@@ -6,8 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	memory "github.com/Timwood0x10/ares/internal/ares_memory"
-	"github.com/Timwood0x10/ares/internal/storage/postgres/repositories"
+	memory "github.com/Timwood0x10/ares/internal/runtime/memory"
 	"github.com/Timwood0x10/ares/internal/tools/resources/base"
 	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
@@ -45,6 +44,16 @@ func NewMemorySearch(memoryMgr memory.MemoryManager) *MemorySearch {
 }
 
 // Execute performs memory search.
+//
+// SECURITY BOUNDARY (single-tenant v1): the search is scoped to the memory
+// manager's CURRENT tenant (see memoryManager's tenant accessor)
+// with no per-user isolation — every tool caller in the process reads the
+// same tenant's task payloads. Accepted for the single-tenant, in-process
+// v1 deployment where all agents share one memory; NOT a property to rely
+// on once multiple users or tenants share a runtime.
+//
+// TODO(tech-debt): thread the caller's tenant/user identity through the
+// tool execution context so memory_search scopes queries per principal.
 func (t *MemorySearch) Execute(ctx context.Context, params map[string]interface{}) (core.Result, error) {
 	query, ok := params["query"].(string)
 	if !ok || query == "" {
@@ -109,14 +118,17 @@ func (t *MemorySearch) Execute(ctx context.Context, params map[string]interface{
 }
 
 // UserProfile retrieves user profile and preferences from memory.
+// The distilled_memories database path was removed (schema ghost: the
+// repository never had a production constructor, so the table saw zero
+// reads/writes); the tool runs on the memory manager's task history, which
+// is the path that actually executed in production.
 type UserProfile struct {
 	*base.BaseTool
-	memoryMgr     memory.MemoryManager
-	distilledRepo repositories.DistilledMemoryRepositoryInterface
+	memoryMgr memory.MemoryManager
 }
 
 // NewUserProfile creates a new UserProfile tool.
-func NewUserProfile(memoryMgr memory.MemoryManager, distilledRepo repositories.DistilledMemoryRepositoryInterface) *UserProfile {
+func NewUserProfile(memoryMgr memory.MemoryManager) *UserProfile {
 	params := &core.ParameterSchema{
 		Type: "object",
 		Properties: map[string]*core.Parameter{
@@ -137,8 +149,7 @@ func NewUserProfile(memoryMgr memory.MemoryManager, distilledRepo repositories.D
 	}
 
 	up := &UserProfile{
-		memoryMgr:     memoryMgr,
-		distilledRepo: distilledRepo,
+		memoryMgr: memoryMgr,
 	}
 	up.BaseTool = base.NewBaseToolWithCapabilities("user_profile", "Retrieve user profile and preferences from memory", core.CategoryMemory, []core.Capability{core.CapabilityMemory}, params)
 
@@ -148,6 +159,7 @@ func NewUserProfile(memoryMgr memory.MemoryManager, distilledRepo repositories.D
 // Execute retrieves user profile.
 //
 //nolint:gocyclo // Complex user profile retrieval with multiple field types
+//nolint:gocyclo
 func (t *UserProfile) Execute(ctx context.Context, params map[string]interface{}) (core.Result, error) {
 	// Get required parameters
 	userID, ok := params["user_id"].(string)
@@ -169,46 +181,9 @@ func (t *UserProfile) Execute(ctx context.Context, params map[string]interface{}
 		"memories":     make([]map[string]interface{}, 0),
 	}
 
-	// First, try to get distilled memories from database
-	if t.distilledRepo != nil {
-		memories, err := t.distilledRepo.GetByUserID(ctx, tenantID, userID, 10)
-		if err == nil && len(memories) > 0 {
-			// Parse distilled memories to extract user profile
-			for _, mem := range memories {
-				memInfo := map[string]interface{}{
-					"id":          mem.ID,
-					"content":     mem.Content,
-					"memory_type": mem.MemoryType,
-					"importance":  mem.Importance,
-					"created_at":  mem.CreatedAt,
-				}
-				profile["memories"] = append(profile["memories"].([]map[string]interface{}), memInfo)
-
-				// Extract tech stack from content
-				content := strings.ToLower(mem.Content)
-				if strings.Contains(content, "精通") || strings.Contains(content, "擅长") {
-					// Extract tech stack preferences
-					if strings.Contains(content, "rust") {
-						addUniqueString(profile, "tech_stack", "Rust")
-					}
-					if strings.Contains(content, "golang") || strings.Contains(content, "go") {
-						addUniqueString(profile, "tech_stack", "Golang")
-					}
-					if strings.Contains(content, "python") {
-						addUniqueString(profile, "tech_stack", "Python")
-					}
-					if strings.Contains(content, "javascript") || strings.Contains(content, "js") {
-						addUniqueString(profile, "tech_stack", "JavaScript")
-					}
-				}
-
-				// Extract preferences
-				if strings.Contains(content, "喜欢") || strings.Contains(content, "prefer") {
-					extractPreferences(profile, content)
-				}
-			}
-		}
-	}
+	// The distilled-memories database branch was removed with the schema
+	// ghost (zero production writes ever reached the table); the memory
+	// manager's task-history branch below is the live path.
 
 	// Second, search in-memory tasks if memory manager is available
 	if t.memoryMgr != nil {
@@ -265,54 +240,6 @@ func (t *UserProfile) Execute(ctx context.Context, params map[string]interface{}
 	}
 
 	return core.NewResult(true, profile), nil
-}
-
-// addUniqueString adds a string to a list if it doesn't already exist
-func addUniqueString(profile map[string]interface{}, key, value string) {
-	if list, ok := profile[key].([]string); ok {
-		for _, v := range list {
-			if strings.EqualFold(v, value) {
-				return
-			}
-		}
-		profile[key] = append(list, value)
-	}
-}
-
-// extractPreferences extracts user preferences from content
-func extractPreferences(profile map[string]interface{}, content string) {
-	// Extract likes
-	if strings.Contains(content, "喜欢") {
-		afterLike := strings.Split(content, "喜欢")
-		if len(afterLike) > 1 {
-			preference := strings.TrimSpace(strings.Split(afterLike[1], "，")[0])
-			preference = strings.TrimSpace(strings.Split(preference, ",")[0])
-			if preference != "" {
-				profile["preferences"] = append(profile["preferences"].([]map[string]interface{}), map[string]interface{}{
-					"type":  "like",
-					"value": preference,
-				})
-			}
-		}
-	}
-
-	// Extract dislikes
-	if strings.Contains(content, "不喜欢") || strings.Contains(content, "讨厌") {
-		parts := strings.Split(content, "不喜欢")
-		if len(parts) == 1 {
-			parts = strings.Split(content, "讨厌")
-		}
-		if len(parts) > 1 {
-			dislike := strings.TrimSpace(strings.Split(parts[1], "，")[0])
-			dislike = strings.TrimSpace(strings.Split(dislike, ",")[0])
-			if dislike != "" {
-				profile["preferences"] = append(profile["preferences"].([]map[string]interface{}), map[string]interface{}{
-					"type":  "dislike",
-					"value": dislike,
-				})
-			}
-		}
-	}
 }
 
 // containsKeywords checks if text contains any of the keywords.

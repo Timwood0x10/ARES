@@ -428,8 +428,8 @@ go build ./...
 
 ## 获取更多帮助
 
-- 查看 [架构文档](arch.md)
-- 查看 [快速开始](quick_start.md)
+- 查看 [架构文档](../../../ARCHITECTURE.md)
+- 查看 [快速开始](quick-start.md)
 - 提交 [Issue](https://github.com/Timwood0x10/ares/issues)
 
 ---

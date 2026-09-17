@@ -40,14 +40,14 @@ graph TB
 
 ## Agent 怎么死的
 
-Agent 有三种死亡方式，都在 `internal/ares_runtime/manager.go` 中处理。
+Agent 有三种死亡方式，都在 `internal/runtime/manager.go` 中处理。
 
 ### 1. 执行过程中 Panic
 
 每个 Agent 在 goroutine 中运行，外层包裹 `defer recover()`。捕获到 panic 后调用 `NotifyAgentDead`：
 
 ```go
-// internal/ares_runtime/manager.go:146-166
+// internal/runtime/manager.go（行号已随重构漂移，见文件本身）
 m.g.Go(func() error {
     defer func() {
         if r := recover(); r != nil {
@@ -115,7 +115,7 @@ flowchart TD
     ASYNC --> TIMEOUT["超时: 60s"]
 ```
 
-实际代码（`internal/ares_runtime/manager.go:416-454`）：
+实际代码（`internal/runtime/manager.go` 的 `RestoreAgent`）：
 
 ```go
 func (m *Manager) NotifyAgentDead(agentID string, reason string) {
@@ -187,7 +187,7 @@ sequenceDiagram
 旧 Agent 在写锁下标记 `stopped = true`，取消其 context，调用 `agent.Stop()`（10s 超时）。
 
 ```go
-// internal/ares_runtime/manager.go:310-328
+// internal/runtime/manager.go（行号已随重构漂移，见文件本身）
 m.mu.Lock()
 oldMA, oldExists := m.agents[agentID]
 if oldExists && oldMA != nil {
@@ -278,83 +278,6 @@ func (a *LeaderAgent) Snapshot() (map[string]any, error) {
     }, nil
 }
 ```
-
-## Leader 故障转移
-
-Leader Agent 有额外的故障转移层，通过 `LeaderSupervisor` 实现。Leader 死亡时，执行基于检查点的恢复：
-
-```mermaid
-sequenceDiagram
-    participant SV as LeaderSupervisor
-    participant HB as HeartbeatMonitor
-    participant Old as 旧 Leader
-    participant CP as CheckpointStore
-    participant ER as EventRecovery
-    participant TR as TaskRecovery
-    participant New as 新 Leader
-
-    SV->>HB: CheckTimeouts()
-    HB-->>SV: 检测到 Leader 超时
-    SV->>SV: 发出 EventFailoverTriggered
-
-    SV->>Old: Stop（30s 超时）
-    SV->>CP: GetLatest(leaderID)
-    alt 检查点存在
-        CP-->>SV: LeaderCheckpoint
-    else 检查点缺失
-        SV->>ER: RecoverFromEvents(leaderID)
-        ER-->>SV: RecoveryState（会话 + 待处理任务）
-    end
-
-    SV->>SV: HandleFailover（ColdRestartStrategy，3 次重试）
-    SV->>New: 创建 + 注入检查点 + 启动
-
-    SV->>TR: RecoverStaleTasks(sessionID)
-    TR-->>SV: 孤儿任务标记为 failed
-
-    SV->>SV: 发出 EventFailoverCompleted
-```
-
-### 检查点
-
-`LeaderCheckpoint` 存储 `leader_id`、`session_id`、`status` 和 `metadata`。通过 upsert 语义持久化到 PostgreSQL。Leader 在创建或恢复会话时保存检查点。
-
-### 事件恢复
-
-如果检查点缺失或不完整，`EventRecovery.RecoverFromEvents` 通过回放完整事件流重建状态：
-- `EventSessionCreated` -> 捕获 session ID
-- `EventTaskCreated` -> 将任务加入待处理列表
-- `EventTaskCompleted` -> 从待处理列表移除任务
-
-### 孤儿任务清理
-
-`TaskRecovery.RecoverStaleTasks` 将状态为 `pending` 或 `running` 的任务标记为 `failed`，错误信息为 `"leader failover: task orphaned"`。
-
-## 复活插件
-
-`resurrection.Supervisor` 是通用的、与 Agent 类型无关的复活机制（`internal/plugins/resurrection/`）。
-
-```mermaid
-flowchart LR
-    SUP[Resurrection Supervisor] -->|Watch| A1[Agent 1 + Factory]
-    SUP -->|Watch| A2[Agent 2 + Factory]
-    SUP -->|Watch| A3[Agent 3 + Factory]
-
-    SUP -->|每 10s 检查| HC[HealthChecker]
-    HC -->|OnFailure| RES[resurrect goroutine]
-
-    RES -->|1| NEW[Factory -> 新 Agent]
-    RES -->|2| REPLAY[回放事件]
-    RES -->|3| RESTORE[RestoreState]
-    RES -->|4| START[启动新 Agent]
-    RES -->|5| OLD[停止旧 Agent]
-```
-
-配置默认值：
-- `CheckInterval`：10s
-- `ResurrectTimeout`：60s
-- `MaxAttempts`：3
-- `HeartbeatInterval`：5s
 
 ## 事件溯源
 

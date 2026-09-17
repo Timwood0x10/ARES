@@ -2,8 +2,10 @@
 // (ares-vs-prime-agent 5.3, medium-high priority). A lease is an exclusive
 // hold on a session owned by one agent/daemon for a bounded TTL; other
 // workers cannot modify the session while the lease is held. This prevents
-// concurrent writers from clobbering each other on long-lived sessions, and
-// pairs with the action store for replay/audit (see package actionlog).
+// concurrent writers from clobbering each other on long-lived sessions.
+// (The action store it once paired with for replay/audit,
+// agents/actionlog, was removed as dead — it had zero production
+// constructors.)
 package lease
 
 import (
@@ -37,9 +39,10 @@ type Lease struct {
 // Manager issues and tracks session leases in memory. It is safe for
 // concurrent use; all state is guarded by mu.
 type Manager struct {
-	mu      sync.Mutex
-	leases  map[string]Lease
-	timeNow func() time.Time // clock injection for tests
+	mu        sync.Mutex
+	leases    map[string]Lease
+	timeNow   func() time.Time // clock injection for tests
+	sweepTick int              // periodic full-prune counter
 }
 
 // NewManager creates a lease Manager with the system clock.
@@ -55,10 +58,10 @@ func NewManager() *Manager {
 // owner (renewing your own lease is not allowed — call Renew instead).
 func (m *Manager) Acquire(ctx context.Context, sessionID, owner string, ttl time.Duration) (Lease, error) {
 	if sessionID == "" || owner == "" {
-		return Lease{}, fmt.Errorf("lease: session ID and owner must not be empty")
+		return Lease{}, errors.New("lease: session ID and owner must not be empty")
 	}
 	if ttl <= 0 {
-		return Lease{}, fmt.Errorf("lease: ttl must be positive")
+		return Lease{}, errors.New("lease: ttl must be positive")
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -78,7 +81,7 @@ func (m *Manager) Acquire(ctx context.Context, sessionID, owner string, ttl time
 // Renew extends an existing lease owned by owner by ttl.
 func (m *Manager) Renew(ctx context.Context, sessionID, owner string, ttl time.Duration) error {
 	if ttl <= 0 {
-		return fmt.Errorf("lease: ttl must be positive")
+		return errors.New("lease: ttl must be positive")
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -89,6 +92,12 @@ func (m *Manager) Renew(ctx context.Context, sessionID, owner string, ttl time.D
 	}
 	if l.Owner != owner {
 		return fmt.Errorf("%w: %s held by %s", ErrLeaseOwnerMismatch, sessionID, l.Owner)
+	}
+	// An expired lease is dead: renewing it would resurrect a hold the
+	// manager has already given up. Callers must Acquire again.
+	if l.ExpiresAt.Before(m.timeNow()) {
+		delete(m.leases, sessionID)
+		return fmt.Errorf("%w: %s expired at %s", ErrLeaseNotFound, sessionID, l.ExpiresAt.Format(time.RFC3339))
 	}
 	l.ExpiresAt = m.timeNow().Add(ttl)
 	m.leases[sessionID] = l
@@ -111,12 +120,30 @@ func (m *Manager) Release(ctx context.Context, sessionID, owner string) error {
 	return nil
 }
 
+// sweepEvery bounds the periodic full prune: expired leases are swept
+// either when Count is called or, probabilistically, on a Get miss, so
+// abandoned expired keys cannot accumulate unboundedly in a long-lived
+// process that only ever reads via Get/Held.
+const sweepEvery = 1024
+
 // Get returns the current lease for sessionID, if unexpired.
 func (m *Manager) Get(sessionID string) (Lease, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	l, ok := m.leases[sessionID]
-	if !ok || l.ExpiresAt.Before(m.timeNow()) {
+	if !ok {
+		// Periodic probabilistic full sweep: bounds abandoned expired leases
+		// even when Count is never called.
+		m.sweepTick++
+		if m.sweepTick >= sweepEvery {
+			m.sweepTick = 0
+			m.pruneExpiredLocked()
+		}
+		return Lease{}, false
+	}
+	if l.ExpiresAt.Before(m.timeNow()) {
+		// Lazy cleanup: drop the expired lease on first touch.
+		delete(m.leases, sessionID)
 		return Lease{}, false
 	}
 	return l, true
@@ -128,9 +155,22 @@ func (m *Manager) Held(sessionID string) bool {
 	return ok
 }
 
-// Count returns the number of active leases.
+// Count returns the number of active leases, pruning expired entries first:
+// the map had no sweep, so abandoned sessions accumulated forever and
+// Count stayed inflated long after every lease expired.
 func (m *Manager) Count() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.pruneExpiredLocked()
 	return len(m.leases)
+}
+
+// pruneExpiredLocked deletes expired leases from the map (caller holds mu).
+func (m *Manager) pruneExpiredLocked() {
+	now := m.timeNow()
+	for id, l := range m.leases {
+		if l.ExpiresAt.Before(now) {
+			delete(m.leases, id)
+		}
+	}
 }

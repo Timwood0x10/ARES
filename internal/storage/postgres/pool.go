@@ -1,23 +1,22 @@
 package postgres
 
-//nolint: errcheck // best-effort operations: ResponseWriter writes, cleanup Close/Wait, deferred shutdown
+//nolint:errcheck // deliberate `_ =` only: rollback-after-commit no-ops and defensive conn.Close on already-failing paths, where the primary error is being returned instead
 import (
 	"context"
 	"database/sql"
+	stderrors "errors"
 	"runtime"
 	"sync"
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 
-	stderrors "errors"
-
 	"github.com/Timwood0x10/ares/internal/errors"
 )
 
 // ErrMissingTenantID is returned when a tenant-aware query is called with an
 // empty tenant ID. This prevents silent data leaks across tenants when RLS
-// policies are enforced via app.tenant_id (P1-11).
+// policies are enforced via app.tenant_id.
 var ErrMissingTenantID = stderrors.New("storage: missing tenant ID")
 
 // Pool represents a database connection pool with "get usage release" pattern.
@@ -172,7 +171,7 @@ func (p *Pool) Exec(ctx context.Context, query string, args ...any) (sql.Result,
 // ExecWithTenant executes a query with a mandatory tenant context on the same
 // connection. Begins a transaction, sets tenant_id via set_config (transaction-
 // scoped, is_local=true), executes the query, and commits. This ensures RLS
-// policies see the correct app.tenant_id and no data leaks across tenants (P1-11).
+// policies see the correct app.tenant_id and no data leaks across tenants.
 // Fails with ErrMissingTenantID if tenantID is empty.
 func (p *Pool) ExecWithTenant(ctx context.Context, tenantID string, query string, args ...any) (sql.Result, error) {
 	if tenantID == "" {
@@ -252,7 +251,23 @@ func (p *Pool) QueryWithTenant(ctx context.Context, tenantID string, query strin
 		_ = conn.Close()
 		return nil, queryErr
 	}
-	return &ManagedRows{Rows: rows, conn: conn, pool: p, tenant: true}, nil
+	mr := &ManagedRows{Rows: rows, conn: conn, pool: p, tenant: true}
+	// Finalizer for a caller that forgets Close(): the connection must not
+	// only be released — the tenant context must be CLEARED first, or the
+	// tenant GUC leaks into every other tenant that reuses the pooled
+	// connection. Query and QueryRow already install equivalent finalizers.
+	runtime.SetFinalizer(mr, func(m *ManagedRows) {
+		if m.conn != nil {
+			log.Warn("ManagedRows garbage collected without Close() being called, releasing connection")
+			if m.tenant {
+				clearTenantContext(m.conn)
+				m.tenant = false
+			}
+			m.pool.Release(m.conn)
+			m.conn = nil
+		}
+	})
+	return mr, nil
 }
 
 // Query executes a query and returns rows.
@@ -343,6 +358,16 @@ func (m *ManagedRows) Close() error {
 // The connection is held until the row is fully consumed by Scan.
 // This avoids the data race that would occur if the connection were released
 // before the caller finishes reading the row data.
+//
+// There is deliberately NO QueryRowWithTenant counterpart, so this method
+// never binds app.tenant_id. If RLS policies are ever re-introduced (signed
+// 方案 B keeps them out — see migrate_storage.go), an unbound app.tenant_id is
+// NULL and such a policy filters every row — the query would fail-close to
+// ErrNoRows rather than leak. That is safe but silent: a caller adding the
+// first tenant-scoped single-row read must go through QueryWithTenant (and
+// Close the rows) or it will see "not found" instead of an error. Add a
+// QueryRowWithTenant when that call site appears; do not reach for QueryRow
+// on tenant data.
 func (p *Pool) QueryRow(ctx context.Context, query string, args ...any) *ManagedRow {
 	var cancel context.CancelFunc
 	if _, hasDeadline := ctx.Deadline(); !hasDeadline {

@@ -115,7 +115,12 @@ func (cb *CircuitBreaker) RecordSuccess() {
 	switch cb.state {
 	case CircuitBreakerStateHalfOpen:
 		cb.halfOpenSuccess++
-		cb.halfOpenInflight.Add(-1)
+		// Guard against going negative: if the inflight counter was already
+		// cleaned up by cleanupHalfOpenInflight, a decrement here would make
+		// it negative and permanently break CompareAndSwap(0,1) in AllowRequest.
+		if cb.halfOpenInflight.Load() > 0 {
+			cb.halfOpenInflight.Add(-1)
+		}
 		if cb.halfOpenSuccess >= cb.successThreshold {
 			cb.state = CircuitBreakerStateClosed
 			cb.failureCount = 0
@@ -161,22 +166,34 @@ func (cb *CircuitBreaker) cleanupHalfOpenInflight() {
 // RecordFailure records a failed operation.
 // In Closed state, this increments the consecutive failure count.
 // In HalfOpen state, this immediately re-opens the circuit.
+// In Open state this is a no-op: the request was rejected by the breaker and
+// never reached the backend, so it is not evidence about the backend — and
+// refreshing lastFailureTime here would push the Open→HalfOpen probe window
+// forward on every rejected call, starving recovery for as long as traffic
+// keeps arriving (the embedding path recorded a failure on its
+// circuit-open branch).
 func (cb *CircuitBreaker) RecordFailure() {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
 
-	if cb.state == CircuitBreakerStateHalfOpen {
-		cb.halfOpenInflight.Add(-1)
+	switch cb.state {
+	case CircuitBreakerStateHalfOpen:
+		if cb.halfOpenInflight.Load() > 0 {
+			cb.halfOpenInflight.Add(-1)
+		}
 		cb.state = CircuitBreakerStateOpen
 		cb.lastFailureTime = time.Now()
-		return
-	}
 
-	cb.failureCount++
-	cb.lastFailureTime = time.Now()
+	case CircuitBreakerStateClosed:
+		cb.failureCount++
+		cb.lastFailureTime = time.Now()
+		if cb.failureCount >= cb.failureThreshold {
+			cb.state = CircuitBreakerStateOpen
+		}
 
-	if cb.failureCount >= cb.failureThreshold {
-		cb.state = CircuitBreakerStateOpen
+	default:
+		// Open (and any future state): ignored on purpose — see the doc
+		// comment for why a rejected call must not count as a failure.
 	}
 }
 

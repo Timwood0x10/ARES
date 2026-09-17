@@ -2,6 +2,7 @@ package planner
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -20,10 +21,10 @@ func NewExecutionPlanner() ExecutionPlanner {
 // Plan creates an execution plan from capability requirements.
 func (p *executionPlanner) Plan(_ context.Context, intent *Intent, requirements []CapabilityRequirement) (*ExecutionPlan, error) {
 	if intent == nil {
-		return nil, fmt.Errorf("planner: intent is nil")
+		return nil, errors.New("planner: intent is nil")
 	}
 	if len(requirements) == 0 {
-		return nil, fmt.Errorf("planner: no requirements to plan")
+		return nil, errors.New("planner: no requirements to plan")
 	}
 
 	planID := uuid.New().String()
@@ -120,6 +121,13 @@ func fallbackToolsFor(capability string) []string {
 	}
 }
 
+// maxEvidenceRecords caps the in-memory evidence store to prevent
+// unbounded growth during long-running serve sessions (REVIEW #15b).
+// When the cap is reached, the oldest records are evicted (ring-buffer
+// semantics). The default is generous enough for scoring relevance
+// (Query uses limit 50/100) while bounding memory.
+const maxEvidenceRecords = 5000
+
 // memoryEvidenceStore implements EvidenceStore with in-memory storage.
 type memoryEvidenceStore struct {
 	mu       sync.RWMutex
@@ -133,14 +141,24 @@ func NewMemoryEvidenceStore() EvidenceStore {
 	}
 }
 
-// Save records a tool execution result.
+// Save records a tool execution result. When the store reaches
+// maxEvidenceRecords, the oldest entries are evicted to bound memory
+// usage (REVIEW #15b).
 func (s *memoryEvidenceStore) Save(_ context.Context, evidence *ToolEvidence) error {
 	if evidence == nil {
-		return fmt.Errorf("planner: evidence is nil")
+		return errors.New("planner: evidence is nil")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.evidence = append(s.evidence, *evidence)
+	// Evict oldest records when over the cap. Reslicing moves the slice
+	// header forward without copying data (O(1)); the backing array is
+	// reallocated only when subsequent appends exhaust remaining capacity,
+	// keeping memory bounded at roughly 2x the cap.
+	if len(s.evidence) > maxEvidenceRecords {
+		trim := len(s.evidence) - maxEvidenceRecords
+		s.evidence = s.evidence[trim:]
+	}
 	return nil
 }
 

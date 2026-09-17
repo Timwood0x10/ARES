@@ -251,3 +251,22 @@ func TestDefaultValidator_TypeConflict(t *testing.T) {
 		t.Error("expected conflicts for type mismatch")
 	}
 }
+
+// TestJaccardOverlapEmptySetsAreZeroSimilarity locks K-3: two empty token
+// sets share no evidence, so the overlap must be 0. Returning 1.0 (the old
+// behavior) made two content-free objects look like a perfect match and got
+// them merged with confidence 1.0 by DefaultEntityMatcher.
+func TestJaccardOverlapEmptySetsAreZeroSimilarity(t *testing.T) {
+	if got := jaccardOverlap(map[string]int{}, map[string]int{}); got != 0.0 {
+		t.Fatalf("jaccardOverlap(empty, empty) = %v, want 0", got)
+	}
+	if got := jaccardOverlap(map[string]int{"a": 1}, map[string]int{}); got != 0.0 {
+		t.Fatalf("jaccardOverlap(one-sided empty) = %v, want 0", got)
+	}
+	if got := jaccardOverlap(map[string]int{"a": 1}, map[string]int{"a": 1}); got != 1.0 {
+		t.Fatalf("jaccardOverlap(identical sets) = %v, want 1", got)
+	}
+	if got := jaccardOverlap(map[string]int{"a": 1, "b": 1}, map[string]int{"b": 1, "c": 1}); got < 0.32 || got > 0.34 {
+		t.Fatalf("jaccardOverlap(partial) = %v, want ~1/3", got)
+	}
+}

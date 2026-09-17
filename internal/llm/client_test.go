@@ -3,7 +3,6 @@ package llm
 
 import (
 	"context"
-	"os"
 	"testing"
 	"time"
 )
@@ -137,43 +136,6 @@ func TestClient_GetModel(t *testing.T) {
 
 	if got := client.GetModel(); got != "llama3" {
 		t.Errorf("Client.GetModel() = %v, want llama3", got)
-	}
-}
-
-func TestNewClientFromEnv(t *testing.T) {
-	// Set environment variables
-	if err := os.Setenv("LLM_PROVIDER", "ollama"); err != nil {
-		t.Fatalf("Failed to set LLM_PROVIDER: %v", err)
-	}
-	if err := os.Setenv("LLM_MODEL", "llama3"); err != nil {
-		t.Fatalf("Failed to set LLM_MODEL: %v", err)
-	}
-	defer func() {
-		if err := os.Unsetenv("LLM_PROVIDER"); err != nil {
-			t.Logf("Failed to unset LLM_PROVIDER: %v", err)
-		}
-	}()
-	defer func() {
-		if err := os.Unsetenv("LLM_MODEL"); err != nil {
-			t.Logf("Failed to unset LLM_MODEL: %v", err)
-		}
-	}()
-
-	client, err := NewClientFromEnv()
-	if err != nil {
-		t.Fatalf("NewClientFromEnv() error = %v", err)
-	}
-
-	if client == nil {
-		t.Fatal("NewClientFromEnv() returned nil client")
-	}
-
-	if client.GetProvider() != "ollama" {
-		t.Errorf("Got provider = %v, want ollama", client.GetProvider())
-	}
-
-	if client.GetModel() != "llama3" {
-		t.Errorf("Got model = %v, want llama3", client.GetModel())
 	}
 }
 
@@ -316,39 +278,5 @@ func TestNewClientWithEmptyProvider(t *testing.T) {
 
 	if client != nil {
 		t.Log("Client created with empty provider")
-	}
-}
-
-func TestNewClientFromEnvMissingVars(t *testing.T) {
-	// Clear environment variables
-	_ = os.Unsetenv("LLM_PROVIDER")
-	_ = os.Unsetenv("LLM_MODEL")
-	_ = os.Unsetenv("LLM_BASE_URL")
-
-	client, err := NewClientFromEnv()
-	if err != nil {
-		t.Logf("Missing env vars test: %v", err)
-	}
-
-	if client == nil {
-		t.Log("Client is nil when env vars are missing")
-	}
-}
-
-func TestNewClientFromEnvPartialVars(t *testing.T) {
-	_ = os.Setenv("LLM_PROVIDER", "ollama")
-	_ = os.Setenv("LLM_MODEL", "llama3")
-	defer func() {
-		_ = os.Unsetenv("LLM_PROVIDER")
-		_ = os.Unsetenv("LLM_MODEL")
-	}()
-
-	client, err := NewClientFromEnv()
-	if err != nil {
-		t.Logf("Partial env vars test: %v", err)
-	}
-
-	if client != nil {
-		t.Log("Client created with partial env vars")
 	}
 }

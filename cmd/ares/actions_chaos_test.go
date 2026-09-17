@@ -11,12 +11,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/agentfabric"
 	"github.com/Timwood0x10/ares/internal/agents/sub"
 	"github.com/Timwood0x10/ares/internal/ares_events"
+	"github.com/Timwood0x10/ares/internal/ares_security"
 	"github.com/Timwood0x10/ares/internal/aresrecovery"
 	"github.com/Timwood0x10/ares/internal/core/models"
-	"github.com/Timwood0x10/ares/internal/taskfabric"
+	"github.com/Timwood0x10/ares/internal/fabric/agent"
+	"github.com/Timwood0x10/ares/internal/fabric/task"
 )
 
 // chaosTestCognition completes every task in one quantum.
@@ -75,6 +76,10 @@ func newChaosTestKernel(t *testing.T, ctx context.Context, withRecoveryLoop bool
 	handler := &actionHandler{
 		kernel: kh,
 		apiKey: "test-key",
+		// RBAC: chaos operations now require RoleAdmin. Wire the JWT
+		// middleware (PermWrite) so admin/operator roles are distinguished —
+		// chaos tests mint an admin token via postChaos.
+		auth: ares_security.NewAuthMiddleware([]byte(testActionJWTSecret), ares_security.PermWrite),
 	}
 	return handler, kh, fabric, agentSink
 }
@@ -84,7 +89,8 @@ func newChaosTestKernel(t *testing.T, ctx context.Context, withRecoveryLoop bool
 func postChaos(t *testing.T, h *actionHandler, chaosType string) (int, map[string]any) {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, "/api/chaos/"+chaosType, bytes.NewReader([]byte("{}")))
-	req.Header.Set("Authorization", "Bearer test-key")
+	// Chaos requires RoleAdmin; mint an admin JWT on the shared test secret.
+	req.Header.Set("Authorization", "Bearer "+testActionJWT(t, ares_security.RoleAdmin))
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
 	var body map[string]any
@@ -92,7 +98,7 @@ func postChaos(t *testing.T, h *actionHandler, chaosType string) (int, map[strin
 	return w.Code, body
 }
 
-// TestChaosRandomKillHitsFabricAndEmitsKilled locks the P1 retarget: with the
+// TestChaosRandomKillHitsFabricAndEmitsKilled locks the retarget: with the
 // peer kernel present, /api/chaos/random-kill kills a LIVE AGENT-FABRIC agent
 // (observable via the agent event stream + fabric removal), NOT a legacy
 // manager-pool entry. The death then flows through the kernel's own recovery
@@ -266,4 +272,98 @@ func (e *chaosStubExecutor) ExecuteStep(_ context.Context, task *models.Task) (*
 	res := models.NewTaskResult(task.TaskID, task.AgentType)
 	res.SetSuccess(nil, "replacement done")
 	return &sub.StepOutcome{Done: true, Result: res}, nil
+}
+
+// TestChaosStopEndpointAuth locks the emergency-stop
+// contract: the endpoint is disabled without a configured stop_token (503),
+// rejects a wrong X-Chaos-Token (403), and trips the live-chaos kill switch
+// on a valid token.
+func TestChaosStopEndpointAuth(t *testing.T) {
+	newHandler := func(token string) *actionHandler {
+		return &actionHandler{apiKey: "test-key", chaosStopToken: token}
+	}
+
+	t.Run("disabled_when_token_empty", func(t *testing.T) {
+		// Reset the process-level singleton so repeated runs (-count>1)
+		// don't inherit the switch tripped by trips_switch_with_valid_token.
+		liveChaosCtl = &chaosStopControl{}
+		h := newHandler("")
+		code, body := postChaosWithToken(t, h, "stop", "whatever")
+		if code != http.StatusServiceUnavailable {
+			t.Fatalf("expected 503 when stop_token empty, got %d", code)
+		}
+		if liveChaosCtl.Stopped() {
+			t.Fatal("kill switch must not trip while endpoint is disabled")
+		}
+		_ = body
+	})
+
+	t.Run("forbidden_with_wrong_token", func(t *testing.T) {
+		liveChaosCtl = &chaosStopControl{}
+		h := newHandler("secret")
+		code, _ := postChaosWithToken(t, h, "stop", "wrong")
+		if code != http.StatusForbidden {
+			t.Fatalf("expected 403 for wrong token, got %d", code)
+		}
+		if liveChaosCtl.Stopped() {
+			t.Fatal("kill switch must not trip on wrong token")
+		}
+	})
+
+	t.Run("trips_switch_with_valid_token", func(t *testing.T) {
+		liveChaosCtl = &chaosStopControl{}
+		h := newHandler("secret")
+		code, _ := postChaosWithToken(t, h, "stop", "secret")
+		if code != http.StatusOK {
+			t.Fatalf("expected 200, got %d", code)
+		}
+		if !liveChaosCtl.Stopped() {
+			t.Fatal("kill switch must be tripped by valid token")
+		}
+	})
+}
+
+// postChaosWithToken issues an authenticated POST with an X-Chaos-Token header.
+func postChaosWithToken(t *testing.T, h *actionHandler, chaosType, token string) (int, map[string]any) {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/api/chaos/"+chaosType, bytes.NewReader([]byte("{}")))
+	req.Header.Set("Authorization", "Bearer test-key")
+	req.Header.Set("X-Chaos-Token", token)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	var body map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &body)
+	return w.Code, body
+}
+
+// TestAgentEligibleForChaosWhitelist locks the whitelist contract: only
+// agents declaring at least one whitelisted capability are injectable; the
+// empty whitelist disables injection entirely.
+func TestAgentEligibleForChaosWhitelist(t *testing.T) {
+	ctx := context.Background()
+	fabric := agentfabric.NewFabric()
+	mustSpawn := func(id string, caps []string) {
+		t.Helper()
+		if _, err := fabric.Spawn(ctx, agentfabric.SpawnSpec{
+			Identity:     id,
+			Capabilities: caps,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mustSpawn("coder", []string{"code"})
+	mustSpawn("generic", []string{"misc"})
+
+	if agentEligibleForChaos(fabric, "coder", nil) {
+		t.Error("empty whitelist must make every agent ineligible")
+	}
+	if agentEligibleForChaos(fabric, "coder", []string{"browser"}) {
+		t.Error("agent without whitelisted capability must be ineligible")
+	}
+	if !agentEligibleForChaos(fabric, "coder", []string{"browser", "code"}) {
+		t.Error("agent declaring a whitelisted capability must be eligible")
+	}
+	if agentEligibleForChaos(fabric, "ghost", []string{"code"}) {
+		t.Error("unknown agent must be ineligible")
+	}
 }

@@ -1,0 +1,242 @@
+package introspect
+
+import (
+	"fmt"
+	"testing"
+	"time"
+
+	"github.com/Timwood0x10/ares/internal/ares_events"
+)
+
+// TestEngine_HealthEvolution verifies health scoring responds to observed
+// success/error events (migrated algorithm).
+func TestEngine_HealthEvolution(t *testing.T) {
+	e := NewEngine(nil)
+	if got := e.SystemHealth().Level; got != HealthUnknown {
+		t.Fatalf("empty engine must report unknown health, got %s", got)
+	}
+
+	// Success-only agent → healthy.
+	for i := 0; i < 50; i++ {
+		e.ObserveAgentEvent("a1", "tick", 10, false)
+	}
+	if h := e.Health("a1"); h.Level != HealthHealthy {
+		t.Fatalf("success-only agent must be healthy, got %s (score %.2f)", h.Level, h.Score)
+	}
+	if h := e.Health("missing"); h.Level != HealthUnknown {
+		t.Fatalf("unknown agent must be unknown, got %s", h.Level)
+	}
+}
+
+// TestEngine_ErrorRateAnomaly verifies error bursts surface an anomaly.
+func TestEngine_ErrorRateAnomaly(t *testing.T) {
+	e := NewEngine(nil)
+	// Feed many errors within the window (MaxErrorRate default 5/min).
+	for i := 0; i < 30; i++ {
+		e.ObserveAgentEvent("a2", "error", 0, true)
+	}
+	anoms := e.Anomalies()
+	found := false
+	for _, a := range anoms {
+		if a.AgentID == "a2" && a.Category == "high_errors" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected high_errors anomaly for a2, got %+v", anoms)
+	}
+	if h := e.Health("a2"); h.Level == HealthHealthy {
+		t.Fatalf("error-heavy agent must not be healthy")
+	}
+}
+
+// TestEngine_RestartAnomaly verifies restart bursts surface an anomaly.
+func TestEngine_RestartAnomaly(t *testing.T) {
+	e := NewEngine(nil)
+	// MaxRestartsPerMin default 3; 20 restarts / 5min window = 4/min ≥ 3.
+	for i := 0; i < 20; i++ {
+		e.ObserveAgentEvent("a3", "restart", 0, false)
+	}
+	anoms := e.Anomalies()
+	found := false
+	for _, a := range anoms {
+		if a.AgentID == "a3" && a.Category == "high_restarts" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected high_restarts anomaly for a3, got %+v", anoms)
+	}
+}
+
+// TestEngine_LatencyAnomaly verifies p99 latency above threshold surfaces an
+// anomaly.
+func TestEngine_LatencyAnomaly(t *testing.T) {
+	e := NewEngine(nil)
+	// LatencyThreshold default 5000ms.
+	for i := 0; i < 20; i++ {
+		e.ObserveAgentEvent("a4", "latency", 9000, false)
+	}
+	anoms := e.Anomalies()
+	found := false
+	for _, a := range anoms {
+		if a.AgentID == "a4" && a.Category == "high_latency" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected high_latency anomaly for a4, got %+v", anoms)
+	}
+}
+
+// TestEngine_ResolveAndAcknowledge verifies anomaly/insight lifecycle ops.
+func TestEngine_ResolveAndAcknowledge(t *testing.T) {
+	e := NewEngine(nil)
+	for i := 0; i < 30; i++ {
+		e.ObserveAgentEvent("a5", "error", 0, true)
+	}
+	anoms := e.Anomalies()
+	if len(anoms) == 0 {
+		t.Fatal("expected anomalies")
+	}
+	e.ResolveAnomaly(anoms[0].ID)
+	if got := len(e.Anomalies()); got != len(anoms)-1 {
+		t.Fatalf("resolved anomaly still listed: want %d, got %d", len(anoms)-1, got)
+	}
+}
+
+// TestEngine_ConcurrentObserve verifies the engine is safe under concurrent
+// observation and read (the old dashboard engine used double RLock which was
+// fragile; this locks the single-lock behavior).
+func TestEngine_ConcurrentObserve(t *testing.T) {
+	e := NewEngine(nil)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 200; i++ {
+			e.ObserveAgentEvent("c1", "tick", 5, i%10 == 0)
+		}
+	}()
+	for i := 0; i < 50; i++ {
+		_ = e.Health("c1")
+		_ = e.SystemHealth()
+		_ = e.Anomalies()
+	}
+	<-done
+}
+
+// TestFeedIntel verifies the event→engine mapping (restart/error/latency/tick).
+func TestFeedIntel(t *testing.T) {
+	e := NewEngine(nil)
+	evts := []*ares_events.Event{
+		{Type: "agent.restarted", StreamID: "f1"},
+		{Type: "error", StreamID: "f2"},
+		{Type: "llm.error", StreamID: "f3"},
+		{Type: "tool.response", StreamID: "f4", Payload: map[string]any{"duration_ms": 1234.0}},
+		{Type: "task.failed", StreamID: "f5"},
+		{Type: "agent.stopped", StreamID: "f6"},
+	}
+	for _, evt := range evts {
+		FeedIntel(e, evt)
+	}
+	if h := e.Health("f1"); h.Level == HealthUnknown {
+		t.Fatal("f1 restart must be observed")
+	}
+	if h := e.Health("f2"); h.Level == HealthUnknown {
+		t.Fatal("f2 error must be observed")
+	}
+	// duration_ms conversion: 1234ms must drive the latency bucket.
+	if h := e.Health("f4"); h.Level == HealthUnknown {
+		t.Fatal("f4 latency must be observed")
+	}
+	// Generic events map to a successful tick observation: the agent becomes
+	// known with zero error rate (uptime builds from successful ops).
+	if h := e.Health("f6"); h.Level == HealthUnknown {
+		t.Fatal("f6 tick must create an agent state (known)")
+	} else if h.ErrorRate != 0 {
+		t.Fatalf("f6 tick must be a success observation, error rate %v", h.ErrorRate)
+	}
+	// nil-safe.
+	FeedIntel(nil, nil)
+	FeedIntel(e, nil)
+}
+
+// TestExtractLatency verifies unit conversion for the duration payload key
+// (nanoseconds → ms; duration_ms stays as-is).
+func TestExtractLatency(t *testing.T) {
+	if got := extractLatency(&ares_events.Event{Payload: map[string]any{"duration_ms": 42.0}}); got != 42 {
+		t.Fatalf("duration_ms passthrough: got %v", got)
+	}
+	if got := extractLatency(&ares_events.Event{Payload: map[string]any{"duration": 5e6}}); got != 5 {
+		t.Fatalf("duration ns→ms: got %v", got)
+	}
+	if got := extractLatency(&ares_events.Event{Payload: map[string]any{"duration": 5 * time.Millisecond}}); got != 5 {
+		t.Fatalf("duration Duration→ms: got %v", got)
+	}
+	if got := extractLatency(&ares_events.Event{Payload: map[string]any{"duration": int64(3e6)}}); got != 3 {
+		t.Fatalf("duration int64 ns→ms: got %v", got)
+	}
+	if got := extractLatency(&ares_events.Event{Payload: nil}); got != 0 {
+		t.Fatalf("nil payload: got %v", got)
+	}
+}
+
+// TestEngine_HealthWindowPrune verifies stale events are pruned from the
+// window so health recovers after quiet periods.
+func TestEngine_HealthWindowPrune(t *testing.T) {
+	cfg := DefaultEngineConfig()
+	cfg.HealthWindow = time.Millisecond // tiny window: everything is stale fast
+	e := NewEngine(cfg)
+	for i := 0; i < 40; i++ {
+		e.ObserveAgentEvent("p1", "error", 0, true)
+	}
+	time.Sleep(5 * time.Millisecond)
+	// Stale events pruned → error rate ~0 → healthy again.
+	if h := e.Health("p1"); h.ErrorRate != 0 {
+		t.Fatalf("stale errors must be pruned, error rate %v", h.ErrorRate)
+	}
+}
+
+// TestEngine_BoundedGrowth locks the migration-regression fixes (#intel): the
+// anomalies ring, per-agent event slices, and the agent map must all stay
+// bounded under sustained churn.
+func TestEngine_BoundedGrowth(t *testing.T) {
+	e := NewEngine(&EngineConfig{
+		HealthWindow:      time.Hour, // wide window so time-trim never fires
+		MaxRestartsPerMin: 1,
+		MaxErrorRate:      0.001, // trivially exceeded → anomalies fire
+		LatencyThreshold:  1,
+		AnomalyCooldown:   0, // every error can re-fire an anomaly
+	})
+
+	// One agent, thousands of errors: errors slice must cap, anomalies ring
+	// must cap.
+	for i := 0; i < maxEventSamplesPerAgent+500; i++ {
+		e.ObserveAgentEvent("busy", "op", 0, true)
+	}
+	e.mu.RLock()
+	st := e.agents["busy"]
+	nErr := len(st.errors)
+	nAnom := len(e.anomalies)
+	e.mu.RUnlock()
+	if nErr > maxEventSamplesPerAgent {
+		t.Errorf("errors slice unbounded: %d > %d", nErr, maxEventSamplesPerAgent)
+	}
+	if nAnom > maxAnomalies {
+		t.Errorf("anomalies ring unbounded: %d > %d", nAnom, maxAnomalies)
+	}
+
+	// Many distinct stream IDs: the agent map must cap.
+	for i := 0; i < maxTrackedAgents+300; i++ {
+		e.ObserveAgentEvent(fmt.Sprintf("stream-%d", i), "tick", 0, false)
+	}
+	e.mu.RLock()
+	nAgents := len(e.agents)
+	e.mu.RUnlock()
+	if nAgents > maxTrackedAgents {
+		t.Errorf("agent map unbounded: %d > %d", nAgents, maxTrackedAgents)
+	}
+}

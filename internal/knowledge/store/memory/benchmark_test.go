@@ -72,7 +72,7 @@ func BenchmarkStore_Get(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _ = s.Get(ctx, fmt.Sprintf("obj-%d", i%1000))
+		_, _ = s.Get(ctx, "", fmt.Sprintf("obj-%d", i%1000))
 	}
 }
 
@@ -115,7 +115,7 @@ func BenchmarkStore_Search(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _ = s.Search(ctx, "Redis cache", "text-embedding-3-small", 10)
+		_, _ = s.Search(ctx, "", "Redis cache", "text-embedding-3-small", 10)
 	}
 }
 
@@ -126,6 +126,6 @@ func BenchmarkStore_Delete(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		s := New()
 		_ = s.Save(ctx, makeObject(0))
-		_ = s.Delete(ctx, "obj-0")
+		_ = s.Delete(ctx, "", "obj-0")
 	}
 }

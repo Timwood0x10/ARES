@@ -8,12 +8,15 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/json"
+	stderrors "errors"
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/errors"
+	"github.com/Timwood0x10/ares/internal/storage/postgres"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/adapters"
 	storage_models "github.com/Timwood0x10/ares/internal/storage/postgres/models"
 )
@@ -162,7 +165,7 @@ func (r *SecretRepository) Delete(ctx context.Context, key, tenantID string) err
 // Returns list of secret metadata (without values) or error if query fails.
 func (r *SecretRepository) List(ctx context.Context, tenantID string) ([]*storage_models.Secret, error) {
 	query := `
-		SELECT id, tenant_id, key, key_version, algorithm, expires_at, created_at
+		SELECT id, tenant_id, key, key_version, algorithm, expires_at, metadata::text, created_at
 		FROM secrets
 		WHERE tenant_id = $1
 		ORDER BY key ASC
@@ -177,12 +180,20 @@ func (r *SecretRepository) List(ctx context.Context, tenantID string) ([]*storag
 	secrets := make([]*storage_models.Secret, 0)
 	for rows.Next() {
 		secret := &storage_models.Secret{}
+		var expiresAt sql.NullTime
+		var metadataStr string
 		err := rows.Scan(
 			&secret.ID, &secret.TenantID, &secret.Key,
-			&secret.KeyVersion, &secret.Algorithm, &secret.ExpiresAt, &secret.CreatedAt,
+			&secret.KeyVersion, &secret.Algorithm, &expiresAt, &metadataStr, &secret.CreatedAt,
 		)
 		if err != nil {
 			continue
+		}
+		if expiresAt.Valid {
+			secret.ExpiresAt = expiresAt.Time
+		}
+		if metadataStr != "" {
+			_ = json.Unmarshal([]byte(metadataStr), &secret.Metadata)
 		}
 		secrets = append(secrets, secret)
 	}
@@ -270,14 +281,21 @@ func (r *SecretRepository) UpdateMetadata(ctx context.Context, key, tenantID str
 // CleanupExpired removes secrets that have expired.
 // Args:
 // ctx - database operation context.
+// tenantID - tenant identifier for isolation; empty is rejected.
 // Returns number of deleted secrets or error if operation fails.
-func (r *SecretRepository) CleanupExpired(ctx context.Context) (int64, error) {
+func (r *SecretRepository) CleanupExpired(ctx context.Context, tenantID string) (int64, error) {
+	// Fail closed on an empty tenant: a tenant-less DELETE purges every
+	// tenant's secrets — the most sensitive table in the schema (S-10).
+	if tenantID == "" {
+		return 0, postgres.ErrMissingTenantID
+	}
 	query := `
 		DELETE FROM secrets
 		WHERE expires_at IS NOT NULL AND expires_at < NOW()
+		  AND tenant_id = $1
 	`
 
-	result, err := r.db.ExecContext(ctx, query)
+	result, err := r.db.ExecContext(ctx, query, tenantID)
 	if err != nil {
 		return 0, errors.Wrap(err, "cleanup expired secrets")
 	}
@@ -318,7 +336,7 @@ func (r *SecretRepository) decrypt(ciphertext []byte) ([]byte, error) {
 
 	nonceSize := gcm.NonceSize()
 	if len(ciphertext) < nonceSize {
-		return nil, fmt.Errorf("ciphertext too short")
+		return nil, errors.New("ciphertext too short")
 	}
 
 	nonce, ciphertext := ciphertext[:nonceSize], ciphertext[nonceSize:]
@@ -354,7 +372,7 @@ func (r *SecretRepository) decrypt(ciphertext []byte) ([]byte, error) {
 // Returns number of updated secrets or error if operation fails.
 func (r *SecretRepository) RotateKey(ctx context.Context, tenantID string, newKey []byte) (int64, error) {
 	if len(newKey) != 32 {
-		return 0, fmt.Errorf("new key must be 32 bytes for AES-256-GCM")
+		return 0, errors.New("new key must be 32 bytes for AES-256-GCM")
 	}
 
 	// Start transaction for atomic operation (per design standard)
@@ -472,23 +490,99 @@ func (r *SecretRepository) RotateKey(ctx context.Context, tenantID string, newKe
 	return updatedCount, nil
 }
 
-// Export exports secrets (for backup purposes).
-// Args:
-// ctx - database operation context.
-// tenantID - tenant identifier for isolation.
-// Returns exported secrets data or error if export fails.
+// Export exports secrets INCLUDING their decrypted values (for backup purposes).
+// Unlike List (which intentionally omits values for security), Export must
+// include them so a backup/restored deployment retains working secrets.
+//
+// Export fails loudly, naming the keys it could not decrypt, rather than
+// writing a payload that silently corrupts them. Emitting the ciphertext as
+// if it were the value would let Import re-encrypt already-encrypted
+// material, producing a permanently unreadable secret on the one path that
+// exists to prevent data loss — and would place recoverable secret material
+// into a backup artifact.
 func (r *SecretRepository) Export(ctx context.Context, tenantID string) ([]byte, error) {
-	secrets, err := r.List(ctx, tenantID)
+	query := `
+		SELECT id, tenant_id, key, value, key_version, algorithm, expires_at, metadata::text, created_at
+		FROM secrets
+		WHERE tenant_id = $1
+		ORDER BY key ASC
+	`
+
+	rows, err := r.db.QueryContext(ctx, query, tenantID)
 	if err != nil {
-		return nil, errors.Wrap(err, "list secrets")
+		return nil, errors.Wrap(err, "export secrets query")
+	}
+	defer func() { _ = rows.Close() }()
+
+	type exportEntry struct {
+		ID         string                 `json:"id"`
+		TenantID   string                 `json:"tenant_id"`
+		Key        string                 `json:"key"`
+		Value      string                 `json:"value"`
+		KeyVersion int                    `json:"key_version"`
+		Algorithm  string                 `json:"algorithm"`
+		ExpiresAt  *time.Time             `json:"expires_at,omitempty"`
+		Metadata   map[string]interface{} `json:"metadata,omitempty"`
+		CreatedAt  time.Time              `json:"created_at"`
 	}
 
-	data, err := json.Marshal(secrets)
+	var entries []exportEntry
+	var undecryptable []string
+	for rows.Next() {
+		var e exportEntry
+		var expiresAt sql.NullTime
+		var encrypted []byte
+		var metadataStr string
+		if err := rows.Scan(&e.ID, &e.TenantID, &e.Key, &encrypted, &e.KeyVersion, &e.Algorithm, &expiresAt, &metadataStr, &e.CreatedAt); err != nil {
+			continue
+		}
+		// Decrypt so the export is usable after restore without needing the
+		// same encryption key. Value is emitted as a plain string (not []byte,
+		// which encoding/json would base64-encode) so Import can consume it
+		// directly as plaintext.
+		value, ok := r.exportableValue(encrypted)
+		if !ok {
+			undecryptable = append(undecryptable, e.Key)
+			continue
+		}
+		e.Value = value
+		if expiresAt.Valid {
+			t := expiresAt.Time
+			e.ExpiresAt = &t
+		}
+		if metadataStr != "" {
+			_ = json.Unmarshal([]byte(metadataStr), &e.Metadata)
+		}
+		entries = append(entries, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, errors.Wrap(err, "iterate export secrets")
+	}
+	if len(undecryptable) > 0 {
+		return nil, fmt.Errorf(
+			"export secrets: %d secret(s) could not be decrypted with the current encryption key (%s); "+
+				"refusing to write a backup that would corrupt them — restore the matching key or rotate these secrets first",
+			len(undecryptable), strings.Join(undecryptable, ", "))
+	}
+
+	data, err := json.Marshal(entries)
 	if err != nil {
 		return nil, errors.Wrap(err, "marshal secrets")
 	}
-
 	return data, nil
+}
+
+// exportableValue decrypts a stored secret for backup export. It reports
+// ok=false when the ciphertext cannot be opened with the process key —
+// wrong key, truncated blob, or a tampered GCM tag. Callers must treat that
+// as a hard failure: the ciphertext is not a usable secret value, and
+// writing it out as one corrupts the backup.
+func (r *SecretRepository) exportableValue(ciphertext []byte) (string, bool) {
+	plain, err := r.decrypt(ciphertext)
+	if err != nil {
+		return "", false
+	}
+	return string(plain), true
 }
 
 // Import imports secrets (for restore purposes).
@@ -521,11 +615,11 @@ func (r *SecretRepository) Export(ctx context.Context, tenantID string) ([]byte,
 func (r *SecretRepository) Import(ctx context.Context, tenantID string, data []byte, format string) (int64, error) {
 	// Validate input
 	if len(data) == 0 {
-		return 0, fmt.Errorf("import data cannot be empty")
+		return 0, errors.New("import data cannot be empty")
 	}
 
 	if tenantID == "" {
-		return 0, fmt.Errorf("tenant ID cannot be empty")
+		return 0, errors.New("tenant ID cannot be empty")
 	}
 
 	// Use adapter layer to parse input format
@@ -543,7 +637,7 @@ func (r *SecretRepository) Import(ctx context.Context, tenantID string, data []b
 	}
 
 	if len(items) == 0 {
-		return 0, fmt.Errorf("no secrets found in import data")
+		return 0, errors.New("no secrets found in import data")
 	}
 
 	// Start transaction for atomic import operation (per design standard)
@@ -577,13 +671,20 @@ func (r *SecretRepository) Import(ctx context.Context, tenantID string, data []b
 			continue
 		}
 
-		// Check for duplicate keys within same tenant (per design standard)
+		// Check for duplicate keys within same tenant (per design standard).
+		// A real query error must abort: treating it as "not exists"
+		// silently degraded the failure into an insert attempt.
 		var existingKeyVersion int
 		checkQuery := `SELECT key_version FROM secrets WHERE key = $1 AND tenant_id = $2`
 		err := tx.QueryRowContext(ctx, checkQuery, item.Key, tenantID).Scan(&existingKeyVersion)
-		if err == nil {
+		switch {
+		case err == nil:
 			log.Warn("Secret key already exists, skipping", "key", item.Key, "existing_version", existingKeyVersion)
 			continue
+		case stderrors.Is(err, sql.ErrNoRows):
+			// genuinely new key — proceed to insert
+		default:
+			return 0, errors.Wrapf(err, "check secret %s", item.Key)
 		}
 
 		// Encrypt secret value using current encryption key (AES-256-GCM)
@@ -596,8 +697,8 @@ func (r *SecretRepository) Import(ctx context.Context, tenantID string, data []b
 		// Insert secret into database with proper tenant isolation
 		insertQuery := `
             INSERT INTO secrets
-            (id, tenant_id, key, value, key_version, algorithm, expires_at, created_at)
-            VALUES (gen_random_uuid(), $1, $2, $3, 1, 'aes-gcm', $4, NOW())
+            (id, tenant_id, key, value, key_version, algorithm, expires_at, metadata, created_at)
+            VALUES (gen_random_uuid(), $1, $2, $3, 1, 'aes-gcm', $4, $5, NOW())
             RETURNING id
         `
 
@@ -611,8 +712,20 @@ func (r *SecretRepository) Import(ctx context.Context, tenantID string, data []b
 			expiresAt = parsedTime
 		}
 
+		// Persist metadata alongside the value so an Export → Import round
+		// trip does not silently drop it. Store {} when absent to match the
+		// column default rather than writing NULL.
+		if item.Metadata == nil {
+			item.Metadata = map[string]interface{}{}
+		}
+		metadataJSON, mErr := json.Marshal(item.Metadata)
+		if mErr != nil {
+			importErrors = append(importErrors, fmt.Sprintf("marshal metadata for key %s: %v", item.Key, mErr))
+			continue
+		}
+
 		var id string
-		err = tx.QueryRowContext(ctx, insertQuery, tenantID, item.Key, encrypted, expiresAt).Scan(&id)
+		err = tx.QueryRowContext(ctx, insertQuery, tenantID, item.Key, encrypted, expiresAt, metadataJSON).Scan(&id)
 		if err != nil {
 			importErrors = append(importErrors, fmt.Sprintf("insert secret %s: %v", item.Key, err))
 			continue
@@ -623,12 +736,8 @@ func (r *SecretRepository) Import(ctx context.Context, tenantID string, data []b
 		log.Debug("Secret imported successfully", "tenant_id", tenantID, "secret_id", id)
 	}
 
-	// Check if there were any import errors
-	if len(importErrors) > 0 {
-		log.Warn("Secret import completed with errors", "imported_count", importedCount, "error_count", len(importErrors), "errors", importErrors)
-	}
-
-	// Return error if no secrets were imported (atomicity: all-or-nothing)
+	// Atomicity contract: if NOTHING was imported the transaction is
+	// rolled back and the collected reasons are returned as the error.
 	if importedCount == 0 {
 		return 0, fmt.Errorf("no secrets imported, errors: %v", importErrors)
 	}
@@ -639,10 +748,20 @@ func (r *SecretRepository) Import(ctx context.Context, tenantID string, data []b
 	}
 	committed = true
 
+	// Partial failures are surfaced to the caller: previously they were
+	// only logged and the call returned a clean nil, hiding data loss.
+	var importErr error
+	if len(importErrors) > 0 {
+		importErr = fmt.Errorf("%d of %d secrets failed to import: %v",
+			len(importErrors), len(items), importErrors)
+		log.Warn("Secret import completed with errors",
+			"imported_count", importedCount, "error_count", len(importErrors))
+	}
+
 	// Add audit logging for import events (per design standard)
 	log.Info("Secret import completed", "tenant_id", tenantID, "imported_count", importedCount, "total_items", len(items))
 
-	return importedCount, nil
+	return importedCount, importErr
 }
 
 // GetKeyVersion retrieves the current key version for a secret.
@@ -716,7 +835,7 @@ func (r *SecretRepository) decryptSecret(ciphertext []byte) ([]byte, error) {
 
 	nonceSize := gcm.NonceSize()
 	if len(ciphertext) < nonceSize {
-		return nil, fmt.Errorf("ciphertext too short")
+		return nil, errors.New("ciphertext too short")
 	}
 
 	nonce, ciphertext := ciphertext[:nonceSize], ciphertext[nonceSize:]

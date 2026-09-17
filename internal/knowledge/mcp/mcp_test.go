@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/Timwood0x10/ares/internal/knowledge"
@@ -353,7 +355,7 @@ func TestDistillMemory(t *testing.T) {
 					t.Errorf("expected 1 saved object, got %d", ms.Count())
 				}
 				objID, _ := parsed["object_id"].(string)
-				saved, gErr := ms.Get(context.Background(), objID)
+				saved, gErr := ms.Get(context.Background(), "default", objID)
 				if gErr != nil {
 					t.Fatalf("saved object not retrievable: %v", gErr)
 				}
@@ -382,4 +384,146 @@ func TestDistillMemoryInvalidJSON(t *testing.T) {
 	if err == nil {
 		t.Error("expected error for invalid JSON")
 	}
+}
+
+// TestAKFServiceNilRuntimeHandlersReturnError locks REVIEW 3.5:
+// NewAKFServiceWithStore documents that the runtime may be nil, but
+// build_graph / compile_context / query_knowledge used to dereference it
+// directly and panicked. Each handler must return an error instead.
+func TestAKFServiceNilRuntimeHandlersReturnError(t *testing.T) {
+	svc := NewAKFService(nil, compiler.NewDefaultCompiler())
+	tools := map[string]func(ctx context.Context, input string) (string, error){}
+	for _, tool := range svc.Tools() {
+		tools[tool.Name] = tool.Execute
+	}
+	if len(tools) != 4 {
+		t.Fatalf("expected 4 tools, got %d", len(tools))
+	}
+
+	cases := []struct {
+		name  string
+		input string
+	}{
+		{"build_graph", `{"goal":"test"}`},
+		{"compile_context", `{"goal":"test"}`},
+		{"query_knowledge", `{"text":"test"}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			exec, ok := tools[tc.name]
+			if !ok {
+				t.Fatalf("tool %s not registered", tc.name)
+			}
+			// A panic fails the test outright; the assertion is that the
+			// handler degrades to a descriptive error.
+			out, err := exec(context.Background(), tc.input)
+			if err == nil {
+				t.Fatalf("%s with nil runtime must return an error, got output %q", tc.name, out)
+			}
+			if !strings.Contains(err.Error(), "runtime is nil") {
+				t.Errorf("%s error should mention nil runtime, got: %v", tc.name, err)
+			}
+		})
+	}
+
+	// distill_memory does not need the runtime: with a nil store it must
+	// still succeed (score-only mode), proving the guard did not
+	// over-restrict the one tool that works without a runtime.
+	out, err := tools["distill_memory"](context.Background(), `{"content":"remember this"}`)
+	if err != nil {
+		t.Fatalf("distill_memory must not require a runtime: %v", err)
+	}
+	if !strings.Contains(out, "mem_") {
+		t.Errorf("distill_memory output missing object id: %s", out)
+	}
+}
+
+// TestQueryKnowledgeBudgetNeverGoesNegative locks the budget arithmetic.
+//
+// Regression: Reserved was computed as MaxTokens - Limit*100 with no floor,
+// so limit=20 with max_tokens=1000 produced Reserved = -1000 — a budget
+// claiming more reasoning headroom than the total it was carved from.
+func TestQueryKnowledgeBudgetNeverGoesNegative(t *testing.T) {
+	cases := []struct {
+		name            string
+		limit, maxTok   int
+		wantMax         int
+		wantNonNegative bool
+	}{
+		{name: "defaults when uncapped", limit: 20, maxTok: 0, wantMax: 5000, wantNonNegative: true},
+		{name: "tight cap clamps graph share", limit: 20, maxTok: 1000, wantMax: 1000, wantNonNegative: true},
+		{name: "tiny cap", limit: 50, maxTok: 100, wantMax: 100, wantNonNegative: true},
+		{name: "roomy cap", limit: 5, maxTok: 10000, wantMax: 10000, wantNonNegative: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			b := queryKnowledgeBudget(tc.limit, tc.maxTok)
+			if b.MaxTokens != tc.wantMax {
+				t.Fatalf("MaxTokens = %d, want %d", b.MaxTokens, tc.wantMax)
+			}
+			if tc.wantNonNegative && b.Reserved < 0 {
+				t.Fatalf("Reserved = %d, must never be negative", b.Reserved)
+			}
+			if b.ForGraph < 0 {
+				t.Fatalf("ForGraph = %d, must never be negative", b.ForGraph)
+			}
+			if b.Reserved+b.ForGraph > b.MaxTokens {
+				t.Fatalf("budget over-allocates: Reserved(%d)+ForGraph(%d) > MaxTokens(%d)",
+					b.Reserved, b.ForGraph, b.MaxTokens)
+			}
+		})
+	}
+}
+
+// TestQueryKnowledgeConfigForwardsTypes locks that the tool's declared type
+// filter actually reaches the runtime. Previously the parameter schema
+// advertised Types and the description promised "by type, tag, or text
+// search" while the handler never read the field.
+func TestQueryKnowledgeConfigForwardsTypes(t *testing.T) {
+	cfg := queryKnowledgeConfig(queryKnowledgeParams{
+		Text:  "redis",
+		Types: []string{"decision", "", "memory"},
+	})
+	if len(cfg.Types) != 2 {
+		t.Fatalf("Types = %v, want 2 entries (empty string dropped)", cfg.Types)
+	}
+	if string(cfg.Types[0]) != "decision" || string(cfg.Types[1]) != "memory" {
+		t.Fatalf("Types = %v, want [decision memory]", cfg.Types)
+	}
+
+	if cfg := queryKnowledgeConfig(queryKnowledgeParams{Text: "x"}); len(cfg.Types) != 0 {
+		t.Fatalf("no filter declared must yield no type restriction, got %v", cfg.Types)
+	}
+}
+
+// TestQueryKnowledgeDoesNotAdvertiseTagFilter pins that the tool schema and
+// description make no tag-filter promise. knowledge.Intent.Scope carries only
+// Namespaces and Types, so a Tags parameter would be accepted and silently
+// ignored — the same over-promising Types did before it was plumbed through.
+// If a Tags filter is added to Scope and wired to the providers, add the field
+// back and assert it forwards instead.
+func TestQueryKnowledgeDoesNotAdvertiseTagFilter(t *testing.T) {
+	// The param struct must not grow a Tags field: reflect over its JSON tags.
+	rt := reflect.TypeOf(queryKnowledgeParams{})
+	if _, ok := rt.FieldByName("Tags"); ok {
+		t.Fatal("queryKnowledgeParams must not declare Tags until Intent.Scope can carry it")
+	}
+	if f, ok := rt.FieldByName("Types"); !ok {
+		t.Fatal("Types must stay: it is plumbed via queryKnowledgeConfig")
+	} else if f.Tag.Get("json") == "" {
+		t.Fatal("Types must keep its json tag")
+	}
+
+	// The tool description must not claim tag search either.
+	svc := NewAKFServiceWithStore(nil, &testCompiler{}, nil, knowledge.QualityGateConfig{})
+	for _, tool := range svc.Tools() {
+		if tool.Name != "query_knowledge" {
+			continue
+		}
+		if strings.Contains(tool.Description, "tag") {
+			t.Fatalf("query_knowledge description still claims tag search: %q", tool.Description)
+		}
+		return
+	}
+	t.Fatal("query_knowledge tool not found")
 }

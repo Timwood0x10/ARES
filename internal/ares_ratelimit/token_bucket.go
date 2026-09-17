@@ -3,6 +3,7 @@ package ares_ratelimit
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"sync"
 	"time"
 )
@@ -49,9 +50,13 @@ func (l *TokenBucketLimiter) Allow(ctx context.Context) (bool, error) {
 }
 
 // Wait blocks until a request can be processed.
-// Calculates the precise wait time based on the fractional token deficit,
-// avoiding the thundering herd problem where all waiters sleep for the
-// full token period and wake up simultaneously.
+// Calculates the precise wait time based on the fractional token deficit so
+// waiters do not all sleep for a full token period, then adds a small random
+// jitter: without it, concurrent waiters that observed the same deficit
+// compute the same waitTime, wake at the same refill instant, and stampede
+// the freshly refilled token (thundering herd). The jitter is uniform in
+// [0, waitTime/8) — bounded so it never dominates the deficit wait, and
+// random so same-deficit waiters desynchronize.
 func (l *TokenBucketLimiter) Wait(ctx context.Context) error {
 	for {
 		l.mu.Lock()
@@ -79,6 +84,7 @@ func (l *TokenBucketLimiter) Wait(ctx context.Context) error {
 		if waitTime <= 0 {
 			waitTime = time.Millisecond // Minimum sleep to avoid busy-loop.
 		}
+		waitTime += jitter(waitTime)
 
 		tbTimer := time.NewTimer(waitTime)
 		select {
@@ -88,6 +94,18 @@ func (l *TokenBucketLimiter) Wait(ctx context.Context) error {
 		case <-tbTimer.C:
 		}
 	}
+}
+
+// jitter spreads concurrent waiters that computed the same deficit so they
+// do not all wake at the refill instant. #nosec G404 — jitter does not
+// require a cryptographically secure source (same posture as the evolution
+// mutator's use of math/rand).
+func jitter(waitTime time.Duration) time.Duration {
+	spread := int64(waitTime) / 8
+	if spread <= 0 {
+		return 0
+	}
+	return time.Duration(rand.Int63n(spread)) // #nosec G404
 }
 
 // Reset resets the limiter to full capacity.

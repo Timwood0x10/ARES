@@ -8,12 +8,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/agentfabric"
-	"github.com/Timwood0x10/ares/internal/taskfabric"
+	"github.com/Timwood0x10/ares/internal/fabric/agent"
+	"github.com/Timwood0x10/ares/internal/fabric/task"
 )
 
-// Recovery orchestrates the Kernel's failure-recovery paths (design §13 +
-// P5). It is a SEPARATE responsibility from Chaos (which injects failures):
+// Recovery orchestrates the Kernel's failure-recovery paths. It is a
+// SEPARATE responsibility from Chaos (which injects failures):
 // Recovery proves the Runtime survives them. The subsystem wires the Task
 // Fabric (durable tasks + lease expiry + checkpoints) to the Agent Fabric
 // (disposable agents + cognitive state) so that an agent death is followed
@@ -21,15 +21,15 @@ import (
 type Recovery struct {
 	tasks  *taskfabric.Fabric
 	agents *agentfabric.Fabric
-	// spawner is the optional evolution-aware spawn gate (v0.3.0 M2-1). When
+	// spawner is the optional evolution-aware spawn gate. When
 	// set, every replacement spawn goes through it so the evolution policy
 	// (Enabled / MaxConcurrent / PreferredCapabilities) shapes restarts and
 	// checkpoint recovery too — "Evolution decides; Kernel enforces". Nil
 	// keeps the plain fabric spawn.
 	spawner *EvolutionAwareSpawner
 	// cogFactory is the A1 execution-body factory injected into every
-	// replacement spawn (aresos-agentos-plan E1: replacement 走 A1 factory,
-	// 可执行 — 消除 phantom). When set, spawnAgent fills
+	// replacement spawn (the replacement goes through the A1 factory,
+	// is executable — no phantom). When set, spawnAgent fills
 	// spec.CognitionFactory before spawning so the replacement agent is a
 	// REAL cognitive process that the scheduler can execute, not an empty
 	// shell. Nil keeps the caller's spec untouched (the production peer path
@@ -41,10 +41,27 @@ type Recovery struct {
 	// count is LIFETIME-CUMULATIVE per identity and is intentionally NEVER
 	// reset by a successful revival: the budget exists to stop a broken agent
 	// from cycling forever, so total deaths — not consecutive ones — consume
-	// it. A2 review clarification (2026-08-22).
+	// it (clarified 2026-08-22).
 	mu       sync.Mutex
 	restarts map[string]int
 	now      func() time.Time
+	// sleep suspends the calling goroutine for d, returning ctx.Err() when
+	// ctx is cancelled first. It exists as a field so tests can replace the
+	// real time.Sleep (same determinism pattern as the now clock above).
+	sleep func(ctx context.Context, d time.Duration) error
+}
+
+// realSleeper sleeps for d unless ctx is cancelled first. The production
+// default injected into Recovery.sleep.
+func realSleeper(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
 }
 
 // RestartPolicy bounds agent restart attempts after a crash.
@@ -88,6 +105,7 @@ func New(tasks *taskfabric.Fabric, agents *agentfabric.Fabric, policy RestartPol
 		policy:   policy,
 		restarts: make(map[string]int),
 		now:      time.Now,
+		sleep:    realSleeper,
 	}
 }
 
@@ -97,7 +115,15 @@ func (r *Recovery) WithClock(now func() time.Time) *Recovery {
 	return r
 }
 
-// WithSpawner injects the evolution-aware spawn gate (v0.3.0 M2-1). When set,
+// WithSleeper injects a controllable sleeper for deterministic tests: the
+// restart backoff is observable through the durations handed to it, without
+// real time.Sleep. Returns the Recovery for chaining.
+func (r *Recovery) WithSleeper(sleep func(ctx context.Context, d time.Duration) error) *Recovery {
+	r.sleep = sleep
+	return r
+}
+
+// WithSpawner injects the evolution-aware spawn gate. When set,
 // every replacement spawn in RecoverTaskCheckpoint / RestartAgent is routed
 // through it, so the evolution policy shapes restart and recovery spawns.
 // Returns the Recovery for chaining.
@@ -106,8 +132,8 @@ func (r *Recovery) WithSpawner(s *EvolutionAwareSpawner) *Recovery {
 	return r
 }
 
-// WithCognitionFactory injects the A1 execution-body factory (aresos-agentos-
-// plan E1). Every replacement spawn produced by RecoverTaskCheckpoint /
+// WithCognitionFactory injects the A1 execution-body factory.
+// Every replacement spawn produced by RecoverTaskCheckpoint /
 // RestartAgent then carries the factory, so the replacement agent is
 // executable (non-phantom). Returns the Recovery for chaining.
 func (r *Recovery) WithCognitionFactory(f agentfabric.CognitionFactory) *Recovery {
@@ -120,9 +146,9 @@ func (r *Recovery) WithCognitionFactory(f agentfabric.CognitionFactory) *Recover
 // spawns ALWAYS use the recovery path (SpawnForRecovery): they replace a
 // dead/expired agent and must not be blocked by the population cap — a
 // self-healing spawn rejected by MaxConcurrent would strand the task forever
-// (v0.3.0 M2-1; recovery bypasses quota, not the Enabled gate).
+// (recovery bypasses quota, not the Enabled gate).
 func (r *Recovery) spawnAgent(ctx context.Context, spec agentfabric.SpawnSpec) (*agentfabric.Agent, error) {
-	// E1: inject the A1 execution body so a replacement is a REAL cognitive
+	// Inject the A1 execution body so a replacement is a REAL cognitive
 	// process (the scheduler can execute it), never a phantom shell.
 	if r.cogFactory != nil && spec.CognitionFactory == nil {
 		spec.CognitionFactory = r.cogFactory
@@ -134,7 +160,7 @@ func (r *Recovery) spawnAgent(ctx context.Context, spec agentfabric.SpawnSpec) (
 }
 
 // RequeueExpiredLeases sweeps the Task Fabric for expired leases and returns
-// the ids of every task requeued to READY (design: lease expiry → requeue).
+// the ids of every task requeued to READY (lease expiry → requeue).
 // A dead agent's lease expires; the task becomes acquirable again. This is
 // the first recovery path. The returned ids are the ONLY tasks that were
 // expired — the caller must NOT iterate all READY tasks (which would hijack
@@ -147,7 +173,7 @@ func (r *Recovery) RequeueExpiredLeases() []string {
 }
 
 // RecoverTaskCheckpoint resumes a task's preserved checkpoint with a new
-// agent (design: checkpoint recovery). The task must be in a state where its
+// agent (checkpoint recovery). The task must be in a state where its
 // checkpoint is preserved (SUSPENDED or READY after lease expiry). The
 // Recovery subsystem:
 //  1. Finds a replacement agent (spawns one if the original is gone).
@@ -155,7 +181,7 @@ func (r *Recovery) RequeueExpiredLeases() []string {
 //  3. The new agent resumes from the checkpoint (its cognitive state is
 //     installed from the task's preserved checkpoint).
 //
-// TEST/CHAOS-ONLY (design-fix: this entry point installs checkpoints via
+// TEST/CHAOS-ONLY (this entry point installs checkpoints via
 // agents.SetCognitiveState and acquires tasks itself, which is a separate
 // mechanism from the production scheduler path (scheduler.executeWith-
 // Candidates → taskfabric.DecodeCheckpoint → ToModelTask). Production
@@ -201,7 +227,7 @@ func (r *Recovery) RecoverTaskCheckpoint(ctx context.Context, taskID, replacemen
 	// it resumes from where the dead agent left off. A failure to install the
 	// checkpoint must not be silent: the task is acquired by a replacement
 	// that cannot resume, so surface it for the recovery loop instead of
-	// pretending recovery succeeded (code_rules_v2 §3.1).
+	// pretending recovery succeeded.
 	if t.Checkpoint != nil {
 		if err := r.agents.SetCognitiveState(agentID, agentfabric.CognitiveState{
 			Checkpoint: t.Checkpoint,
@@ -214,10 +240,17 @@ func (r *Recovery) RecoverTaskCheckpoint(ctx context.Context, taskID, replacemen
 }
 
 // RestartAgent replaces a crashed agent with a new one that picks up the
-// dead agent's cognitive checkpoint (design: agent restart). The original
+// dead agent's cognitive checkpoint (agent restart). The original
 // agent must be gone (killed). The new agent is spawned with the original's
-// capabilities and cognitive state. The restart budget is checked; if
-// exhausted, ErrRecoveryExhausted is returned.
+// capabilities and cognitive state. The restart budget is checked and its
+// slot reserved ATOMICALLY (check+increment under one lock hold); if
+// exhausted, ErrRecoveryExhausted is returned, and concurrent calls for the
+// same corpse cannot collectively exceed the budget. A failed
+// spawn/recover rolls the reservation back, so only successful restarts
+// consume budget. A backoff delay (Backoff
+// doubled per prior attempt, capped at MaxBackoff) is slept before the
+// replacement spawn, so consecutive crash-restart cycles cannot hammer the
+// fabric; a cancelled ctx aborts the wait.
 //
 // Args:
 //   - ctx: for event sinks.
@@ -227,7 +260,8 @@ func (r *Recovery) RecoverTaskCheckpoint(ctx context.Context, taskID, replacemen
 //
 // Returns:
 //   - *agentfabric.Agent: the replacement agent.
-//   - error: ErrRecoveryExhausted.
+//   - error: ErrRecoveryExhausted, or the ctx error when the ctx is
+//     cancelled during the backoff sleep (no spawn happens).
 func (r *Recovery) RestartAgent(ctx context.Context, deadAgentID string, cognitive agentfabric.CognitiveState, capabilities []string) (*agentfabric.Agent, error) {
 	r.mu.Lock()
 	// Lifetime-cumulative budget (see the restarts field note): successful
@@ -237,24 +271,69 @@ func (r *Recovery) RestartAgent(ctx context.Context, deadAgentID string, cogniti
 		r.mu.Unlock()
 		return nil, ErrRecoveryExhausted
 	}
+	// Reserve the slot NOW, atomically with the check: the backoff sleep
+	// and spawn below happen outside the lock, so a check-then-charge-later
+	// scheme let N concurrent RestartAgent calls for the same corpse each
+	// pass the gate and collectively blow past MaxRestarts (TOCTOU). If the
+	// spawn or recover below fails, the reservation is rolled back so a
+	// failed attempt still does not consume the budget — the same
+	// "only successful restarts count" semantics as before, just with an
+	// atomic gate.
 	r.restarts[deadAgentID] = attempts + 1
 	r.mu.Unlock()
-	// Fusion-plan A2 arbitration: when a death snapshot exists for THIS
+	// rollbackBudget releases THIS caller's reservation. Each caller owns
+	// exactly one increment, so the decrement is unconditional: a
+	// value-match guard (only undo when the counter still equals attempts+1)
+	// leaked under concurrent failures — with two failing callers the first
+	// rollback saw the second's increment and skipped, leaving a phantom
+	// count and burning budget with zero successful restarts.
+	rollbackBudget := func() {
+		r.mu.Lock()
+		if prev := r.restarts[deadAgentID]; prev <= 1 {
+			delete(r.restarts, deadAgentID)
+		} else {
+			r.restarts[deadAgentID] = prev - 1
+		}
+		r.mu.Unlock()
+	}
+	// Crash-restart storm prevention: consecutive crash-restart cycles used
+	// to hammer the fabric instantly (sleep-less restarts, the exact storm
+	// the policy's Backoff was written to prevent). Sleep backoff doubled
+	// per prior attempt, capped at MaxBackoff — the 0-th restart pays the
+	// plain Backoff. The sleeper honors ctx, so a shutdown aborts the wait
+	// instead of spawning a replacement into a dying process. Sleep BEFORE
+	// spawning, and never under r.mu (holding the lock while sleeping would
+	// freeze RestartCount/budget checks).
+	delay := r.policy.Backoff << attempts
+	if delay > r.policy.MaxBackoff || delay <= 0 {
+		// Cap at MaxBackoff; the <=0 guard also catches the (unreachable
+		// for sane policies) shift-overflow into non-positive values.
+		delay = r.policy.MaxBackoff
+	}
+	if err := r.sleep(ctx, delay); err != nil {
+		rollbackBudget()
+		return nil, fmt.Errorf("aresrecovery: restart backoff for %s: %w", deadAgentID, err)
+	}
+	// Arbitration: when a death snapshot exists for THIS
 	// identity, revive IN PLACE under the same id — provenance and the audit
-	// trail stay continuous ("有状态认知复活"). Without a snapshot, fall back
-	// to a freshly generated identity (pure W1 replacement).
+	// trail stay continuous ("stateful cognition revival"). Without a snapshot, fall back
+	// to a freshly generated identity (plain replacement).
 	spec := agentfabric.SpawnSpec{Capabilities: capabilities}
 	if _, ok := r.agents.LastSnapshot(deadAgentID); ok {
 		spec.Identity = deadAgentID
 	}
 	a, err := r.spawnAgent(ctx, spec)
 	if err != nil {
+		rollbackBudget()
 		return nil, fmt.Errorf("aresrecovery: restart spawn for %s: %w", deadAgentID, err)
 	}
 	// Install the preserved cognitive state.
 	if err := r.agents.Recover(ctx, a.Identity, cognitive); err != nil {
+		rollbackBudget()
 		return nil, fmt.Errorf("aresrecovery: restart recover for %s: %w", deadAgentID, err)
 	}
+	// The budget was already charged atomically at the gate above (the
+	// reservation); a successful spawn+recover simply keeps it.
 	// The snapshot is now CONSUMED by this revival; keeping it would let a
 	// much later death of the revived body restore stale cognition.
 	r.agents.ClearSnapshot(deadAgentID)
@@ -269,18 +348,18 @@ func (r *Recovery) RestartCount(agentID string) int {
 }
 
 // RevivableSnapshot exposes the agent fabric's death-snapshot matching the
-// given capability (fusion-plan A2 arbitration input). Found does not imply
+// given capability (arbitration input). Found does not imply
 // allowed — RestartAgent still enforces the restart budget.
 func (r *Recovery) RevivableSnapshot(capability string) (string, agentfabric.AgentSnapshot, bool) {
 	return r.agents.FindRevivableSnapshot(capability)
 }
 
-// RecoverFromAgentDeath is the full recovery chain (design P5 acceptance:
+// RecoverFromAgentDeath is the full recovery chain (the acceptance path:
 // "inject failure → kill agent → lease expires → Task READY → B acquire →
 // checkpoint resume"). It sweeps expired leases, requeues tasks, and resumes
 // each requeued task's checkpoint with a fresh replacement agent.
 //
-// TEST/CHAOS-ONLY (design-fix: this entry point installs checkpoints via
+// TEST/CHAOS-ONLY (this entry point installs checkpoints via
 // agents.SetCognitiveState and acquires tasks itself, which is a separate
 // mechanism from the production path (runKernelRecoveryLoop → taskfabric
 // DecodeCheckpoint → scheduler Schedule/Acquire). It must not be wired into
@@ -308,7 +387,7 @@ func (r *Recovery) RecoverFromAgentDeath(ctx context.Context) int {
 			// checkpoint resume failed (spawn/acquire/SetCognitiveState).
 			// The task is still READY and will be picked up by the scheduler
 			// on the next drain, but surface the failure instead of
-			// silently dropping it (code_rules_v2 §3.1).
+			// silently dropping it.
 			slog.Error("aresrecovery: recover task failed",
 				slog.String("task_id", taskID),
 				slog.Any("error", err))
@@ -320,7 +399,7 @@ func (r *Recovery) RecoverFromAgentDeath(ctx context.Context) int {
 }
 
 // RecoveryTask is a snapshot of a task that was requeued from an expired
-// lease (W1). It carries the minimal information the recovery loop needs to
+// lease. It carries the minimal information the recovery loop needs to
 // spawn a replacement executor: the task ID and its required capability.
 type RecoveryTask struct {
 	// ID is the task identifier.
@@ -334,7 +413,7 @@ type RecoveryTask struct {
 }
 
 // RecoveryTasksFor returns a RecoveryTask snapshot for each requeued task id
-// from RequeueExpiredLeases (W1). Only the requeued ids are accepted — the
+// from RequeueExpiredLeases. Only the requeued ids are accepted — the
 // caller must pass exactly the ids returned by RequeueExpiredLeases, never
 // ReadyTasks, so a brand-new READY task is never mistaken for a crash-
 // recovery candidate.

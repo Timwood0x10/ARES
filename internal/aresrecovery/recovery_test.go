@@ -3,11 +3,12 @@ package aresrecovery
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/agentfabric"
-	"github.com/Timwood0x10/ares/internal/taskfabric"
+	"github.com/Timwood0x10/ares/internal/fabric/agent"
+	"github.com/Timwood0x10/ares/internal/fabric/task"
 )
 
 // newRecoveryHarness wires a fresh Task Fabric + Agent Fabric + Recovery +
@@ -20,14 +21,19 @@ func newRecoveryHarness(t *testing.T) (*taskfabric.Fabric, *agentfabric.Fabric, 
 	// taskfabric.Fabric exposes its clock via WithClock (same pattern as
 	// taskfabric/fabric_test.go's withClock helper, but cross-package).
 	tasks.WithClock(func() time.Time { return now })
-	rec := New(tasks, agents, DefaultRestartPolicy()).WithClock(func() time.Time { return now })
+	// The no-op sleeper keeps RestartAgent's backoff out of wall-clock time:
+	// the exhaustion tests restart 5 times (real delays would sleep 1+2+4+8+16s
+	// per run). The backoff math itself is covered by the fake-sleeper tests.
+	rec := New(tasks, agents, DefaultRestartPolicy()).
+		WithClock(func() time.Time { return now }).
+		WithSleeper(func(context.Context, time.Duration) error { return nil })
 	chaos := NewChaos(agents, rec)
 	return tasks, agents, rec, chaos, &now
 }
 
 // TestRequeueExpiredLeases verifies the first recovery path: a dead agent's
 // lease expires, the task is requeued to READY, and another agent can
-// acquire it (Agent 死亡 ≠ Task 死亡).
+// acquire it (Agent death ≠ Task death).
 func TestRequeueExpiredLeases(t *testing.T) {
 	tasks, agents, rec, _, now := newRecoveryHarness(t)
 	ctx := context.Background()
@@ -142,7 +148,130 @@ func TestRestartBudgetExhausted(t *testing.T) {
 	}
 }
 
-// TestFullRecoveryChain verifies the complete P5 acceptance path: inject
+// fakeSleeper records every backoff duration RestartAgent asks to sleep and
+// returns nil, so the exponential-backoff contract is observable without real
+// time.Sleep. canceledAt, when set, makes the FIRST sleep return the given
+// error (simulating a ctx cancelled mid-backoff).
+type fakeSleeper struct {
+	mu       sync.Mutex
+	slept    []time.Duration
+	canceled error // when non-nil, returned from the first sleep instead of nil
+}
+
+func (s *fakeSleeper) sleep(ctx context.Context, d time.Duration) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.slept = append(s.slept, d)
+	if s.canceled != nil {
+		return s.canceled
+	}
+	return nil
+}
+
+func (s *fakeSleeper) durations() []time.Duration {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]time.Duration(nil), s.slept...)
+}
+
+// TestRestartAgentBackoffDoublesPerAttempt verifies the crash-restart storm
+// prevention: before spawning a replacement, RestartAgent sleeps the policy
+// backoff scaled by the prior attempt count — Backoff on the 0-th restart,
+// doubled each consecutive restart, capped at MaxBackoff.
+func TestRestartAgentBackoffDoublesPerAttempt(t *testing.T) {
+	deadAgentID := "dead-1"
+	for _, tt := range []struct {
+		name     string
+		policy   RestartPolicy
+		attempts int // prior restarts of the agent
+		want     time.Duration
+	}{
+		{
+			name:     "attempt_0_pays_plain_backoff",
+			policy:   RestartPolicy{MaxRestarts: 5, Backoff: 1 * time.Second, MaxBackoff: 30 * time.Second},
+			attempts: 0,
+			want:     1 * time.Second,
+		},
+		{
+			name:     "attempt_2_pays_4x_backoff",
+			policy:   RestartPolicy{MaxRestarts: 5, Backoff: 1 * time.Second, MaxBackoff: 30 * time.Second},
+			attempts: 2,
+			want:     4 * time.Second,
+		},
+		{
+			name:     "large_attempt_capped_at_max_backoff",
+			policy:   RestartPolicy{MaxRestarts: 25, Backoff: 1 * time.Second, MaxBackoff: 5 * time.Second},
+			attempts: 20, // 1s<<20 would be ~12 days; the cap must win
+			want:     5 * time.Second,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			tasks := taskfabric.NewFabric()
+			agents := agentfabric.NewFabric()
+			rec := New(tasks, agents, tt.policy)
+			sleeper := &fakeSleeper{}
+			rec.WithSleeper(sleeper.sleep)
+
+			// Bring the agent to the wanted prior-attempt count.
+			for i := 0; i < tt.attempts; i++ {
+				if _, err := rec.RestartAgent(context.Background(), deadAgentID, agentfabric.CognitiveState{}, nil); err != nil {
+					t.Fatalf("priming restart %d: %v", i, err)
+				}
+			}
+			// The restart under test.
+			a, err := rec.RestartAgent(context.Background(), deadAgentID, agentfabric.CognitiveState{}, nil)
+			if err != nil {
+				t.Fatalf("RestartAgent: %v", err)
+			}
+			if a == nil {
+				t.Fatal("replacement must be spawned after the backoff")
+			}
+			got := sleeper.durations()
+			if len(got) != tt.attempts+1 {
+				t.Fatalf("sleeper called %d times, want %d (one per restart incl. priming)", len(got), tt.attempts+1)
+			}
+			if last := got[len(got)-1]; last != tt.want {
+				t.Fatalf("backoff = %v, want %v (all: %v)", last, tt.want, got)
+			}
+			// Budget order preserved: the attempt is charged AFTER the
+			// spawn, one per successful restart.
+			if n := rec.RestartCount(deadAgentID); n != tt.attempts+1 {
+				t.Fatalf("restart count = %d, want %d", n, tt.attempts+1)
+			}
+		})
+	}
+}
+
+// TestRestartAgentBackoffCtxCancelled verifies the backoff respects ctx: a
+// ctx cancelled during the sleep aborts the restart with the ctx error and
+// NO replacement is spawned (the budget is not charged either).
+func TestRestartAgentBackoffCtxCancelled(t *testing.T) {
+	tasks := taskfabric.NewFabric()
+	agents := agentfabric.NewFabric()
+	rec := New(tasks, agents, DefaultRestartPolicy())
+	sleeper := &fakeSleeper{canceled: context.Canceled}
+	rec.WithSleeper(sleeper.sleep)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancelled before the call; the sleeper reports it during sleep
+
+	before := len(agents.Agents())
+	_, err := rec.RestartAgent(ctx, "dead-1", agentfabric.CognitiveState{}, nil)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("must return the ctx error, got %v", err)
+	}
+	if got := sleeper.durations(); len(got) != 1 {
+		t.Fatalf("sleeper called %d times, want 1", len(got))
+	}
+	if after := len(agents.Agents()); after != before {
+		t.Fatalf("cancelled backoff must not spawn, agents %d -> %d", before, after)
+	}
+	if n := rec.RestartCount("dead-1"); n != 0 {
+		t.Fatalf("cancelled backoff must not charge the budget, count = %d", n)
+	}
+}
+
+// TestFullRecoveryChain verifies the complete acceptance path: inject
 // failure (kill agent) → lease expires → Task READY → B acquire → checkpoint
 // resume. The task survives the agent's death.
 func TestFullRecoveryChain(t *testing.T) {
@@ -280,7 +409,7 @@ func TestRestartAgentThroughSpawner(t *testing.T) {
 // TestRecoverTaskCheckpointThroughSpawner verifies checkpoint recovery routes
 // the replacement spawn through the evolution gate's TIMING check (Enabled)
 // but BYPASSES the MaxConcurrent quota: recovery replaces a dead/expired agent
-// and must not be stranded by the population cap (v0.3.0 M2-1).
+// and must not be stranded by the population cap.
 func TestRecoverTaskCheckpointThroughSpawner(t *testing.T) {
 	tasks, agents, rec, _, _ := newRecoveryHarness(t)
 	ctx := context.Background()
@@ -360,7 +489,7 @@ func TestRecoveryRespectsDisabledGate(t *testing.T) {
 // a task yields at a quantum boundary (SUSPENDED + preserved checkpoint),
 // its agent is suspended (lifecycle pause), resumed, and the task is
 // recovered with the checkpoint intact — the full yield→suspend→resume
-// round trip proving the "agent as thread" model (B1) end to end.
+// round trip proving the "agent as thread" model end to end.
 func TestYieldSuspendResumeFullChain(t *testing.T) {
 	tasks, agents, rec, _, _ := newRecoveryHarness(t)
 	ctx := context.Background()
@@ -449,5 +578,71 @@ func TestYieldSuspendResumeFullChain(t *testing.T) {
 	}
 	if repCS.Checkpoint == nil {
 		t.Fatal("replacement must carry the checkpoint as cognitive state")
+	}
+}
+
+// TestRestartAgent_ConcurrentBudgetNotBypassed locks REVIEW 2.7#39: the
+// budget check and charge must be atomic (reservation under one lock hold).
+// The old check-then-charge-later scheme let N concurrent RestartAgent calls
+// for the same corpse each pass the gate before any of them charged, so the
+// group collectively exceeded MaxRestarts.
+func TestRestartAgent_ConcurrentBudgetNotBypassed(t *testing.T) {
+	tasks := taskfabric.NewFabric()
+	agents := agentfabric.NewFabric()
+	rec := New(tasks, agents, RestartPolicy{
+		MaxRestarts: 3,
+		Backoff:     time.Millisecond,
+		MaxBackoff:  5 * time.Millisecond,
+	}).
+		WithClock(time.Now).
+		WithSleeper(func(context.Context, time.Duration) error { return nil })
+
+	const callers = 8
+	var wg sync.WaitGroup
+	for i := 0; i < callers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _ = rec.RestartAgent(context.Background(), "dead-agent",
+				agentfabric.CognitiveState{}, []string{"cap"})
+		}()
+	}
+	wg.Wait()
+
+	if got := rec.RestartCount("dead-agent"); got != 3 {
+		t.Errorf("concurrent restarts bypassed the budget: count=%d, want exactly MaxRestarts=3", got)
+	}
+}
+
+// TestRestartAgent_FailedSpawnDoesNotConsumeBudget verifies the reservation
+// rollback: a spawn error (or recover error / cancelled backoff) must give
+// the reserved slot back, preserving the "only successful restarts count"
+// semantics the late-charge scheme used to provide.
+func TestRestartAgent_FailedSpawnDoesNotConsumeBudget(t *testing.T) {
+	tasks := taskfabric.NewFabric()
+	agents := agentfabric.NewFabric()
+	rec := New(tasks, agents, RestartPolicy{
+		MaxRestarts: 1,
+		Backoff:     time.Millisecond,
+		MaxBackoff:  time.Millisecond,
+	}).
+		WithClock(time.Now).
+		WithSleeper(func(context.Context, time.Duration) error { return nil })
+
+	// A spawner whose policy is disabled fails every SpawnForRecovery with
+	// ErrSpawnDisabled — the deterministic spawn-failure path.
+	rec.WithSpawner(NewEvolutionAwareSpawner(agents, &stubSpawnPolicySource{
+		policy: SpawnPolicy{Enabled: false},
+	}))
+
+	// Budget 1: every attempt fails at spawn → rolled back…
+	for i := 0; i < 3; i++ {
+		if _, err := rec.RestartAgent(context.Background(), "dead-agent",
+			agentfabric.CognitiveState{}, nil); !errors.Is(err, ErrSpawnDisabled) {
+			t.Fatalf("attempt %d: expected ErrSpawnDisabled, got %v", i, err)
+		}
+	}
+	if got := rec.RestartCount("dead-agent"); got != 0 {
+		t.Errorf("failed spawns consumed the budget: count=%d, want 0", got)
 	}
 }

@@ -26,6 +26,14 @@ type GraphProvider interface {
 	// The provider must close the channel when done. If ctx is cancelled,
 	// the provider should stop producing and return immediately.
 	// Errors during streaming are sent through the error channel.
+	//
+	// Consumption contract: callers MUST drain both channels until they
+	// are closed, or cancel ctx when abandoning early. Producers select on
+	// ctx.Done while sending, so cancellation always releases them; a caller
+	// that stops consuming WITHOUT cancelling would block the producer
+	// goroutine on a full channel buffer forever. The runtime's only
+	// production consumer drains unconditionally (runtime.go) and providers
+	// close both channels via defer on exit.
 	Stream(ctx context.Context, intent knowledge.Intent) (<-chan *knowledge.KnowledgeObject, <-chan error)
 }
 
@@ -41,8 +49,6 @@ const (
 	ProviderEvolution ProviderType = "evolution"
 	// ProviderPostgres reads rows from a PostgreSQL table.
 	ProviderPostgres ProviderType = "postgres"
-	// ProviderMySQL reads rows from a MySQL table.
-	ProviderMySQL ProviderType = "mysql"
 	// ProviderVector queries a vector store for semantic similarity.
 	ProviderVector ProviderType = "vector"
 	// ProviderStore recalls AKG-distilled objects from a KnowledgeStore.

@@ -12,11 +12,11 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	api_tools "github.com/Timwood0x10/ares/api/tools"
 	"github.com/Timwood0x10/ares/internal/agents/base"
-	"github.com/Timwood0x10/ares/internal/ares_runtime"
+	api_tools "github.com/Timwood0x10/ares/internal/apitools"
 	"github.com/Timwood0x10/ares/internal/ares_security"
 	"github.com/Timwood0x10/ares/internal/core/models"
+	"github.com/Timwood0x10/ares/internal/runtime"
 )
 
 const testActionJWTSecret = "test-action-jwt-secret"
@@ -25,13 +25,13 @@ const testActionJWTSecret = "test-action-jwt-secret"
 // registered agent, plus a JWT middleware and audit sink on the same secret.
 type actionTestEnv struct {
 	h        *actionHandler
-	mgr      *ares_runtime.Manager
+	mgr      *runtime.Manager
 	auditBuf *bytes.Buffer
 }
 
 func newActionTestEnv(t *testing.T) *actionTestEnv {
 	t.Helper()
-	mgr := ares_runtime.New(nil, nil, nil)
+	mgr := runtime.New(nil, nil, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(func() { cancel(); _ = mgr.Stop() })
 	require.NoError(t, mgr.Start(ctx))
@@ -63,8 +63,8 @@ func testActionJWT(t *testing.T, role ares_security.Role) string {
 }
 
 // TestActionHandler_JWTAcceptedOnKill verifies the actionHandler (the
-// production entry for POST /api/agents/:id/kill) accepts a valid JWT — the
-// v0.3.0 review gap where interception bypassed JWT entirely.
+// production entry for POST /api/agents/:id/kill) accepts a valid JWT —
+// closing the gap where interception bypassed JWT entirely.
 func TestActionHandler_JWTAcceptedOnKill(t *testing.T) {
 	env := newActionTestEnv(t)
 

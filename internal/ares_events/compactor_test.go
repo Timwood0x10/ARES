@@ -46,7 +46,7 @@ func TestDefaultCompactionConfig_SensibleDefaults(t *testing.T) {
 	assert.Equal(t, 100, cfg.KeepRecent)
 	assert.Equal(t, 50, cfg.MaxSummariesPerStream)
 	assert.Equal(t, 30*24*time.Hour, cfg.SummaryTTL)
-	assert.False(t, cfg.EnableTrimming)
+	assert.True(t, cfg.EnableTrimming)
 }
 
 func TestCompactionConfig_ZeroThreshold_HandledByNewCompactor(t *testing.T) {

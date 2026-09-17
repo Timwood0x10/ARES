@@ -1,28 +1,36 @@
+// serve — the `ares serve` command: runServe assembly skeleton, event store,
+// config/LLM/tool wiring, agent + peer registry setup, control plane, and
+// HTTP start. The chaos wiring lives in serve_chaos_domain.go, the L1/Live
+// DAG builders in serve_live_dag.go, and the arena CLI in serve_arena.go —
+// all split from the former merged serve.go (M-C2), which in turn came from
+// serve.go, serve_routine.go, serve_agents.go, serve_chaos.go,
+// serve_live_dag.go, arena.go.
 package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
-	"net/http"
+	"net"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strconv"
 	"sync/atomic"
 	"syscall"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/ares_archive"
+	"github.com/spf13/cobra"
+	"golang.org/x/sync/errgroup"
+
 	"github.com/Timwood0x10/ares/internal/ares_bootstrap"
 	"github.com/Timwood0x10/ares/internal/ares_config"
 	"github.com/Timwood0x10/ares/internal/ares_shutdown"
-	"github.com/Timwood0x10/ares/internal/knowledge/compiler"
-	akf_mcp "github.com/Timwood0x10/ares/internal/knowledge/mcp"
-	core_tools "github.com/Timwood0x10/ares/internal/tools/resources/core"
-	"github.com/spf13/cobra"
-	"golang.org/x/sync/errgroup"
+	"github.com/Timwood0x10/ares/internal/logger"
 )
+
+// log is the package-level structured logger for the ares serve command.
+var log = logger.Module("ares")
 
 var serveCmd = &cobra.Command{
 	Use:   "serve",
@@ -40,6 +48,7 @@ Flags:
 
 var (
 	serveConfigPath string
+	serveHost       string
 	servePort       int
 	serveLLMURL     string
 	serveLLMKey     string
@@ -49,12 +58,14 @@ var (
 func init() {
 	rootCmd.AddCommand(serveCmd)
 	serveCmd.Flags().StringVarP(&serveConfigPath, "config", "c", "", "Path to config YAML (optional; use --llm-url instead for minimal setup)")
+	serveCmd.Flags().StringVar(&serveHost, "host", "", "HTTP bind address (overrides config; default 127.0.0.1 — use 0.0.0.0 to expose, requires auth)")
 	serveCmd.Flags().IntVarP(&servePort, "port", "p", 0, "HTTP port for dashboard (overrides config)")
 	serveCmd.Flags().StringVar(&serveLLMURL, "llm-url", "", "LLM endpoint URL — minimal setup, no config file needed")
 	serveCmd.Flags().StringVar(&serveLLMKey, "llm-api-key", "", "LLM API key (minimal setup)")
 	serveCmd.Flags().StringVar(&serveLLMModel, "llm-model", "", "LLM model name (optional, provider default when empty)")
 }
 
+//nolint:gocyclo // runServe is the serve assembly hub; each step is extracted.
 func runServe() error {
 	// --- Config ---
 	cfg, err := loadServeConfig()
@@ -87,187 +98,70 @@ func runServe() error {
 	// atomic.Store/Load so the goroutine never races with the Bootstrap
 	// assignment on the main goroutine.
 	var compPtr atomic.Pointer[ares_bootstrap.Components]
-	g.Go(func() error {
-		select {
-		case <-sigCh:
-			fmt.Println("\nShutting down...")
-			// Run the registered shutdown phases (HTTP → MCP → runtime) with a
-			// bounded overall timeout. cancel() afterwards stops background
-			// goroutines (event bridge, task submission) that wait on ctx.
-			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer shutdownCancel()
-			if err := shutdownMgr.StartShutdown(shutdownCtx); err != nil {
-				fmt.Fprintf(os.Stderr, "graceful shutdown error: %v\n", err)
-			}
-			shutdownSystemRuntime(&compPtr, shutdownCtx)
-			cancel()
-		case <-ctx.Done():
-		}
-		comp := compPtr.Load()
-		if comp == nil {
-			return nil
-		}
-		// Record the pre-shutdown component snapshot for shutdown diagnostics
-		// (which components were still running before background exit).
-		if snapJSON, snapErr := comp.Snapshot().JSON(); snapErr == nil {
-			log.Printf("system_runtime snapshot (shutdown): %s", string(snapJSON))
-		}
-		// Wait for Bootstrap's background goroutines (distillation subscriber,
-		// GA evolution ticker, LLM suggestion ticker) to exit after the
-		// context is cancelled, so none outlives the graceful shutdown.
-		comp.WaitBackground()
-		return nil
-	})
+	wiringServeSignalWatch(g, sigCh, ctx, cancel, shutdownMgr, &compPtr)
 
-	// --- EventStore (archive-enabled, shared pipeline) ---
-	// Build the archive-enabled store once and inject it into Bootstrap so
-	// `ares serve` uses the same construction path as `ares start`
-	// (ares_archive.NewCompactableStoreWithArchive is the single source).
-	// Archive defaults to on; disable via memory.archive.enabled: false.
-	// The raw *MemoryEventStore is unused here — serve consumes the store via
-	// the EventStore interface only — so it is discarded.
-	compactableStore, _, err := ares_archive.NewCompactableStoreWithArchive(cfg.Memory.Archive)
+	// --- EventStore + Bootstrap ---
+	comp, store, mgr, err := wiringServeEventStore(ctx, cfg)
 	if err != nil {
-		return fmt.Errorf("create event store: %w", err)
+		return err
 	}
-
-	// --- Bootstrap: infrastructure components via single wiring hub ---
-	// Uses internal/ares_bootstrap for EventStore, Runtime, Memory.
-	// MCP setup is handled separately below for registry bridging. The store
-	// is passed via deps so Bootstrap wires Runtime/Memory against the real
-	// archive-enabled store instead of creating a throwaway MemoryEventStore.
-	comp, err := ares_bootstrap.Bootstrap(ctx, cfg, &ares_bootstrap.BootstrapDeps{
-		EventStore: compactableStore,
-	})
-	if err != nil {
-		return fmt.Errorf("bootstrap: %w", err)
-	}
-	// Publish the assembled components to the signal goroutine via the atomic
-	// pointer so the shutdown snapshot/WaitBackground reads never race.
 	compPtr.Store(comp)
-	store := comp.EventStore
-	mgr := comp.Runtime
-
-	// --- Runtime config store + hot-reload watcher (P1) ---
-	// The store holds the last-good config and its reload history, served via
-	// /runtime/config on the console HTTP server. When the serve command was
-	// started with an explicit config file, an fsnotify watcher hot-reloads it
-	// on change (failed reloads keep the previous config). With no config file
-	// (minimal --llm-url mode) the watcher is skipped — the store still serves
-	// the effective config snapshot.
-	cfgStore := ares_config.NewConfigStore(cfg)
-	if serveConfigPath != "" {
-		cfgPath := serveConfigPath
-		g.Go(func() error {
-			// Watch blocks until ctx cancels; a reload error is logged inside
-			// the store (recorded to history), so returning here is only for
-			// watcher setup failures and ctx cancellation.
-			return cfgStore.Watch(ctx, cfgPath)
-		})
+	// Assembly-phase exit check — if a shutdown signal arrived during the
+	// (potentially long) Bootstrap, abort the startup instead of proceeding
+	// to wire components and start the runtime on a canceled context.
+	if err := ctx.Err(); err != nil {
+		log.Info("serve: shutdown was requested during assembly; aborting startup", "err", err)
+		return normalizeShutdownErr(err)
 	}
 
-	// Stage 3 fix (B01): EventStore is wired into Memory during Bootstrap,
-	// not post-Bootstrap here. validateServeConfig has already enforced that
-	// the full agent-serving entry point has its required Memory component.
-
-	// Stage 1 observability: report the System Runtime component snapshot
-	// (names, modes, lifecycle states) so operators can confirm which
-	// components were assembled and reached Ready at startup.
-	if snapJSON, snapErr := comp.Snapshot().JSON(); snapErr == nil {
-		log.Printf("system_runtime snapshot (startup): %s", string(snapJSON))
-	} else {
-		log.Printf("system_runtime snapshot unavailable: %v", snapErr)
-	}
-
-	// --- LLM adapter with fallback ---
-	llmAdapter, err := createLLMAdapterWithFallback(cfg)
-	if err != nil {
-		return fmt.Errorf("create llm adapter: %w", err)
-	}
-
-	// --- Tool registry (public API) ---
-	registry, err := newToolRegistry()
-	if err != nil {
-		return fmt.Errorf("create tool registry: %w", err)
-	}
-
-	// --- MCP servers: reuse the manager started by Bootstrap (single manager,
-	// single set of connections; its Stop hook is registered below) and bridge
-	// its tools into the internal + public registries. ---
-	internalReg, err := setupMCP(ctx, comp.MCP, registry, ares_bootstrap.ToolDepsFromComponents(comp))
-	if err != nil {
-		return fmt.Errorf("MCP setup: %w", err)
-	}
-
-	// Register AKF (Knowledge Fabric) tools into the internal registry using
-	// the shared KnowledgeRuntime from bootstrap. This is the critical wiring
-	// that makes knowledge genome patches (ChangeBudget/ChangePlanner/
-	// ChangeReducer) affect the actual runtime used by the agent's knowledge
-	// tools — because both the evolution system's KnowledgePatchExecutor and
-	// the agent's AKF tools share the same comp.KnowledgeRuntime instance.
-	if comp.KnowledgeRuntime != nil {
-		akfSvc := akf_mcp.NewAKFService(comp.KnowledgeRuntime, &compiler.DefaultCompiler{})
-		for _, akfTool := range akfSvc.Tools() {
-			t := akfTool // capture
-			adapted := &akfToolAdapter{name: t.Name, desc: t.Description, fn: t.Execute}
-			if err := internalReg.Register(adapted); err != nil {
-				log.Printf("AKF: failed to register tool %q: %v", t.Name, err)
-			}
-		}
-		log.Printf("AKF tools registered with shared KnowledgeRuntime: %d", len(akfSvc.Tools()))
-	}
-
-	// --- ToolBinder for agents ---
-	// Primitive 7 wiring: probe host commands from the ARES_NATIVE_TOOLS
-	// allowlist and register them into the internal registry (command -v +
-	// --help; security boundary = allowlist only). Registered tools flow into
-	// GetLLMTools naturally; SetActiveTools lets the runtime narrow the active
-	// subset per task (progressive disclosure), and serve keeps the full set
-	// active by default (zero-value behavior, no change to LLM tool injection).
-	if err := registerNativeTools(ctx, internalReg); err != nil {
-		return fmt.Errorf("register native tools: %w", err)
-	}
-
-	// REVIEW #11 (second half): expose the environment-capability searcher as
-	// the `search_capabilities` tool so agents can actively discover tools,
-	// skills, and native commands. Registered before the binder is built so it
-	// flows into the agent tool set naturally. comp.SkillsRegistry may be nil
-	// (skills disabled) — the searcher skips that source.
-	if err := registerCapabilitySearch(internalReg, comp.SkillsRegistry); err != nil {
-		return fmt.Errorf("register capability search: %w", err)
-	}
-	toolBinder := newToolBinder(internalReg)
-	log.Printf("tools registered: %d", len(toolBinder.ListTools()))
-
-	// --- Capability Planner bridge for agent tool fallback ---
-	if bridge := newPlannerBridge(internalReg); bridge != nil {
-		toolBinder.WithPlannerBridge(bridge)
-		log.Println("planner bridge: attached")
-	}
+	// --- Runtime config store + hot-reload watcher + startup snapshot ---
+	cfgStore := wiringServeCfgStoreWatch(ctx, g, cfg, comp)
 
 	// --- ChatClient for native tool calling ---
+	// TODO(tech-debt): the separate output.LLMAdapter assembly
+	// (createLLMAdapterWithFallback) was removed here — its result was
+	// threaded through createAndServeAgents/createPeerAgents but never
+	// consumed, so the "runtime fallback chain" it advertised never ran.
+	// Runtime failover lives in FailoverClient (createChatClient); the
+	// unused internal/llm/output adapter package has zero callers left
+	// and is a 0.4 deletion candidate (independent-review F-07).
 	chatClient, err := createChatClient(cfg)
 	if err != nil {
 		return fmt.Errorf("create chat client: %w", err)
 	}
-	log.Printf("chat client created: provider=%s model=%s", cfg.LLM.Provider, cfg.LLM.Model)
+	log.Info("chat client created", "provider", cfg.LLM.Provider, "model", cfg.LLM.Model)
+
+	// --- Tools + MCP + binder ---
+	toolBinder, registry, internalReg, err := wiringServeToolchain(ctx, cfg, comp)
+	if err != nil {
+		return err
+	}
 
 	// --- Create + register agents with the runtime manager ---
-	subAgents, peerKernel, err := createAndServeAgents(ctx, cfg, internalReg, llmAdapter, chatClient, toolBinder, comp, mgr)
+	subAgents, peerKernel, err := createAndServeAgents(ctx, cfg, internalReg, chatClient, toolBinder, comp, mgr)
 	if err != nil {
 		return err
 	}
 
 	// --- Peer registry: enable direct agent-to-agent messaging ---
 	// setupPeerRegistry builds the registry; the kernel handle powers
-	// collaboration-topic execution through the fabric DAG (fusion C2).
-	if _, err := setupPeerRegistry(subAgents, comp, peerKernel); err != nil {
+	// collaboration-topic execution through the fabric DAG. The
+	// registry is retained on the kernel handle so it stays reachable for
+	// direct peer messaging / capability discovery instead of being discarded.
+	reg, err := setupPeerRegistry(ctx, g, subAgents, comp, peerKernel)
+	if err != nil {
 		return err
 	}
+	if peerKernel != nil {
+		peerKernel.peerRegistry = reg
+		log.Info("serve: peer registry retained on kernel (agents)", "count", len(reg.IDs()))
+	}
 
-	// --- PluginBus + MonitorPlugin (extracted to setupServeMonitoring to keep
-	// runServe's cyclomatic complexity within gocyclo's 30 limit) ---
-	plugin, err := setupServeMonitoring(ctx, g, cfg, mgr, registry, store)
+	// --- Runtime introspection control plane:
+	// intelligence engine + read-only control server (extracted to
+	// setupServeControlPlane to keep runServe's cyclomatic complexity within
+	// gocyclo's 30 limit). The old MonitorPlugin/tabs/PluginBus bridge is gone.
+	intelEngine, controlServer, err := setupServeControlPlane(ctx, g, cfg, cfgStore, store, peerKernel, comp.Dashboard, comp.FlightRecorder, evolutionLifecycleForServe(comp))
 	if err != nil {
 		return err
 	}
@@ -277,59 +171,33 @@ func runServe() error {
 		return fmt.Errorf("start runtime: %w", err)
 	}
 
-	// Sub-agents are execution units only (ares-runtime.md: agents are not
+	// Sub-agents are execution units only (ares-runtime: agents are not
 	// orchestrated, they are scheduled). The Kernel owns dispatch: the
 	// kernelScheduler drives each task through RunQuantum →
 	// sub.Agent.ExecuteStep; agents never subscribe to the event stream and
-	// self-dispatch (self-dispatch was removed in v0.3.0).
+	// self-dispatch (self-dispatch was removed).
 
-	// --- Dashboard APIv2 server (M3/M4 observability read side) ---
-	if err := startDashboardServer(ctx, g, cfg, comp, shutdownMgr); err != nil {
-		return err
-	}
+	// --- Dashboard APIv2 server (observability read side) ---
+	// The old standalone dashboard :8090 server was removed; the
+	// observability providers now feed introspect.ControlServer below.
 
 	// --- HTTP server + graceful-shutdown hooks (extracted to keep runServe
 	// cyclomatic complexity within lint limits) ---
-	if _, err := startServeHTTPAndHooks(ctx, g, cfg, cfgStore, plugin, mgr, registry, toolBinder, shutdownMgr, comp, peerKernel); err != nil {
+	if _, err := startServeHTTPAndHooks(ctx, g, cfg, cfgStore, controlServer, intelEngine, mgr, registry, toolBinder, shutdownMgr, comp, peerKernel); err != nil {
+		return err
+	}
+
+	// Opt-in pprof/expvar on a loopback listener (Phase 3 observability):
+	// server.pprof_addr unset = off; non-loopback addresses refuse to start.
+	if err := startPprofServer(ctx, g, cfg); err != nil {
 		return err
 	}
 
 	// Wait for all goroutines to complete (signal handler, bridge, tasks, HTTP).
 	// A context cancellation (SIGINT/SIGTERM → graceful shutdown) surfaces as
 	// context.Canceled from the errgroup; that is a NORMAL exit, not an error —
-	// normalized to nil so `ares serve` exits 0 on Ctrl-C (code_rules_v2 §3.1).
+	// normalized to nil so `ares serve` exits 0 on Ctrl-C.
 	return normalizeShutdownErr(g.Wait())
-}
-
-// startDashboardServer starts the Bootstrap-assembled dashboard HTTP server
-// and registers its shutdown hook. The server carries the SHARED M3/M4
-// observability adapters (evolution trajectory, human feedback, cross-Fabric
-// spans); historically nothing ever called Start, so those endpoints fed a
-// server no one could reach. It listens on cfg.Dashboard.Addr (default :8090,
-// distinct from the console on cfg.Server.Port).
-func startDashboardServer(
-	ctx context.Context,
-	g *errgroup.Group,
-	cfg *ares_config.Config,
-	comp *ares_bootstrap.Components,
-	shutdownMgr *ares_shutdown.Manager,
-) error {
-	if comp == nil || comp.Dashboard == nil || comp.Dashboard.Start == nil {
-		return nil
-	}
-	g.Go(func() error {
-		if err := comp.Dashboard.Start(ctx); err != nil && err != http.ErrServerClosed {
-			return fmt.Errorf("dashboard server error: %w", err)
-		}
-		return nil
-	})
-	log.Printf("dashboard APIv2 listening on %s", cfg.Dashboard.Addr)
-	if err := shutdownMgr.AddCallback(ares_shutdown.PhasePreShutdown, func(ctx context.Context) error {
-		return comp.Dashboard.Stop(ctx)
-	}); err != nil {
-		return fmt.Errorf("register dashboard shutdown hook: %w", err)
-	}
-	return nil
 }
 
 // normalizeShutdownErr treats context cancellation (graceful shutdown) as a
@@ -342,34 +210,162 @@ func normalizeShutdownErr(err error) error {
 	return err
 }
 
-// akfToolAdapter adapts an AKF MCP tool (func(ctx, input string) -> string)
-// to the core_tools.Tool interface so it can be registered in the internal
-// tool registry and used by agents through the ToolBinder. This is the wiring
-// that makes knowledge genome patches affect the agent's knowledge tools —
-// because both share the same comp.KnowledgeRuntime instance.
-type akfToolAdapter struct {
-	name string
-	desc string
-	fn   func(ctx context.Context, input string) (string, error)
+// allowConfigDirFor confines ares_config.Load to the directory holding the
+// given config path. The path-traversal guard inside Load is opt-in via
+// SetAllowedConfigDir and had NO production caller — SECURITY.md documented a
+// control that was a no-op at runtime (review C-3). Every Load entry point in
+// this binary calls this first, so each load in the process (initial,
+// hot-reload re-reads, status fallback candidates) is confined to the
+// operator's config directory.
+func allowConfigDirFor(path string) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		// A path that cannot be absolutized cannot be confined; Load
+		// surfaces its own error when it fails to read the file.
+		return
+	}
+	ares_config.SetAllowedConfigDir(filepath.Dir(abs))
 }
 
-func (a *akfToolAdapter) Name() string                      { return a.name }
-func (a *akfToolAdapter) Description() string               { return a.desc }
-func (a *akfToolAdapter) Category() core_tools.ToolCategory { return core_tools.CategoryKnowledge }
-func (a *akfToolAdapter) Capabilities() []core_tools.Capability {
-	return []core_tools.Capability{core_tools.CapabilityKnowledge}
-}
-func (a *akfToolAdapter) Parameters() *core_tools.ParameterSchema { return nil }
-func (a *akfToolAdapter) Execute(ctx context.Context, params map[string]interface{}) (core_tools.Result, error) {
-	input, _ := params["input"].(string)
-	if input == "" {
-		// Serialize the whole params map as JSON input.
-		b, _ := json.Marshal(params)
-		input = string(b)
+func loadServeConfig() (*ares_config.Config, error) {
+	// Minimal setup: the user provides only the LLM endpoint (--llm-url) and
+	// optionally the API key / model. Everything else — agents, memory, tools,
+	// storage, kernel policy — is assembled by the runtime from defaults, so no
+	// config file is required.
+	if serveLLMURL != "" {
+		cfg := ares_config.NewMinimalConfig(serveLLMURL, serveLLMKey, serveLLMModel)
+		if serveHost != "" {
+			cfg.Server.Host = serveHost
+		}
+		if servePort > 0 {
+			cfg.Server.Port = servePort
+		}
+		log.Info("serve: minimal config (llm-url only); runtime defaults for all subsystems")
+		return cfg, nil
 	}
-	out, err := a.fn(ctx, input)
+
+	configPath := serveConfigPath
+	if configPath == "" {
+		for _, p := range []string{
+			"ares.yaml",
+			"./ares.yaml",
+		} {
+			if _, err := os.Stat(p); err == nil {
+				configPath = p
+				break
+			}
+		}
+		if configPath == "" {
+			configPath = "ares.yaml"
+		}
+		// Write the resolved path back so runServe's watcher starts for the
+		// auto-detected config too (previously Watch only ran with an explicit
+		// --config; hot-reload silently no-op'd on the default ares.yaml).
+		serveConfigPath = configPath
+	}
+
+	allowConfigDirFor(configPath)
+	cfg, err := ares_config.Load(configPath)
 	if err != nil {
-		return core_tools.NewErrorResult(err.Error()), nil
+		return nil, fmt.Errorf("load config: %w", err)
 	}
-	return core_tools.NewResult(true, map[string]interface{}{"output": out}), nil
+	// CLI flags win over YAML: the explicit argument is the most specific
+	// intent. (No environment overrides exist — the config file is the only
+	// entry point.)
+	if serveHost != "" {
+		cfg.Server.Host = serveHost
+	}
+	if servePort > 0 {
+		cfg.Server.Port = servePort
+	}
+	return cfg, nil
+}
+
+// validateServeConfig enforces the configuration contract of the full agent
+// serving entry point before Bootstrap starts any component.
+//
+// It runs the shared Config validator, which the config-file path already
+// gets from Config.Load. The no-config path (`ares serve --llm-url …`)
+// builds a config with NewMinimalConfig and returns it directly, so without
+// this call nothing validated that config at all — the only thing standing
+// between an operator and a late, deep wiring failure was a nil check.
+func validateServeConfig(cfg *ares_config.Config) error {
+	if cfg == nil {
+		return errors.New("serve: config is required")
+	}
+	if err := cfg.Validate(); err != nil {
+		return fmt.Errorf("serve: invalid configuration: %w", err)
+	}
+	// Fail closed on an unauthenticated wildcard bind. serve_wiring only logged
+	// this at Info, so a config that exposed /api/v1/introspect/* and
+	// /api/runtime/config to every interface started happily. Every remedy is
+	// one line of config (enable security.auth_enabled, set introspect.token,
+	// or bind a loopback host), so refusing to start costs less than shipping
+	// an open port. authConfigured here mirrors the exact predicate
+	// serve_wiring uses to decide whether auth middleware is installed.
+	authConfigured := cfg.Security.AuthEnabled && cfg.Security.JWTSecret != ""
+	if isWildcardHost(cfg.Server.Host) && !authConfigured && cfg.Introspect.Token == "" {
+		return fmt.Errorf(
+			"serve: server.host %q binds all interfaces while security.auth_enabled is false — "+
+				"the unauthenticated control-plane read API is reachable from the network; "+
+				"set security.auth_enabled (+ security.jwt_secret), set introspect.token, or bind a loopback host",
+			cfg.Server.Host)
+	}
+	return nil
+}
+
+// createLLMAdapterWithFallback was removed (independent-review F-07): its
+// result was threaded into createAndServeAgents/createPeerAgents but never
+// consumed — the primary→fallback→ollama chain it advertised never ran.
+// Runtime failover is FailoverClient in createChatClient; see the TODO at
+// the ChatClient assembly site.
+
+// defaultServeHost is the fallback bind host when the config leaves
+// server.host empty (a hand-built Config may skip setDefaults). The explicit
+// loopback IP, not the "localhost" name — the bind must not depend on
+// hosts-file resolution (M-S1).
+const defaultServeHost = "127.0.0.1"
+
+// serverBindAddr resolves the HTTP listen address from the server config.
+// The host is the real bind address (default "localhost"); empty falls back
+// rather than silently widening to a wildcard bind.
+func serverBindAddr(host string, port int) string {
+	if host == "" {
+		host = defaultServeHost
+	}
+	return net.JoinHostPort(host, strconv.Itoa(port))
+}
+
+// isWildcardHost reports whether host selects all network interfaces
+// (the "0.0.0.0" wildcard; IPv6's "::" is also a wildcard form).
+func isWildcardHost(host string) bool {
+	switch host {
+	case "0.0.0.0", "::":
+		return true
+	default:
+		return false
+	}
+}
+
+// displayServeHost picks the host to print on the startup console: a wildcard
+// bind prints the loopback probe address, because connecting to 0.0.0.0
+// directly does not work on every platform and the panel URL must be usable.
+func displayServeHost(host, addr string) string {
+	if isWildcardHost(host) {
+		return "localhost:" + strconv.Itoa(portOf(addr))
+	}
+	return addr
+}
+
+// portOf extracts the numeric port from a host:port address.
+func portOf(addr string) int {
+	_, portStr, err := net.SplitHostPort(addr)
+	if err != nil {
+		return 0
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		return 0
+	}
+	return port
 }

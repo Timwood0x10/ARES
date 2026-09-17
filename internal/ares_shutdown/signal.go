@@ -11,13 +11,14 @@ import (
 // SignalHandler handles system signals for graceful shutdown.
 type SignalHandler struct {
 	signals []os.Signal
-	ctx     context.Context
-	cancel  context.CancelFunc
 	manager *Manager
 	sigChan chan os.Signal // Store the channel for stopping
 	mu      struct {
 		sync.RWMutex
 		started bool
+		// cancel stops the handleSignals loop; guarded by mu, set together
+		// with started so Stop can never observe a torn pair.
+		cancel context.CancelFunc
 	}
 }
 
@@ -36,64 +37,64 @@ func NewSignalHandler(manager *Manager) *SignalHandler {
 // Start starts listening for signals.
 func (h *SignalHandler) Start(ctx context.Context) error {
 	h.mu.Lock()
+	defer h.mu.Unlock()
 	if h.mu.started {
-		h.mu.Unlock()
 		return ErrSignalHandlerAlreadyStarted
 	}
-	h.mu.Unlock()
 
 	ctx, cancel := context.WithCancel(ctx)
-	h.ctx = ctx
-	h.cancel = cancel
-
+	h.mu.cancel = cancel
 	h.sigChan = make(chan os.Signal, len(h.signals))
 	signal.Notify(h.sigChan, h.signals...)
 
-	go h.handleSignals(h.sigChan)
+	go h.handleSignals(ctx, h.sigChan)
 
-	h.mu.Lock()
 	h.mu.started = true
-	h.mu.Unlock()
 
 	return nil
 }
 
 // Stop stops listening for signals.
 func (h *SignalHandler) Stop() error {
-	h.mu.RLock()
+	h.mu.Lock()
 	if !h.mu.started {
-		h.mu.RUnlock()
+		h.mu.Unlock()
 		return nil
 	}
-	h.mu.RUnlock()
+	h.mu.started = false
+	// Snapshot under the same write lock that cleared started: the captured
+	// pair (cancel, sigChan) is exactly what the running loop was created
+	// with, so a concurrent re-Start cannot hand this Stop the new loop's
+	// primitives.
+	cancel := h.mu.cancel
+	h.mu.cancel = nil
+	sigChan := h.sigChan
+	h.mu.Unlock()
 
-	if h.cancel != nil {
-		h.cancel()
+	if cancel != nil {
+		cancel()
 	}
 
 	// Stop the actual channel that was registered
-	if h.sigChan != nil {
-		signal.Stop(h.sigChan)
+	if sigChan != nil {
+		signal.Stop(sigChan)
 	}
-
-	h.mu.Lock()
-	h.mu.started = false
-	h.mu.Unlock()
 
 	return nil
 }
 
-// handleSignals handles incoming signals.
-func (h *SignalHandler) handleSignals(sigChan <-chan os.Signal) {
-	defer func() {
-		h.mu.Lock()
-		h.mu.started = false
-		h.mu.Unlock()
-	}()
-
+// handleSignals handles incoming signals. The context is captured at Start
+// time and passed here: storing it on the handler and reading h.ctx in this
+// goroutine raced a concurrent Start/SetContext write.
+//
+// The exit defer does NOT touch mu.started: a stopped-then-restarted handler
+// would have the OLD goroutine's defer clobber the NEW Start's started=true,
+// making a second Stop return early while the new loop leaks. The old loop's
+// lifetime is owned entirely by its captured ctx (cancelled by Stop).
+func (h *SignalHandler) handleSignals(ctx context.Context, sigChan <-chan os.Signal) {
 	for {
 		select {
-		case <-h.ctx.Done():
+		case <-ctx.Done():
 			return
 		case sig := <-sigChan:
 			h.handleSignal(sig)
@@ -128,11 +129,6 @@ func (h *SignalHandler) AddSignal(sig os.Signal) {
 	if h.mu.started && h.sigChan != nil {
 		signal.Notify(h.sigChan, sig)
 	}
-}
-
-// SetContext sets the context for signal handling.
-func (h *SignalHandler) SetContext(ctx context.Context) {
-	h.ctx = ctx
 }
 
 // SignalHandler errors.

@@ -1,6 +1,6 @@
 // Package ares_bootstrap — periodic storage maintenance.
 //
-// Closes the "write-only retention" open loop (REVIEW_PROGRESS #7): tables
+// Closes the "write-only retention" open loop: tables
 // with expires_at / decay_at columns are purged on a schedule instead of
 // growing unboundedly while read paths silently filter dead rows.
 package ares_bootstrap
@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/ares_config"
+	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/logger"
 	"github.com/Timwood0x10/ares/internal/storage/postgres"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/repositories"
@@ -44,17 +45,74 @@ type NamedExpiryCleaner struct {
 // recently read or written.
 const knowledgeRetention = 90 * 24 * time.Hour
 
+// eventsRetentionCleaner adapts *ares_events.PostgresEventStore (whose
+// CleanupExpiredBefore takes an explicit cutoff) to the parameterless
+// ExpiryCleaner interface with a rolling now-days cutoff — the same pattern
+// as knowledgeCleanerAdapter. PG mode has no archive and no compaction
+// trim, so this cleaner is the events table's only growth bound.
+type eventsRetentionCleaner struct {
+	store *ares_events.PostgresEventStore
+	days  int
+}
+
+// CleanupExpired deletes event rows older than the configured retention.
+// Satisfies ExpiryCleaner.
+func (c eventsRetentionCleaner) CleanupExpired(ctx context.Context) (int64, error) {
+	return c.store.CleanupExpiredBefore(ctx, time.Now().AddDate(0, 0, -c.days))
+}
+
+// eventsRetentionCleanerFor decides whether an events retention cleaner
+// applies to the given store: only a *PostgresEventStore with a positive
+// retention (days > 0) gets one. The decision is a pure type+value check so
+// it is unit-testable without a live database; the memory-mode compactable
+// store already has its own archive+trim lifecycle, and zero retention is
+// the deliberate keep-forever default.
+func eventsRetentionCleanerFor(store ares_events.EventStore, days int) (NamedExpiryCleaner, bool) {
+	if days <= 0 {
+		return NamedExpiryCleaner{}, false
+	}
+	pg, ok := store.(*ares_events.PostgresEventStore)
+	if !ok {
+		return NamedExpiryCleaner{}, false
+	}
+	return NamedExpiryCleaner{
+		Name:    "events",
+		Cleaner: eventsRetentionCleaner{store: pg, days: days},
+	}, true
+}
+
 // knowledgeCleanerAdapter bridges *KnowledgeRepository (whose CleanupExpired
-// takes an explicit cutoff) to the parameterless ExpiryCleaner interface by
-// supplying a rolling now-knowledgeRetention cutoff on each pass.
+// takes an explicit tenant and cutoff) to the parameterless ExpiryCleaner
+// interface by binding the maintenance tenant and supplying a rolling
+// now-knowledgeRetention cutoff on each pass.
 type knowledgeCleanerAdapter struct {
-	repo *repositories.KnowledgeRepository
+	repo   *repositories.KnowledgeRepository
+	tenant string
 }
 
 // CleanupExpired deletes knowledge chunks older than knowledgeRetention that
 // are below the access-count floor. Satisfies ExpiryCleaner.
 func (a knowledgeCleanerAdapter) CleanupExpired(ctx context.Context) (int64, error) {
-	return a.repo.CleanupExpired(ctx, time.Now().Add(-knowledgeRetention))
+	return a.repo.CleanupExpired(ctx, a.tenant, time.Now().Add(-knowledgeRetention))
+}
+
+// maintenanceTenantID is the tenant the process-wide maintenance worker
+// purges. The worker is a per-process singleton (same posture as
+// PGStrategyStore): no multi-tenant configuration exists yet, so the tenant is
+// bound at wiring time. Consequence: expired rows of other tenants are NOT
+// purged by this worker — the safe direction, since a tenant-less DELETE
+// would purge every tenant's rows (S-10). When maintenance goes multi-tenant,
+// iterate tenants here instead of binding one.
+const maintenanceTenantID = postgres.DefaultTenantID
+
+// tenantCleanupFunc adapts a repository cleanup that takes an explicit tenant
+// to the parameterless ExpiryCleaner interface, binding maintenanceTenantID.
+type tenantCleanupFunc func(ctx context.Context, tenantID string) (int64, error)
+
+// CleanupExpired runs the underlying cleanup for the maintenance tenant.
+// Satisfies ExpiryCleaner.
+func (f tenantCleanupFunc) CleanupExpired(ctx context.Context) (int64, error) {
+	return f(ctx, maintenanceTenantID)
 }
 
 // wireExpiryCleaners registers the remaining retention-managed repositories
@@ -63,7 +121,7 @@ func (a knowledgeCleanerAdapter) CleanupExpired(ctx context.Context) (int64, err
 // each repo is registered independently and a construction failure for one
 // (e.g. the secret cipher) skips only that table, never the others.
 //
-// This closes the remainder of REVIEW #7: previously only experiences_1024
+// Previously only experiences_1024
 // was purged on schedule; the other four CleanupExpired implementations had
 // no production caller and their dead rows grew unbounded.
 func wireExpiryCleaners(comp *Components, db *sql.DB, cfg *ares_config.Config) {
@@ -76,16 +134,17 @@ func wireExpiryCleaners(comp *Components, db *sql.DB, cfg *ares_config.Config) {
 	comp.ExpiryCleaners = append(comp.ExpiryCleaners,
 		NamedExpiryCleaner{Name: "sessions", Cleaner: sessionRepo})
 
-	// Conversations: DELETE WHERE expires_at < now.
+	// Conversations: DELETE WHERE expires_at < now, scoped to the maintenance
+	// tenant (the repo's CleanupExpired is fail-closed on an empty tenant).
 	convRepo := repositories.NewConversationRepository(db)
 	comp.ExpiryCleaners = append(comp.ExpiryCleaners,
-		NamedExpiryCleaner{Name: "conversations", Cleaner: convRepo})
+		NamedExpiryCleaner{Name: "conversations", Cleaner: tenantCleanupFunc(convRepo.CleanupExpired)})
 
 	// Knowledge chunks: prune stale, low-access rows via the age adapter.
 	knowRepo := repositories.NewKnowledgeRepository(db, db)
 	comp.ExpiryCleaners = append(comp.ExpiryCleaners,
-		NamedExpiryCleaner{Name: "knowledge_chunks_1024",
-			Cleaner: knowledgeCleanerAdapter{repo: knowRepo}})
+		NamedExpiryCleaner{Name: tableKnowledgeChunks,
+			Cleaner: knowledgeCleanerAdapter{repo: knowRepo, tenant: maintenanceTenantID}})
 
 	// Secrets: DELETE WHERE expires_at < now. NewSecretRepository requires a
 	// 32-byte AES key at construction even though CleanupExpired never
@@ -98,7 +157,7 @@ func wireExpiryCleaners(comp *Components, db *sql.DB, cfg *ares_config.Config) {
 		logMaintenance.Warn("bootstrap: secret expiry cleaner not wired", "error", err)
 	} else {
 		comp.ExpiryCleaners = append(comp.ExpiryCleaners,
-			NamedExpiryCleaner{Name: "secrets", Cleaner: secretRepo})
+			NamedExpiryCleaner{Name: "secrets", Cleaner: tenantCleanupFunc(secretRepo.CleanupExpired)})
 	}
 }
 

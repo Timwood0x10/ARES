@@ -2,6 +2,9 @@ package compiler
 
 import (
 	"context"
+	"encoding/json"
+	"encoding/xml"
+	"io"
 	"strings"
 	"testing"
 
@@ -272,5 +275,93 @@ func testGraph() *knowledge.WorkingGraph {
 		Edges: []knowledge.Relation{
 			{From: "cache", To: "redis", Name: knowledge.RelDependsOn, Score: 0.9},
 		},
+	}
+}
+
+// TestFormatJSON_EdgeFieldsAreValidJSON locks REVIEW 3.5: the edge fields of
+// the JSON format must be encoded with json.Marshal, not %q. %q produces Go
+// string-literal escapes (\a, \x…) that are invalid JSON when an edge field
+// contains control characters, so downstream json.Unmarshal failed.
+func TestFormatJSON_EdgeFieldsAreValidJSON(t *testing.T) {
+	c := NewDefaultCompiler()
+	graph := testGraph()
+	// Control characters in every edge field: %q would emit \a (an escape
+	// JSON does not define) and \x07, both rejected by json.Unmarshal.
+	graph.Edges = []knowledge.Relation{
+		{From: "src\x07", To: "dst\x07", Name: "depends\bon", Score: 0.5},
+	}
+
+	ctx, err := c.Compile(context.Background(), graph, CompileConfig{Formats: []Format{FormatJSON}})
+	if err != nil {
+		t.Fatalf("Compile error: %v", err)
+	}
+	out := ctx.Formats[FormatJSON]
+
+	// The whole document must parse as JSON.
+	var decoded struct {
+		Edges []struct {
+			From string `json:"from"`
+			To   string `json:"to"`
+			Name string `json:"name"`
+		} `json:"edges"`
+	}
+	if err := json.Unmarshal([]byte(out), &decoded); err != nil {
+		t.Fatalf("compiled JSON is not parseable (%%q escaping?): %v\noutput: %s", err, out)
+	}
+	if len(decoded.Edges) != 1 {
+		t.Fatalf("expected 1 edge, got %d", len(decoded.Edges))
+	}
+	if decoded.Edges[0].From != "src\x07" || decoded.Edges[0].To != "dst\x07" || decoded.Edges[0].Name != "depends\bon" {
+		t.Errorf("edge fields did not round-trip: %+v", decoded.Edges[0])
+	}
+}
+
+// TestFormatXML_EdgeAttributesAreEscaped locks REVIEW 3.5: the relation
+// attributes of the XML format must be escaped with escapeXMLAttr, not %q.
+// %q leaves & and < unescaped (and adds Go quoting), producing XML no parser
+// accepts.
+func TestFormatXML_EdgeAttributesAreEscaped(t *testing.T) {
+	c := NewDefaultCompiler()
+	graph := testGraph()
+	graph.Edges = []knowledge.Relation{
+		{From: "a<b", To: "c&d", Name: "depends<on>&", Score: 0.5},
+	}
+
+	ctx, err := c.Compile(context.Background(), graph, CompileConfig{Formats: []Format{FormatXML}})
+	if err != nil {
+		t.Fatalf("Compile error: %v", err)
+	}
+	out := ctx.Formats[FormatXML]
+
+	// The whole document must parse as well-formed XML.
+	dec := xml.NewDecoder(strings.NewReader(out))
+	for {
+		_, err := dec.Token()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("compiled XML is not well-formed (%%q attributes?): %v\noutput: %s", err, out)
+		}
+	}
+
+	// The escaped values must round-trip through a real parser.
+	parsed := struct {
+		XMLName  xml.Name `xml:"knowledge_context"`
+		Relation []struct {
+			From string `xml:"from,attr"`
+			To   string `xml:"to,attr"`
+			Name string `xml:"name,attr"`
+		} `xml:"relations>relation"`
+	}{}
+	if err := xml.Unmarshal([]byte(out), &parsed); err != nil {
+		t.Fatalf("xml.Unmarshal: %v", err)
+	}
+	if len(parsed.Relation) != 1 {
+		t.Fatalf("expected 1 relation, got %d", len(parsed.Relation))
+	}
+	r := parsed.Relation[0]
+	if r.From != "a<b" || r.To != "c&d" || r.Name != "depends<on>&" {
+		t.Errorf("relation attributes did not round-trip: %+v", r)
 	}
 }

@@ -5,9 +5,11 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -16,7 +18,7 @@ import (
 
 var (
 	// ErrObjectNotFound is returned when a Get call finds no matching object.
-	ErrObjectNotFound = fmt.Errorf("object not found")
+	ErrObjectNotFound = errors.New("object not found")
 )
 
 // Store is a PostgreSQL-backed KnowledgeStore.
@@ -27,7 +29,7 @@ type Store struct {
 // New creates a new PostgreSQL KnowledgeStore with the given connection.
 func New(db *sql.DB) (*Store, error) {
 	if db == nil {
-		return nil, fmt.Errorf("db is nil")
+		return nil, errors.New("db is nil")
 	}
 	s := &Store{db: db}
 	if err := s.initTables(context.Background()); err != nil {
@@ -86,21 +88,13 @@ func (s *Store) initTables(ctx context.Context) error {
 	return nil
 }
 
-func (s *Store) Save(ctx context.Context, objects ...*knowledge.KnowledgeObject) error {
-	for _, obj := range objects {
-		if obj.ID == "" {
-			return fmt.Errorf("knowledge object ID cannot be empty")
-		}
-
-		metaJSON, _ := json.Marshal(obj.Metadata)
-		tags := obj.Tags
-		if tags == nil {
-			tags = []string{}
-		}
-		qualityJSON := marshalQuality(obj.Quality)
-		relationsJSON := marshalRelations(obj.Relations)
-
-		_, err := s.db.ExecContext(ctx, `
+// saveUpsertSQL is the tenant-guarded object upsert. The WHERE on DO UPDATE
+// restricts the update branch to a row owned by the caller's namespace: a
+// conflicting id under another namespace matches no update row, so the
+// statement affects zero rows and Save reports ErrObjectNotFound (see the
+// RowsAffected check). Extracted as a constant so the guard's presence is
+// asserted by TestSaveUpsertSQLGuardsNamespace without a live database.
+const saveUpsertSQL = `
 			INSERT INTO akf_objects (id, type, namespace, raw, normalized, summary, metadata, tags, confidence, version, created_at, updated_at, status, quality, relations, embedding_model)
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
 			ON CONFLICT (id) DO UPDATE SET
@@ -118,12 +112,42 @@ func (s *Store) Save(ctx context.Context, objects ...*knowledge.KnowledgeObject)
 				quality = EXCLUDED.quality,
 				relations = EXCLUDED.relations,
 				embedding_model = EXCLUDED.embedding_model
-		`, obj.ID, string(obj.Type), obj.Namespace, obj.Raw, obj.Normalized, obj.Summary,
+			WHERE akf_objects.namespace = EXCLUDED.namespace
+		`
+
+func (s *Store) Save(ctx context.Context, objects ...*knowledge.KnowledgeObject) error {
+	for _, obj := range objects {
+		if obj.ID == "" {
+			return errors.New("knowledge object ID cannot be empty")
+		}
+		if obj.Namespace == "" {
+			return errors.New("knowledge object namespace cannot be empty: an empty namespace is unreachable once any caller supplies a tenant (StoreProvider.namespaceFor never yields empty)")
+		}
+
+		metaJSON, _ := json.Marshal(obj.Metadata)
+		tags := obj.Tags
+		if tags == nil {
+			tags = []string{}
+		}
+		qualityJSON := marshalQuality(obj.Quality)
+		relationsJSON := marshalRelations(obj.Relations)
+
+		res, err := s.db.ExecContext(ctx, saveUpsertSQL,
+			obj.ID, string(obj.Type), obj.Namespace, obj.Raw, obj.Normalized, obj.Summary,
 			string(metaJSON), pqStringArray(tags), obj.Confidence, obj.Version,
 			obj.CreatedAt, obj.UpdatedAt,
 			string(obj.Status), qualityJSON, relationsJSON, obj.EmbeddingModel)
 		if err != nil {
 			return fmt.Errorf("save %q: %w", obj.ID, err)
+		}
+		// The WHERE on DO UPDATE only lets the upsert touch a row owned by the
+		// caller's namespace; a conflicting ID under another namespace affects
+		// zero rows. That must surface as ErrObjectNotFound (same answer as a
+		// tenant-scoped Get for a foreign row) so an upsert-on-miss caller
+		// cannot migrate another tenant's object into its own namespace, and
+		// cannot probe which foreign IDs exist.
+		if n, _ := res.RowsAffected(); n == 0 {
+			return ErrObjectNotFound
 		}
 	}
 	return nil
@@ -161,10 +185,10 @@ func marshalRelations(rels []knowledge.Relation) string {
 	return string(b)
 }
 
-func (s *Store) Get(ctx context.Context, id string) (*knowledge.KnowledgeObject, error) {
+func (s *Store) Get(ctx context.Context, tenantID, id string) (*knowledge.KnowledgeObject, error) {
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, type, namespace, raw, normalized, summary, metadata, tags, confidence, version, created_at, updated_at, status, quality, relations, embedding_model
-		FROM akf_objects WHERE id = $1`, id)
+		FROM akf_objects WHERE id = $1 AND namespace = $2`, id, tenantID)
 
 	obj, err := scanObject(row)
 	if err == sql.ErrNoRows {
@@ -235,21 +259,31 @@ func (s *Store) Query(ctx context.Context, q knowledge.Query) ([]*knowledge.Know
 	return results, rows.Err()
 }
 
-func (s *Store) Delete(ctx context.Context, id string) error {
-	_, err := s.db.ExecContext(ctx, "DELETE FROM akf_objects WHERE id = $1", id)
-	return err
+func (s *Store) Delete(ctx context.Context, tenantID, id string) error {
+	res, err := s.db.ExecContext(ctx, "DELETE FROM akf_objects WHERE id = $1 AND namespace = $2", id, tenantID)
+	if err != nil {
+		return fmt.Errorf("delete %q: %w", id, err)
+	}
+	// A missing ID and a foreign-namespace ID both affect zero rows and must
+	// answer the same way (ErrObjectNotFound): reporting nil for one would let
+	// a caller enumerate which IDs exist under other tenants. Mirrors the
+	// memory backend, where both cases return ErrObjectNotFound.
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrObjectNotFound
+	}
+	return nil
 }
 
-func (s *Store) Search(ctx context.Context, text string, _ string, limit int) ([]*knowledge.KnowledgeObject, error) {
+func (s *Store) Search(ctx context.Context, tenantID, text string, _ string, limit int) ([]*knowledge.KnowledgeObject, error) {
 	if limit <= 0 {
 		limit = 20
 	}
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, type, namespace, raw, normalized, summary, metadata, tags, confidence, version, created_at, updated_at, status, quality, relations, embedding_model
 		FROM akf_objects
-		WHERE normalized ILIKE $1 OR summary ILIKE $1
+		WHERE (normalized ILIKE $1 OR summary ILIKE $1) AND namespace = $2
 		ORDER BY created_at DESC
-		LIMIT $2`, "%"+text+"%", limit)
+		LIMIT $3`, "%"+text+"%", tenantID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -330,7 +364,7 @@ func scanRepresentation(row scanner) (*knowledge.Representation, error) {
 
 func (s *Store) SaveRepresentation(ctx context.Context, rep *knowledge.Representation) error {
 	if rep.ID == "" {
-		return fmt.Errorf("representation ID cannot be empty")
+		return errors.New("representation ID cannot be empty")
 	}
 	metaJSON, _ := json.Marshal(rep.Metadata)
 	_, err := s.db.ExecContext(ctx, `
@@ -345,10 +379,14 @@ func (s *Store) SaveRepresentation(ctx context.Context, rep *knowledge.Represent
 	return err
 }
 
-func (s *Store) GetRepresentation(ctx context.Context, objectID string, model string) (*knowledge.Representation, error) {
+func (s *Store) GetRepresentation(ctx context.Context, tenantID, objectID, model string) (*knowledge.Representation, error) {
+	// Tenant scope via the owning object (F-05): same join rationale as the
+	// sqlite backend — no namespace column on representations.
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, object_id, model, dimension, vector, metadata, created_at
-		FROM akf_representations WHERE object_id = $1 AND model = $2`, objectID, model)
+		SELECT r.id, r.object_id, r.model, r.dimension, r.vector, r.metadata, r.created_at
+		FROM akf_representations r
+		JOIN akf_objects o ON o.id = r.object_id
+		WHERE r.object_id = $1 AND r.model = $2 AND o.namespace = $3`, objectID, model, tenantID)
 
 	rep, err := scanRepresentation(row)
 	if err == sql.ErrNoRows {
@@ -360,12 +398,43 @@ func (s *Store) GetRepresentation(ctx context.Context, objectID string, model st
 	return rep, nil
 }
 
+// hybridRecallCap bounds the candidate rows HybridSearch loads for scoring.
+// The previous query had no LIMIT: it materialized EVERY matching row
+// including the raw BYTEA column, so a large table OOM'd the process. The
+// cap is a recall window over the most recently updated objects (there is no
+// relevance index — vector columns are plain real[] arrays, and lexical
+// scoring is Go-side Jaccard), sized generously relative to the default
+// TopK=20/FinalK=5 so bounded recall is not noticeable at normal request
+// sizes. An explicit larger TopK/FinalK raises the window accordingly.
+const hybridRecallCap = 512
+
+// hybridRecallLimit returns the SQL-side candidate LIMIT for a hybrid search
+// request: at least the recall cap, but never smaller than the caller's own
+// recall caps (TopK/FinalK) so an explicit wide request is honored.
+func hybridRecallLimit(req knowledge.HybridSearchRequest) int {
+	limit := hybridRecallCap
+	if req.TopK > limit {
+		limit = req.TopK
+	}
+	if req.FinalK > limit {
+		limit = req.FinalK
+	}
+	return limit
+}
+
 // HybridSearch performs vector + lexical scoring over PostgreSQL-stored objects.
+//
+// Memory bounding: the candidate pass selects every column EXCEPT raw (the
+// BYTEA payload is the dominant per-row cost and scoring never reads it), and
+// applies a SQL-side LIMIT (see hybridRecallCap). Only the final FinalK
+// survivors get their raw payload hydrated in a second bounded query, so the
+// returned objects keep the same shape callers got before the bound.
 func (s *Store) HybridSearch(ctx context.Context, req knowledge.HybridSearchRequest) ([]knowledge.ScoredObject, error) {
 	conditions, args := hybridConditions(req)
-	//nolint:gosec // conditions are static WHERE fragments; values use $N placeholders.
-	query := `SELECT id, type, namespace, raw, normalized, summary, metadata, tags, confidence, version, created_at, updated_at, status, quality, relations, embedding_model
-		FROM akf_objects` + conditions
+	args = append(args, hybridRecallLimit(req))
+	//nolint:gosec // conditions are static WHERE fragments; the LIMIT value is a parameterized placeholder.
+	query := `SELECT id, type, namespace, NULL AS raw, normalized, summary, metadata, tags, confidence, version, created_at, updated_at, status, quality, relations, embedding_model
+		FROM akf_objects` + conditions + ` ORDER BY updated_at DESC LIMIT $` + strconv.Itoa(len(args))
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("hybrid search query: %w", err)
@@ -445,6 +514,38 @@ func (s *Store) HybridSearch(ctx context.Context, req knowledge.HybridSearchRequ
 	}
 	if len(scored) > finalK {
 		scored = scored[:finalK]
+	}
+	// Hydrate the raw payload for the (bounded, ≤ FinalK) survivors: the
+	// candidate pass above deliberately selected NULL AS raw to keep the
+	// BYTEA column out of the bounded scan. One query, keyed by the
+	// surviving ids, preserves the returned objects' pre-bound shape.
+	if len(scored) > 0 {
+		ids := make(pqStringArray, 0, len(scored))
+		for i := range scored {
+			ids = append(ids, scored[i].Object.ID)
+		}
+		rawRows, err := s.db.QueryContext(ctx,
+			`SELECT id, raw FROM akf_objects WHERE id = ANY($1)`, ids)
+		if err != nil {
+			return nil, fmt.Errorf("hybrid search raw hydrate: %w", err)
+		}
+		rawByID := make(map[string][]byte, len(scored))
+		for rawRows.Next() {
+			var id string
+			var raw []byte
+			if err := rawRows.Scan(&id, &raw); err != nil {
+				_ = rawRows.Close()
+				return nil, fmt.Errorf("hybrid search raw hydrate scan: %w", err)
+			}
+			rawByID[id] = raw
+		}
+		_ = rawRows.Close()
+		if err := rawRows.Err(); err != nil {
+			return nil, fmt.Errorf("hybrid search raw hydrate rows: %w", err)
+		}
+		for i := range scored {
+			scored[i].Object.Raw = rawByID[scored[i].Object.ID]
+		}
 	}
 	return scored, nil
 }
@@ -539,9 +640,9 @@ func (s *Store) ListByStatus(ctx context.Context, ns string, status knowledge.Ob
 }
 
 // UpdateStatus transitions an object's lifecycle status.
-func (s *Store) UpdateStatus(ctx context.Context, id string, status knowledge.ObjectStatus) error {
-	res, err := s.db.ExecContext(ctx, "UPDATE akf_objects SET status = $1, updated_at = NOW() WHERE id = $2",
-		string(status), id)
+func (s *Store) UpdateStatus(ctx context.Context, tenantID, id string, status knowledge.ObjectStatus) error {
+	res, err := s.db.ExecContext(ctx, "UPDATE akf_objects SET status = $1, updated_at = NOW() WHERE id = $2 AND namespace = $3",
+		string(status), id, tenantID)
 	if err != nil {
 		return fmt.Errorf("update status %q: %w", id, err)
 	}
@@ -553,10 +654,10 @@ func (s *Store) UpdateStatus(ctx context.Context, id string, status knowledge.Ob
 }
 
 // Promote moves a candidate to active and records its computed Quality.
-func (s *Store) Promote(ctx context.Context, id string, q *knowledge.Quality) error {
+func (s *Store) Promote(ctx context.Context, tenantID, id string, q *knowledge.Quality) error {
 	qualityJSON := marshalQuality(q)
-	res, err := s.db.ExecContext(ctx, "UPDATE akf_objects SET status = $1, quality = $2, updated_at = NOW() WHERE id = $3",
-		string(knowledge.StatusActive), qualityJSON, id)
+	res, err := s.db.ExecContext(ctx, "UPDATE akf_objects SET status = $1, quality = $2, updated_at = NOW() WHERE id = $3 AND namespace = $4",
+		string(knowledge.StatusActive), qualityJSON, id, tenantID)
 	if err != nil {
 		return fmt.Errorf("promote %q: %w", id, err)
 	}

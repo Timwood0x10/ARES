@@ -1,4 +1,4 @@
-// Package ares_bootstrap — MCP state observability tests (Stage 5).
+// Package ares_bootstrap — MCP state observability tests.
 //
 // Verifies that MCP server connection state is observable through the
 // manager's status API (disconnected servers report Connected=false with an
@@ -12,11 +12,12 @@ import (
 	"context"
 	"testing"
 
-	"github.com/Timwood0x10/ares/internal/ares_config"
-	"github.com/Timwood0x10/ares/internal/ares_mcp"
-	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/Timwood0x10/ares/internal/ares_config"
+	"github.com/Timwood0x10/ares/internal/runtime/protocol/mcp"
+	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
 
 // TestMCPStatus_EmptyConfig_Observable verifies that an MCP manager built with

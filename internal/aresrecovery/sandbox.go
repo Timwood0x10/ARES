@@ -5,11 +5,11 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/agentfabric"
-	"github.com/Timwood0x10/ares/internal/taskfabric"
+	"github.com/Timwood0x10/ares/internal/fabric/agent"
+	"github.com/Timwood0x10/ares/internal/fabric/task"
 )
 
-// Simulation sandbox (v0.3.0 M4-2): replay recorded events to verify recovery
+// Simulation sandbox: replay recorded events to verify recovery
 // logic, or simulate failure scenarios to predict runtime behavior — all
 // offline, on a scratch set of fabrics. The sandbox reuses the real Recovery
 // subsystem so the replay exercises the same code paths as production.

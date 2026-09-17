@@ -135,6 +135,12 @@ func (r *PgSummaryRepository) FindByStreamID(ctx context.Context, streamID strin
 		}
 		summaries = append(summaries, s)
 	}
+	// rows.Err() surfaces mid-iteration failures (connection drop, context
+	// cancellation): without it a partial result set was returned as
+	// success and callers treated a truncated history as complete.
+	if err := rows.Err(); err != nil {
+		return nil, apperrors.Wrap(err, "iterate event summaries by stream")
+	}
 
 	return summaries, nil
 }
@@ -174,6 +180,11 @@ func (r *PgSummaryRepository) FindByAgentAndTask(ctx context.Context, agentID, t
 		}
 		summaries = append(summaries, s)
 	}
+	// See FindByStreamID: a mid-iteration failure must not masquerade as a
+	// complete (partial) result set.
+	if err := rows.Err(); err != nil {
+		return nil, apperrors.Wrap(err, "iterate event summaries by agent+task")
+	}
 
 	return summaries, nil
 }
@@ -212,6 +223,11 @@ func (r *PgSummaryRepository) FindByAgentID(ctx context.Context, agentID string)
 			return nil, apperrors.Wrap(err, "scan event summary")
 		}
 		summaries = append(summaries, s)
+	}
+	// See FindByStreamID: a mid-iteration failure must not masquerade as a
+	// complete (partial) result set.
+	if err := rows.Err(); err != nil {
+		return nil, apperrors.Wrap(err, "iterate event summaries by agent")
 	}
 
 	return summaries, nil

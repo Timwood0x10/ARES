@@ -2,7 +2,7 @@ package planner
 
 import (
 	"context"
-	"fmt"
+	"errors"
 )
 
 // capabilityPlanner implements CapabilityPlanner with deterministic rules.
@@ -22,10 +22,10 @@ func NewCapabilityPlanner() CapabilityPlanner {
 // redundant tool calls.
 func (p *capabilityPlanner) Plan(_ context.Context, intent *Intent) ([]CapabilityRequirement, error) {
 	if intent == nil {
-		return nil, fmt.Errorf("planner: intent is nil")
+		return nil, errors.New("planner: intent is nil")
 	}
 	if len(intent.RequiredCapabilities) == 0 {
-		return nil, fmt.Errorf("planner: no capabilities required")
+		return nil, errors.New("planner: no capabilities required")
 	}
 
 	// Build requirements from the intent's capability list.
@@ -62,7 +62,7 @@ func (p *capabilityPlanner) Plan(_ context.Context, intent *Intent) ([]Capabilit
 	}
 
 	if len(requirements) == 0 {
-		return nil, fmt.Errorf("planner: no capability requirements generated from intent")
+		return nil, errors.New("planner: no capability requirements generated from intent")
 	}
 
 	return requirements, nil

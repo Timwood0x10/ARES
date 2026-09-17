@@ -1,16 +1,15 @@
 package builtin
 
 import (
+	stderrors "errors"
 	"fmt"
-	"log"
 	"os"
+	"strings"
 	"time"
 
-	stderrors "errors"
-
-	memory "github.com/Timwood0x10/ares/internal/ares_memory"
 	"github.com/Timwood0x10/ares/internal/errors"
 	"github.com/Timwood0x10/ares/internal/llm"
+	memory "github.com/Timwood0x10/ares/internal/runtime/memory"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/repositories"
 	"github.com/Timwood0x10/ares/internal/tools/resources/base"
 	builtin_embedding "github.com/Timwood0x10/ares/internal/tools/resources/builtin/embedding"
@@ -26,27 +25,32 @@ import (
 	builtin_stringutils "github.com/Timwood0x10/ares/internal/tools/resources/builtin/stringutils"
 	builtin_system "github.com/Timwood0x10/ares/internal/tools/resources/builtin/system"
 	builtin_text "github.com/Timwood0x10/ares/internal/tools/resources/builtin/text"
-
 	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
 
-// fileToolsAllowedDirEnv is the environment variable used to configure the
-// FileTools allowed directory at registration time. Operators MUST set this to
-// a directory the agent is permitted to read and write.
-const fileToolsAllowedDirEnv = "ARES_FILE_TOOLS_ALLOWED_DIR"
-
-// resolveFileToolsAllowedDir returns the directory that FileTools may operate
-// within. It reads from the ARES_FILE_TOOLS_ALLOWED_DIR environment variable,
-// falling back to the current working directory if unset.
-func resolveFileToolsAllowedDir() string {
-	if dir := os.Getenv(fileToolsAllowedDirEnv); dir != "" {
-		return dir
+// ResolveFileToolsAllowedDir returns the directory that FileTools and PDFTool
+// may operate within. It uses the configured dir — tools.file_sandbox_dir in
+// ares.yaml, the single knob for every file-facing tool surface (the public
+// HTTP tool registry reads the same config entry).
+//
+// When the configured dir is empty it falls back to a process-PRIVATE
+// subdirectory of the OS temp dir — neither the working directory (typically
+// the deployment's source tree; granting the agent read/write there is
+// privilege escalation) nor the shared temp dir itself (world-writable: any
+// local user could pre-plant or read the agent's files). The per-boot private
+// dir costs nothing for a scratch sandbox. A loud warning marks the fallback
+// so the operator sees the reduced scope.
+func ResolveFileToolsAllowedDir(configured string) (string, error) {
+	if dir := strings.TrimSpace(configured); dir != "" {
+		return dir, nil
 	}
-	dir, err := os.Getwd()
+	fallback, err := os.MkdirTemp("", "ares-file-tools-")
 	if err != nil {
-		return "/tmp"
+		return "", fmt.Errorf("builtin: create private file-tools sandbox dir: %w", err)
 	}
-	return dir
+	log.Warn("builtin: tools.file_sandbox_dir not set; file tools fall back to a process-private temp dir",
+		"fallback_dir", fallback, "config", "tools.file_sandbox_dir")
+	return fallback, nil
 }
 
 // GeneralToolsDeps carries the optional runtime dependencies for the
@@ -62,12 +66,14 @@ type GeneralToolsDeps struct {
 	KnowledgeService builtin_knowledge.KnowledgeService
 	// KnowledgeRepo backs correct_knowledge.
 	KnowledgeRepo repositories.KnowledgeRepositoryInterface
-	// DistilledRepo backs distilled_memory_search and user_profile.
-	DistilledRepo repositories.DistilledMemoryRepositoryInterface
 	// MemoryMgr backs memory_search and user_profile.
 	MemoryMgr memory.MemoryManager
 	// LLMClient backs task_planner.
 	LLMClient *llm.Client
+	// FileSandboxDir roots the FileTools/PDFTool sandbox — wired from
+	// tools.file_sandbox_dir in ares.yaml. Empty falls back to a
+	// process-private temp dir (see ResolveFileToolsAllowedDir).
+	FileSandboxDir string
 }
 
 // RegisterGeneralTools registers all general-purpose tools into the provided
@@ -82,8 +88,10 @@ type GeneralToolsDeps struct {
 //
 // SECURITY: FileTools is registered with WithAllowedDir so that path traversal
 // is blocked by default. CodeRunner is registered with Python DISABLED by
-// default — operators must opt in via EnablePython(true). HTTPRequest and
-// WebScraper enforce SSRF filtering at the HTTP client layer.
+// default — operators must opt in via EnablePython(true), and the opt-in is
+// host RCE: the validator gate is mistake-prevention, not isolation (see the
+// CodeRunner security model). HTTPRequest and WebScraper enforce SSRF
+// filtering at the HTTP client layer.
 func RegisterGeneralTools(reg *core.Registry, deps ...GeneralToolsDeps) error {
 	if reg == nil {
 		return errors.New("register general tools: registry cannot be nil")
@@ -91,6 +99,13 @@ func RegisterGeneralTools(reg *core.Registry, deps ...GeneralToolsDeps) error {
 	var d GeneralToolsDeps
 	if len(deps) > 0 {
 		d = deps[0]
+	}
+	// Resolve the file sandbox ONCE so FileTools and PDFTool share the exact
+	// same directory — two resolutions could diverge under the private-dir
+	// fallback and silently split the sandbox.
+	fileSandboxDir, err := ResolveFileToolsAllowedDir(d.FileSandboxDir)
+	if err != nil {
+		return errors.Wrap(err, "register general tools")
 	}
 	tools := []core.Tool{
 		// Math capability
@@ -103,7 +118,7 @@ func RegisterGeneralTools(reg *core.Registry, deps ...GeneralToolsDeps) error {
 			"side_effects": "false",
 		}),
 		base.WithToolTags(builtin_math.NewTextProcessor(), map[string]string{
-			"domain": "math", "input_type": "text", "output_type": "text",
+			"domain": "text", "input_type": "text", "output_type": "text",
 			"side_effects": "false",
 		}),
 
@@ -123,7 +138,7 @@ func RegisterGeneralTools(reg *core.Registry, deps ...GeneralToolsDeps) error {
 		}),
 
 		// File capability — restricted to the configured allowed directory.
-		base.WithToolTags(builtin_file.NewFileTools(builtin_file.WithAllowedDir(resolveFileToolsAllowedDir())), map[string]string{
+		base.WithToolTags(builtin_file.NewFileTools(builtin_file.WithAllowedDir(fileSandboxDir)), map[string]string{
 			"domain": "file", "input_type": "text", "output_type": "text",
 			"side_effects": "true", "mutates_state": "true",
 		}),
@@ -180,8 +195,9 @@ func RegisterGeneralTools(reg *core.Registry, deps ...GeneralToolsDeps) error {
 			"side_effects": "false",
 		}),
 
-		// PDF capability
-		base.WithToolTags(builtin_pdf.NewPDFTool(), map[string]string{
+		// PDF capability — sandboxed to the same allowed directory as
+		// FileTools so it cannot read arbitrary files (REVIEW #30).
+		base.WithToolTags(builtin_pdf.NewPDFTool(builtin_pdf.WithAllowedDir(fileSandboxDir)), map[string]string{
 			"domain": "pdf", "input_type": "file", "output_type": "text",
 			"side_effects": "false",
 		}),
@@ -226,14 +242,8 @@ func RegisterGeneralTools(reg *core.Registry, deps ...GeneralToolsDeps) error {
 			"side_effects": "false",
 		}))
 	}
-	if d.MemoryMgr != nil && d.DistilledRepo != nil {
-		tools = append(tools, base.WithToolTags(builtin_memory.NewUserProfile(d.MemoryMgr, d.DistilledRepo), map[string]string{
-			"domain": "memory", "input_type": "text", "output_type": "json",
-			"side_effects": "false",
-		}))
-	}
-	if d.DistilledRepo != nil {
-		tools = append(tools, base.WithToolTags(builtin_memory.NewDistilledMemorySearch(d.DistilledRepo), map[string]string{
+	if d.MemoryMgr != nil {
+		tools = append(tools, base.WithToolTags(builtin_memory.NewUserProfile(d.MemoryMgr), map[string]string{
 			"domain": "memory", "input_type": "text", "output_type": "json",
 			"side_effects": "false",
 		}))
@@ -254,7 +264,7 @@ func RegisterGeneralTools(reg *core.Registry, deps ...GeneralToolsDeps) error {
 			// On conflict (e.g. duplicate name from a prior registration), log a
 			// warning and continue with the remaining tools instead of aborting
 			// the whole registration. The pre-existing tool wins.
-			log.Printf("WARN: builtin: failed to register tool %q: %v", tool.Name(), err)
+			log.Warn("builtin: failed to register tool", "tool", tool.Name(), "error", err)
 			errs = append(errs, fmt.Errorf("%s: %w", tool.Name(), err))
 			continue
 		}

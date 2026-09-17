@@ -1,7 +1,9 @@
 package builtin
 
 import (
+	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -23,6 +25,14 @@ const (
 	paramOffset        = "offset"
 	paramLimit         = "limit"
 	paramRecursive     = "recursive"
+
+	// defaultReadMaxLines bounds a read that asks for no explicit window
+	// (limit=0). limit=0 means "no window requested", NOT "no bound": the
+	// result is returned whole to the caller, so an uncapped default is an
+	// OOM vector on a large file — reachable from an LLM-driven agent
+	// calling its own tool. total_lines + truncated report the truth so a
+	// caller can page explicitly.
+	defaultReadMaxLines = 1000
 
 	// Types
 	typeString = "string"
@@ -93,14 +103,14 @@ func resolveSecurePath(path string) (string, error) {
 // filesystem operation. Using the returned path (instead of the caller's
 // original path) closes the TOCTOU window between validation and access: a
 // symlink swapped in after the check cannot redirect the operation outside
-// the allowed directory (M11).
+// the allowed directory.
 //
 // Both paths are resolved to their absolute, symlink-evaluated forms before
 // the check. A relative path that escapes the allowed directory (via ".." or
 // a symlink) is rejected.
 func (t *FileTools) isPathAllowed(targetPath string) (string, error) {
 	if t.allowedDir == "" {
-		return "", fmt.Errorf("file tools have no allowedDir configured; refusing to operate")
+		return "", errors.New("file tools have no allowedDir configured; refusing to operate")
 	}
 
 	resolvedTarget, err := resolveSecurePath(targetPath)
@@ -251,7 +261,7 @@ func (t *FileTools) readFile(ctx context.Context, params map[string]interface{})
 
 	// Security: validate path is within allowed directory BEFORE any filesystem access.
 	// Use the symlink-resolved secure path for the actual read so a symlink
-	// swapped in after validation cannot redirect the read (M11).
+	// swapped in after validation cannot redirect the read.
 	safePath, err := t.isPathAllowed(filePath)
 	if err != nil {
 		return core.NewErrorResult(err.Error()), nil
@@ -272,38 +282,53 @@ func (t *FileTools) readFile(ctx context.Context, params map[string]interface{})
 		return core.NewErrorResult(fmt.Sprintf("file not found: %s", filePath)), nil
 	}
 
-	// Read file
-	content, err := os.ReadFile(filePath) // #nosec G304
-	if err != nil {
-		return core.NewErrorResult(fmt.Sprintf("failed to read file: %v", err)), nil
-	}
-
-	// Process offset and limit if provided
-	lines := strings.Split(string(content), "\n")
+	// Read file line-by-line with offset/limit so a large file is never
+	// fully loaded into memory when the caller only wants a window.
+	//
+	// limit=0 means "no explicit window", NOT "no bound": the default read
+	// is capped at defaultReadMaxLines so a large file cannot OOM the
+	// process. The scanner's per-line buffer cap bounds one LINE; without a
+	// total cap every line was accumulated and then joined into a second
+	// full copy for "content". total_lines and truncated report the truth so
+	// a caller can ask for the rest explicitly.
 	offset := getInt(params, paramOffset, 0)
-	limit := getInt(params, paramLimit, len(lines))
-
-	// Validate offset
+	limit := getInt(params, paramLimit, 0)
 	if offset < 0 {
 		offset = 0
 	}
-	if offset >= len(lines) {
+	capped := limit <= 0
+	if capped {
+		limit = defaultReadMaxLines
+	}
+
+	f, err := os.Open(filePath) // #nosec G304
+	if err != nil {
+		return core.NewErrorResult(fmt.Sprintf("failed to read file: %v", err)), nil
+	}
+	defer func() { _ = f.Close() }()
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 64*1024), 10*1024*1024) // 10MB max line
+	resultLines := make([]string, 0, min(limit, 1024))
+	totalLines := 0
+	truncated := false
+	for scanner.Scan() {
+		if totalLines >= offset {
+			if len(resultLines) >= limit {
+				totalLines++
+				truncated = true
+				continue // keep counting totalLines but skip storing
+			}
+			resultLines = append(resultLines, scanner.Text())
+		}
+		totalLines++
+	}
+	if err := scanner.Err(); err != nil {
+		return core.NewErrorResult(fmt.Sprintf("failed to read file: %v", err)), nil
+	}
+	if offset >= totalLines {
 		return core.NewErrorResult("offset exceeds file length"), nil
 	}
-
-	// Validate limit
-	if limit <= 0 {
-		limit = len(lines) - offset
-	}
-
-	end := offset + limit
-	if end > len(lines) {
-		end = len(lines)
-	}
-
-	// Return requested lines
-	resultLines := lines[offset:end]
-	totalLines := len(lines)
 
 	return core.NewResult(true, map[string]interface{}{
 		"operation":   "read",
@@ -314,6 +339,7 @@ func (t *FileTools) readFile(ctx context.Context, params map[string]interface{})
 		"total_lines": totalLines,
 		"offset":      offset,
 		"limit":       limit,
+		"truncated":   truncated,
 	}), nil
 }
 
@@ -331,7 +357,7 @@ func (t *FileTools) writeFile(ctx context.Context, params map[string]interface{}
 
 	// Security: validate path is within allowed directory BEFORE any filesystem access.
 	// Use the symlink-resolved secure path for the actual write so a symlink
-	// swapped in after validation cannot redirect the write (M11).
+	// swapped in after validation cannot redirect the write.
 	safePath, err := t.isPathAllowed(filePath)
 	if err != nil {
 		return core.NewErrorResult(err.Error()), nil
@@ -407,7 +433,7 @@ func (t *FileTools) listFiles(ctx context.Context, params map[string]interface{}
 
 	// Security: validate path is within allowed directory BEFORE any filesystem access.
 	// Use the symlink-resolved secure path for the actual listing so a
-	// symlink swapped in after validation cannot redirect the walk (M11).
+	// symlink swapped in after validation cannot redirect the walk.
 	safePath, err := t.isPathAllowed(dirPath)
 	if err != nil {
 		return core.NewErrorResult(err.Error()), nil

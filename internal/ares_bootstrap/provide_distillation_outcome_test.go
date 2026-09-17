@@ -1,4 +1,4 @@
-// Package ares_bootstrap — Track A strategy outcome write-back tests (Stage 4.3).
+// Package ares_bootstrap — strategy outcome write-back tests.
 //
 // Verifies that GA strategy outcomes are persisted into the experience store
 // instead of being silently dropped (the previous nil-RecordFunc no-op), so the
@@ -10,10 +10,11 @@ import (
 	"errors"
 	"testing"
 
-	ares_evolution "github.com/Timwood0x10/ares/internal/ares_evolution"
-	"github.com/Timwood0x10/ares/internal/storage/postgres/models"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	ares_evolution "github.com/Timwood0x10/ares/internal/runtime/ares_evolution"
+	"github.com/Timwood0x10/ares/internal/storage/postgres/models"
 )
 
 // mockExpRepo records created experiences and can inject a failure.
@@ -30,11 +31,15 @@ func (m *mockExpRepo) Create(ctx context.Context, exp *models.Experience) error 
 	return nil
 }
 
-func (m *mockExpRepo) GetByID(ctx context.Context, id string) (*models.Experience, error) {
+func (m *mockExpRepo) GetByID(ctx context.Context, tenantID, id string) (*models.Experience, error) {
 	return nil, errors.New("not implemented")
 }
 
 func (m *mockExpRepo) Update(ctx context.Context, exp *models.Experience) error {
+	return errors.New("not implemented")
+}
+
+func (m *mockExpRepo) UpdateEmbedding(context.Context, string, string, []float64, string, int) error {
 	return errors.New("not implemented")
 }
 
@@ -50,11 +55,11 @@ func (m *mockExpRepo) SearchByKeyword(ctx context.Context, query, tenantID strin
 	return nil, nil
 }
 
-func (m *mockExpRepo) IncrementUsageCount(ctx context.Context, id string) error {
+func (m *mockExpRepo) IncrementUsageCount(ctx context.Context, tenantID, id string) error {
 	return errors.New("not implemented")
 }
 
-func (m *mockExpRepo) DecrementRank(ctx context.Context, id string) error {
+func (m *mockExpRepo) DecrementRank(ctx context.Context, tenantID, id string) error {
 	return errors.New("not implemented")
 }
 

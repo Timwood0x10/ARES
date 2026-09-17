@@ -10,10 +10,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/agentfabric"
+	"github.com/Timwood0x10/ares/internal/agentruntime"
 	"github.com/Timwood0x10/ares/internal/aresrecovery"
 	"github.com/Timwood0x10/ares/internal/core/models"
-	"github.com/Timwood0x10/ares/internal/taskfabric"
+	"github.com/Timwood0x10/ares/internal/fabric/agent"
+	"github.com/Timwood0x10/ares/internal/fabric/planprojection"
+	"github.com/Timwood0x10/ares/internal/fabric/task"
 )
 
 // recordingPeerCognition completes every task in one quantum and records the
@@ -47,12 +49,24 @@ func buildTestPeerKernel(t *testing.T, ctx context.Context) (*kernelHandle, *rec
 	kernel.fabric = taskfabric.NewFabric()
 	agents := agentfabric.NewFabric()
 	kernel.agents = agents
+	// The submission path always admits sessions, so the minimal
+	// kernel needs the same registry + coordinator pair createPeerAgents
+	// wires in production.
+	sessions := &agentruntime.Sessions{
+		Reg:     agentfabric.NewSessionRegistry(),
+		Fabric:  kernel.fabric,
+		Compile: planprojection.NewCompileCoordinator(kernel.fabric, nil),
+	}
+	kernel.sessionReg = sessions.Reg
+	kernel.compileCoord = sessions.Compile
+	kernel.submitter = agentruntime.NewSubmitter(sessions)
 	cog := &recordingPeerCognition{}
 
-	// Spawn the peer agent WITH its execution body (A1).
+	// Spawn the peer agent WITH its execution body, advertising the
+	// production L2 capability set (no legacy capabilities).
 	if _, err := agents.Spawn(ctx, agentfabric.SpawnSpec{
 		Identity:     "coder",
-		Capabilities: []string{"code"},
+		Capabilities: peerCapabilities(nil),
 		CognitionFactory: func([]string) agentfabric.Cognition {
 			return cog
 		},

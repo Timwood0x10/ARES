@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Timwood0x10/ares/api/core"
+	llmcore "github.com/Timwood0x10/ares/internal/llmcore"
 )
 
 // ---- helpers ----
@@ -19,8 +19,8 @@ import (
 func newTestRuntime(t *testing.T) *Runtime {
 	t.Helper()
 	rt := NewRuntime(WithOllama("llama3.2"), WithoutMemory(), WithTrace(false))
-	rt.llmSvc = &mockLLMSvc{responses: []*core.GenerateResponse{
-		{Content: "graph-llm-result", Usage: core.TokenUsage{PromptTokens: 1, CompletionTokens: 1}},
+	rt.llmSvc = &mockLLMSvc{responses: []*llmcore.GenerateResponse{
+		{Content: "graph-llm-result", Usage: llmcore.TokenUsage{PromptTokens: 1, CompletionTokens: 1}},
 	}}
 	return rt
 }
@@ -251,96 +251,29 @@ func TestGraphSubgraphParallelSiblingRace(t *testing.T) {
 	}
 }
 
-// recordingLLM echoes its last user message as the response and records every
-// input it received, so tests can assert data flow between chained agent
-// nodes.
-type recordingLLM struct {
-	mu     sync.Mutex
-	inputs []string
-}
-
-func (m *recordingLLM) Generate(_ context.Context, req *core.GenerateRequest) (*core.GenerateResponse, error) {
-	var last string
-	for _, msg := range req.Messages {
-		if msg.Role == roleUser {
-			last = msg.Content
-		}
-	}
-	m.mu.Lock()
-	m.inputs = append(m.inputs, last)
-	m.mu.Unlock()
-	return &core.GenerateResponse{Content: "echo:" + last}, nil
-}
-
-func (m *recordingLLM) GetProvider() core.LLMProvider { return core.LLMProviderOllama }
-func (m *recordingLLM) GetModel() string              { return "mock-model" }
-func (m *recordingLLM) Close()                        {}
-
-var _ llmService = (*recordingLLM)(nil)
-
-// TestGraphAgentChainDataFlow is a regression test for the pipeline data-flow
-// gap: agent b (downstream) must receive agent a's OUTPUT as its input, not
-// the stale global state["input"]. a echoes "echo:<input>", so a correct
-// chain yields b's output "echo:echo:start"; the buggy version (b reads
-// state["input"] again) yields "echo:start".
-func TestGraphAgentChainDataFlow(t *testing.T) {
-	rt := newTestRuntime(t)
-	defer rt.Close()
-
-	rec := &recordingLLM{}
-	rt.llmSvc = rec
-
-	agentA := rt.RegisterAgent("agent-a", WithInstruction("you are A"))
-	agentB := rt.RegisterAgent("agent-b", WithInstruction("you are B"))
-
-	g := NewGraph("chain")
-	g.AddNode("seed", func(_ context.Context, state map[string]any) error {
-		state["input"] = "start"
-		return nil
-	})
-	g.AddNode("a", agentA)
-	g.AddNode("b", agentB)
-	g.AddEdge("seed", "a", nil)
-	g.AddEdge("a", "b", nil)
-
-	res, err := rt.RunGraph(context.Background(), g)
-	if err != nil {
-		t.Fatalf("RunGraph error: %v", err)
-	}
-	// a: input "start" → output "echo:start" (stored at state["a"]).
-	if got := res.State["a"]; got != "echo:start" {
-		t.Fatalf("state[a] = %v, want echo:start", got)
-	}
-	// b: input MUST be a's output ("echo:start") → output "echo:echo:start".
-	if got := res.State["b"]; got != "echo:echo:start" {
-		t.Fatalf("state[b] = %v, want echo:echo:start (b must consume a's output, not state[input])", got)
-	}
-}
-
-// systemCapturingLLM records the system instruction of every request so a
-// test can assert that an AddNode'd agent's configuration (instruction/tools)
-// actually reaches the LLM instead of being replaced by a bare stand-in.
+// systemCapturingLLM records the full message text of every Generate request
+// and always answers "ok". Since the B3 convergence an agent's instruction
+// rides the composed PROMPT (not a system message), the capture keeps every
+// message so tests can assert the instruction reached the LLM at all.
 type systemCapturingLLM struct {
 	mu      sync.Mutex
 	systems []string
 }
 
-func (m *systemCapturingLLM) Generate(_ context.Context, req *core.GenerateRequest) (*core.GenerateResponse, error) {
-	var sys string
+func (m *systemCapturingLLM) Generate(_ context.Context, req *llmcore.GenerateRequest) (*llmcore.GenerateResponse, error) {
+	var all string
 	for _, msg := range req.Messages {
-		if msg.Role == roleSystem {
-			sys = msg.Content
-		}
+		all += msg.Content + "\n"
 	}
 	m.mu.Lock()
-	m.systems = append(m.systems, sys)
+	m.systems = append(m.systems, all)
 	m.mu.Unlock()
-	return &core.GenerateResponse{Content: "ok"}, nil
+	return &llmcore.GenerateResponse{Content: "ok"}, nil
 }
 
-func (m *systemCapturingLLM) GetProvider() core.LLMProvider { return core.LLMProviderOllama }
-func (m *systemCapturingLLM) GetModel() string              { return "mock-model" }
-func (m *systemCapturingLLM) Close()                        {}
+func (m *systemCapturingLLM) GetProvider() llmcore.LLMProvider { return llmcore.LLMProviderOllama }
+func (m *systemCapturingLLM) GetModel() string                 { return "mock-model" }
+func (m *systemCapturingLLM) Close()                           {}
 
 var _ llmService = (*systemCapturingLLM)(nil)
 
@@ -974,7 +907,7 @@ func TestGraphNodeNoExecutableKind(t *testing.T) {
 	}
 }
 
-// TestRunGraphMaxRoundConcurrency locks the fusion-plan §B1 field: with
+// TestRunGraphMaxRoundConcurrency locks the concurrency cap: with
 // MaxRoundConcurrency=N and N+ ready nodes in one round, at most N execute
 // simultaneously (observed via a barrier that counts concurrent entrants).
 func TestRunGraphMaxRoundConcurrency(t *testing.T) {

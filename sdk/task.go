@@ -6,8 +6,8 @@ import (
 )
 
 // Task is the minimal unit of work a caller submits to a Runtime
-// (aresos-agentos-plan H1: 极简 SDK — NewRuntime → RegisterAgent → Submit →
-// 结果). It is deliberately field-light: the Runtime resolves the executor by
+// (minimal SDK — NewRuntime → RegisterAgent → Submit →
+// result). It is deliberately field-light: the Runtime resolves the executor by
 // capability, so callers never construct agents or reference any internal
 // scheduling/leadership concept.
 type Task struct {
@@ -20,12 +20,23 @@ type Task struct {
 	Capability string
 	// Input is the task content passed to the agent.
 	Input string
-	// Timeout caps the total wall-clock duration (<=0 = no limit).
+	// Timeout caps the total wall-clock duration. <=0 means unbounded on the
+	// static-executor path; an L2 submission with no explicit timeout and no
+	// caller-context deadline inherits the serve-mode default wait cap (10m,
+	// collabTimeout parity) so an unwinnable session cannot block Submit
+	// forever.
 	Timeout time.Duration
+	// SessionID continues an L2 session (unregistered-capability submissions):
+	// the submission grows the SAME session graph, and the returned Result
+	// carries THIS submission's answer — previous turns' completed answers
+	// are never re-served. Any non-empty value works as the session key (the
+	// session is admitted on first use); empty auto-admits a fresh session
+	// (sess-auto-N). Ignored on the static-executor path.
+	SessionID string
 }
 
 // RegisterAgent creates an agent and registers it as the handler for its
-// capability (H1: 极简 SDK — 不暴露 leader/sub/kernel 概念). The agent is
+// capability (minimal SDK — no leader/sub/kernel concepts are exposed). The agent is
 // named after the capability; opts configure it (WithInstruction/WithTools/
 // ...). The first agent registered for a capability wins; a later
 // RegisterAgent for the same capability does not replace it.
@@ -44,27 +55,22 @@ func (r *Runtime) RegisterAgent(capability string, opts ...AgentOption) *Agent {
 	defer r.agentMu.Unlock()
 	if _, ok := r.agentByCapability[capability]; !ok {
 		r.agentByCapability[capability] = a
-		// H1/H2: also register the shared-scheduler executor so Submit drives
-		// the agent through the fabric, not a direct call.
-		r.sdkExecutors[capability] = &sdkAgentExecutor{agent: a}
 	}
 	return a
 }
 
-// Submit dispatches a task to the agent registered for its capability and
-// returns the execution result (H1: 极简 SDK 闭环). The task goes through the
-// SAME scheduling path as the kernel: fabric.Create → kernelscheduler
-// (Schedule → Acquire → RunQuantum via the registered agent) → COMPLETED →
-// result (H1/H2: 合并 SDK 和 kernel 两条路径 — the SDK and the kernel share
-// one scheduler; no divergent direct-run path). When no agent is registered
-// for the task's capability, a capability-named agent is created on demand —
-// a runtime never refuses a well-formed task just because it was not
-// pre-registered.
+// Submit dispatches a task and returns the execution result (minimal SDK
+// closed loop). Since the B3 convergence there is ONE route: the submission
+// goes through the shared L2 execution core (the same router cognition
+// serve/start use) — auto-admitted as an L2 session (capability normalized
+// to ares/plan) and the returned Result carries the session's terminal
+// answer. A runtime never refuses a well-formed task just because it was
+// not pre-registered; the capability is planner context, not a dispatch key.
 //
 // Timeout, when > 0, bounds the whole dispatch (and the execution — the
 // executor receives the same context). The returned error wraps the agent's
 // execution error; context cancellation surfaces as
-// context.Canceled/DeadlineExceeded (code_rules_v2 §3.1).
+// context.Canceled/DeadlineExceeded .
 func (r *Runtime) Submit(ctx context.Context, t Task) (*Result, error) {
 	return r.submitThroughScheduler(ctx, t)
 }

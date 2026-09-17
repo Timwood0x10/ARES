@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/Timwood0x10/ares/internal/knowledge"
 )
@@ -222,5 +223,57 @@ func TestProviderConfig(t *testing.T) {
 	}
 	if len(cfg.IntentTags) != 2 {
 		t.Errorf("expected 2 intent tags, got %d", len(cfg.IntentTags))
+	}
+}
+
+// reentrantProvider's IntentMatch registers another provider, i.e. it takes
+// the registry's WRITE lock while Select used to hold the READ lock —
+// a guaranteed self-deadlock before Select was fixed to score a snapshot
+// outside the lock.
+type reentrantProvider struct {
+	registry *ProviderRegistry
+}
+
+func (p *reentrantProvider) Name() string { return "reentrant" }
+func (p *reentrantProvider) IntentMatch(_ knowledge.Intent) float64 {
+	_ = p.registry.Register(&testProvider{name: "registered-from-intent-match", intentMatch: 0.9})
+	return 0.9
+}
+func (p *reentrantProvider) Stream(_ context.Context, _ knowledge.Intent) (<-chan *knowledge.KnowledgeObject, <-chan error) {
+	objCh := make(chan *knowledge.KnowledgeObject)
+	errCh := make(chan error, 1)
+	close(objCh)
+	close(errCh)
+	return objCh, errCh
+}
+
+// TestRegistrySelectIntentMatchOutsideLock locks REVIEW 3.5: Select must not
+// hold its read lock while calling IntentMatch. A provider that mutates the
+// registry from IntentMatch (composite providers do this) deadlocked the
+// whole selection path before the fix.
+func TestRegistrySelectIntentMatchOutsideLock(t *testing.T) {
+	r := NewProviderRegistry()
+	p := &reentrantProvider{registry: r}
+	if err := r.Register(p); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	done := make(chan []GraphProvider, 1)
+	go func() {
+		done <- r.Select(knowledge.Intent{Goal: "anything"}, 0.1)
+	}()
+
+	select {
+	case selected := <-done:
+		if len(selected) != 1 || selected[0].Name() != "reentrant" {
+			t.Fatalf("Select returned wrong providers: %+v", selected)
+		}
+		// The reentrant registration must have succeeded, proving the write
+		// lock was free while IntentMatch ran.
+		if got := r.Get("registered-from-intent-match"); got == nil {
+			t.Error("reentrant Register during IntentMatch did not take effect")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Select deadlocked: IntentMatch ran under the registry read lock")
 	}
 }

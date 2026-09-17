@@ -2,15 +2,16 @@ package ares_bootstrap
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/ares_config"
 	"github.com/Timwood0x10/ares/internal/ares_events"
-	evolution "github.com/Timwood0x10/ares/internal/ares_evolution"
-	aresexp "github.com/Timwood0x10/ares/internal/ares_experience"
 	"github.com/Timwood0x10/ares/internal/llm"
+	evolution "github.com/Timwood0x10/ares/internal/runtime/ares_evolution"
+	aresexp "github.com/Timwood0x10/ares/internal/runtime/memory/experience"
 	"github.com/Timwood0x10/ares/internal/storage/postgres"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/embedding"
 	storage_models "github.com/Timwood0x10/ares/internal/storage/postgres/models"
@@ -31,14 +32,28 @@ const defaultDistillTenant = ares_events.DefaultTenantID
 // (e.g. Postgres unreachable, LLM client of unexpected type) is returned as an
 // error and the caller logs + skips, leaving the system running without
 // distillation.
+// distillationWiring bundles what provideDistillation builds. It exists so the
+// embedding queue (and the config it was built with) can be handed to
+// wireEmbeddingWorker instead of being constructed a second time from the same
+// pool, which is what previously created two queue instances for one queue.
+type distillationWiring struct {
+	pool             *postgres.Pool
+	embeddingClient  *embedding.EmbeddingClient
+	experienceRepo   repositories.ExperienceRepositoryInterface
+	service          *aresexp.DistillationService
+	guidanceProvider evolution.GuidanceProvider
+	embeddingQueue   *postgres.EmbeddingQueue
+	embeddingConfig  *postgres.EmbeddingConfig
+}
+
 func provideDistillation(
 	ctx context.Context,
 	cfg *ares_config.Config,
 	llmClientArg interface{},
-) (*postgres.Pool, *embedding.EmbeddingClient, repositories.ExperienceRepositoryInterface, *aresexp.DistillationService, evolution.GuidanceProvider, error) {
+) (*distillationWiring, error) {
 	llmClient, ok := llmClientArg.(*llm.Client)
 	if !ok {
-		return nil, nil, nil, nil, nil, fmt.Errorf("distillation requires *llm.Client, got %T", llmClientArg)
+		return nil, fmt.Errorf("distillation requires *llm.Client, got %T", llmClientArg)
 	}
 
 	pgCfg := &postgres.Config{
@@ -51,7 +66,7 @@ func provideDistillation(
 	}
 	pool, err := postgres.NewPool(pgCfg)
 	if err != nil {
-		return nil, nil, nil, nil, nil, fmt.Errorf("distillation: open postgres pool: %w", err)
+		return nil, fmt.Errorf("distillation: open postgres pool: %w", err)
 	}
 
 	timeout := time.Duration(cfg.Embedding.Timeout) * time.Second
@@ -62,7 +77,15 @@ func provideDistillation(
 
 	expRepo := repositories.NewExperienceRepository(pool.GetDB())
 
-	distSvc := aresexp.NewDistillationService(llmClient, embClient, expRepo)
+	// Feed the embedding queue from the distillation path so the async worker
+	// (wireEmbeddingWorker) backfills experience vectors instead of embedding
+	// synchronously. The adapter bridges the consuming-package interface to the
+	// concrete postgres queue; the queue is returned so the worker shares it.
+	embCfg := postgres.DefaultEmbeddingConfig()
+	embedQueue := postgres.NewEmbeddingQueue(pool, embCfg)
+	distSvc := aresexp.NewDistillationService(llmClient, embClient, expRepo,
+		aresexp.WithEmbeddingEnqueuer(postgresEmbeddingEnqueuer{queue: embedQueue}),
+		aresexp.WithEmbeddingConfig(embCfg))
 
 	guidProv := &evolution.FuncGuidanceProvider{
 		HintsFunc: func(ctx context.Context, taskType string, limit int) ([]evolution.EvolutionHint, error) {
@@ -77,17 +100,25 @@ func provideDistillation(
 			return hints, nil
 		},
 		// RecordStrategyOutcome persists the actual strategy result back into
-		// the experience store (Track A write side). Previously the GA core
+		// the experience store (write side). Previously the GA core
 		// invoked RecordStrategyOutcome but the FuncGuidanceProvider treated a
 		// nil RecordFunc as a successful no-op — the outcome was silently
 		// dropped. Now it is written so the next round's mutation guidance can
-		// read the outcome (Strategy → Experience → Guidance loop, Stage 4.3).
+		// read the outcome (Strategy → Experience → Guidance loop).
 		RecordFunc: func(ctx context.Context, outcome evolution.StrategyOutcome) error {
 			return recordStrategyOutcome(ctx, expRepo, outcome)
 		},
 	}
 
-	return pool, embClient, expRepo, distSvc, guidProv, nil
+	return &distillationWiring{
+		pool:             pool,
+		embeddingClient:  embClient,
+		experienceRepo:   expRepo,
+		service:          distSvc,
+		guidanceProvider: guidProv,
+		embeddingQueue:   embedQueue,
+		embeddingConfig:  embCfg,
+	}, nil
 }
 
 // recordStrategyOutcome persists a GA strategy outcome as an experience so the
@@ -106,7 +137,7 @@ func provideDistillation(
 //	err - repository or validation error; nil on success.
 func recordStrategyOutcome(ctx context.Context, repo repositories.ExperienceRepositoryInterface, outcome evolution.StrategyOutcome) error {
 	if repo == nil {
-		return fmt.Errorf("record strategy outcome: experience repository is nil")
+		return errors.New("record strategy outcome: experience repository is nil")
 	}
 	expType := "failure"
 	if outcome.Success {
@@ -185,14 +216,31 @@ func experienceToHint(exp *storage_models.Experience) evolution.EvolutionHint {
 	}
 
 	return evolution.EvolutionHint{
-		ID:                  exp.ID,
-		TaskType:            exp.Type,
+		ID: exp.ID,
+		// TaskType carries the real task type, NOT exp.Type ("success"/
+		// "failure" — the storage outcome label). Strategy-outcome rows
+		// store the task type in the input column (see
+		// recordStrategyOutcome), so reading it back here preserves the
+		// Strategy → Experience → Guidance round trip: without it every
+		// hint's TaskType collapsed to the outcome label and the GA could
+		// no longer tell which task type a hint applied to.
+		TaskType:            experienceTaskType(exp),
 		Problem:             exp.Input,
 		Solution:            exp.Output,
 		Constraints:         constraints,
 		Confidence:          confidence,
 		SourceExperienceIDs: []string{exp.ID},
 	}
+}
+
+// experienceTaskType extracts the task-type key from a stored experience.
+// Input (== the 'input' column, where recordStrategyOutcome writes the task
+// type) is authoritative; Problem is the alias fallback.
+func experienceTaskType(exp *storage_models.Experience) string {
+	if exp.Input != "" {
+		return exp.Input
+	}
+	return exp.Problem
 }
 
 // HandleTaskCompletedForDistillation turns a task-completed/failed event into
@@ -238,6 +286,24 @@ func HandleTaskCompletedForDistillation(ctx context.Context, svc *aresexp.Distil
 	if _, err := svc.Distill(ctx, taskResult); err != nil {
 		log.Warn("bootstrap: distillation on task completion failed", "error", err)
 	}
+}
+
+// postgresEmbeddingEnqueuer adapts the consuming-package EmbeddingEnqueuer
+// interface to the concrete postgres EmbeddingQueue so the distillation path can
+// enqueue async experience-vector backfill tasks.
+type postgresEmbeddingEnqueuer struct {
+	queue *postgres.EmbeddingQueue
+}
+
+func (e postgresEmbeddingEnqueuer) Enqueue(ctx context.Context, task *aresexp.EmbeddingTask) error {
+	return e.queue.Enqueue(ctx, &postgres.EmbeddingTask{
+		TaskID:   task.TaskID,
+		Table:    storage_models.ExperiencesTable,
+		Content:  task.Content,
+		TenantID: task.TenantID,
+		Model:    task.Model,
+		Version:  task.Version,
+	})
 }
 
 // stringField returns the first non-empty string value among the given keys.

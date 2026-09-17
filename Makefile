@@ -1,6 +1,6 @@
 # Makefile for ARES — Agent Runtime & Evolution System
 
-.PHONY: all lint test test-race check check-core check-tools help clean install install-cli ci benchmark quickstart examples cover cover-html ci-test-race-short
+.PHONY: all lint test test-race check check-core check-tools help clean install install-cli ci ci-freeze benchmark quickstart examples cover cover-html ci-test-race-short
 
 # Default target
 all: lint test
@@ -11,7 +11,7 @@ install:
 	go get ./...
 
 # CI target - runs all CI checks locally (matches .github/workflows/ci.yml)
-ci: ci-deps ci-fmt ci-vet ci-lint ci-build ci-test-race ci-security
+ci: ci-deps ci-fmt ci-freeze ci-vet ci-lint ci-build ci-test-race ci-security
 	@echo ""
 	@echo "✅ All CI checks PASSED"
 
@@ -38,10 +38,28 @@ ci-vet:
 	@echo "Vet: OK"
 
 # CI linter
+# LINT_CONCURRENCY caps golangci-lint's parallel analysis.
+#
+# golangci-lint's cache-key phase open()/read()s every .go file in the
+# transitive import graph (~8500 files / ~191MB here). At full parallelism
+# those syscalls contend on FileHash's global mutex, so TOTAL CPU is
+# multiplied without any wall-time gain. Cold-cache measurements on a
+# 14-core box (see docs/reports/ if re-derived):
+#
+#   -j 14 -> 54s CPU / 5.6s wall / peak 1300%
+#   -j  8 -> 37s CPU / 5.3s wall / peak  795%   <- strictly better than -j 14
+#   -j  4 -> 31s CPU / 7.8s wall / peak  405%   <- slower wall
+#
+# Half the logical CPUs is the sweet spot: it keeps (even beats) wall time
+# while cutting the CPU spike that makes the machine unresponsive. Override
+# with `make lint LINT_CONCURRENCY=14` when you want throughput back.
+NPROC := $(shell sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 8)
+LINT_CONCURRENCY ?= $(shell echo $$(( $(NPROC) / 2 )))
+
 ci-lint:
 	@echo "Running golangci-lint..."
 	@if command -v golangci-lint >/dev/null 2>&1; then \
-		golangci-lint run --timeout=10m; \
+		golangci-lint run --timeout=10m -j $(LINT_CONCURRENCY); \
 		echo "Linting: OK"; \
 	else \
 		echo "ERROR: golangci-lint not installed. Install with: brew install golangci-lint"; \
@@ -69,16 +87,39 @@ ci-test-race-short:
 # CI security scan
 ci-security:
 	@echo "Running gosec security scan..."
-	@go run github.com/securego/gosec/v2/cmd/gosec@latest ./internal/... ./api/...
+	@golangci-lint run --enable-only=gosec -j $(LINT_CONCURRENCY) ./...
 	@echo "Security scan: OK"
 
+# Convergence freeze patrol (ARCHITECTURE.md Phase 0). Fails on new
+# examples/ dirs, new internal/ packages, or production imports of the
+# internal/fabric placeholder before Phase 2b.
+ci-freeze:
+	@echo "Checking convergence freeze..."
+	@bash scripts/check_convergence_freeze.sh
+	@echo "Freeze check: OK"
+
 # Format code
+# Uses `golangci-lint fmt` (formatter-only subcommand) with the same gci version
+# it checks with, plus gofmt -s for final cleanup.
+# Do NOT use `golangci-lint run --fix` here: it executes all 18 linters
+# (full type-check + analysis) just to format — measured 48s CPU / 1250% peak
+# on a 14-core Mac. `golangci-lint fmt` runs only the configured formatters:
+# 2.3s CPU / 122% peak for byte-identical output.
+# gci replaces goimports which caused 800%+ CPU via modindex re-reads
+# (see docs/bug@ques/zh/goimports-modindex-cpu-spike.md).
 fmt:
-	goimports -w .
+	# `golangci-lint fmt` has no -j flag (formatter-only subcommand); concurrency
+	# only matters for the analysis in `run`.
+	golangci-lint fmt
 	gofmt -s -w .
 
 # Lint targets
-lint: lint-vet lint-staticcheck lint-golangci
+#
+# golangci-lint already runs govet + staticcheck as linters (see .golangci.yml),
+# so a separate `go vet` / `staticcheck` pass is a redundant full-tree analysis.
+# Measured: vet 3.4s CPU + staticcheck 4.4s CPU duplicated work per `make lint`.
+# The standalone lint-vet / lint-staticcheck targets remain for explicit use.
+lint: lint-golangci
 	@echo ""
 	@echo "All lint checks: PASSED"
 
@@ -99,16 +140,34 @@ lint-staticcheck:
 lint-golangci:
 	@echo "Running golangci-lint..."
 	@if command -v golangci-lint >/dev/null 2>&1; then \
-		golangci-lint run --timeout=5m && \
+		golangci-lint run --timeout=5m -j $(LINT_CONCURRENCY) && \
 		echo "golangci-lint: PASSED"; \
 	else \
 		echo "ERROR: golangci-lint not installed. Install with: brew install golangci-lint"; \
 		exit 1; \
 	fi
 
+# TEST_PARALLEL and TEST_GOMAXPROCS cap how hard `go test` pushes the machine.
+# Measured peak whole-machine CPU on a 14-core box, all cold:
+#
+#   default (-p 14, GOMAXPROCS 14)   1282%   39.5s   0 FAIL
+#   -p 4 only                        1333%   44.9s   0 FAIL   <- peak unchanged
+#   GOMAXPROCS=8 -p 4                1012%   42.3s   0 FAIL
+#   GOMAXPROCS=4 -p 4                 580%   55.5s   3 FAIL   <- starves E2E
+#
+# -p alone does NOT lower the peak: 4 concurrent test binaries each still
+# spawn GOMAXPROCS threads, so the box saturates either way. Only capping
+# GOMAXPROCS moves the peak — and below 8 it starts starving CPU-sensitive
+# tests (TestE2E_GrandLoop_RealSchedulerChaosRecovery hits its 30s deadline).
+# So 8 is the deepest cut that keeps the suite green. Override for throughput:
+#   make test TEST_PARALLEL=8 TEST_GOMAXPROCS=14
+TEST_PARALLEL ?= 4
+TEST_GOMAXPROCS ?= 8
+export GOMAXPROCS := $(TEST_GOMAXPROCS)
+
 # Test targets
 test:
-	go test -short -cover ./...
+	go test -short -cover -p $(TEST_PARALLEL) ./...
 
 test-race:
 	go test -race -cover ./...
@@ -146,7 +205,7 @@ test-core:
 # Other modules — check total coverage across tools packages
 test-tools:
 	@echo "Running tools module tests with coverage..."
-	@go test -cover -coverprofile=coverage.out ./internal/llm/... ./internal/workflow/... ./internal/ares_memory/... ./internal/ares_shutdown/... ./internal/ares_ratelimit/... ./internal/tools/... ./internal/storage/... ./internal/agents/...
+	@go test -cover -coverprofile=coverage.out ./internal/llm/... ./internal/fabric/task/workflow/... ./internal/ares_memory/... ./internal/ares_shutdown/... ./internal/ares_ratelimit/... ./internal/tools/... ./internal/storage/... ./internal/agents/...
 	@echo ""
 	@echo "--- Per-package coverage ---"
 	@go tool cover -func=coverage.out | grep "total:" || true
@@ -165,6 +224,19 @@ test-tools:
 
 # All checks
 check: lint test
+
+# G1-G3 repair-plan gates: reachability, config contract, event contract.
+# G4 (design-doc closure): the design doc's acceptance assertions only exist under
+# `-tags closure` — without this line `make check` green ≠ design-doc closure verified.
+gate:
+	@./scripts/g1_reachability_gate.sh
+	@go test -run TestG2ConfigContract ./internal/ares_config/...
+	@go test -run TestEventContract ./internal/ares_events/...
+	@go test -race -tags closure ./internal/runtime/ares_evolution/... ./internal/runtime/evolution/... ./internal/ares_bootstrap/...
+
+# G4: nightly race + soak baseline (cron target).
+nightly: test-race
+	@echo "nightly: race suite passed; 12h soak is a separate scheduled job"
 
 # Combined check with coverage
 check-all: lint test-race test-core test-tools
@@ -206,9 +278,6 @@ benchmark:
 	@echo "=== Evaluation Framework Benchmarks ==="
 	@go test -bench=. -benchmem ./internal/eval/...
 	@echo ""
-	@echo "=== Streaming Handler Benchmarks ==="
-	@go test -bench=. -benchmem ./api/handler/...
-	@echo ""
 	@echo "=== Plugin System Benchmarks ==="
 	@go test -bench=. -benchmem ./internal/tools/resources/core/...
 	@echo ""
@@ -219,7 +288,7 @@ benchmark:
 
 benchmark-quick:
 	@echo "Running quick benchmarks (1s each)..."
-	@go test -bench=. -benchtime=1s ./internal/eval/... ./api/handler/... ./internal/tools/resources/core/...
+	@go test -bench=. -benchtime=1s ./internal/eval/... ./internal/tools/resources/core/...
 
 benchmark-profile:
 	@echo "Running benchmarks with CPU profile..."
@@ -239,9 +308,6 @@ benchmark-save:
 	@echo "## Evaluation Framework Benchmarks" >> benchmarks/benchmark_report.md
 	@go test -bench=. -benchmem ./internal/eval/... >> benchmarks/benchmark_report.md 2>&1
 	@echo "" >> benchmarks/benchmark_report.md
-	@echo "## Streaming Handler Benchmarks" >> benchmarks/benchmark_report.md
-	@go test -bench=. -benchmem ./api/handler/... >> benchmarks/benchmark_report.md 2>&1
-	@echo "" >> benchmarks/benchmark_report.md
 	@echo "✅ Benchmark results saved to benchmarks/benchmark_report.md"
 
 # ──────────────────────────────────────────────
@@ -249,26 +315,22 @@ benchmark-save:
 # ──────────────────────────────────────────────
 test-eval:  ## Run evaluation tests
 	@echo "📊 Running evaluation tests..."
-	@go test -count=1 -timeout=300s ./evaluation/...
+	@go test -count=1 -timeout=300s ./examples/_fixtures/evaluation/...
 	@echo "✅ Evaluation tests complete"
 
-# Demo: MCP + Dashboard
-# Usage: make demo-mcp TARGET=/path/to/analyze ADDR=:8090
-demo-mcp: TARGET ?= .
-demo-mcp: ADDR ?= :8090
+# Demo: MCP service registry (discovery + lifecycle walkthrough)
+# Usage: make demo-mcp
 demo-mcp:
-	@echo "Building MCP dashboard demo..."
-	@go build -o /tmp/mcp-dashboard ./examples/mcp-dashboard/
+	@echo "Building MCP registry demo..."
+	@go build -o /tmp/mcp-registry-demo ./examples/_internal/mcp-registry/
 	@echo "Starting in background..."
-	@PORT=$$(echo $(ADDR) | sed 's/://'); \
-		/tmp/mcp-dashboard -target $(TARGET) -addr $(ADDR) > /tmp/mcp-dashboard.log 2>&1 & \
+	@/tmp/mcp-registry-demo > /tmp/mcp-registry-demo.log 2>&1 & \
 		PID=$$!; \
 		echo "PID: $$PID"; \
-		echo "Logs: tail -f /tmp/mcp-dashboard.log"; \
-		echo "Dashboard: http://localhost:$$PORT"; \
+		echo "Logs: tail -f /tmp/mcp-registry-demo.log"; \
 		echo "Stop: kill $$PID"; \
 		sleep 2; \
-		open http://localhost:$$PORT 2>/dev/null || true
+		tail -n 20 /tmp/mcp-registry-demo.log || true
 
 # ──────────────────────────────────────────────
 # Demo: Docker + Integration Tests
@@ -323,26 +385,30 @@ demo-smoke:
 # ──────────────────────────────────────────────
 quickstart:  ## 5 分钟快速开始
 	@echo "🚀 Running quickstart example..."
-	@go run examples/01-quickstart/main.go
+	@go run examples/_fixtures/01-quickstart/main.go
 
 # ──────────────────────────────────────────────
 # Examples — build all examples
 # ──────────────────────────────────────────────
-examples:  ## Build all examples
-	@echo "Building all examples..."
-	@for d in examples/*/; do \
+examples:  ## Build all example fixtures
+	@echo "Building all example fixtures..."
+	@for d in examples/_fixtures/*/; do \
 		name=$$(basename $$d); \
-		echo "  building $$name..."; \
-		go build ./examples/$$name/... || exit 1; \
+		if ls examples/_fixtures/$$name/*.go >/dev/null 2>&1; then \
+			echo "  building $$name..."; \
+			go build ./examples/_fixtures/$$name/... || exit 1; \
+		else \
+			echo "  skipping $$name (config-only, no Go sources)"; \
+		fi; \
 	done
-	@echo "✅ All examples built successfully"
+	@echo "✅ All example fixtures built successfully"
 
 # Help
 help:
 	@echo "Available targets:"
 	@echo "  install       - Download and install dependencies"
-	@echo "  fmt           - Format code with goimports and gofmt"
-	@echo "  lint          - Run all linters (vet, staticcheck, golangci-lint)"
+	@echo "  fmt           - Format code (golangci-lint fmt + gofmt -s)"
+	@echo "  lint          - Run golangci-lint (includes govet + staticcheck)"
 	@echo "  lint-vet      - Run go vet"
 	@echo "  lint-staticcheck  - Run staticcheck"
 	@echo "  lint-golangci    - Run golangci-lint (REQUIRED)"

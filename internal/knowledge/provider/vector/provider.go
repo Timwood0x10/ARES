@@ -3,17 +3,21 @@ package vector
 //nolint: errcheck // best-effort operations: ResponseWriter writes, cleanup Close/Wait, deferred shutdown
 import (
 	"context"
+	"errors"
 	"fmt"
+	"math"
 	"math/rand"
 	"strings"
 	"time"
 
-	"github.com/Timwood0x10/ares/api/embedding"
+	"golang.org/x/sync/errgroup"
+
+	"github.com/Timwood0x10/ares/internal/embedding"
 	"github.com/Timwood0x10/ares/internal/knowledge"
 	"github.com/Timwood0x10/ares/internal/knowledge/provider"
 	"github.com/Timwood0x10/ares/internal/scoreutil"
 	"github.com/Timwood0x10/ares/internal/storage"
-	"golang.org/x/sync/errgroup"
+	"github.com/Timwood0x10/ares/internal/tenantctx"
 )
 
 // VectorProvider implements GraphProvider by querying a VectorStore for
@@ -46,6 +50,11 @@ type Config struct {
 	// Collection is the VectorStore collection/table to search.
 	// Examples: "knowledge_chunks_1024", "doc_embeddings", "my_collection".
 	Collection string
+
+	// TenantID scopes the vector search to one tenant. REQUIRED: the
+	// production table is tenant-scoped (tenant_id NOT NULL) and an unscoped
+	// search would leak rows across tenants (2.13#66).
+	TenantID string
 
 	// IntentTags are keywords used by IntentMatch to score relevance.
 	// Tags matching the query goal increase the provider's selection score.
@@ -82,10 +91,13 @@ func NewVectorProvider(store storage.VectorStore, cfg Config) (*VectorProvider, 
 		return nil, fmt.Errorf("vector provider %s: store is nil", cfg.Name)
 	}
 	if cfg.Name == "" {
-		return nil, fmt.Errorf("vector provider: name is required")
+		return nil, errors.New("vector provider: name is required")
 	}
 	if cfg.Collection == "" {
 		return nil, fmt.Errorf("vector provider %s: collection is required", cfg.Name)
+	}
+	if cfg.TenantID == "" {
+		return nil, fmt.Errorf("vector provider %s: tenant id is required (vector search is tenant-scoped)", cfg.Name)
 	}
 	if cfg.VectorDimension <= 0 {
 		cfg.VectorDimension = 1024
@@ -94,9 +106,15 @@ func NewVectorProvider(store storage.VectorStore, cfg Config) (*VectorProvider, 
 		cfg.DefaultScore = 0.5
 	}
 
-	// Attempt to create the collection; most backends return an error if the
-	// collection already exists, which is safe to ignore.
-	_ = store.CreateCollection(context.Background(), cfg.Collection, cfg.VectorDimension)
+	// Create the collection. The single production backend (pgvector) uses
+	// CREATE TABLE IF NOT EXISTS, so an existing collection returns nil —
+	// every non-nil error (invalid name, dimension, DB outage) is a real
+	// failure and must surface: swallowing it hid broken setups until the
+	// first Search failed with an opaque "collection does not exist".
+	if err := store.CreateCollection(context.Background(), cfg.Collection, cfg.VectorDimension); err != nil {
+		return nil, fmt.Errorf("vector provider %s: create collection %q (dim %d): %w",
+			cfg.Name, cfg.Collection, cfg.VectorDimension, err)
+	}
 
 	return &VectorProvider{
 		store:  store,
@@ -165,7 +183,14 @@ func (p *VectorProvider) Stream(ctx context.Context, intent knowledge.Intent) (<
 			limit = 200 // safety cap
 		}
 
-		results, err := p.store.Search(gCtx, p.config.Collection, queryVec, limit)
+		// Resolve tenant per-request: the constructor-time Config.TenantID
+		// is the fallback, but the request-scoped tenant takes priority so
+		// tenant-attributed chunks are reachable by their owner.
+		tenant := tenantctx.From(gCtx)
+		if tenant == "" {
+			tenant = p.config.TenantID
+		}
+		results, err := p.store.Search(gCtx, p.config.Collection, tenant, queryVec, limit)
 		if err != nil {
 			// If the collection doesn't exist yet, return empty (not an error).
 			errCh <- fmt.Errorf("vector search %s: %w", p.config.Collection, err)
@@ -308,24 +333,12 @@ func normalizeUnit(vec []float64) []float64 {
 	if sum == 0 {
 		return vec
 	}
-	mag := 1.0 / sqrt(sum)
+	mag := 1.0 / math.Sqrt(sum)
 	out := make([]float64, len(vec))
 	for i, v := range vec {
 		out[i] = v * mag
 	}
 	return out
-}
-
-// sqrt is a simple Newton‑Raphson sqrt for float64.
-func sqrt(x float64) float64 {
-	if x <= 0 {
-		return 0
-	}
-	z := x / 2
-	for i := 0; i < 10; i++ {
-		z -= (z*z - x) / (2 * z)
-	}
-	return z
 }
 
 // compile-time interface check.

@@ -127,6 +127,68 @@ func TestCircuitBreaker_HalfOpen_FailureReopens(t *testing.T) {
 	}
 }
 
+// TestCircuitBreaker_OpenStateRecordFailureDoesNotStarveProbe pins the
+// half-open recovery contract (P1): while the circuit is OPEN, a rejected
+// call is NOT a new backend failure, so RecordFailure must not refresh
+// lastFailureTime. Pre-fix every rejected request did refresh it, and since
+// Open→HalfOpen requires time.Since(lastFailureTime) > openTimeout, sustained
+// traffic pushed the probe window forward forever — the service came back but
+// the breaker was never re-probed (retrieval_search.go recorded a failure on
+// the circuit-open branch).
+func TestCircuitBreaker_OpenStateRecordFailureDoesNotStarveProbe(t *testing.T) {
+	cb := NewCircuitBreaker(2, 20*time.Millisecond)
+	defer cb.Close()
+
+	cb.RecordFailure()
+	cb.RecordFailure()
+	if cb.State() != CircuitBreakerStateOpen {
+		t.Fatalf("expected open state, got %s", cb.State())
+	}
+
+	// Sustained rejected traffic for well past openTimeout, each rejection
+	// recording a failure the way the embedding path did.
+	deadline := time.Now().Add(200 * time.Millisecond)
+	var admitted = errors.ErrCircuitBreakerOpen
+	for time.Now().Before(deadline) {
+		if admitted = cb.AllowRequest(); admitted == nil {
+			break
+		}
+		cb.RecordFailure()
+		time.Sleep(2 * time.Millisecond)
+	}
+	if admitted != nil {
+		t.Fatalf("open circuit never re-probed under sustained rejected traffic: %v", admitted)
+	}
+	if cb.State() != CircuitBreakerStateHalfOpen {
+		t.Fatalf("expected half-open after the probe window elapsed, got %s", cb.State())
+	}
+}
+
+// TestCircuitBreaker_OpenStateRecordFailureKeepsFailureCount pins the
+// bookkeeping half of the same contract: a failure recorded while Open is
+// ignored entirely (no count growth, no state change) — the request never
+// reached the backend.
+func TestCircuitBreaker_OpenStateRecordFailureKeepsFailureCount(t *testing.T) {
+	cb := NewCircuitBreaker(2, time.Hour)
+	defer cb.Close()
+
+	cb.RecordFailure()
+	cb.RecordFailure()
+	if cb.State() != CircuitBreakerStateOpen {
+		t.Fatalf("expected open state, got %s", cb.State())
+	}
+	before := cb.failureCount
+	for i := 0; i < 5; i++ {
+		cb.RecordFailure()
+	}
+	if cb.State() != CircuitBreakerStateOpen {
+		t.Fatalf("open state must be stable, got %s", cb.State())
+	}
+	if cb.failureCount != before {
+		t.Fatalf("record-while-open must not grow the failure count: %d → %d", before, cb.failureCount)
+	}
+}
+
 func TestCircuitBreaker_Reset(t *testing.T) {
 	cb := NewCircuitBreaker(3, 5*time.Second)
 	defer cb.Close()

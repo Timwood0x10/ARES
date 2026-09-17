@@ -5,19 +5,21 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
 	"strings"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/knowledge"
 	_ "modernc.org/sqlite"
+
+	"github.com/Timwood0x10/ares/internal/knowledge"
 )
 
 var (
 	// ErrObjectNotFound is returned when a Get call finds no matching object.
-	ErrObjectNotFound = fmt.Errorf("object not found")
+	ErrObjectNotFound = errors.New("object not found")
 )
 
 // Store is a SQLite-backed KnowledgeStore.
@@ -45,7 +47,7 @@ func New(dbPath string) (*Store, error) {
 // NewWithDB creates a new SQLite KnowledgeStore with an existing db connection.
 func NewWithDB(db *sql.DB) (*Store, error) {
 	if db == nil {
-		return nil, fmt.Errorf("db is nil")
+		return nil, errors.New("db is nil")
 	}
 	s := &Store{db: db}
 	if err := s.initTables(context.Background()); err != nil {
@@ -55,6 +57,11 @@ func NewWithDB(db *sql.DB) (*Store, error) {
 }
 
 func (s *Store) initTables(ctx context.Context) error {
+	// SQLite disables foreign key enforcement by default; without this
+	// pragma, ON DELETE CASCADE is decorative.
+	if _, err := s.db.ExecContext(ctx, "PRAGMA foreign_keys = ON"); err != nil {
+		return fmt.Errorf("enable foreign_keys: %w", err)
+	}
 	queries := []string{
 		`CREATE TABLE IF NOT EXISTS akf_objects (
 			id TEXT PRIMARY KEY,
@@ -105,7 +112,11 @@ func (s *Store) initTables(ctx context.Context) error {
 	}
 	for _, m := range migrations {
 		if _, err := s.db.ExecContext(ctx, m); err != nil {
-			if !strings.Contains(err.Error(), "duplicate column") {
+			// SQLite driver returns a plain text error (no sentinel) for an
+			// ALTER TABLE that adds an existing column, so errors.Is cannot
+			// match it; the driver-text check is isolated in
+			// isDuplicateColumnError instead of being scattered inline.
+			if !isDuplicateColumnError(err) {
 				return fmt.Errorf("migrate akf_objects: %w", err)
 			}
 		}
@@ -113,10 +124,28 @@ func (s *Store) initTables(ctx context.Context) error {
 	return nil
 }
 
+// isDuplicateColumnError reports whether a SQLite migration error is a duplicate-column skip.
+func isDuplicateColumnError(err error) bool {
+	return strings.Contains(err.Error(), "duplicate column")
+}
+
+// escapeLike escapes LIKE wildcard characters (% and _) and the escape
+// character itself so a tag is matched literally as a delimited token.
+func escapeLike(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `%`, `\%`)
+	s = strings.ReplaceAll(s, `_`, `\_`)
+	return s
+}
+
+// Save upserts the given knowledge objects.
 func (s *Store) Save(ctx context.Context, objects ...*knowledge.KnowledgeObject) error {
 	for _, obj := range objects {
 		if obj.ID == "" {
-			return fmt.Errorf("knowledge object ID cannot be empty")
+			return errors.New("knowledge object ID cannot be empty")
+		}
+		if obj.Namespace == "" {
+			return errors.New("knowledge object namespace cannot be empty: an empty namespace is unreachable once any caller supplies a tenant (StoreProvider.namespaceFor never yields empty)")
 		}
 
 		metaJSON, _ := json.Marshal(obj.Metadata)
@@ -125,7 +154,7 @@ func (s *Store) Save(ctx context.Context, objects ...*knowledge.KnowledgeObject)
 		relationsJSON := marshalRelations(obj.Relations)
 		now := time.Now().UTC().Format(time.RFC3339)
 
-		_, err := s.db.ExecContext(ctx, `
+		res, err := s.db.ExecContext(ctx, `
 			INSERT INTO akf_objects (id, type, namespace, raw, normalized, summary, metadata, tags, confidence, version, created_at, updated_at, status, quality, relations, embedding_model)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT (id) DO UPDATE SET
@@ -143,12 +172,22 @@ func (s *Store) Save(ctx context.Context, objects ...*knowledge.KnowledgeObject)
 				quality = excluded.quality,
 				relations = excluded.relations,
 				embedding_model = excluded.embedding_model
+			WHERE akf_objects.namespace = excluded.namespace
 		`, obj.ID, string(obj.Type), obj.Namespace, obj.Raw, obj.Normalized, obj.Summary,
 			string(metaJSON), tags, obj.Confidence, obj.Version,
 			obj.CreatedAt.UTC().Format(time.RFC3339), now,
 			string(obj.Status), qualityJSON, relationsJSON, obj.EmbeddingModel)
 		if err != nil {
 			return fmt.Errorf("save %q: %w", obj.ID, err)
+		}
+		// The WHERE on DO UPDATE only lets the upsert touch a row owned by the
+		// caller's namespace; a conflicting ID under another namespace affects
+		// zero rows. That must surface as ErrObjectNotFound (same answer as a
+		// tenant-scoped Get for a foreign row) so an upsert-on-miss caller
+		// cannot migrate another tenant's object into its own namespace, and
+		// cannot probe which foreign IDs exist.
+		if n, _ := res.RowsAffected(); n == 0 {
+			return ErrObjectNotFound
 		}
 	}
 	return nil
@@ -182,10 +221,10 @@ func marshalRelations(rels []knowledge.Relation) string {
 	return string(b)
 }
 
-func (s *Store) Get(ctx context.Context, id string) (*knowledge.KnowledgeObject, error) {
+func (s *Store) Get(ctx context.Context, tenantID, id string) (*knowledge.KnowledgeObject, error) {
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, type, namespace, raw, normalized, summary, metadata, tags, confidence, version, created_at, updated_at, status, quality, relations, embedding_model
-		FROM akf_objects WHERE id = ?`, id)
+		FROM akf_objects WHERE id = ? AND namespace = ?`, id, tenantID)
 
 	obj, err := scanObject(row)
 	if err == sql.ErrNoRows {
@@ -214,10 +253,14 @@ func (s *Store) Query(ctx context.Context, q knowledge.Query) ([]*knowledge.Know
 		conditions = append(conditions, fmt.Sprintf("type IN (%s)", strings.Join(placeholders, ",")))
 	}
 	if len(q.Tags) > 0 {
+		// Exact tag matching against the comma-joined tags column: the old
+		// bare `tags LIKE '%tag%'` substring match made a query for tag "a"
+		// hit rows tagged "ab" or "ac". Wrapping both sides in commas makes
+		// each tag a delimited token; ESCAPE handles tags containing % or _.
 		tagConditions := make([]string, len(q.Tags))
 		for i, tag := range q.Tags {
-			tagConditions[i] = "tags LIKE ?"
-			args = append(args, "%"+tag+"%")
+			tagConditions[i] = "(',' || tags || ',') LIKE ? ESCAPE '\\'"
+			args = append(args, "%,"+escapeLike(tag)+",%")
 		}
 		conditions = append(conditions, "("+strings.Join(tagConditions, " OR ")+")")
 	}
@@ -255,21 +298,31 @@ func (s *Store) Query(ctx context.Context, q knowledge.Query) ([]*knowledge.Know
 	return results, rows.Err()
 }
 
-func (s *Store) Delete(ctx context.Context, id string) error {
-	_, err := s.db.ExecContext(ctx, "DELETE FROM akf_objects WHERE id = ?", id)
-	return err
+func (s *Store) Delete(ctx context.Context, tenantID, id string) error {
+	res, err := s.db.ExecContext(ctx, "DELETE FROM akf_objects WHERE id = ? AND namespace = ?", id, tenantID)
+	if err != nil {
+		return fmt.Errorf("delete %q: %w", id, err)
+	}
+	// A missing ID and a foreign-namespace ID both affect zero rows and must
+	// answer the same way (ErrObjectNotFound): reporting nil for one would let
+	// a caller enumerate which IDs exist under other tenants. Mirrors the
+	// memory backend, where both cases return ErrObjectNotFound.
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrObjectNotFound
+	}
+	return nil
 }
 
-func (s *Store) Search(ctx context.Context, text string, _ string, limit int) ([]*knowledge.KnowledgeObject, error) {
+func (s *Store) Search(ctx context.Context, tenantID, text string, _ string, limit int) ([]*knowledge.KnowledgeObject, error) {
 	if limit <= 0 {
 		limit = 20
 	}
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, type, namespace, raw, normalized, summary, metadata, tags, confidence, version, created_at, updated_at, status, quality, relations, embedding_model
 		FROM akf_objects
-		WHERE normalized LIKE ? OR summary LIKE ?
+		WHERE (normalized LIKE ? OR summary LIKE ?) AND namespace = ?
 		ORDER BY created_at DESC
-		LIMIT ?`, "%"+text+"%", "%"+text+"%", limit)
+		LIMIT ?`, "%"+text+"%", "%"+text+"%", tenantID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -289,7 +342,7 @@ func (s *Store) Search(ctx context.Context, text string, _ string, limit int) ([
 
 func (s *Store) SaveRepresentation(ctx context.Context, rep *knowledge.Representation) error {
 	if rep.ID == "" {
-		return fmt.Errorf("representation ID cannot be empty")
+		return errors.New("representation ID cannot be empty")
 	}
 	metaJSON, _ := json.Marshal(rep.Metadata)
 	now := time.Now().UTC().Format(time.RFC3339)
@@ -309,10 +362,15 @@ func (s *Store) SaveRepresentation(ctx context.Context, rep *knowledge.Represent
 	return err
 }
 
-func (s *Store) GetRepresentation(ctx context.Context, objectID string, model string) (*knowledge.Representation, error) {
+func (s *Store) GetRepresentation(ctx context.Context, tenantID, objectID, model string) (*knowledge.Representation, error) {
+	// Tenant scope via the owning object (F-05): the representations table
+	// carries no namespace column, so the join enforces that the caller's
+	// tenant owns the object before its vector is served.
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, object_id, model, dimension, vector, metadata, created_at
-		FROM akf_representations WHERE object_id = ? AND model = ?`, objectID, model)
+		SELECT r.id, r.object_id, r.model, r.dimension, r.vector, r.metadata, r.created_at
+		FROM akf_representations r
+		JOIN akf_objects o ON o.id = r.object_id
+		WHERE r.object_id = ? AND r.model = ? AND o.namespace = ?`, objectID, model, tenantID)
 
 	var rep knowledge.Representation
 	var metaJSON, vecJSON, createdAtStr string
@@ -327,8 +385,23 @@ func (s *Store) GetRepresentation(ctx context.Context, objectID string, model st
 
 	_ = json.Unmarshal([]byte(vecJSON), &rep.Vector)
 	_ = json.Unmarshal([]byte(metaJSON), &rep.Metadata)
-	rep.CreatedAt, _ = time.Parse(time.RFC3339, createdAtStr)
+	rep.CreatedAt = parseTimeField(createdAtStr, "representation", rep.ID)
 	return &rep, nil
+}
+
+// parseTimeField decodes a persisted RFC3339 timestamp column. The write
+// path always stores time.Time.Format(time.RFC3339), so a parse failure
+// means the row was corrupted or hand-written — keep the zero time (same
+// degrade contract as the best-effort JSON unmarshals) but log the raw
+// string so the corrupt row is observable, not silently blank.
+func parseTimeField(raw, what, id string) time.Time {
+	t, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		slog.Warn("sqlite store: corrupt timestamp column, keeping zero time",
+			"what", what, "id", id, "raw", raw, "error", err)
+		return time.Time{}
+	}
+	return t
 }
 
 // scanObject scans a row into a KnowledgeObject.
@@ -357,8 +430,8 @@ func scanObject(row scanner) (*knowledge.KnowledgeObject, error) {
 	if tagsStr != "" {
 		obj.Tags = strings.Split(tagsStr, ",")
 	}
-	obj.CreatedAt, _ = time.Parse(time.RFC3339, createdAtStr)
-	obj.UpdatedAt, _ = time.Parse(time.RFC3339, updatedAtStr)
+	obj.CreatedAt = parseTimeField(createdAtStr, "object", obj.ID)
+	obj.UpdatedAt = parseTimeField(updatedAtStr, "object", obj.ID)
 	obj.Status = knowledge.ObjectStatus(statusStr)
 	obj.EmbeddingModel = embeddingModel
 	// Unmarshal quality/relations best-effort: malformed JSON is ignored.
@@ -377,11 +450,19 @@ func scanObject(row scanner) (*knowledge.KnowledgeObject, error) {
 }
 
 // HybridSearch performs vector + lexical scoring over SQLite-stored objects.
+//
+// Memory bounding: the candidate pass applies a SQL-side LIMIT (see
+// hybridRecallCap) so a broad namespace/type filter cannot materialize
+// every matching row into Go memory — the same window postgres applies
+// (independent-review F-09: sqlite had no bound at all). The window is
+// ordered by updated_at DESC (most recent objects first); an explicit
+// wider TopK/FinalK raises it so a caller's own recall request is honored.
 func (s *Store) HybridSearch(ctx context.Context, req knowledge.HybridSearchRequest) ([]knowledge.ScoredObject, error) {
 	conditions, args := hybridConditions(req)
+	args = append(args, hybridRecallLimit(req))
 	//nolint:gosec // conditions are static WHERE fragments; values use ? placeholders.
 	query := `SELECT id, type, namespace, raw, normalized, summary, metadata, tags, confidence, version, created_at, updated_at, status, quality, relations, embedding_model
-		FROM akf_objects` + conditions
+		FROM akf_objects` + conditions + ` ORDER BY updated_at DESC LIMIT ?`
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("hybrid search query: %w", err)
@@ -467,6 +548,30 @@ func (s *Store) HybridSearch(ctx context.Context, req knowledge.HybridSearchRequ
 	return scored, nil
 }
 
+// hybridRecallCap bounds the candidate rows HybridSearch loads for scoring
+// (independent-review F-09): sqlite previously had no LIMIT, so a broad
+// namespace/type filter materialized EVERY matching row. Same window and
+// rationale as the postgres fix: there is no relevance index (vector
+// columns are Go-side scored, lexical scoring is Jaccard in Go), so the
+// cap is a recall window over the most recently updated objects, sized
+// generously relative to the default TopK=20/FinalK=5.
+const hybridRecallCap = 512
+
+// hybridRecallLimit returns the SQL-side candidate LIMIT for a hybrid
+// search request: at least hybridRecallCap, but never smaller than the
+// caller's own recall caps (TopK/FinalK) so an explicit wide request is
+// honored.
+func hybridRecallLimit(req knowledge.HybridSearchRequest) int {
+	limit := hybridRecallCap
+	if req.TopK > limit {
+		limit = req.TopK
+	}
+	if req.FinalK > limit {
+		limit = req.FinalK
+	}
+	return limit
+}
+
 // hybridConditions builds the WHERE clause (with parameterized placeholders)
 // and args for HybridSearch candidates based on namespace, types, and status
 // filter. Empty status on a row matches the active filter for back-compat.
@@ -514,7 +619,7 @@ func scanRepresentation(row scanner) (*knowledge.Representation, error) {
 	}
 	_ = json.Unmarshal([]byte(vecJSON), &rep.Vector)
 	_ = json.Unmarshal([]byte(metaJSON), &rep.Metadata)
-	rep.CreatedAt, _ = time.Parse(time.RFC3339, createdAtStr)
+	rep.CreatedAt = parseTimeField(createdAtStr, "representation", rep.ID)
 	return &rep, nil
 }
 
@@ -560,9 +665,9 @@ func (s *Store) ListByStatus(ctx context.Context, ns string, status knowledge.Ob
 }
 
 // UpdateStatus transitions an object's lifecycle status.
-func (s *Store) UpdateStatus(ctx context.Context, id string, status knowledge.ObjectStatus) error {
-	res, err := s.db.ExecContext(ctx, "UPDATE akf_objects SET status = ?, updated_at = ? WHERE id = ?",
-		string(status), time.Now().UTC().Format(time.RFC3339), id)
+func (s *Store) UpdateStatus(ctx context.Context, tenantID, id string, status knowledge.ObjectStatus) error {
+	res, err := s.db.ExecContext(ctx, "UPDATE akf_objects SET status = ?, updated_at = ? WHERE id = ? AND namespace = ?",
+		string(status), time.Now().UTC().Format(time.RFC3339), id, tenantID)
 	if err != nil {
 		return fmt.Errorf("update status %q: %w", id, err)
 	}
@@ -574,10 +679,10 @@ func (s *Store) UpdateStatus(ctx context.Context, id string, status knowledge.Ob
 }
 
 // Promote moves a candidate to active and records its computed Quality.
-func (s *Store) Promote(ctx context.Context, id string, q *knowledge.Quality) error {
+func (s *Store) Promote(ctx context.Context, tenantID, id string, q *knowledge.Quality) error {
 	qualityJSON := marshalQuality(q)
-	res, err := s.db.ExecContext(ctx, "UPDATE akf_objects SET status = ?, quality = ?, updated_at = ? WHERE id = ?",
-		string(knowledge.StatusActive), qualityJSON, time.Now().UTC().Format(time.RFC3339), id)
+	res, err := s.db.ExecContext(ctx, "UPDATE akf_objects SET status = ?, quality = ?, updated_at = ? WHERE id = ? AND namespace = ?",
+		string(knowledge.StatusActive), qualityJSON, time.Now().UTC().Format(time.RFC3339), id, tenantID)
 	if err != nil {
 		return fmt.Errorf("promote %q: %w", id, err)
 	}

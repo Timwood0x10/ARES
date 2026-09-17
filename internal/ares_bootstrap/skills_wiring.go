@@ -1,6 +1,6 @@
 // Package ares_bootstrap — SKILLS progressive-disclosure wiring.
 //
-// REVIEW #11 closure: the ares_skills subsystem (Catalog → Registry) was only
+// The ares_skills subsystem (Catalog → Registry) was only
 // reachable from the `ares status` CLI; `ares serve` never constructed it, so
 // the memory manager's resident "Available skills" block was always empty and
 // progressive disclosure (Level-0 metadata resident, Level-1 body on demand)
@@ -13,13 +13,14 @@ import (
 	"os"
 	"path/filepath"
 
-	ares_skills "github.com/Timwood0x10/ares/internal/ares_skills"
 	"github.com/Timwood0x10/ares/internal/knowledge/skills"
+	ares_skills "github.com/Timwood0x10/ares/internal/runtime/protocol/skills"
 )
 
 // skillsRegistrySetter is the minimal interface for injecting a skills registry
-// into a MemoryManager. Both *memoryManager and *ProductionMemoryManager
-// satisfy it, but the public MemoryManager interface does not expose
+// into a MemoryManager. Only *memoryManager satisfies it — the config-only
+// ProductionMemoryManager fallback exposes no skills registry — but the
+// public MemoryManager interface does not expose
 // SetSkillsRegistry (progressive disclosure is an optional capability), so we
 // type-assert at wiring time instead of widening the interface — the same
 // pattern used by retrieverSetter.

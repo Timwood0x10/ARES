@@ -33,13 +33,21 @@ func NewExperienceRepository(db postgres.DBTX) *ExperienceRepository {
 // Returns error if insert operation fails.
 func (r *ExperienceRepository) Create(ctx context.Context, exp *storage_models.Experience) error {
 	// Convert metadata to JSON for database storage
-	metadataJSON, err := json.Marshal(exp.Metadata)
+	metadataJSON, err := json.Marshal(exp.MetadataForStorage())
 	if err != nil {
 		return errors.Wrap(err, "marshal metadata")
 	}
 
-	// Convert embedding to pgvector format
-	embeddingStr := postgres.FormatVector(exp.Embedding)
+	// Convert embedding to pgvector format. An empty embedding is written as a
+	// SQL NULL (the column is nullable) so the async embedding worker can later
+	// backfill the vector without producing a zero-dimension vector, which would
+	// make pgvector raise "different vector dimensions" during vector search.
+	var embeddingStr interface{}
+	if len(exp.Embedding) == 0 {
+		embeddingStr = nil
+	} else {
+		embeddingStr = postgres.FormatVector(exp.Embedding)
+	}
 
 	// Build query with optional decay_at and created_at
 	var query string
@@ -128,25 +136,31 @@ func (r *ExperienceRepository) Create(ctx context.Context, exp *storage_models.E
 // ctx - database operation context.
 // id - experience ID, must be non-empty.
 // Returns experience or error if not found or invalid argument.
-func (r *ExperienceRepository) GetByID(ctx context.Context, id string) (*storage_models.Experience, error) {
+func (r *ExperienceRepository) GetByID(ctx context.Context, tenantID, id string) (*storage_models.Experience, error) {
 	if id == "" {
 		return nil, errors.ErrInvalidArgument
 	}
+	if tenantID == "" {
+		return nil, postgres.ErrMissingTenantID
+	}
 
 	query := `
-		SELECT id, tenant_id, type, input, output, embedding_model, embedding_version,
-			   score, success, agent_id, metadata::text, decay_at, created_at
+		SELECT id, tenant_id, type, input, output, embedding::text, embedding_model, embedding_version,
+			   score, success, agent_id, metadata::text, decay_at, created_at, usage_count
 		FROM experiences_1024
-		WHERE id = $1
+		WHERE id = $1 AND tenant_id = $2
 	`
 
 	exp := &storage_models.Experience{}
-	var metadataStr string
-	err := r.db.QueryRowContext(ctx, query, id).Scan(
+	// embedding/metadata are nullable (an experience queued for async
+	// embedding has embedding = NULL); scanning NULL into a plain string
+	// fails, so both are carried as NullString.
+	var embeddingStr, metadataStr sql.NullString
+	err := r.db.QueryRowContext(ctx, query, id, tenantID).Scan(
 		&exp.ID, &exp.TenantID, &exp.Type, &exp.Input, &exp.Output,
-		&exp.EmbeddingModel, &exp.EmbeddingVersion,
+		&embeddingStr, &exp.EmbeddingModel, &exp.EmbeddingVersion,
 		&exp.Score, &exp.Success, &exp.AgentID, &metadataStr,
-		&exp.DecayAt, &exp.CreatedAt,
+		&exp.DecayAt, &exp.CreatedAt, &exp.UsageCount,
 	)
 
 	if err == sql.ErrNoRows {
@@ -156,9 +170,19 @@ func (r *ExperienceRepository) GetByID(ctx context.Context, id string) (*storage
 		return nil, errors.Wrap(err, "get experience by id")
 	}
 
+	// Parse embedding vector (nullable, e.g. queued for async embedding).
+	// A NULL folds to an empty slice so a write-back binds NULL again.
+	if embeddingStr.Valid && embeddingStr.String != "" {
+		embedding, err := postgres.ParseVectorString(embeddingStr.String)
+		if err != nil {
+			return nil, errors.Wrap(err, "parse embedding")
+		}
+		exp.Embedding = embedding
+	}
+
 	// Parse metadata JSON string to map
-	if metadataStr != "" {
-		if err := json.Unmarshal([]byte(metadataStr), &exp.Metadata); err != nil {
+	if metadataStr.Valid && metadataStr.String != "" {
+		if err := json.Unmarshal([]byte(metadataStr.String), &exp.Metadata); err != nil {
 			return nil, errors.Wrap(err, "parse metadata")
 		}
 	}
@@ -172,27 +196,32 @@ func (r *ExperienceRepository) GetByID(ctx context.Context, id string) (*storage
 // exp - experience with updated values.
 // Returns error if update operation fails.
 func (r *ExperienceRepository) Update(ctx context.Context, exp *storage_models.Experience) error {
+	if exp.TenantID == "" {
+		return postgres.ErrMissingTenantID
+	}
 	// Convert metadata to JSON for database storage
-	metadataJSON, err := json.Marshal(exp.Metadata)
+	metadataJSON, err := json.Marshal(exp.MetadataForStorage())
 	if err != nil {
 		return errors.Wrap(err, "marshal metadata")
 	}
 
-	// Convert embedding to pgvector format
-	embeddingStr := postgres.FormatVector(exp.Embedding)
+	// Convert embedding to pgvector format. An empty embedding binds NULL
+	// (pgvector rejects the zero-dimension literal for a VECTOR(n) column),
+	// matching what Create writes for un-backfilled rows.
+	embeddingStr := postgres.VectorArg(exp.Embedding)
 
 	query := `
 		UPDATE experiences_1024
 		SET type = $2, input = $3, output = $4, embedding = $5::vector,
 			embedding_model = $6, embedding_version = $7, score = $8,
 			success = $9, agent_id = $10, metadata = $11
-		WHERE id = $1
+		WHERE id = $1 AND tenant_id = $12
 	`
 
 	result, err := r.db.ExecContext(ctx, query,
 		exp.ID, exp.Type, exp.Input, exp.Output, embeddingStr,
 		exp.EmbeddingModel, exp.EmbeddingVersion, exp.Score,
-		exp.Success, exp.AgentID, metadataJSON,
+		exp.Success, exp.AgentID, metadataJSON, exp.TenantID,
 	)
 	if err != nil {
 		return errors.Wrap(err, "update experience")
@@ -220,6 +249,21 @@ func (r *ExperienceRepository) Delete(ctx context.Context, id, tenantID string) 
 }
 
 // SearchByVector performs vector similarity search for experiences.
+//
+// The embedding column is nullable (distillation inserts the row first and the
+// async worker backfills the vector), so the query filters NULL vectors
+// explicitly. This does NOT change how many rows come back: `ORDER BY <dist>`
+// is ascending and PostgreSQL puts NULLs last, so a NULL-vector row could never
+// displace a row that has a vector. What the predicate buys is:
+//   - such rows no longer reach the scan loop, where a NULL scanned into a
+//     string target failed and was dropped by a bare `continue` — an invisible
+//     loss that made pending backfill look like "this tenant has few rows";
+//   - the executor stops reading rows that can never be ranked;
+//   - the planner gains a filter it can actually use for row estimates.
+//
+// Rows that still fail to scan or parse are counted and reported once, so a
+// systematic problem shows up in logs instead of silently shrinking results.
+//
 // Args:
 // ctx - database operation context.
 // embedding - query vector embedding.
@@ -227,16 +271,23 @@ func (r *ExperienceRepository) Delete(ctx context.Context, id, tenantID string) 
 // limit - maximum number of results to return.
 // Returns list of similar experiences ordered by similarity.
 func (r *ExperienceRepository) SearchByVector(ctx context.Context, embedding []float64, tenantID string, limit int) ([]*storage_models.Experience, error) {
+	// Fail closed on an empty embedding (invalid vector-search input) with a
+	// clear error instead of letting pgvector reject a zero-dimension literal.
+	// Matches every other repository's SearchByVector contract.
+	if len(embedding) == 0 {
+		return nil, errors.New("search by vector: embedding must not be empty")
+	}
 	// Convert embedding to pgvector format
 	embeddingStr := postgres.FormatVector(embedding)
 
 	query := `
 		SELECT id, tenant_id, type, input, output, embedding::text, embedding_model, embedding_version,
-			   score, success, agent_id, metadata::text, decay_at, created_at,
+			   score, success, agent_id, metadata::text, decay_at, created_at, usage_count,
 			   1 - (embedding <=> $1::vector) as similarity
 		FROM experiences_1024
 		WHERE tenant_id = $2
 		  AND (decay_at IS NULL OR decay_at > NOW())
+		  AND embedding IS NOT NULL
 		ORDER BY embedding <=> $1::vector
 		LIMIT $3
 	`
@@ -248,6 +299,7 @@ func (r *ExperienceRepository) SearchByVector(ctx context.Context, embedding []f
 	defer func() { _ = rows.Close() }()
 
 	experiences := make([]*storage_models.Experience, 0)
+	skipped := 0
 	for rows.Next() {
 		exp := &storage_models.Experience{}
 		var similarity float64
@@ -256,15 +308,24 @@ func (r *ExperienceRepository) SearchByVector(ctx context.Context, embedding []f
 			&exp.ID, &exp.TenantID, &exp.Type, &exp.Input, &exp.Output,
 			&embeddingStr, &exp.EmbeddingModel, &exp.EmbeddingVersion,
 			&exp.Score, &exp.Success, &exp.AgentID, &metadataStr,
-			&exp.DecayAt, &exp.CreatedAt, &similarity,
+			&exp.DecayAt, &exp.CreatedAt, &exp.UsageCount, &similarity,
 		)
 		if err != nil {
+			// Skip the single bad row instead of failing the whole search: one
+			// unscannable row must not blank out an otherwise valid result set.
+			// Logged and counted because a silent continue makes a broken
+			// column look like "the tenant has fewer experiences".
+			skipped++
+			log.Warn("Skipping experience row in vector search", "tenant_id", tenantID, "error", err)
 			continue
 		}
 
 		// Parse embedding string to float64 array
 		exp.Embedding, err = postgres.ParseVectorString(embeddingStr)
 		if err != nil {
+			skipped++
+			log.Warn("Skipping experience with unparsable embedding",
+				"tenant_id", tenantID, "experience_id", exp.ID, "error", err)
 			continue
 		}
 
@@ -289,6 +350,14 @@ func (r *ExperienceRepository) SearchByVector(ctx context.Context, embedding []f
 		return nil, errors.Wrap(err, "iterate experiences")
 	}
 
+	// One aggregate line per search: the per-row warnings above are easy to
+	// lose in volume, and the ratio is what tells an operator whether the
+	// result set was truncated by data problems rather than by the limit.
+	if skipped > 0 {
+		log.Warn("Vector search dropped experience rows",
+			"tenant_id", tenantID, "skipped", skipped, "returned", len(experiences))
+	}
+
 	return experiences, nil
 }
 
@@ -309,7 +378,7 @@ func (r *ExperienceRepository) SearchByKeyword(ctx context.Context, query, tenan
 
 	sqlQuery := `
         SELECT id, tenant_id, type, input, output, embedding_model, embedding_version,
-               score, success, agent_id, metadata::text, decay_at, created_at
+               score, success, agent_id, metadata::text, decay_at, created_at, usage_count
         FROM experiences_1024
         WHERE (input ILIKE '%' || $1 || '%' ESCAPE '\' OR output ILIKE '%' || $1 || '%' ESCAPE '\')
           AND tenant_id = $2
@@ -332,7 +401,7 @@ func (r *ExperienceRepository) SearchByKeyword(ctx context.Context, query, tenan
 			&exp.ID, &exp.TenantID, &exp.Type, &exp.Input, &exp.Output,
 			&exp.EmbeddingModel, &exp.EmbeddingVersion,
 			&exp.Score, &exp.Success, &exp.AgentID, &metadataStr,
-			&exp.DecayAt, &exp.CreatedAt,
+			&exp.DecayAt, &exp.CreatedAt, &exp.UsageCount,
 		)
 		if err != nil {
 			continue
@@ -366,7 +435,7 @@ func (r *ExperienceRepository) SearchByKeyword(ctx context.Context, query, tenan
 func (r *ExperienceRepository) ListByType(ctx context.Context, expType, tenantID string, limit int) ([]*storage_models.Experience, error) {
 	query := `
 		SELECT id, tenant_id, type, input, output, embedding_model, embedding_version,
-			   score, success, agent_id, metadata::text, decay_at, created_at
+			   score, success, agent_id, metadata::text, decay_at, created_at, usage_count
 		FROM experiences_1024
 		WHERE type = $1
 		  AND tenant_id = $2
@@ -389,7 +458,7 @@ func (r *ExperienceRepository) ListByType(ctx context.Context, expType, tenantID
 			&exp.ID, &exp.TenantID, &exp.Type, &exp.Input, &exp.Output,
 			&exp.EmbeddingModel, &exp.EmbeddingVersion,
 			&exp.Score, &exp.Success, &exp.AgentID, &metadataStr,
-			&exp.DecayAt, &exp.CreatedAt,
+			&exp.DecayAt, &exp.CreatedAt, &exp.UsageCount,
 		)
 		if err != nil {
 			continue
@@ -413,20 +482,49 @@ func (r *ExperienceRepository) ListByType(ctx context.Context, expType, tenantID
 	return experiences, nil
 }
 
+// CountByType counts experiences of a type within a tenant without
+// materializing rows. It backs the memory distiller's per-type cap checks
+// (e.g. MaxSolutionsPerTenant = 5000), which read counts far beyond any sane
+// ListByType limit — deriving the count from a limited listing silently
+// plateaued at the limit and made the cap unreachable.
+// Args:
+// ctx - database operation context.
+// expType - experience type filter.
+// tenantID - tenant identifier for isolation.
+// Returns the number of live (non-decayed) experiences of the type.
+func (r *ExperienceRepository) CountByType(ctx context.Context, expType, tenantID string) (int, error) {
+	query := `
+		SELECT COUNT(*)
+		FROM experiences_1024
+		WHERE type = $1
+		  AND tenant_id = $2
+		  AND (decay_at IS NULL OR decay_at > NOW())
+	`
+
+	var count int
+	if err := r.db.QueryRowContext(ctx, query, expType, tenantID).Scan(&count); err != nil {
+		return 0, errors.Wrap(err, "count experiences by type")
+	}
+	return count, nil
+}
+
 // UpdateScore updates the score of an experience.
 // Args:
 // ctx - database operation context.
 // id - experience identifier.
 // score - new score value (0-1).
 // Returns error if update operation fails.
-func (r *ExperienceRepository) UpdateScore(ctx context.Context, id string, score float64) error {
+func (r *ExperienceRepository) UpdateScore(ctx context.Context, tenantID, id string, score float64) error {
+	if tenantID == "" {
+		return postgres.ErrMissingTenantID
+	}
 	query := `
 		UPDATE experiences_1024
 		SET score = $2
-		WHERE id = $1
+		WHERE id = $1 AND tenant_id = $3
 	`
 
-	result, err := r.db.ExecContext(ctx, query, id, score)
+	result, err := r.db.ExecContext(ctx, query, id, score, tenantID)
 	if err != nil {
 		return errors.Wrap(err, "update experience score")
 	}
@@ -453,7 +551,7 @@ func (r *ExperienceRepository) UpdateScore(ctx context.Context, id string, score
 func (r *ExperienceRepository) ListByAgent(ctx context.Context, agentID, tenantID string, limit int) ([]*storage_models.Experience, error) {
 	query := `
 		SELECT id, tenant_id, type, input, output, embedding_model, embedding_version,
-			   score, success, agent_id, metadata::text, decay_at, created_at
+			   score, success, agent_id, metadata::text, decay_at, created_at, usage_count
 		FROM experiences_1024
 		WHERE agent_id = $1
 		  AND tenant_id = $2
@@ -476,7 +574,7 @@ func (r *ExperienceRepository) ListByAgent(ctx context.Context, agentID, tenantI
 			&exp.ID, &exp.TenantID, &exp.Type, &exp.Input, &exp.Output,
 			&exp.EmbeddingModel, &exp.EmbeddingVersion,
 			&exp.Score, &exp.Success, &exp.AgentID, &metadataStr,
-			&exp.DecayAt, &exp.CreatedAt,
+			&exp.DecayAt, &exp.CreatedAt, &exp.UsageCount,
 		)
 		if err != nil {
 			continue
@@ -508,17 +606,25 @@ func (r *ExperienceRepository) ListByAgent(ctx context.Context, agentID, tenantI
 // model - embedding model name.
 // version - embedding model version.
 // Returns error if update operation fails.
-func (r *ExperienceRepository) UpdateEmbedding(ctx context.Context, id string, embedding []float64, model string, version int) error {
+func (r *ExperienceRepository) UpdateEmbedding(ctx context.Context, tenantID, id string, embedding []float64, model string, version int) error {
+	if tenantID == "" {
+		return postgres.ErrMissingTenantID
+	}
+	// An explicit "set the vector" call must carry a vector: FormatVector
+	// would otherwise bind "[]", which pgvector rejects.
+	if len(embedding) == 0 {
+		return errors.ErrInvalidArgument
+	}
 	// Convert embedding to pgvector format
 	embeddingStr := postgres.FormatVector(embedding)
 
 	query := `
 		UPDATE experiences_1024
 		SET embedding = $2::vector, embedding_model = $3, embedding_version = $4
-		WHERE id = $1
+		WHERE id = $1 AND tenant_id = $5
 	`
 
-	result, err := r.db.ExecContext(ctx, query, id, embeddingStr, model, version)
+	result, err := r.db.ExecContext(ctx, query, id, embeddingStr, model, version, tenantID)
 	if err != nil {
 		return errors.Wrap(err, "update embedding")
 	}
@@ -538,14 +644,21 @@ func (r *ExperienceRepository) UpdateEmbedding(ctx context.Context, id string, e
 // CleanupExpired removes experiences that have decayed.
 // Args:
 // ctx - database operation context.
+// tenantID - tenant identifier for isolation; empty is rejected.
 // Returns number of deleted experiences or error if operation fails.
-func (r *ExperienceRepository) CleanupExpired(ctx context.Context) (int64, error) {
+func (r *ExperienceRepository) CleanupExpired(ctx context.Context, tenantID string) (int64, error) {
+	// Fail closed on an empty tenant: a tenant-less DELETE purges every
+	// tenant's experiences (S-10).
+	if tenantID == "" {
+		return 0, postgres.ErrMissingTenantID
+	}
 	query := `
 		DELETE FROM experiences_1024
 		WHERE decay_at IS NOT NULL AND decay_at < NOW()
+		  AND tenant_id = $1
 	`
 
-	result, err := r.db.ExecContext(ctx, query)
+	result, err := r.db.ExecContext(ctx, query, tenantID)
 	if err != nil {
 		return 0, errors.Wrap(err, "cleanup expired experiences")
 	}
@@ -604,19 +717,22 @@ func (r *ExperienceRepository) GetStatistics(ctx context.Context, tenantID strin
 // ctx - database operation context.
 // id - experience identifier.
 // Returns error if update operation fails.
-func (r *ExperienceRepository) IncrementUsageCount(ctx context.Context, id string) error {
+func (r *ExperienceRepository) IncrementUsageCount(ctx context.Context, tenantID, id string) error {
 	if id == "" {
 		return errors.ErrInvalidArgument
+	}
+	if tenantID == "" {
+		return postgres.ErrMissingTenantID
 	}
 
 	query := `
 		UPDATE experiences_1024
 		SET usage_count = COALESCE(usage_count, 0) + 1,
 		    updated_at = NOW()
-		WHERE id = $1
+		WHERE id = $1 AND tenant_id = $2
 	`
 
-	result, err := r.db.ExecContext(ctx, query, id)
+	result, err := r.db.ExecContext(ctx, query, id, tenantID)
 	if err != nil {
 		return errors.Wrap(err, "increment usage count")
 	}
@@ -640,9 +756,12 @@ func (r *ExperienceRepository) IncrementUsageCount(ctx context.Context, id strin
 // ctx - database operation context.
 // id - experience identifier.
 // Returns error if update operation fails.
-func (r *ExperienceRepository) DecrementRank(ctx context.Context, id string) error {
+func (r *ExperienceRepository) DecrementRank(ctx context.Context, tenantID, id string) error {
 	if id == "" {
 		return errors.ErrInvalidArgument
+	}
+	if tenantID == "" {
+		return postgres.ErrMissingTenantID
 	}
 
 	// Apply a 10% score penalty, with a floor of 0.
@@ -650,10 +769,10 @@ func (r *ExperienceRepository) DecrementRank(ctx context.Context, id string) err
 		UPDATE experiences_1024
 		SET score = GREATEST(score - (score * 0.1), 0),
 		    updated_at = NOW()
-		WHERE id = $1
+		WHERE id = $1 AND tenant_id = $2
 	`
 
-	result, err := r.db.ExecContext(ctx, query, id)
+	result, err := r.db.ExecContext(ctx, query, id, tenantID)
 	if err != nil {
 		return errors.Wrap(err, "decrement rank")
 	}

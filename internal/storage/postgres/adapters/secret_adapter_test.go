@@ -2,6 +2,7 @@
 package adapters
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -281,4 +282,49 @@ func TestSecretAdapter_YAML_Comments(t *testing.T) {
 	assert.Equal(t, 2, len(items))
 	assert.Equal(t, "api_key", items[0].Key)
 	assert.Equal(t, "db_password", items[1].Key)
+}
+
+func TestSecretAdapter_ConvertTo_YAMLQuotesHostileValues(t *testing.T) {
+	adapter := NewSecretAdapter()
+
+	// Values that break hand-rolled YAML: mapping indicators, comments,
+	// newlines, quotes and leading special characters. The old writer
+	// emitted them raw, producing structurally invalid YAML.
+	jsonData := `{
+		"secrets": [
+			{
+				"key": "db_url",
+				"value": "postgres://user:p@ss:word@host:5432/db #prod",
+				"expires_at": "2026-12-31T23:59:59Z"
+			},
+			{
+				"key": "multiline",
+				"value": "line1\nline2: with colon"
+			},
+			{
+				"key": "quoted",
+				"value": "\"quoted value\""
+			}
+		]
+	}`
+
+	yamlOut, err := adapter.ConvertTo([]byte(jsonData), FormatYAML)
+	require.NoError(t, err)
+
+	// Round-trip: the generated YAML must parse back to the same secrets.
+	back, err := adapter.ParseFrom(yamlOut, FormatYAML)
+	require.NoError(t, err)
+
+	var parsed ImportData
+	require.NoError(t, json.Unmarshal(back, &parsed))
+	require.Len(t, parsed.Secrets, 3)
+
+	byKey := map[string]SecretImportItem{}
+	for _, s := range parsed.Secrets {
+		byKey[s.Key] = s
+	}
+	assert.Equal(t, "postgres://user:p@ss:word@host:5432/db #prod", byKey["db_url"].Value)
+	assert.Equal(t, "line1\nline2: with colon", byKey["multiline"].Value)
+	assert.Equal(t, "\"quoted value\"", byKey["quoted"].Value)
+	assert.Equal(t, "2026-12-31T23:59:59Z", byKey["db_url"].ExpiresAt)
 }

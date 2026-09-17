@@ -10,7 +10,7 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
-	experience "github.com/Timwood0x10/ares/internal/ares_experience"
+	experience "github.com/Timwood0x10/ares/internal/runtime/memory/experience"
 	storage_models "github.com/Timwood0x10/ares/internal/storage/postgres/models"
 )
 
@@ -50,10 +50,21 @@ func (s *RetrievalService) searchSingleQuery(ctx context.Context, q WeightedQuer
 					mu.Lock()
 					vectorResults = append(vectorResults, results...)
 					mu.Unlock()
+					s.retrievalGuard.RecordEmbeddingSuccess()
+				} else {
+					// The embedding call failed (getEmbedding returns nil on
+					// any error). Recording it as a success — as the old code
+					// did unconditionally — kept the breaker closed forever,
+					// so a dead embedding service was never isolated.
+					s.retrievalGuard.RecordEmbeddingFailure()
 				}
-				s.retrievalGuard.RecordEmbeddingSuccess()
 			} else {
-				s.retrievalGuard.RecordEmbeddingFailure()
+				// Circuit open: the request was rejected, not executed. Do
+				// NOT record a failure — the rejection carries no evidence
+				// about the backend, and (pre-fix) recording it refreshed
+				// the breaker's lastFailureTime on every rejected call,
+				// pushing the half-open probe window forward forever so a
+				// recovered embedding service was never re-probed.
 				s.logger.Warn("Embedding circuit breaker open", "query", q.Query, "error", err)
 			}
 		}
@@ -151,6 +162,17 @@ func (s *RetrievalService) searchKnowledgeVector(ctx context.Context, embedding 
 		return []*SearchResult{}
 	}
 
+	// Nil guard, symmetric with searchExperienceVector / searchToolsVector.
+	// NewRetrievalService takes kbRepo as a caller-supplied argument and does
+	// not validate it; a nil repository here used to dereference and panic
+	// instead of degrading to "no knowledge results" the way its siblings do.
+	if s.kbRepo == nil {
+		if s.logger != nil {
+			s.logger.Debug("KnowledgeRepository not available, skipping knowledge vector search")
+		}
+		return []*SearchResult{}
+	}
+
 	// Use Repository layer to search knowledge base
 	chunks, err := s.kbRepo.SearchByVector(ctx, embedding, req.TenantID, req.Plan.TopK)
 	if err != nil {
@@ -217,6 +239,32 @@ func (s *RetrievalService) searchExperienceVector(ctx context.Context, embedding
 	return s.convertExperiencesToResults(experiences)
 }
 
+// toAPIExperience converts one storage-model experience to the API model.
+// Problem/Solution map from the raw Input/Output columns — the vector-search
+// scan only populates the raw pair, and leaving the API fields empty made
+// every ranked experience carry an empty Solution
+// (convertAPIExperiencesToResults reads it as Content). Same mapping as the
+// bootstrap distillation adapter (provide_distillation.go).
+func toAPIExperience(exp *storage_models.Experience) *experience.Experience {
+	return &experience.Experience{
+		ID:               exp.ID,
+		TenantID:         exp.TenantID,
+		Type:             exp.Type,
+		Problem:          exp.Input,
+		Solution:         exp.Output,
+		Constraints:      exp.Constraints,
+		Embedding:        exp.Embedding,
+		EmbeddingModel:   exp.EmbeddingModel,
+		EmbeddingVersion: exp.EmbeddingVersion,
+		Score:            exp.Score,
+		Success:          exp.Success,
+		AgentID:          exp.AgentID,
+		UsageCount:       exp.GetUsageCount(), // metadata["usage_count"] is authoritative for backward compatibility
+		DecayAt:          exp.DecayAt,
+		CreatedAt:        exp.CreatedAt,
+	}
+}
+
 // applyExperienceRanking applies ranking and conflict resolution to experiences.
 // Args:
 // ctx - operation context.
@@ -241,25 +289,7 @@ func (s *RetrievalService) applyExperienceRanking(ctx context.Context, experienc
 			}
 		}
 		baseScores[i] = semanticScore
-
-		// Convert to API model
-		apiExperiences[i] = &experience.Experience{
-			ID:               exp.ID,
-			TenantID:         exp.TenantID,
-			Type:             exp.Type,
-			Problem:          exp.Problem,
-			Solution:         exp.Solution,
-			Constraints:      exp.Constraints,
-			Embedding:        exp.Embedding,
-			EmbeddingModel:   exp.EmbeddingModel,
-			EmbeddingVersion: exp.EmbeddingVersion,
-			Score:            exp.Score,
-			Success:          exp.Success,
-			AgentID:          exp.AgentID,
-			UsageCount:       exp.GetUsageCount(), // metadata["usage_count"] is authoritative for backward compatibility
-			DecayAt:          exp.DecayAt,
-			CreatedAt:        exp.CreatedAt,
-		}
+		apiExperiences[i] = toAPIExperience(exp)
 	}
 
 	// Apply ranking
@@ -443,6 +473,15 @@ func (s *RetrievalService) bm25Search(ctx context.Context, req *SearchRequest) [
 
 // bm25SearchKnowledge performs BM25 search on knowledge base.
 func (s *RetrievalService) bm25SearchKnowledge(ctx context.Context, query string, tenantID string, limit int) []*SearchResult {
+	// Nil guard, symmetric with bm25SearchExperience / bm25SearchTools — see
+	// searchKnowledgeVector for why a nil kbRepo must degrade, not panic.
+	if s.kbRepo == nil {
+		if s.logger != nil {
+			s.logger.Debug("KnowledgeRepository not available, skipping knowledge BM25 search")
+		}
+		return []*SearchResult{}
+	}
+
 	// Use Repository layer for keyword search
 	chunks, err := s.kbRepo.SearchByKeyword(ctx, query, tenantID, limit)
 	if err != nil {

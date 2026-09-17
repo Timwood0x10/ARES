@@ -289,38 +289,9 @@ CREATE INDEX idx_events_stream_version ON events (stream_id, version);
 CREATE INDEX idx_events_created_at ON events (created_at);
 ```
 
-## 与 Leader 故障转移的集成
-
-Event Sourcing 用完整的事件日志替代基于 Checkpoint 的恢复。不再依赖周期性快照，而是记录每次状态转换：
-
-```mermaid
-sequenceDiagram
-    participant Leader
-    participant Store as EventStore
-    participant Super as Supervisor
-    participant New as New Leader
-
-    Leader->>Store: Append(failover.triggered)
-    Leader--xSuper: 心跳超时
-
-    Super->>Store: Read("leader-main")
-    Store-->>Super: [agent.started, task.created, task.dispatched, ...]
-
-    Super->>New: 重放事件
-    New->>New: 从事件流重建状态
-    New->>Store: Append(failover.completed)
-```
-
-新 Leader 重放事件流以重建：
-- 哪些任务已分发但未完成
-- 哪些 Agent 处于活跃状态
-- 最后的会话状态
-
-这比 Checkpoint 更可靠，因为快照之间的状态不会丢失。
-
 ## DLQ 自动重试
 
-失败的消息处理与 `internal/ares_protocol/ahp/dlq.go` 中的 Dead Letter Queue (DLQ) 集成。`DLQProcessor` 在可配置的间隔内重试失败的条目：
+失败的消息处理与 `internal/runtime/protocol/ahp/dlq.go` 中的 Dead Letter Queue (DLQ) 集成。`DLQProcessor` 在可配置的间隔内重试失败的条目：
 
 ```go
 dlq := ahp.NewDLQ(10000)

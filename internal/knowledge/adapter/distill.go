@@ -2,12 +2,13 @@ package adapter
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 
-	"github.com/Timwood0x10/ares/api/embedding"
-	"github.com/Timwood0x10/ares/internal/ares_memory/distillation"
+	"github.com/Timwood0x10/ares/internal/embedding"
 	"github.com/Timwood0x10/ares/internal/knowledge"
+	"github.com/Timwood0x10/ares/internal/runtime/memory/distillation"
 )
 
 // ConversationDistiller is the minimal interface for distilling conversations
@@ -171,13 +172,13 @@ func (b *DistillBridge) DistillConversation(
 	userID string,
 ) ([]*knowledge.KnowledgeObject, error) {
 	if b.distiller == nil {
-		return nil, fmt.Errorf("distill bridge: distiller is nil")
+		return nil, errors.New("distill bridge: distiller is nil")
 	}
 	if len(messages) == 0 {
-		return nil, fmt.Errorf("distill bridge: no messages to distill")
+		return nil, errors.New("distill bridge: no messages to distill")
 	}
 
-	// Phase 1: run the existing Memory Distiller.
+	// Step 1: run the existing Memory Distiller.
 	memories, err := b.distiller.DistillConversation(ctx, conversationID, messages, tenantID, userID)
 	if err != nil {
 		return nil, fmt.Errorf("distill bridge: distill conversation %q: %w", conversationID, err)
@@ -186,17 +187,31 @@ func (b *DistillBridge) DistillConversation(
 		return nil, nil
 	}
 
-	// Phase 2: convert Memory → KnowledgeObject.
+	// Step 2: convert Memory → KnowledgeObject.
+	//
+	// Objects are stamped with the CALLER'S tenant, not the bridge's fixed
+	// namespace. The bridge namespace is a construction-time constant that
+	// production wiring sets to "default" (ares_bootstrap/knowledge_akg.go),
+	// so using it here put every tenant's distilled facts into one corpus:
+	// HybridSearch recalled them cross-tenant, and FindDuplicate — which is
+	// namespace-scoped — marked a fresh fact superseded because some other
+	// tenant had stored something similar (silent fact loss on top of the
+	// leak). An empty tenantID keeps the bridge namespace so callers that
+	// genuinely have no tenant behave exactly as before.
+	ns := b.namespace
+	if tenantID != "" {
+		ns = tenantID
+	}
 	pointers := make([]*distillation.Memory, len(memories))
 	for i := range memories {
 		pointers[i] = &memories[i]
 	}
-	objects := b.memoryAdapter.FromMemories(pointers, b.namespace)
+	objects := b.memoryAdapter.FromMemories(pointers, ns)
 	if len(objects) == 0 {
 		return nil, nil
 	}
 
-	// Phase 3: run through AKF KnowledgePipeline.
+	// Step 3: run through AKF KnowledgePipeline.
 	if b.pipeline != nil {
 		processed := make([]*knowledge.KnowledgeObject, 0, len(objects))
 		for _, obj := range objects {
@@ -216,25 +231,33 @@ func (b *DistillBridge) DistillConversation(
 		objects = objects[:b.gate.MaxFactsPerIngest]
 	}
 
-	// Phase 3.5: extract rule-based Relations from each object's text.
+	// extract rule-based Relations from each object's text.
 	// Relations feed the quality gate (ExtractionScore boost) and downstream
 	// graph construction.
 	b.extractRelations(objects)
 
-	// Phase 3.6: embedding + dedup. Requires both emb and store; dedup
+	// embedding + dedup. Requires both emb and store; dedup
 	// additionally requires gate.EnableDedup. Superseded objects skip the
-	// quality gate in phase 3.7.
-	b.embedAndDedup(ctx, objects)
+	// quality gate during scoring. Representations are collected but NOT
+	// yet persisted: the Postgres FK (akf_representations.object_id →
+	// akf_objects.id) requires the parent object to exist first.
+	reps := b.embedAndDedup(ctx, objects)
 
-	// Phase 3.7: quality gate. Score each non-superseded object; the
-	// resulting Quality and Confidence drive the promote decision in phase 4.
+	// quality gate. Score each non-superseded object; the
+	// resulting Quality and Confidence drive the promote decision at persist.
 	b.scoreQuality(objects)
 
-	// Phase 4: persist to KnowledgeStore and promote qualifying candidates.
-	return objects, b.persistAndPromote(ctx, objects)
+	// persist to KnowledgeStore and promote qualifying candidates.
+	if err := b.persistAndPromote(ctx, objects); err != nil {
+		return objects, err
+	}
+
+	// Objects now exist in the store; representations can reference them.
+	b.saveRepresentations(ctx, reps)
+	return objects, nil
 }
 
-// extractRelations runs Phase 3.5: it populates obj.Relations for each object
+// extractRelations populates obj.Relations for each object
 // using the rule-based RelationExtractor. Relations feed the quality gate
 // (ExtractionScore boost) and downstream graph construction.
 func (b *DistillBridge) extractRelations(objects []*knowledge.KnowledgeObject) {
@@ -243,14 +266,16 @@ func (b *DistillBridge) extractRelations(objects []*knowledge.KnowledgeObject) {
 	}
 }
 
-// embedAndDedup runs Phase 3.6: it embeds each object, stores the
-// Representation, and marks superseded duplicates. Requires both emb and
-// store; dedup additionally requires gate.EnableDedup. Superseded objects
-// skip the quality gate in phase 3.7. Does nothing when emb or store is nil.
-func (b *DistillBridge) embedAndDedup(ctx context.Context, objects []*knowledge.KnowledgeObject) {
+// embedAndDedup embeds each object and marks superseded duplicates.
+// Requires both emb and store; dedup additionally requires gate.EnableDedup.
+// Superseded objects skip the quality gate. Returns the representations for
+// later persistence (the caller must save them AFTER store.Save so the FK
+// constraint is satisfied). Does nothing when emb or store is nil.
+func (b *DistillBridge) embedAndDedup(ctx context.Context, objects []*knowledge.KnowledgeObject) []*knowledge.Representation {
 	if b.emb == nil || b.store == nil {
-		return
+		return nil
 	}
+	var reps []*knowledge.Representation
 	for _, obj := range objects {
 		text := obj.Normalized
 		if text == "" {
@@ -263,22 +288,30 @@ func (b *DistillBridge) embedAndDedup(ctx context.Context, objects []*knowledge.
 			continue
 		}
 		vec := toFloat32(vecF64)
-		rep := &knowledge.Representation{
+		reps = append(reps, &knowledge.Representation{
 			ID:        "rep_" + obj.ID,
 			ObjectID:  obj.ID,
 			Model:     b.model,
 			Dimension: len(vec),
 			Vector:    vec,
-		}
-		if rErr := b.store.SaveRepresentation(ctx, rep); rErr != nil {
-			// best-effort: representation is not required for Save.
-			slog.Warn("distill bridge: save representation",
-				"object_id", obj.ID, "error", rErr)
-		}
+		})
 		if !b.gate.EnableDedup {
 			continue
 		}
-		dup, dErr := knowledge.FindDuplicate(ctx, b.store, vec, b.model, b.gate.DedupThreshold)
+		dup, dErr := knowledge.FindDuplicate(ctx, b.store, knowledge.DuplicateQuery{
+			// Scoped to the object's OWN namespace, which DistillConversation
+			// stamps with the caller's tenant. Scoping to the bridge's fixed
+			// namespace was correct only while every object shared it; once
+			// objects are tenant-attributed, comparing against the bridge
+			// namespace would either match nothing (tenant objects live
+			// elsewhere) or — when the bridge namespace is still in use —
+			// compare one tenant's fact against another's and mark the fresh
+			// one superseded.
+			Namespace: obj.Namespace,
+			Vector:    vec,
+			Model:     b.model,
+			Threshold: b.gate.DedupThreshold,
+		})
 		if dErr != nil {
 			slog.Warn("distill bridge: find duplicate",
 				"object_id", obj.ID, "error", dErr)
@@ -288,12 +321,25 @@ func (b *DistillBridge) embedAndDedup(ctx context.Context, objects []*knowledge.
 			obj.Status = knowledge.StatusSuperseded
 		}
 	}
+	return reps
 }
 
-// scoreQuality runs Phase 3.7: it scores each non-superseded object and sets
+// saveRepresentations persists representations after the parent objects
+// exist in the store. Best-effort: a representation failure does not roll
+// back the already-saved objects.
+func (b *DistillBridge) saveRepresentations(ctx context.Context, reps []*knowledge.Representation) {
+	for _, rep := range reps {
+		if rErr := b.store.SaveRepresentation(ctx, rep); rErr != nil {
+			slog.Warn("distill bridge: save representation",
+				"object_id", rep.ObjectID, "error", rErr)
+		}
+	}
+}
+
+// scoreQuality scores each non-superseded object and sets
 // its Status, Quality, Confidence, and EmbeddingModel. Superseded objects
 // skip the gate; the resulting Quality and Confidence drive the promote
-// decision in phase 4.
+// decision at persist.
 func (b *DistillBridge) scoreQuality(objects []*knowledge.KnowledgeObject) {
 	for _, obj := range objects {
 		if obj.Status == knowledge.StatusSuperseded {
@@ -309,7 +355,7 @@ func (b *DistillBridge) scoreQuality(objects []*knowledge.KnowledgeObject) {
 	}
 }
 
-// persistAndPromote runs Phase 4: it saves all objects to the Store and
+// persistAndPromote saves all objects to the Store and
 // promotes candidates whose Confidence >= MinFinalScore to StatusActive
 // (best-effort; promotion failures are logged but do not roll back the Save).
 // Returns a wrapped error if Save fails. Does nothing when store is nil.
@@ -327,7 +373,7 @@ func (b *DistillBridge) persistAndPromote(ctx context.Context, objects []*knowle
 		if obj.Confidence < b.gate.MinFinalScore {
 			continue
 		}
-		if pErr := b.store.Promote(ctx, obj.ID, obj.Quality); pErr != nil {
+		if pErr := b.store.Promote(ctx, obj.Namespace, obj.ID, obj.Quality); pErr != nil {
 			// best-effort: promotion failure does not roll back the Save.
 			slog.Warn("distill bridge: promote object",
 				"object_id", obj.ID, "error", pErr)

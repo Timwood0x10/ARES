@@ -8,13 +8,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/agentfabric"
 	"github.com/Timwood0x10/ares/internal/agentipc"
 	"github.com/Timwood0x10/ares/internal/agents/sub"
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/aresrecovery"
 	"github.com/Timwood0x10/ares/internal/core/models"
-	"github.com/Timwood0x10/ares/internal/taskfabric"
+	"github.com/Timwood0x10/ares/internal/fabric/agent"
+	"github.com/Timwood0x10/ares/internal/fabric/task"
 )
 
 // Fixture identities shared across executors, fabrics, and assertions so the
@@ -38,7 +38,7 @@ const (
 
 // holyGrailChildOutput is the configurable payload a child agent returns.
 // The test mutates it between runs to prove the parent's synthesis tracks
-// the child's REAL output (H2 §10.4: synthesis must not be hardcoded).
+// the child's REAL output (synthesis must not be hardcoded).
 type holyGrailChildOutput struct {
 	mu  sync.Mutex // guards val
 	val string
@@ -191,7 +191,7 @@ func (e *holyGrailParentExecutor) reset() {
 	e.finalResult = ""
 }
 
-// holyGrailReplacementExecutor is the W1/E1 replacement for a killed child.
+// holyGrailReplacementExecutor is the recovery replacement for a killed child.
 type holyGrailReplacementExecutor struct {
 	id      string
 	typ     models.AgentType
@@ -329,7 +329,7 @@ func newHolyGrailFixture(t *testing.T, ctx context.Context) *holyGrailFixture {
 	return f
 }
 
-// startKernel wires the scheduler and the W1 recovery loop over the fabric
+// startKernel wires the scheduler and the recovery loop over the fabric
 // and launches both managed workers (both stop via ctx).
 func (f *holyGrailFixture) startKernel(t *testing.T, ctx context.Context) {
 	t.Helper()
@@ -391,8 +391,7 @@ func waitForChildTask(t *testing.T, f *holyGrailFixture, id string) {
 }
 
 // assertSynthesis reads the parent's final synthesis and asserts it contains
-// both children's real outputs, returning the synthesis for change detection
-// (H2 §10.4).
+// both children's real outputs, returning the synthesis for change detection.
 func assertSynthesis(t *testing.T, f *holyGrailFixture, wantB, wantC string) string {
 	t.Helper()
 	f.parentExec.mu.Lock()
@@ -414,7 +413,7 @@ func assertSynthesis(t *testing.T, f *holyGrailFixture, wantB, wantC string) str
 // ─── The holy-grail E2E test ───
 
 // TestE2E_HolyGrail is the single continuous end-to-end test that proves the
-// full Agent-OS thesis (aresos-agentos-plan H2 §10.2/§10.4 "圣杯测试"):
+// full Agent-OS thesis ("the holy-grail test"):
 //
 //	User → Submit(root task) → Scheduler → Agent A (quantum 1: spawn B,C)
 //	  → B,C scheduled → B,C run → IPC results back to A
@@ -422,7 +421,7 @@ func assertSynthesis(t *testing.T, f *holyGrailFixture, wantB, wantC string) str
 //	  → kill B → B' recovery → converge
 //
 // The synthesis assertion: changing the child's output changes the final
-// result (§10.4).
+// result.
 func TestE2E_HolyGrail(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -487,7 +486,7 @@ func TestE2E_HolyGrail(t *testing.T) {
 
 	synthesis2 := assertSynthesis(t, f, outB2, outC2)
 	if synthesis == synthesis2 {
-		t.Fatalf("synthesis must change when child output changes (§10.4): got %q both times", synthesis)
+		t.Fatalf("synthesis must change when child output changes: got %q both times", synthesis)
 	}
 
 	// ── 11. Event stream assertions ──
@@ -512,5 +511,5 @@ func TestE2E_HolyGrail(t *testing.T) {
 	}
 
 	t.Logf("Holy Grail PASS: Submit→spawn→schedule→IPC synthesis (child-driven)→" +
-		"kill→recovery→converge; synthesis tracks child output (§10.4)")
+		"kill→recovery→converge; synthesis tracks child output")
 }

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/Timwood0x10/ares/internal/core/models"
 )
 
 func TestFactory(t *testing.T) {
@@ -702,7 +704,81 @@ func TestValidator(t *testing.T) {
 	})
 
 	t.Run("validate RecommendResult", func(t *testing.T) {
-		t.Skip("Validator has issues with custom types - needs fix in validator implementation")
+		v := NewValidator()
+
+		// Occasion and StyleTag are NAMED string types. The validator used to
+		// type-assert `.(string)` on them, which fails for a named type, so a
+		// fully populated domain result was rejected. This test is the
+		// regression guard for that behaviour.
+		result := &models.RecommendResult{
+			SessionID:  "sess-1",
+			UserID:     "user-1",
+			Reason:     "matches the requested style",
+			TotalPrice: 129.5,
+			MatchScore: 0.82,
+			Occasion:   models.Occasion("casual"),
+			Season:     "summer",
+			Metadata:   map[string]any{"channel": "web"},
+			Items: []*models.RecommendItem{
+				{
+					ItemID:           "item-1",
+					Category:         "top", // must be one of the schema's category enum values
+					Name:             "Linen Shirt",
+					Brand:            "Acme",
+					Price:            129.5,
+					Description:      "lightweight",
+					AgentPreferences: []models.StyleTag{models.StyleTag("minimal")},
+					Colors:           []string{"white"},
+				},
+			},
+		}
+
+		if err := v.ValidateRecommendResult(result); err != nil {
+			t.Fatalf("valid RecommendResult should pass validation, got: %v", err)
+		}
+	})
+
+	t.Run("reject RecommendResult with out-of-enum occasion", func(t *testing.T) {
+		v := NewValidator()
+
+		result := &models.RecommendResult{
+			SessionID:  "sess-1",
+			UserID:     "user-1",
+			Occasion:   models.Occasion("blacktie"), // not in the occasion enum
+			Season:     "summer",
+			MatchScore: 0.5,
+			Items: []*models.RecommendItem{
+				{ItemID: "item-1", Category: "top", Name: "Tux"},
+			},
+		}
+
+		err := v.ValidateRecommendResult(result)
+		if err == nil {
+			t.Fatal("out-of-enum occasion should be rejected — the named-type fix must not make validation permissive")
+		}
+		if !strings.Contains(err.Error(), "occasion") {
+			t.Errorf("error should name the offending field, got: %v", err)
+		}
+	})
+
+	t.Run("accept RecommendResult with unset optional enum fields", func(t *testing.T) {
+		v := NewValidator()
+
+		// Occasion/Season are documented as optional domain fields. A Go struct
+		// carries them as "" when unset, and ValidateRecommendResult always puts
+		// the key into the map, so a strict enum check would reject every
+		// general-purpose result that simply does not use these fields.
+		result := &models.RecommendResult{
+			SessionID: "sess-1",
+			UserID:    "user-1",
+			Items: []*models.RecommendItem{
+				{ItemID: "item-1", Category: "top", Name: "Tee"},
+			},
+		}
+
+		if err := v.ValidateRecommendResult(result); err != nil {
+			t.Fatalf("unset optional enum fields should validate, got: %v", err)
+		}
 	})
 
 	t.Run("validate RecommendResult nil", func(t *testing.T) {

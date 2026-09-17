@@ -2,6 +2,7 @@ package builtin
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -15,13 +16,29 @@ func TestNewPDFTool(t *testing.T) {
 	assert.Equal(t, "pdf_tool", tool.Name())
 }
 
-func TestPDFTool_FileNotFound(t *testing.T) {
+func TestPDFTool_DenyByDefault(t *testing.T) {
+	// Without an allowed directory the tool refuses every read (REVIEW #30).
+	// This is the regression test for the arbitrary-file-read + path-existence
+	// oracle that the old "empty allowedDir = any path" behavior allowed.
 	tool := NewPDFTool()
 	ctx := context.Background()
 
 	result, err := tool.Execute(ctx, map[string]interface{}{
 		"operation": "extract_text",
-		"file_path": "/tmp/nonexistent-test-file.pdf",
+		"file_path": "/etc/passwd",
+	})
+	require.NoError(t, err)
+	require.False(t, result.Success)
+	assert.Contains(t, result.Error, "access denied")
+}
+
+func TestPDFTool_FileNotFound(t *testing.T) {
+	tool := NewPDFTool(WithAllowedDir("testdata"))
+	ctx := context.Background()
+
+	result, err := tool.Execute(ctx, map[string]interface{}{
+		"operation": "extract_text",
+		"file_path": "testdata/nonexistent.pdf",
 	})
 	require.NoError(t, err)
 	require.False(t, result.Success)
@@ -72,7 +89,7 @@ func TestPDFTool_IsIdempotent(t *testing.T) {
 // TestPDFTool_ExtractTextFromRealPDF tests with an actual PDF file.
 // Uses testdata/hello.pdf to verify the extraction works end-to-end.
 func TestPDFTool_ExtractTextFromRealPDF(t *testing.T) {
-	tool := NewPDFTool()
+	tool := NewPDFTool(WithAllowedDir("testdata"))
 	ctx := context.Background()
 
 	pdfPath := filepath.Join("testdata", "hello.pdf")
@@ -127,4 +144,58 @@ func TestPDFTool_AllowedDir_RejectsOutside(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, result.Success)
 	assert.Contains(t, result.Error, "access denied")
+}
+
+// TestPDFTool_SymlinkEscapeDenied is the #60 regression: the containment
+// check resolved symlinks, but the reader opened the ORIGINAL path — a
+// symlink inside the allowed directory could be swapped (TOCTOU) between
+// check and open, or the unresolved path could point outside after the check
+// passed on the resolved twin. Both check and read must use the same
+// resolved path.
+func TestPDFTool_SymlinkEscapeDenied(t *testing.T) {
+	tmp := t.TempDir()
+	allowed := filepath.Join(tmp, "allowed")
+	require.NoError(t, os.MkdirAll(allowed, 0o750))
+
+	// A secret outside the allowed dir, and a symlink inside pointing to it.
+	secret := filepath.Join(tmp, "secret.pdf")
+	require.NoError(t, os.WriteFile(secret, []byte("%PDF-1.4 fake"), 0o600))
+	link := filepath.Join(allowed, "escape.pdf")
+	require.NoError(t, os.Symlink(secret, link))
+
+	tool := NewPDFTool(WithAllowedDir(allowed))
+	result, err := tool.Execute(context.Background(), map[string]interface{}{
+		"operation": "extract_text",
+		"file_path": link,
+	})
+	require.NoError(t, err)
+	require.False(t, result.Success)
+	assert.Contains(t, result.Error, "access denied",
+		"a symlink inside the allowed dir must not read files outside it")
+}
+
+// TestPDFTool_SymlinkToInsideAllowed: a symlink INSIDE the allowed dir
+// pointing at another file INSIDE the allowed dir must keep working (the
+// resolution must not over-reject).
+func TestPDFTool_SymlinkToInsideAllowed(t *testing.T) {
+	tmp := t.TempDir()
+	allowed := filepath.Join(tmp, "allowed")
+	require.NoError(t, os.MkdirAll(allowed, 0o750))
+
+	target := filepath.Join(allowed, "real.pdf")
+	require.NoError(t, os.WriteFile(target, []byte("%PDF-1.4 fake"), 0o600))
+	link := filepath.Join(allowed, "alias.pdf")
+	require.NoError(t, os.Symlink(target, link))
+
+	tool := NewPDFTool(WithAllowedDir(allowed))
+	result, err := tool.Execute(context.Background(), map[string]interface{}{
+		"operation": "extract_text",
+		"file_path": link,
+	})
+	require.NoError(t, err)
+	// The path must be admitted (not "access denied"); the minimal fixture
+	// may still fail to parse.
+	if !result.Success {
+		assert.NotContains(t, result.Error, "access denied")
+	}
 }

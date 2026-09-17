@@ -1,5 +1,5 @@
 // Package outputguard validates agent outputs before they are consumed
-// downstream (原语6: 框架级输出校验). A guard checks structural and
+// downstream (primitive 6: framework-level output validation). A guard checks structural and
 // consistency invariants of a TaskResult so malformed output — a result that
 // claims success while carrying an error, or a failure with no explanation —
 // is rejected at the boundary instead of propagating into aggregation,

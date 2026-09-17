@@ -6,11 +6,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/agentfabric"
+	"github.com/Timwood0x10/ares/internal/fabric/agent"
 )
 
-// This file is the P3.4 + P4 end-to-end proof using the IPC Bus
-// (aresos-plan.md §P3.4 + §P4 验收):
+// This file is the spawn + IPC end-to-end proof using the IPC Bus:
 //
 //  1. Agent A spawns B/C/D as same-level peers via agentfabric.
 //  2. B/C/D register handlers on the IPC Bus.
@@ -21,10 +20,10 @@ import (
 //  7. Child can communicate with non-parent (B ↔ C).
 //
 // This test does NOT use the leader path — it proves "A ≡ B ≡ C ≡ D"
-// (peer equivalence) from P4 acceptance.
+// (peer equivalence).
 
-// TestP3_4_P4_EndToEndSpawnIPC is the combined P3.4 + P4 acceptance scenario.
-func TestP3_4_P4_EndToEndSpawnIPC(t *testing.T) {
+// TestEndToEndSpawnIPC is the combined end-to-end spawn scenario.
+func TestEndToEndSpawnIPC(t *testing.T) {
 	ctx := context.Background()
 	agents := agentfabric.NewFabric()
 	bus := NewBus()
@@ -160,10 +159,10 @@ func TestP3_4_P4_EndToEndSpawnIPC(t *testing.T) {
 	}
 }
 
-// TestP4_ChildCanCommunicateWithNonParent verifies P4 acceptance:
+// TestChildCanCommunicateWithNonParent verifies peer acceptance:
 // "Child can communicate with non-parent" — two children of different
 // parents can message each other directly.
-func TestP4_ChildCanCommunicateWithNonParent(t *testing.T) {
+func TestChildCanCommunicateWithNonParent(t *testing.T) {
 	ctx := context.Background()
 	agents := agentfabric.NewFabric()
 	bus := NewBus()
@@ -223,11 +222,11 @@ func TestP4_ChildCanCommunicateWithNonParent(t *testing.T) {
 	}
 }
 
-// TestP4_NoLeaderPermissionBypass verifies P4 acceptance:
-// "不存在 Leader 权限绕过" — there is no special "leader" agent that
+// TestNoLeaderPermissionBypass verifies the peer model invariant:
+// "no Leader privilege bypass exists" — there is no special "leader" agent that
 // can bypass the IPC layer. All agents use the same Send/Request/Reply
 // primitives. A leader, if it exists, is just another peer on the bus.
-func TestP4_NoLeaderPermissionBypass(t *testing.T) {
+func TestNoLeaderPermissionBypass(t *testing.T) {
 	ctx := context.Background()
 	bus := NewBus()
 

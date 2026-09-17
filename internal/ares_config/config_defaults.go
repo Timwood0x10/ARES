@@ -10,21 +10,59 @@ import (
 // constants (rather than inline literals) so goconst stays quiet and the
 // values are grep-able.
 const (
-	defaultServerHost   = "localhost"
-	defaultLLMProvider  = "ollama"
-	defaultLLMModel     = "gemma4"
+	// defaultServerHost is the loopback bind (M-S1): the introspect read
+	// side carries task payloads, so the default must be an explicit
+	// loopback IP — never a wildcard, and not the "localhost" name (which
+	// a hosts-file remap could point off-loopback).
+	defaultServerHost  = "127.0.0.1"
+	defaultLLMProvider = "ollama"
+	// defaultLLMModel must name a model the default provider (Ollama) can
+	// actually serve, and must match the SDK's default (sdk.defaultModel) so a
+	// zero-config serve and a zero-config SDK run behave the same. The previous
+	// value ("gemma4") existed in no Ollama registry, so the default config
+	// failed on its first inference.
+	defaultLLMModel     = "llama3.2"
 	defaultOutputFormat = "simple"
 	defaultStorageType  = "postgres"
 	defaultPGVectorTbl  = "embeddings"
 	providerOpenAI      = "openai"
 	providerOpenRouter  = "openrouter"
 	providerAnthropic   = "anthropic"
+	// defaultSubAgentTimeoutSeconds matches the shipped ares.yaml. Validate
+	// requires a positive sub-agent timeout, so leaving it at zero made
+	// every config that listed agents without an explicit timeout — and the
+	// whole NewMinimalConfig path, which never went through Validate —
+	// invalid.
+	defaultSubAgentTimeoutSeconds = 120
 )
 
 // DefaultArchiveDir is the default round-archive directory. Exported so the
 // minimal service path (api_impl) can reuse the exact same default without
 // duplicating the literal, keeping the two wiring paths in sync.
 const DefaultArchiveDir = ".context/rounds"
+
+// DefaultEvolution* are the config-layer defaults setDefaults applies when the
+// YAML leaves an evolution field unset. Exported so the bootstrap GA wiring can
+// tell "operator tuned this field" apart from "setDefaults filled it in": every
+// field is non-zero by the time Bootstrap runs, so a plain non-zero guard
+// cannot make that distinction (see applyGATuning).
+//
+// These deliberately differ from the GA engine's own defaults in
+// ares_evolution.DefaultSystemConfig (e.g. EliteCount 2 vs 3, BreedingPoolRatio
+// 0.5 vs 0.6); fields the operator did not tune must keep the engine values.
+const (
+	DefaultEvolutionPopulationSize    = 20
+	DefaultEvolutionEliteCount        = 2
+	DefaultEvolutionSurvivalRate      = 0.6
+	DefaultEvolutionMutationRate      = 0.2
+	DefaultEvolutionMinMutationRate   = 0.05
+	DefaultEvolutionMaxMutationRate   = 0.5
+	DefaultEvolutionGenerations       = 15
+	DefaultEvolutionBreedingPoolRatio = 0.5
+	DefaultEvolutionSelectionStrategy = "tournament"
+)
+
+// DefaultToolProjection* removed with their package.
 
 // NewMinimalConfig builds a fully-runnable Config from only the LLM endpoint
 // details, so a user does not need a YAML file to start the runtime: everything
@@ -54,6 +92,11 @@ func NewMinimalConfig(baseURL, apiKey, model string) *Config {
 		cfg.LLM.Provider = defaultLLMProvider // ollama
 	}
 	cfg.LLM.Model = model
+	// Assemble a default agent population BEFORE setDefaults so the defaults
+	// loop reaches it: assigning Sub afterwards left every sub-agent with a
+	// zero Timeout, which Validate rejects ("timeout must be positive"). A
+	// user who wants different agents supplies a config file instead.
+	cfg.Agents.Sub = defaultSubAgents()
 	// Memory defaults to enabled (nil Enabled field → IsEnabled() == true), so
 	// a minimal startup always satisfies the kernel scheduler's Memory
 	// requirement.
@@ -65,11 +108,6 @@ func NewMinimalConfig(baseURL, apiKey, model string) *Config {
 			cfg.LLM.Model = defaultLLMModel
 		}
 	}
-	// Assemble a default agent population so the runtime is immediately
-	// capable of task division (coder / reviewer / researcher), even with no
-	// config file. A user who wants different agents supplies a config file
-	// instead.
-	cfg.Agents.Sub = defaultSubAgents()
 	return cfg
 }
 
@@ -126,6 +164,13 @@ func (c *Config) setDefaults() {
 	if c.LLM.ScorerAPIBurst == 0 {
 		c.LLM.ScorerAPIBurst = 20
 	}
+	// Sub-agent timeouts default so a config that names agents without
+	// timing them still satisfies Validate. An explicit value always wins.
+	for i := range c.Agents.Sub {
+		if c.Agents.Sub[i].Timeout < 1 {
+			c.Agents.Sub[i].Timeout = defaultSubAgentTimeoutSeconds
+		}
+	}
 	if c.Output.Format == "" {
 		c.Output.Format = defaultOutputFormat
 	}
@@ -177,10 +222,15 @@ func (c *Config) setDefaults() {
 	if c.Memory.MaxHistory == 0 {
 		c.Memory.MaxHistory = 10
 	}
-	// Distillation defaults: only apply threshold default when distillation
-	// is opted in. When EnableDistillation is false, leave threshold at zero
-	// so the closed loop treats it as "do not distill".
-	if c.Memory.EnableDistillation && c.Memory.DistillationThreshold == 0 {
+	// Distillation defaults (default TRUE). EnableDistillation
+	// is a *bool: nil (unset) → true, so deployments relying on
+	// Storage+Embedding alone keep distillation after the gate landed — an
+	// explicit `false` in YAML is the only way to disable it.
+	if c.Memory.EnableDistillation == nil {
+		t := true
+		c.Memory.EnableDistillation = &t
+	}
+	if c.Memory.DistillationEnabled() && c.Memory.DistillationThreshold == 0 {
 		c.Memory.DistillationThreshold = 3
 	}
 	// RAG defaults: only apply TopK/MinScore defaults when RAG is opted in.
@@ -229,43 +279,36 @@ func (c *Config) setDefaults() {
 			c.MCP.Servers[i].Timeout = 30
 		}
 	}
-	// Dashboard defaults
-	if c.Dashboard.Addr == "" {
-		c.Dashboard.Addr = ":8090"
-	}
-	if c.Dashboard.WSPingInterval == 0 {
-		c.Dashboard.WSPingInterval = 30
-	}
 	// Evolution defaults
 	if c.Evolution.PopulationSize == 0 {
-		c.Evolution.PopulationSize = 20
+		c.Evolution.PopulationSize = DefaultEvolutionPopulationSize
 	}
 	if c.Evolution.EliteCount == 0 {
-		c.Evolution.EliteCount = 2
+		c.Evolution.EliteCount = DefaultEvolutionEliteCount
 	}
 	if c.Evolution.SurvivalRate == 0 {
-		c.Evolution.SurvivalRate = 0.6
+		c.Evolution.SurvivalRate = DefaultEvolutionSurvivalRate
 	}
 	if c.Evolution.MutationRate == 0 {
-		c.Evolution.MutationRate = 0.2
+		c.Evolution.MutationRate = DefaultEvolutionMutationRate
 	}
 	if c.Evolution.MinMutationRate == 0 {
-		c.Evolution.MinMutationRate = 0.05
+		c.Evolution.MinMutationRate = DefaultEvolutionMinMutationRate
 	}
 	if c.Evolution.MaxMutationRate == 0 {
-		c.Evolution.MaxMutationRate = 0.5
+		c.Evolution.MaxMutationRate = DefaultEvolutionMaxMutationRate
 	}
 	if c.Evolution.Generations == 0 {
-		c.Evolution.Generations = 15
+		c.Evolution.Generations = DefaultEvolutionGenerations
 	}
 	if c.Evolution.BreedingPoolRatio == 0 {
-		c.Evolution.BreedingPoolRatio = 0.5
+		c.Evolution.BreedingPoolRatio = DefaultEvolutionBreedingPoolRatio
 	}
 	if c.Evolution.MinInterval == "" {
 		c.Evolution.MinInterval = "5m"
 	}
 	if c.Evolution.SelectionStrategy == "" {
-		c.Evolution.SelectionStrategy = "tournament"
+		c.Evolution.SelectionStrategy = DefaultEvolutionSelectionStrategy
 	}
 	if c.Evolution.TournamentSize == 0 {
 		c.Evolution.TournamentSize = 3
@@ -278,6 +321,7 @@ func (c *Config) setDefaults() {
 	if c.Evolution.LLMScoring.MaxCallsPerGeneration == 0 {
 		c.Evolution.LLMScoring.MaxCallsPerGeneration = 100
 	}
+	// tool_projection defaults removed with their package.
 	// Discovery defaults — opt-in via Enabled (default false). When enabled
 	// but Interval is unset, default to 5 minutes between discovery cycles.
 	if c.Discovery.Interval == 0 {

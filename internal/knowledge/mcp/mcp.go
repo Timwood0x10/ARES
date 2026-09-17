@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/knowledge"
 	"github.com/Timwood0x10/ares/internal/knowledge/compiler"
 	"github.com/Timwood0x10/ares/internal/knowledge/runtime"
+	memctx "github.com/Timwood0x10/ares/internal/tenantctx"
 )
 
 // Tools returns the AKF MCP tool definitions that can be registered
@@ -95,10 +97,14 @@ type compileContextParams struct {
 }
 
 // queryKnowledgeParams is the JSON input for the QueryKnowledge tool.
+//
+// There is deliberately no Tags filter. knowledge.Intent.Scope carries only
+// Namespaces and Types, so a tag parameter would be accepted and then silently
+// ignored — the same over-promising that Types once did. Plumb a Tags field
+// through Scope and the providers before advertising one here.
 type queryKnowledgeParams struct {
 	Text      string   `json:"text"`
 	Types     []string `json:"types,omitempty"`
-	Tags      []string `json:"tags,omitempty"`
 	Limit     int      `json:"limit"`
 	MaxTokens int      `json:"max_tokens,omitempty"`
 }
@@ -125,7 +131,7 @@ func (s *AKFService) Tools() []Tool {
 		},
 		{
 			Name:        "query_knowledge",
-			Description: "Query knowledge objects by type, tag, or text search through all providers.",
+			Description: "Query knowledge objects by type or text search through all providers.",
 			Execute:     s.handleQueryKnowledge,
 		},
 		{
@@ -136,6 +142,17 @@ func (s *AKFService) Tools() []Tool {
 	}
 }
 
+// runtimeOrErr returns the shared KnowledgeRuntime, or an error when the
+// service was constructed without one. NewAKFServiceWithStore documents that
+// rt may be nil (tool-only tests); the handlers that need it must degrade to
+// an error instead of panicking on a nil receiver.
+func (s *AKFService) runtimeOrErr() (*runtime.KnowledgeRuntime, error) {
+	if s == nil || s.Runtime == nil {
+		return nil, errors.New("akf service: runtime is nil")
+	}
+	return s.Runtime, nil
+}
+
 // handleBuildGraph executes the AKF pipeline and returns the raw graph.
 func (s *AKFService) handleBuildGraph(ctx context.Context, input string) (string, error) {
 	var params buildGraphParams
@@ -143,7 +160,7 @@ func (s *AKFService) handleBuildGraph(ctx context.Context, input string) (string
 		return "", fmt.Errorf("invalid params: %w", err)
 	}
 	if params.Goal == "" {
-		return "", fmt.Errorf("goal is required")
+		return "", errors.New("goal is required")
 	}
 	if params.MaxTokens <= 0 {
 		params.MaxTokens = 2000
@@ -152,13 +169,18 @@ func (s *AKFService) handleBuildGraph(ctx context.Context, input string) (string
 		params.ForGraph = 1000
 	}
 
+	rt, err := s.runtimeOrErr()
+	if err != nil {
+		return "", err
+	}
+
 	budget := knowledge.TokenBudget{
 		MaxTokens: params.MaxTokens,
 		ForGraph:  params.ForGraph,
 		Reserved:  params.MaxTokens - params.ForGraph,
 	}
 
-	graph, err := s.Runtime.Execute(ctx, params.Goal, budget, nil)
+	graph, err := rt.Execute(ctx, params.Goal, budget, nil)
 	if err != nil {
 		return "", fmt.Errorf("build graph: %w", err)
 	}
@@ -180,7 +202,7 @@ func (s *AKFService) handleCompileContext(ctx context.Context, input string) (st
 		return "", fmt.Errorf("invalid params: %w", err)
 	}
 	if params.Goal == "" {
-		return "", fmt.Errorf("goal is required")
+		return "", errors.New("goal is required")
 	}
 	if params.MaxTokens <= 0 {
 		params.MaxTokens = 5000
@@ -189,13 +211,18 @@ func (s *AKFService) handleCompileContext(ctx context.Context, input string) (st
 		params.ForGraph = 3000
 	}
 
+	rt, err := s.runtimeOrErr()
+	if err != nil {
+		return "", err
+	}
+
 	budget := knowledge.TokenBudget{
 		MaxTokens: params.MaxTokens,
 		ForGraph:  params.ForGraph,
 		Reserved:  params.MaxTokens - params.ForGraph,
 	}
 
-	graph, err := s.Runtime.Execute(ctx, params.Goal, budget, nil)
+	graph, err := rt.Execute(ctx, params.Goal, budget, nil)
 	if err != nil {
 		return "", fmt.Errorf("build graph: %w", err)
 	}
@@ -236,7 +263,7 @@ func (s *AKFService) handleDistillMemory(ctx context.Context, input string) (str
 		return "", fmt.Errorf("invalid params: %w", err)
 	}
 	if params.Content == "" {
-		return "", fmt.Errorf("content is required")
+		return "", errors.New("content is required")
 	}
 
 	objType := knowledge.ObjectMemory
@@ -246,8 +273,14 @@ func (s *AKFService) handleDistillMemory(ctx context.Context, input string) (str
 
 	now := time.Now()
 	obj := &knowledge.KnowledgeObject{
-		ID:         fmt.Sprintf("mem_%d", now.UnixNano()),
-		Type:       objType,
+		ID:   fmt.Sprintf("mem_%d", now.UnixNano()),
+		Type: objType,
+		// Every read path is tenant-scoped (Get/Delete/Search/UpdateStatus/
+		// Promote all filter on namespace), so an object saved without one is
+		// unreachable: StoreProvider.namespaceFor falls back through
+		// Scope.Namespaces -> tenantctx -> the provider default and never
+		// yields empty. Stamp the request tenant, defaulting the same way.
+		Namespace:  knowledgeNamespace(ctx),
 		Summary:    params.Content,
 		Normalized: params.Content,
 		Tags:       params.Tags,
@@ -278,7 +311,10 @@ func (s *AKFService) handleDistillMemory(ctx context.Context, input string) (str
 			return "", fmt.Errorf("distill memory: save object %s: %w", obj.ID, err)
 		}
 		if obj.Confidence >= s.gate.MinFinalScore {
-			if err := s.store.Promote(ctx, obj.ID, obj.Quality); err == nil {
+			// Promote is tenant-scoped: pass the SAME namespace the Save
+			// above stamped (knowledgeNamespace(ctx)), so the update lands
+			// on the row we just wrote instead of silently missing it.
+			if err := s.store.Promote(ctx, obj.Namespace, obj.ID, obj.Quality); err == nil {
 				obj.Status = knowledge.StatusActive
 			} else {
 				// best-effort: promotion failure leaves the object persisted as
@@ -321,22 +357,19 @@ func (s *AKFService) handleQueryKnowledge(ctx context.Context, input string) (st
 		params.Limit = 20
 	}
 
-	budget := knowledge.TokenBudget{
-		MaxTokens: params.MaxTokens,
-		ForGraph:  params.Limit * 100,
-	}
-	if params.MaxTokens <= 0 {
-		budget.MaxTokens = 5000
-		budget.ForGraph = 3000
-	}
-	budget.Reserved = budget.MaxTokens - budget.ForGraph
+	budget := queryKnowledgeBudget(params.Limit, params.MaxTokens)
 
 	goal := params.Text
 	if goal == "" {
 		goal = "query"
 	}
 
-	graph, err := s.Runtime.Execute(ctx, goal, budget, nil)
+	rt, err := s.runtimeOrErr()
+	if err != nil {
+		return "", err
+	}
+
+	graph, err := rt.Execute(ctx, goal, budget, queryKnowledgeConfig(params))
 	if err != nil {
 		return "", fmt.Errorf("query: %w", err)
 	}
@@ -349,4 +382,62 @@ func (s *AKFService) handleQueryKnowledge(ctx context.Context, input string) (st
 	}
 	data, _ := json.Marshal(result)
 	return string(data), nil
+}
+
+// queryKnowledgeBudget derives the token budget for a query_knowledge call.
+//
+// The previous inline arithmetic could produce a NEGATIVE Reserved: ForGraph
+// is Limit*100, so a caller asking for limit=20 with max_tokens=1000 got
+// Reserved = 1000-2000 = -1000. Reserved is clamped to at least zero here;
+// when the requested cap cannot even cover the graph allocation, the graph
+// share is reduced to what the cap allows rather than reporting a budget
+// that adds to more than it has.
+func queryKnowledgeBudget(limit, maxTokens int) knowledge.TokenBudget {
+	const defaultMaxTokens = 5000
+	const defaultForGraph = 3000
+	const tokensPerObject = 100
+
+	if maxTokens <= 0 {
+		return knowledge.TokenBudget{
+			MaxTokens: defaultMaxTokens,
+			ForGraph:  defaultForGraph,
+			Reserved:  defaultMaxTokens - defaultForGraph,
+		}
+	}
+	forGraph := limit * tokensPerObject
+	if forGraph > maxTokens {
+		forGraph = maxTokens
+	}
+	return knowledge.TokenBudget{
+		MaxTokens: maxTokens,
+		ForGraph:  forGraph,
+		Reserved:  maxTokens - forGraph,
+	}
+}
+
+// queryKnowledgeConfig maps the tool's declared type filter onto a runtime
+// Config so it reaches the providers as Intent.Scope.Types (which
+// StoreProvider honours). Previously the tool declared Types/Tags in its
+// parameter schema and advertised "by type, tag, or text search" in its
+// description, but neither was ever read — a caller filtering by type
+// received an unfiltered graph and had no way to tell.
+func queryKnowledgeConfig(p queryKnowledgeParams) *runtime.Config {
+	cfg := &runtime.Config{}
+	for _, t := range p.Types {
+		if t != "" {
+			cfg.Types = append(cfg.Types, knowledge.ObjectType(t))
+		}
+	}
+	return cfg
+}
+
+// knowledgeNamespace resolves the namespace a distill_memory write must land
+// under: the request-scoped tenant when present, otherwise "default". It
+// mirrors StoreProvider.namespaceFor's fallback so writes and reads agree on
+// which namespace holds the object.
+func knowledgeNamespace(ctx context.Context) string {
+	if ns := memctx.From(ctx); ns != "" {
+		return ns
+	}
+	return "default"
 }

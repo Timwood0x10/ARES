@@ -3,9 +3,10 @@ package sdk
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
-	"github.com/Timwood0x10/ares/api/tools"
+	tools "github.com/Timwood0x10/ares/internal/apitools"
 	"github.com/Timwood0x10/ares/internal/knowledge/compiler"
 	mcp "github.com/Timwood0x10/ares/internal/knowledge/mcp"
 	khruntime "github.com/Timwood0x10/ares/internal/knowledge/runtime"
@@ -80,7 +81,7 @@ var _ tools.Tool = (*akfToolAdapter)(nil)
 //	error - wrapped with context if any registration fails, or if rt is nil.
 func registerAKFTools(reg *tools.Registry, rt *khruntime.KnowledgeRuntime) error {
 	if rt == nil {
-		return fmt.Errorf("akf tools: knowledge runtime is nil")
+		return errors.New("akf tools: knowledge runtime is nil")
 	}
 	svc := mcp.NewAKFService(rt, compiler.NewDefaultCompiler())
 	for _, t := range svc.Tools() {

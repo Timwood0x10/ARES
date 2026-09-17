@@ -5,6 +5,433 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1]
+
+### Added
+
+- **Cross-restart task-state rebuild (release-readiness T2)**:
+  `taskfabric.Fabric.RestoreFromStore` folds the durable `task.*` event log
+  back into in-memory tasks, closing the process-crash gap (previously only
+  in-process agent death was recovered). Must-persist events (created /
+  checkpointed / completed / failed / expired) now carry the full rebuild
+  payload (capability, priority, dependencies, deadline, retry budget,
+  creation time, versioned checkpoint JSON through `MarshalCheckpoint`), and
+  the fencing epoch rides on *every* persisted event. Leases are never
+  restored — every non-terminal task folds to READY unowned with its
+  checkpoint intact and resumes through the ordinary acquire path; the fencing
+  epoch is restored monotonically (max-in-log + 1, never shrinking) so
+  pre-crash tokens stay rejected. Review fix: the epoch scan spans all events,
+  not just must-persist ones — `Acquire` is the only epoch bump and it records
+  the observability-only `task.acquired`, so restricting the scan lost every
+  token granted after the last checkpoint, and the rebuilt fabric re-issued
+  them (a stale pre-crash holder then passed the ownership epoch check).
+  `ares serve` (peer kernel) calls the restore before the scheduler drains,
+  failing startup loudly on a store-read error; a fabric without an event
+  store (SDK default) treats restore as a no-op. Idempotent by contract:
+  repeated restores reset-and-refold and converge to the same state (the epoch
+  may skip ahead across restores — only monotonicity matters for fencing).
+
+- **DAG-level plan round loops (GAP-2 / appendix C M4)**: `taskfabric.PlanLoop`
+  re-executes a whole plan DAG for up to `MaxRounds` rounds — each round is
+  recompiled atomically under round-namespaced task IDs
+  (`<planID>#r<N>#<stepID>`) and scheduled through the normal kernel pipeline.
+  Rounds end when every task is terminal; an optional `UntilCondition` over the
+  round outcome (or the declarative `RoundOutcome.Succeeded()`) stops the loop
+  early, and an optional `Replan` hook derives the next round's steps from the
+  previous outcome (incremental replanning) — including adding, dropping or
+  renaming steps, since the loop tracks the tasks it actually compiled rather
+  than the base step list. `RoundOutcome.Output` reports each step's own
+  execution checkpoint only, so a step's submission payload never masquerades
+  as a result, and a round task deleted behind the loop's back counts as
+  terminal-FAILED instead of stalling the plan. The loop owns one ctx-bounded,
+  recover-guarded worker; execution never bypasses the scheduler. The
+  `create_plan` syscall gains an optional `loop {max_rounds, until}` argument
+  (until is the enum `all_succeeded`; model-supplied logic is never executed),
+  with loop goroutines bounded by the serve lifetime via
+  `agentsyscall.WithLoopLifetime` (wired in peer_mode). Started loops are
+  registered on the Kernel: live loops are capped (`WithMaxPlanLoops`, default
+  16) so repeated LLM calls cannot fan out unbounded background work, a fatal
+  loop error is logged by a watcher instead of being recorded and never read,
+  and `LivePlanLoops` / `StopPlanLoop` expose per-plan inspection and shutdown.
+
+- **Kernel pillars adopted into System Runtime orchestration (release-readiness
+  K1–K5)**: the six kernel pillars (scheduler, taskfabric, agentfabric,
+  recovery, dispatcher, pluginbus) — previously invisible to the component
+  graph — now join the orchestrator through the new
+  `system_runtime.Orchestrator.Adopt` (late registration after `Start`, with
+  fail-loud dependency validation, duplicate rejection and
+  `ErrShuttingDown` during teardown). Dependency edges give `orch.Snapshot()`
+  real kernel states and give Shutdown a reverse-topological teardown that
+  covers the kernel: the scheduler and recovery loops hand their lifecycle to
+  managed stop/wait hooks (cancel + join), PluginBus stops through its own
+  `Stop(ctx)`. Scheduler readiness now means "drain loop alive" (K5): the
+  component reports `Ready` only while the loop runs, otherwise `Degraded`
+  with a readable reason — never a false Ready. Long-lived cmd/ares loops
+  (chaos shadow/live, quota, population, feedback, collab GC, scheduler,
+  recovery) moved to the unified `Orchestrator.GoBackground` entry (K3): a
+  panicking loop is recovered, logged, recorded as a `component.failed` event
+  (visible on the FlightRecorder timeline) and marks its component `Failed`
+  instead of killing the process or faking Ready. Shutdown gained an overall
+  budget (caller deadline wins, otherwise 30s) and names every component that
+  did not reach `Stopped` (K4). The introspect snapshot endpoint carries the
+  full component graph under `system_runtime` (read-gated like the rest of
+  the JSON feed, T7). The three remaining bare `go` sites in cmd/ares
+  production paths are documented exceptions with recover boundaries
+  (second-signal force-exit watcher, bounded recovery sweep, one-shot arena
+  stream).
+
+- **M4 fitness cost channel — token accounting end-to-end** (M4 second
+  batch): the planner stamps each quantum's LLM `resp.Usage` onto the
+  `StepOutcome` result metadata; the kernel scheduler accumulates it into the
+  `CheckpointEnvelope` (schema **v4**, adding `InputTokens`/`OutputTokens`
+  with forward compatibility from v3); `taskfabric.recordLocked` stamps
+  `input_tokens`/`output_tokens`/`total_tokens` on terminal
+  `task.completed` events; and the RuntimeObserver applies a multiplicative
+  `costPenalty` of `1/(1+tokens/100k)` alongside the latency penalty
+  (correctness still dominates, unmeasured tasks are never invented a cost).
+  A USD-denominated term was deliberately removed: the token dimension
+  carries the cost signal, no price table exists to denominate it.
+- **Skill-confidence loop closed** (M4.4): the starved
+  `SkillOutcomeRecorder` (its event shape never existed) is replaced by a
+  writer on the production terminal-event stream — `task.completed/failed`
+  events now carry a `capability` payload key and
+  `startSkillOutcomeWriter` records `{capability → success rate}` priors on
+  the Experience store. The read side was also un-masked: history-less
+  candidates used to keep the tracker's neutral 1.0 confidence, hiding any
+  recorded prior; `ConfidenceForMeasured` now lets the fabric's prior fill
+  genuinely unmeasured candidates (measured values always win).
+- **Arena preserved-case regression gate** (auto-armed by default since
+  M-G2): `ArenaRegressionGate` runs candidate-vs-active A/B over the eval
+  suite's cases (Welch t-test) and rejects only a statistically significant
+  drop; ties pass to the staging channel. `evolution.gates.regression_enabled`
+  is tri-state — unset arms the gate automatically when `eval_suite` and the
+  LLM client exist, `false` is the Warn-logged opt-out, `true` makes missing
+  prerequisites fatal.
+- **M5 internalization**: the api/ packages' canonical definitions moved to
+  `internal/` (llmcore, embedding, llmexp, knowledgeapi, apitools,
+  mcpclient, llmsvcapi, evoapi, discoveryapi); api/ itself is now a pure
+  forwarding layer (type aliases + function delegation) for examples and
+  external consumers, with the full surface compile-locked in
+  `test/apifwd`. `api/discovery` and `api/evolution` (incl. genome and
+  mutation) were removed outright once their examples migrated.
+- **PostgreSQL events retention** (`storage.events_retention_days`,
+  default 0 = keep forever): a periodic maintenance worker deletes event rows
+  older than the configured retention, bounding the events table (PG mode
+  has no archive and no compaction — the table IS the durable history).
+- **Giant-file split** (M-C2): `cmd/ares/agent.go` (3021 lines) is now a
+  528-line routing shell over `agent_routes_{agents,chaos,tasks,tools}.go`
+  and `agent_kernel.go`; `serve.go` (2868) extracted seven assembly-stage
+  functions plus the arena and chaos domains. All 87 agent-side top-level
+  functions verified moved with zero loss.
+
+### Changed
+
+- **`sdk.WithMaxTokens` is now enforced (was a silent no-op on the L2
+  path)**: the value bridges into the runtime's cognitive-governance budget
+  (`WithAgentGovernance`'s `TokenBudget` — enforced by the scheduler at
+  quantum boundaries), so a run that exceeds the budget cooperatively yields
+  instead of burning tokens. Semantics to note: the budget is the shared L2
+  peer's LIFETIME TOTAL (not per-run), the first positive value applied
+  (with `WithAgentGovernance` taking precedence) wins for the runtime, and
+  callers who relied on the option being ignored will now observe
+  enforcement. `sdk.WithMaxIterations` remains Evolve's search-depth knob
+  only — its doc now says so explicitly (bounds on the L2 path come from
+  `WithTimeout` / `WithAgentGovernance`).
+- **One execution engine: the SDK joins the shared L2 execution core**
+  (the 0.3.1 convergence): `Agent.Run`, `Submit` and `RunGraph` no longer
+  run a separate in-SDK ReAct engine — all three compose the prompt
+  (instruction + memory + knowledge) and submit through the same
+  `agentruntime.NewExecution` core `ares serve` builds (session registry +
+  planprojection compile coordinator + router cognition + reaper +
+  instance-scoped `Submitter`) and the same single-loop `kernel.Scheduler`
+  drain. `RegisterAgent` is identity-only (name/instruction/tools for
+  prompt composition; the per-capability static executor pool is no longer
+  populated), and unregistered capabilities (spawned peers, planner-grown
+  tool nodes) inherit the root session's governance through the L2
+  session. Root-cause fix for a scheduler deadlock: the removed path could
+  synchronously wait on another task from inside a scheduler quantum,
+  wedging the single-loop drain; a runtime without an LLM now refuses
+  `Run`/`Submit` loudly instead of half-wiring. Invariants are
+  compile-locked by `sdk/arch_test.go` (zero `internal/agentloop` imports;
+  exactly two `agentruntime.NewExecution` construction points).
+
+- **`ares serve` submissions now carry conversation memory**: the serve
+  admission path was the one place a user prompt entered the shared L2 core
+  *unenriched* — the SDK folds memory into the prompt inside
+  `Agent.composePrompt`, but `submitPeerTask` submitted the raw input, so
+  serve sessions had no cross-turn history. The shared `agentruntime.Submitter`
+  now accepts an optional `PromptEnricher` (nil = pass-through, the SDK path —
+  it must never install a second hook, that would enrich twice), applied
+  after session-ID resolution and before admission so the enriched text
+  reaches both prompt reads downstream (session root + payload fallback).
+  `cmd/ares` wires the bootstrap `comp.Memory` component into that hook
+  (`resolveServePromptEnricher`, nil when memory is disabled/unbuilt);
+  the enricher keys one memory session per L2 session and fails open to the
+  raw prompt on any memory error — enrichment is additive context and never
+  blocks a submission.
+
+- **Experience distillation now defaults to ON** (P0-3): `memory.enable_distillation`
+  became a tri-state (`*bool`) in both `internal/ares_config` and the SDK
+  `ConfigFile`. Unset (the common case — the key absent from yaml) now resolves
+  to enabled via `MemoryConfig.DistillationEnabled()`; setting
+  `enable_distillation: false` explicitly is the only way to turn it off.
+  Deployments with `memory.enabled: true` but no embedding/storage backend take
+  the existing `ErrDistillDepsMissing` fallback to compression-only memory and
+  emit one additional warning at startup — behaviour is unchanged, the log line
+  is new. `distillation_threshold: 0` means "ungated" (fire on every event) and
+  is passed through verbatim rather than replaced by a default.
+- **G2 config-contract gate moved from shell to Go test**: `scripts/g2_config_contract_gate.sh`
+  is replaced by `TestG2ConfigContract` in `internal/ares_config/contract_test.go`,
+  and `make gate` invokes it via `go test -run`. The new gate resolves each
+  config leaf's full access path (`.Memory.Archive.Dir`) instead of grepping a
+  bare field name, requires matches to end at the accessed field (`.Memory` no
+  longer matches `.MemoryStore`), and only credits a wholesale sub-struct pass
+  when the receiver is a config value — so `exp.Output` can no longer exempt
+  every leaf of `OutputConfig`.
+- **G1 reachability gate whitelist matches full package paths** instead of bare
+  substrings, so an entry can no longer silently exempt unrelated packages.
+
+- **Promote-gate defaults hardened** (M-G): an ARMED G3 eval gate
+  (`eval_suite` set) with missing registry/LLM client now fails bootstrap
+  (was a silent pass-through); a built gate is always runtime-strict (a
+  runtime infrastructure loss rejects candidates). `eval_strict` now governs
+  ONLY whether a missing suite is fatal, not the strictness of a built gate.
+  The arena regression gate auto-arms by default (see above). Operators who
+  relied on the old permissive defaults will see bootstrap failures — the
+  escape hatches (`eval_strict: false`, `regression_enabled: false`) are
+  Warn-logged.
+- **Introspect read side closed by default** (M-S1): the HTTP console binds
+  `127.0.0.1` (was `localhost`, which a hosts remap could widen); a new
+  `introspect.token` config adds a constant-time bearer credential for
+  non-loopback read access that composes with (never weakens) JWT/API-key
+  auth; startup logs print the full exposure posture (bind / wildcard /
+  auth / token / per-route auth levels).
+- **Control-plane routing is registry-driven** (M-S2): the handwritten
+  dispatch switch in `cmd/ares/agent.go` is now an 18-entry endpoint
+  registry (`routeSpec`: method, path pattern, explicit auth level,
+  availability gate) with a single dispatcher — golden-diff-locked against
+  the old switch, handler bodies moved untouched.
+- **sub.New signature** (agents/sub dead-code burial): the handler and
+  heartbeat-monitor parameters were removed (zero call sites / always-nil in
+  production); `SubAgentConfig.EnableTools`, `WithActionLog`, `MessageHandler`,
+  and the heartbeatSender were deleted with `TODO(tech-debt)` markers.
+
+### Security
+
+- **Nine critical defect fixes from the deep code review** (each with a
+  red→green regression test): fabric `ReplaceNode` dropping newly declared
+  dependency edges (could schedule before prerequisites); nil-checkpoint
+  `Yield` erasing the saved checkpoint envelope; empty-capability tasks
+  vanishing on cross-restart restore; PG `Subscribe` permanently starving
+  subscribers past a 100-event window (keyset pagination fix); the knowledge
+  PG `Stream` double-error deadlock; MCP client connections bound to the
+  caller context (a returning `skill_activate` killed the stdio children);
+  per-disconnect SSE goroutine leaks; YAML `llm.temperature`/`max_tokens`
+  validated then silently discarded; concurrent `Stop` double-close panic.
+- **SSRF hardening**: the block list gained RFC 6598 CGNAT (100.64/10 —
+  Kubernetes pod CIDRs), IPv4-mapped IPv6 normalization, dial-time
+  re-validation of the resolved IP (DNS-rebinding TOCTOU), and proxy
+  inheritance disabled so `http_proxy` cannot bypass the dial check.
+- **Tenant isolation**: the knowledge tools no longer take `tenant_id` from
+  LLM tool arguments (server-side constant); `content_hash` dedup became
+  per-tenant; PG vector search rejects empty tenant IDs.
+- **Code-runner sandbox honestly documented**: the Python validator is a
+  mistake-guard, not a security boundary — enabling it equals host RCE; it
+  stays disabled by default and the docs now say so.
+
+### Known limitations
+
+- **0.3.1 hardening update (2026-09-10)**: the deep-review batch (~230
+  fixes), M-S control-plane hardening, and M-G gate defaults landed after
+  the limitations below were written; entries below are preserved for
+  history but several have since moved — most notably the promote-gate
+  chain is now fail-closed by construction (armed gates never silently
+  degrade), and the introspect read side is loopback-bound with optional
+  token auth.
+- **Unified orchestration covers only `ares serve`** (release-readiness K6):
+  the `sdk` runtime and the `arena` / non-serve peer paths do not build a
+  System Runtime orchestrator; their background loops keep the bootstrap
+  errgroup lifecycle (panic-recovered, joined at shutdown) but are not
+  visible in a component-graph snapshot and their kernel pillars are not
+  adopted. Registering them is deferred to 0.4.x.
+- **GA control plane is fail-closed by default** (`evolution.enabled: true`
+  does NOT mean strategies keep shipping): the G2 shadow gate rejects any
+  candidate with zero shadow comparisons. The P0-9 task-level feeder
+  (`ShadowSampler`) is now landed, but it only produces comparisons when an
+  independent scorer is wired on the evaluator — and the default bootstrap
+  does not wire one (`evolution.llm_scoring` is off), so default configs still
+  keep zero comparisons and fail-closed. In the default config the lifecycle
+  promotes exactly ONE seed strategy and safely holds every later candidate —
+  enable `evolution.llm_scoring` to let the sampler feed real comparisons.
+   **Second limit**: the sampler scores the same candidate/active pair N times,
+   so the comparisons are only statistically independent under a
+   non-deterministic (LLM) scorer; with a deterministic scorer `min_samples` is
+   satisfied by repetition rather than by independent evidence. Per-task
+   real-execution A/B sampling is the follow-up.
+   **Cost model** (`evolution.llm_scoring` on): each submitted candidate runs
+   `min_samples` comparisons × 2 scorer calls (active + candidate) per Prime,
+   and each LLM scorer call may itself fan out `num_samples` (max-of-N) LLM
+   requests — i.e. up to `2 × min_samples × num_samples` LLM requests per
+   Submit. Since the fix that wired the shadow scorer through the shared
+   `TieredScorer`, all of these are charged against
+   `MaxLLMCallsPerGeneration` (the same budget as population scoring): once
+   the budget is exhausted the sampler falls back to the heuristic, so a
+   generation that cannot afford verification cannot silently overdraw cost —
+   it degrades to fewer independent LLM comparisons (fail-closed on the gate).
+   **Corollary — automatic rollback is also unavailable by default**: the
+   seed deploy leaves `previous` nil and no further promote ever happens, so
+   `Rollback` returns "no previous strategy available". The watch loop still
+   scores and detects degradation (logged at Info), but it cannot restore a
+   strategy until a second (approved) promote exists.
+
+### Fixed
+
+- **Vector search returned rows that have no embedding yet**
+  (`internal/storage/postgres`): the async embedding path inserts a row first
+  and backfills its vector later, but the readers never excluded those rows.
+  Two placeholder shapes were both wrong: `WriteBuffer` wrote a 1024-dimensional
+  *zero* vector (a perfectly valid vector, so it satisfies `IS NOT NULL`, enters
+  the ivfflat index, and ranks by a meaningless distance), while the migration
+  made the column nullable without teaching the queries about NULL. Now every
+  vector read filters `embedding IS NOT NULL`, the ivfflat indexes on
+  `knowledge_chunks_1024` / `experiences_1024` are partial on the same
+  predicate (so the planner can prove the filter is implied), and the write
+  buffer leaves `embedding` NULL. Databases migrated earlier keep their
+  non-partial index — still correct, just without that proof.
+- **Rows whose content repeated were never embedded** (`embedding_queue`):
+  `dedupe_key` hashed `table|content|model|version` and completed entries stay
+  in the queue, so the *second* row that happened to share content with an older
+  one got `ErrDuplicateTask` forever and kept a NULL vector. The key is now
+  exactly `(table_name, task_id, tenant_id)` — one source row owns at most one
+  queue entry, which is the invariant `MarkProcessing`/`MarkCompleted`/
+  `MarkFailed` already assumed by addressing rows via `WHERE task_id = $1`.
+  Anything varying per attempt (content, model, version, spec hash) is excluded;
+  re-embedding an edited row revives its existing entry in place, and only from
+  `completed`, so an entry held by a worker is never yanked away.
+  **Upgrade note**: pending entries written by an older build hash differently
+  and will be re-enqueued once by the reconcile loop; embedding writes are
+  idempotent, so the only cost is one duplicated embedding call per pending row.
+- **Dead-lettering an embedding task always failed, retrying it forever**
+  (`EmbeddingQueue.MarkFailed`): the insert into `embedding_dead_letter`
+  selected `created_at` from `embedding_queue`, which has no such column. The
+  statement errored, aborted the transaction, and left the entry pending with
+  `retry_count` already at the limit — so the worker re-picked it, failed, and
+  hit the same broken statement on every pass. It now carries `queued_at` over.
+- **Reconcile re-enqueued dead-lettered rows on every tick**: `MarkFailed`
+  deletes the queue entry when it gives up, so the source row matched the orphan
+  scan again immediately (re-enqueue → fail → dead-letter → re-enqueue), burning
+  embedding quota on content that cannot be embedded. Both orphan scans now skip
+  rows present in `embedding_dead_letter` (indexed on `(task_id, table_name)`),
+  and the experiences scan treats `processing` like `pending` so a task held by
+  a worker is not reset underneath it.
+- **Cost dashboard routes panicked on every request** (`cmd/ares`): `actionHandler.costMux`
+  was never assigned while `cost` was, and `serveIntrospect` dereferences the
+  mux whenever `cost` is non-nil — so the first request to
+  `/api/v1/observability/cost*` or `/api/v1/observability/dashboard` hit a nil
+  `*http.ServeMux`. The mux is now built by `buildCostMux` in the same struct
+  literal that sets `cost`, with a regression test covering both routes.
+- **`make gate` was broken**: the target still invoked the deleted
+  `scripts/g2_config_contract_gate.sh` and failed with exit 127.
+- **Event store compaction corrupted previously-returned slices**
+  (`internal/ares_events`): retention filtering reused the input slice's
+  backing array via `keep[:0]`, overwriting elements that earlier `Read` calls
+  had handed to callers. Compaction now allocates a fresh slice.
+- **Context cancellation no longer pollutes the IPC dead-letter queue**
+  (`internal/agentipc`): the unified dead-letter exit recorded `ctx.Err()`,
+  so caller-side cancellation and upstream deadline propagation evicted genuine
+  delivery failures from the bounded FIFO. Only handler errors and timeouts are
+  recorded now.
+- **Arena chaos injections no longer report success against a dead pool**
+  (`cmd/ares`): when the demo agent pool fails to start, `buildArenaInjector`
+  now passes a nil `RuntimeProvider` so agent injections fail with
+  `ErrRuntimeNil`, matching how a failed DAG construction is already handled.
+- **Agent syscall argument decoding no longer drops fields silently**
+  (`internal/agentsyscall`): hand-rolled `map[string]any` extraction is replaced
+  by a JSON round-trip into the typed arg structs, turning malformed or
+  unexpected payloads into explicit errors.
+- **Plan compilation rollback preserves the original error**
+  (`internal/taskfabric`): `CompilePlan` checks `ctx.Err()` before each create,
+  rolls back every created task even when individual deletes fail, and joins the
+  create error with all rollback failures so each stays reachable through
+  `errors.Is`/`errors.As`.
+
+### Fixed (deep code review 2026-09)
+
+- **Deep-review batch (HIGH/MEDIUM highlights, ~200 fixes total)**: PG event
+  append uses an advisory lock so concurrent same-stream appends no longer
+  drop batches; `flushAppends` ordering-barrier timeouts no longer poison
+  every later event with a 30s stall; `MutableDAG.Steps()/StepIndex()`
+  return isolated copies (data race); the reaper no longer orphans READY
+  tasks whose COMPLETED predecessor it harvested; `RestartAgent` restart
+  budgets are reserved atomically (concurrent bypass); write-buffer poison
+  pills (unsupported tables) are dead-lettered instead of looping forever;
+  LLM cost attribution uses the real input/output token split instead of a
+  50/50 guess; `MetricsTracer` generates per-call trace IDs so the cost
+  dashboard populates; `llm.Generate` streams carry the provider usage
+  counts; the regex tool clamps result counts and skips empty matches (OOM);
+  the PDF tool resolves symlinks once for both validation and I/O (TOCTOU);
+  streaming LLM calls are no longer cut off by a 30s request timeout;
+  Anthropic parallel tool results merge into a single user message (HTTP
+  400); `BestMatch("")` no longer matches every record; and the eval
+  gate-chain latency penalty is on by default again (a regression that
+  silently disabled it in every deployment was caught and reverted).
+
+### Removed (breaking)
+
+- **Environment-variable configuration layer removed** (`SERVER_HOST` /
+  `SERVER_PORT` / `LLM_API_KEY` / `LLM_PROVIDER` / `LLM_BASE_URL` /
+  `LLM_MODEL` / `DB_*` / `ARES_JWT_SECRET` / `ARES_AUTH_ENABLED` /
+  `ARES_API_KEY` / `ARES_PPROF_ADDR` / `ARES_NATIVE_TOOLS` /
+  `ARES_FILE_TOOLS_ALLOWED_DIR` / `ARES_WORKSPACE_DIR` / `ARENA_API_KEY` /
+  `SYNONYM_CONFIG_PATH`, the SDK's `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` /
+  `OPENROUTER_API_KEY` fallbacks, and `sdk.WithConfigFromEnv` incl. its
+  `api` alias): `ares.yaml` is now the single configuration entry point.
+  `ares_config.LoadFromEnv` and every per-caller env reader are gone, so
+  behavior can no longer diverge between "works via export on my machine"
+  and the checked-in config. Formerly-env knobs moved into YAML:
+  `server.pprof_addr`, `security.arena_api_key`,
+  `tools.native_allowlist`, `tools.file_sandbox_dir`. `ares db migrate`
+  gains `--config` (absent file keeps the built-in defaults; a
+  present-but-broken file is a hard error), `ares arena *` gains a
+  persistent `--config` flag, `ares doctor` diagnoses the config file
+  itself, and `sdk.New` / `MustNew` read `./ares.yaml`. The SDK's
+  env-probing `internal/detector` package went with them; the only
+  surviving `os.Getenv` is `code_runner`'s child-process `PATH`
+  injection — process plumbing, not configuration.
+- **`internal/agentloop` engine**: the SDK's synchronous ReAct loop is
+  retired — `Agent.Run`, `Submit` and `RunGraph` now route through the
+  shared L2 execution core (see Changed). The per-capability static
+  executor pool went with it (`sdkExecutors` is no longer populated and
+  `sdkAgentExecutor` is deleted); `RegisterAgent` remains as identity-only
+  agent registration (name/instruction/tools consumed by the L2 prompt
+  composition), and the duplicated `DiscoverToolsName` constant is gone.
+- **`api/discovery` and `api/evolution` packages deleted** (incl. genome and
+  mutation subpackages): their canonical definitions live in
+  `internal/discoveryapi` and `internal/evoapi`; the six consuming examples
+  migrated. The remaining seven api/ packages (core, embedding, experience,
+  knowledge, tools, mcp, service/llm) remain as deprecated forwarding layers
+  for external consumers until 0.4.x.
+- **agents/sub dead surface**: `MessageHandler`/`NewMessageHandler`,
+  `WithActionLog`, the heartbeat sender, `SubAgentConfig.EnableTools`, and
+  the `SubAgentCognition` parity adapter — all had zero production call
+  sites; `internal/agents/actionlog` went with them.
+- **Runtime plugin capability dispatch** (M-C1.3): the CapCheckpoint /
+  CapMemory / CapEvolution discovery branches and their plugin types
+  (CheckpointPlugin, MemoryPlugin, EvolutionPlugin, router_memory,
+  router_evolution, outcome recorder, state snapshots) were removed — each
+  domain has its own wiring since M4/M5 (fabric CheckpointEnvelope,
+  retriever_wiring, direct ares_evolution consumption). The LoopPlugin
+  round clock stays.
+- **distilled_memories schema ghost**: repository, `distilled_memory_search`
+  tool, the `db create-table`/`db check-rls` subcommands, and the DDL family
+  from migrate_storage.go — the table saw zero reads/writes in production
+  (the `user_profile` tool keeps its memory-manager path).
+- **`internal/runtime/arena.go` (ArenaPlugin)**: plugin-bus fault-injection
+  demo with zero production consumers; the live `internal/runtime/arena/`
+  RegressionTester family is unaffected.
+- **CostUSD plumbing**: `StrategySample.CostUSD` and the `cost_usd`
+  evidence payload key — the token dimension carries the cost signal.
+
 ## [0.3.0] - 2026-08-25
 
 > **Agent OS (AgentOS) release**: the kernel becomes an agent operating system —
@@ -37,6 +464,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Evidence storage, selection sorting & evidence collection defects**
   (commit `871bb004`): multiple correctness fixes across the evidence
   persistence, candidate selection ordering, and evidence-collection paths.
+- **Dead `LLMAdapter` assembly removed** (independent-review F-07):
+  `createLLMAdapterWithFallback` built an `internal/llm/output` adapter and
+  threaded it through `createAndServeAgents`/`createPeerAgents`, but no
+  function body ever consumed it — the "runtime fallback chain" it advertised
+  never ran, and `ErrNoLLMAdapter` was dead code. The assembly and
+  `cmd/ares/llm_adapter.go` are deleted; runtime LLM failover is a single
+  `FailoverClient` chain (`createChatClient`). `internal/llm/output` keeps no
+  production caller and is a 0.4 deletion candidate.
+- **SQLite `HybridSearch` recall cap** (independent-review F-09): the keyword
+  candidate query was an unbounded `LIKE` scan (postgres capped at
+  `hybridRecallCap = 512`) — a pathological `LIKE` pattern turned every hybrid
+  query into a full table scan plus O(candidates) similarity scoring. SQLite
+  now mirrors the 512-row cap (`hybridRecallCap`) via `LIMIT` with relevance
+  tiebreak, and a bounded-scan regression test locks it in.
+- **`llm.extra` no longer a dead config** (independent-review F-16):
+  `ares_config.LLMConfig.Extra` was plumbed into `llm.Config.Extra` and then
+  never read — a full `extra: {}` map survived validation via the contract
+  gate's one-touch blind spot. `Client` now applies the entries as HTTP
+  headers on every request, set *after* the built-in provider headers so a
+  proxy/gateway can override reserved fields (`Authorization`, `X-Title`).
 
 ### Added (post-release review)
 
@@ -47,6 +494,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   every TTL-bearing table is actually purged in the `serve` path.
 
 ### Changed (post-release hardening)
+
+- **Event package coverage raised 51% → 71.7% (release-readiness T9)**:
+  `internal/ares_events` was the lowest-coverage contract core. New offline
+  tests (no test Postgres needed) exercise the pure logic that had been
+  untested: the in-memory summary repository (save/index/move-on-collision,
+  all finders, delete, delete-older-than), the PG query builders
+  (`buildStreamReadQuery`/`buildAllReadQuery`/`buildSubscribeQuery`),
+  `scanSummary`, `pgSubscription.markDelivered` overflow, the
+  `CompactableEventStore.Read` summary-fallback, `VerifyStreamIntegrity` and
+  `StreamHash`, `MemoryEventStore.Stats` and `Compactor.WithTrimStore`.
+  All pass `-race -count=5` clean.
+
+- **No live credentials in tracked configs (release-readiness T8)**: the
+  tracked example configs no longer carry an operable default password.
+  `configs/query_rewrite_config.yaml` and
+  `examples/11-knowledge-import/config_example.yaml` now use
+  `REPLACE_WITH_YOUR_PASSWORD` placeholders (the real `configs/ares.local.yaml`
+  key was already gitignored); commented defaults in `configs/ares.yaml` were
+  placeholder-ized too. A CI-traceable scan
+  (`git ls-files 'configs/*' 'examples/**' | xargs grep password:/api_key:`)
+  now returns no active plaintext credential.
+
+- **Read surfaces gated by auth (release-readiness T7)**: with
+  `security.auth_enabled: true`, the JSON read endpoints now require READ
+  credentials (`PermRead` — a RoleAgent JWT suffices) instead of being open:
+  the introspect feed (`/api/v1/introspect/*` task payloads & event stream),
+  the tool inventories (`GET /api/tools`, `GET /api/mcp/tools`), the cost
+  dashboard API, and — review fix — every `/api/*` route of the pass-through
+  `introspect.ControlServer` (`/api/agents` live agent topology,
+  `/api/flight/timeline`, `/api/flight/decisions` scheduling decisions,
+  `/api/observability/spans`, `/api/runtime/config`, `/api/insights`,
+  `/api/anomalies`), which previously fell through the handler tail ungated
+  while the introspect feed was closed. A new `PermRead` AuthMiddleware is
+  wired in `serve_routine` alongside the existing `PermWrite` one. The panel
+  HTML UI (`/introspect`), the root redirect, `/metrics` and non-`/api` paths
+  stay open (the UI carries no data; metrics follow the scraper convention;
+  a mistyped URL should not need a token to learn it is a 404). With auth
+  unconfigured the read routes remain open — safe only because serve defaults
+  to a loopback bind (T1).
+
+- **SDK `create_plan` loop parity (release-readiness T4)**: the SDK path's
+  syscall kernel is now built with `agentsyscall.WithLoopLifetime` bound to
+  the runtime's lifecycle ctx (cancelled in `Close`), so an SDK agent's
+  `create_plan` accepts the `loop {max_rounds, until}` option — previously
+  the shared tool schema advertised the parameter but every SDK call failed
+  loudly with "plan loop requires a kernel loop lifetime". Mirrors the serve
+  path wiring. Loop control is reachable from embedding programs via the new
+  exported `Runtime.LivePlanLoops()` / `Runtime.StopPlanLoop(planID)` (review
+  fix: the kernel was held on a private field, so a `loop` plan was a
+  goroutine the caller could neither list nor cancel before `Close`); both are
+  safe no-ops before the first `Submit` wires the kernel.
 
 - **Leader residual symbols de-leaderized** (aresos-hardening-plan H3): the
   `AresMemoryManager` checkpoint lookup is renamed
@@ -74,10 +572,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   replaces full-scan busy waits. IPC collaboration topics
   (`delegate-task`/`pipeline-stage`/`orchestrate-worker`) now execute through
   the kernel fabric DAG when wired (`wireEvolutionIPC` gained the kernel
-  handle; reply shape unchanged). Convergence self-verification:
-  `docs/fusion-convergence.md`.
+  handle; reply shape unchanged). Convergence self-verification (report since
+  pruned — its DoD is complete and the cited `cmd/ares` files it referenced
+  were themselves removed in the 0.3.1 modularization).
 
 ### Breaking changes
+
+- **Removed `run_js` operation from `code_runner`** (release-readiness T3):
+  the code validator is Python-oriented (import allowlist, dangerous-pattern
+  scan) and cannot understand CommonJS `require`, so `EnableJS(true)` handed
+  the model an unsandboxed `node -e` shell (`require('child_process')` was
+  invisible to every check). The `run_js` operation, `EnableJS`/`IsJSEnabled`
+  methods, the `enableJS` parameter of `NewCodeRunnerWithOptions`, and the
+  `javascript` entry of `GetSupportedLanguages` are removed; the tool schema
+  now enumerates only `run_python`. Python execution keeps its existing
+  protections (allowlist + denylist + process-group isolation + PATH-only
+  env). Re-introduce JS only together with a JS-specific validator.
+
+- **Default HTTP bind address narrowed from `0.0.0.0` to `localhost`**
+  (release-readiness T1): `ares serve` now honors `server.host` as the real
+  bind address (previously display-only; serve always bound `:<port>`, i.e.
+  all interfaces). The introspect read API (`/api/v1/introspect/*`) is
+  unauthenticated, so the default loopback bind closes that exposure.
+  Deployments that must accept remote connections (e.g. docker) need
+  `server.host: 0.0.0.0` (or `SERVER_HOST` env, or the new `--host` flag) plus
+  `security.auth_enabled: true`; starting with a wildcard host and auth
+  disabled prints a loud exposure warning. `ares status` / `ares dashboard`
+  already resolve wildcard hosts to localhost for probing and are unaffected.
+  `serve` gained `--host` for symmetry with `--port`; precedence is
+  flag > env > YAML. The `examples/09-full-app` demo server (which has no auth
+  at all) follows the same rule — loopback by default, `SERVER_HOST` to widen —
+  so the `SERVER_HOST=0.0.0.0` in `docker-compose.yml` is what makes its
+  published port reachable.
 
 - **Removed legacy public API packages and CLI** (fusion plan Phases A/B):
   `api/graph`, `api/service/workflow`, `api/client` (13 files), and the
@@ -94,7 +620,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **sdk.Graph — dynamic graph orchestration returns to the SDK**
-  (`docs/design/sdk-graph-v040.md`, v0.4.0 M1): `NewGraph/AddNode/AddEdge/
+  (v0.4.0 M1): `NewGraph/AddNode/AddEdge/
   RemoveNode/RemoveEdge/SetRouter` + `(*Runtime).RunGraph` (≤10 new symbols).
   LLM (`*Agent`) nodes execute through the SAME kernel scheduling path as
   `Submit` (fabric quantum engine); function and subgraph nodes run inline
@@ -146,8 +672,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Versioning** (`VERSION` file + Makefile injection): `make build` embeds
   `0.3.0-dev` into `main.version`; `ares version` prefers the injected version,
   falling back to build-info pseudo-version. Deprecation policy documented in
-  `docs/design/versioning.md`.
-- **P0-P2 plan items** (AGENTOS_DEVELOPMENT_PLAN.md §6): security layer, config
+  (design notes were never committed).
+- **P0-P2 plan items** (AGENTOS_DEVELOPMENT_PLAN.md Section 6): security layer, config
   hot-reload, and fault-injection e2e all marked implemented.
 - **Quantum execution + scheduler resumption** (`cmd/ares/scheduler.go`,
   `internal/agents/sub/executor.go`): the sub-agent executor is refactored into
@@ -435,7 +961,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Kernel Dispatch & DAG Fixes
 
 - **Kernel dispatch fake success** (`cmd/ares/kernel.go`): `kernelTaskDispatcher.Dispatch` unconditionally reported `SetSuccess(nil, "dispatched via kernel")` for every task, so the leader aggregated empty results (`items=0`) while the scheduler actually executed the work — the `EventSubTaskResult` reflux was bypassed and no producer existed in production. The dispatcher is now event-driven: it subscribes to `EventTaskCompleted/Failed` (broadcast), submits tasks through the fabric, waits for the real terminal event (with the same 300s timeout contract as the leader dispatcher), and rebuilds the `TaskResult` from the fabric checkpoint (`items`/`reason`/`metadata`) plus the original task's `UsedExperienceID`. Legacy sync path (no fabric) keeps immediate success; fabric present but no event store fails explicitly. `flipKernelToTaskFabric` injects the fabric reference and wires the event store so `fabric.record` emits externally. `user_profile` is now passed through to the executor (struct reference), so the LLM path no longer degrades to the empty `executeByType` fallback. Contract tests cover result reflux + `UserProfile` passthrough, timeout, worker failure, and the legacy/batch adapters.
-- **Kernel DAG wiring** (`cmd/ares/kernel.go`): `taskFromPayload` now accepts `dependencies` as both `[]string` (in-memory hop via `kernelTaskDispatcher.Dispatch`) and `[]any` (JSON round-trip). Previously the `[]any`-only assertion silently dropped every DAG edge on the Task Fabric path, defeating the `IsReady` gate (ares-runtime.md §9). Test extended to cover both shapes.
+- **Kernel DAG wiring** (`cmd/ares/kernel.go`): `taskFromPayload` now accepts `dependencies` as both `[]string` (in-memory hop via `kernelTaskDispatcher.Dispatch`) and `[]any` (JSON round-trip). Previously the `[]any`-only assertion silently dropped every DAG edge on the Task Fabric path, defeating the `IsReady` gate (ares-runtime.md Section 9). Test extended to cover both shapes.
 - **Planner DAG truncation** (`internal/agents/leader/planner.go`): dependency resolution now runs *after* the `maxTasks` truncation. Previously a retained task could depend on a truncated task — a dangling reference that permanently blocked the Task Fabric's `IsReady` gate (deadlock). Regression test `TestPlan_DependenciesAfterTruncation` covers the truncation-dependency interplay.
 
 ### Candidate Release Closed-Loop (evolution)
@@ -717,9 +1243,9 @@ Closed the gap between code modules and article coverage. Seven new articles (Ch
 ### Documentation
 
 - **Architecture Diagram Overhaul**: Updated README architecture diagram to 6-layer model (added Evolution Engine layer), with GA engine details (7 selectors, 3 crossover, 6 mutation, 6 genomes), runtime evolution pipeline, and data flow sequence diagram.
-- **GA Deep-Dive Articles**: Updated `docs/articles/en/autonomous-evolution-deep-dive.md` and `docs/articles/zh/autonomous-evolution-deep-dive.md` with 6 new subsections (9.11-9.16) covering NSGA-II, steady-state GA, split score, experience system, memory evolution, and Phase 3-6 integration.
-- **GA-in-the-Trenches**: Updated `docs/articles/en/ga-in-the-trenches.md` and `docs/articles/zh/ga-in-the-trenches.md` with steady-state GA, NSGA-II, split score lessons, and new Lesson 6 on experience systems.
-- **Overview Update**: Updated `docs/articles/zh/autonomous-evolution-overview.md` with service bridge, memory evolution, and experience hints coverage.
+- **GA Deep-Dive Articles**: Updated `docs/articles/en/11-autonomous-evolution-deep-dive.md` and `docs/articles/zh/11-autonomous-evolution-deep-dive.md` with 6 new subsections (9.11-9.16) covering NSGA-II, steady-state GA, split score, experience system, memory evolution, and Phase 3-6 integration.
+- **GA-in-the-Trenches**: Updated `docs/articles/en/24.6-ga-in-the-trenches.md` and `docs/articles/zh/24.6-ga-in-the-trenches.md` with steady-state GA, NSGA-II, split score lessons, and new Lesson 6 on experience systems.
+- **Overview Update**: Updated `docs/articles/zh/24.7-autonomous-evolution-overview.md` with service bridge, memory evolution, and experience hints coverage.
 - **Feature Doc Update**: Updated `docs/en/features/autonomous-evolution.md` and `docs/zh/features/autonomous-evolution.md` with all new GA features.
 - **Analysis Plan Sync**: Updated `GA_ANALYSIS.md` and `GA_DEVELOPMENT_PLAN.md` to reflect completed implementation status.
 
@@ -770,7 +1296,7 @@ Closed the gap between code modules and article coverage. Seven new articles (Ch
 ### Documentation
 
 - **README Rewrite**: Reduced from 774 to 214 lines. SDK Quick Start at the top. English (`README.md`) and Chinese (`README_CN.md`) versions.
-- **GitHub Pages Website**: `docs/index.html` with dark theme, marked.js inline Markdown rendering, all articles browsable.
+- **GitHub Pages Website** (removed in 0.3.1): a `docs/index.html` dark-theme reader with marked.js inline Markdown rendering.
 - **Architecture Diagram**: Mermaid diagram covering SDK, LLM providers, Tools, Memory, Evolution, CLI, Examples.
 - **7 Cookbook Recipes**: `docs/cookbook/` with Chat, Tool Calling, Multi-Agent, Memory, Coding Agent, Code Review, GitHub Agent.
 - **CI Docs Deployment**: GitHub Actions workflow (`docs.yml`) auto-deploys `docs/` to Pages.
@@ -787,7 +1313,7 @@ Closed the gap between code modules and article coverage. Seven new articles (Ch
 - **Docker Compose**: `docker-compose.yml` + `Dockerfile.demo` for one-command demo deployment (Ollama + full-app).
 - **Makefile**: Added `quickstart`, `examples`, `install-cli`, `test-eval` targets.
 - **Example Cleanup**: Removed 20+ stale/duplicate examples; kept 9 curated SDK examples + advanced ones in git history.
-- **Chaos Arena YAML**: Restored `examples/arena/leader_assassination.yaml` and `cascading_storm.yaml` with all built-in action types.
+- **Chaos Arena YAML**: Restored `examples/arena/peer_failure.yaml` (formerly `leader_assassination.yaml` — rewritten for the leaderless scheduler) and `cascading_storm.yaml` with all built-in action types.
 
 ### Performance
 

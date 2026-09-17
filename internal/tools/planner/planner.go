@@ -4,6 +4,7 @@ package planner
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 )
@@ -41,22 +42,22 @@ func NewPlanner(
 	evidence EvidenceStore,
 ) (*Planner, error) {
 	if analyzer == nil {
-		return nil, fmt.Errorf("planner: SemanticAnalyzer is nil")
+		return nil, errors.New("planner: SemanticAnalyzer is nil")
 	}
 	if plannerImpl == nil {
-		return nil, fmt.Errorf("planner: CapabilityPlanner is nil")
+		return nil, errors.New("planner: CapabilityPlanner is nil")
 	}
 	if resolver == nil {
-		return nil, fmt.Errorf("planner: ToolResolver is nil")
+		return nil, errors.New("planner: ToolResolver is nil")
 	}
 	if scorer == nil {
-		return nil, fmt.Errorf("planner: ToolScorer is nil")
+		return nil, errors.New("planner: ToolScorer is nil")
 	}
 	if execPlan == nil {
-		return nil, fmt.Errorf("planner: ExecutionPlanner is nil")
+		return nil, errors.New("planner: ExecutionPlanner is nil")
 	}
 	if evidence == nil {
-		return nil, fmt.Errorf("planner: EvidenceStore is nil")
+		return nil, errors.New("planner: EvidenceStore is nil")
 	}
 	return &Planner{
 		analyzer:  analyzer,

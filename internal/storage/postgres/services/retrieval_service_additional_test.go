@@ -324,10 +324,15 @@ func TestRetrievalPlan_WeightsSum(t *testing.T) {
 	assert.InDelta(t, 1.0, totalWeight, 0.001, "Weights should sum to 1.0")
 }
 
-// TestSearchRequest_NilHandling tests handling of nil search request.
+// TestSearchRequest_NilHandling tests that validateRequest rejects a nil
+// request instead of panicking. This needs no database — validateRequest only
+// inspects the struct.
 func TestSearchRequest_NilHandling(t *testing.T) {
-	// This test requires full postgres.Pool setup
-	t.Skip("Requires full postgres.Pool setup - to be implemented")
+	service := &RetrievalService{logger: slog.Default()}
+
+	if err := service.validateRequest(nil); err == nil {
+		t.Fatal("validateRequest(nil) should return an error, got nil")
+	}
 }
 
 // TestCalculateTimeDecay_NegativeAge tests that negative age doesn't break the function.
@@ -574,16 +579,13 @@ func TestQueryRewrite(t *testing.T) {
 	}
 }
 
-// TestSearchKnowledgeVector tests knowledge base vector search.
-func TestSearchKnowledgeVector(t *testing.T) {
-	// Skip if kbRepo is not initialized
-	t.Skip("Requires full database setup - kbRepo dependency")
+// TestSearchKnowledgeVector_NoRepository guards the degraded path: with no
+// KnowledgeRepository the search must degrade to an empty result set rather
+// than dereference nil. It used to panic here — the nil guard was missing even
+// though searchExperienceVector and searchToolsVector both had one.
+func TestSearchKnowledgeVector_NoRepository(t *testing.T) {
+	service := &RetrievalService{logger: slog.Default()}
 
-	service := &RetrievalService{}
-
-	ctx := context.Background()
-
-	// Create test embedding
 	embedding := make([]float64, 1024)
 	for i := range embedding {
 		embedding[i] = float64(i) / 1024.0
@@ -596,24 +598,22 @@ func TestSearchKnowledgeVector(t *testing.T) {
 		Plan:     DefaultRetrievalPlan(),
 	}
 
-	// This test requires full database setup
-	results := service.searchKnowledgeVector(ctx, embedding, req)
+	results := service.searchKnowledgeVector(context.Background(), embedding, req)
 
-	// Results should be a slice (may be empty if no database)
 	assert.NotNil(t, results)
-	assert.IsType(t, []*SearchResult{}, results)
+	assert.Empty(t, results)
 }
 
-// TestSearchExperienceVector tests experience repository vector search.
-func TestSearchExperienceVector(t *testing.T) {
-	// Skip if not implemented
-	t.Skip("ExperienceRepository not yet implemented")
+// The empty-embedding short-circuit for searchKnowledgeVector is already
+// covered by TestSearchKnowledgeVector_EmptyEmbedding in
+// retrieval_service_test.go.
 
-	service := &RetrievalService{}
+// TestSearchExperienceVector_NoRepository guards the degraded path. The
+// production bootstrap passes repositories as optional arguments, so a nil
+// ExperienceRepository must mean "no experience results", not a panic.
+func TestSearchExperienceVector_NoRepository(t *testing.T) {
+	service := &RetrievalService{logger: slog.Default()}
 
-	ctx := context.Background()
-
-	// Create test embedding
 	embedding := make([]float64, 1024)
 	for i := range embedding {
 		embedding[i] = float64(i) / 1024.0
@@ -626,24 +626,18 @@ func TestSearchExperienceVector(t *testing.T) {
 		Plan:     DefaultRetrievalPlan(),
 	}
 
-	// This test requires full database setup
-	results := service.searchExperienceVector(ctx, embedding, req)
+	results := service.searchExperienceVector(context.Background(), embedding, req)
 
-	// Results should be a slice (may be empty if no database)
 	assert.NotNil(t, results)
-	assert.IsType(t, []*SearchResult{}, results)
+	assert.Empty(t, results)
 }
 
-// TestSearchToolsVector tests tools vector search.
-func TestSearchToolsVector(t *testing.T) {
-	// Skip if not implemented
-	t.Skip("ToolRepository not yet implemented")
+// TestSearchToolsVector_NoRepository guards the degraded path. This is the one
+// that matters in production today: production_manager.go passes toolRepo as
+// nil, so the tool search path always runs with a nil repository.
+func TestSearchToolsVector_NoRepository(t *testing.T) {
+	service := &RetrievalService{logger: slog.Default()}
 
-	service := &RetrievalService{}
-
-	ctx := context.Background()
-
-	// Create test embedding
 	embedding := make([]float64, 1024)
 	for i := range embedding {
 		embedding[i] = float64(i) / 1024.0
@@ -656,22 +650,24 @@ func TestSearchToolsVector(t *testing.T) {
 		Plan:     DefaultRetrievalPlan(),
 	}
 
-	// This test requires full database setup
-	results := service.searchToolsVector(ctx, embedding, req)
+	results := service.searchToolsVector(context.Background(), embedding, req)
 
-	// Results should be a slice (may be empty if no database)
 	assert.NotNil(t, results)
-	assert.IsType(t, []*SearchResult{}, results)
+	assert.Empty(t, results)
 }
 
-// TestBm25Search tests BM25 keyword search.
-func TestBm25Search(t *testing.T) {
-	// Skip if kbRepo is not initialized
-	t.Skip("Requires full database setup - kbRepo dependency")
+// newRepoLessService builds a RetrievalService with every repository nil — the
+// degraded configuration. All searches must degrade to empty results instead of
+// dereferencing nil.
+func newRepoLessService() *RetrievalService {
+	return &RetrievalService{logger: slog.Default()}
+}
 
-	service := &RetrievalService{}
-
-	ctx := context.Background()
+// TestBm25Search_NoRepositories covers the whole BM25 fan-out (knowledge +
+// experience + tools) with no repositories configured: it must aggregate to an
+// empty set rather than panic on the first nil.
+func TestBm25Search_NoRepositories(t *testing.T) {
+	service := newRepoLessService()
 
 	req := &SearchRequest{
 		Query:    "test query",
@@ -680,61 +676,57 @@ func TestBm25Search(t *testing.T) {
 		Plan:     DefaultRetrievalPlan(),
 	}
 
-	// This test requires full database setup
-	results := service.bm25Search(ctx, req)
+	results := service.bm25Search(context.Background(), req)
 
-	// Results should be a slice (may be empty if no database)
 	assert.NotNil(t, results)
-	assert.IsType(t, []*SearchResult{}, results)
+	assert.Empty(t, results)
 }
 
-// TestBm25SearchKnowledge tests BM25 search in knowledge base.
-func TestBm25SearchKnowledge(t *testing.T) {
-	// Skip if kbRepo is not initialized
-	t.Skip("Requires full database setup - kbRepo dependency")
+// TestBm25Search_EmptyQuery asserts the short-circuit that runs before any
+// repository access.
+func TestBm25Search_EmptyQuery(t *testing.T) {
+	service := newRepoLessService()
 
-	service := &RetrievalService{}
+	req := &SearchRequest{
+		Query:    "",
+		TenantID: "tenant-1",
+		TopK:     10,
+		Plan:     DefaultRetrievalPlan(),
+	}
 
-	ctx := context.Background()
+	results := service.bm25Search(context.Background(), req)
 
-	// This test requires full database setup
-	results := service.bm25SearchKnowledge(ctx, "test query", "tenant-1", 10)
-
-	// Results should be a slice (may be empty if no database)
 	assert.NotNil(t, results)
-	assert.IsType(t, []*SearchResult{}, results)
+	assert.Empty(t, results)
 }
 
-// TestBm25SearchExperience tests BM25 search in experience repository.
-func TestBm25SearchExperience(t *testing.T) {
-	// Skip if not implemented
-	t.Skip("ExperienceRepository not yet implemented")
+// TestBm25SearchKnowledge_NoRepository guards the degraded path. bm25SearchKnowledge
+// had no nil guard and would panic here; see searchKnowledgeVector's comment.
+func TestBm25SearchKnowledge_NoRepository(t *testing.T) {
+	service := newRepoLessService()
 
-	service := &RetrievalService{}
+	results := service.bm25SearchKnowledge(context.Background(), "test query", "tenant-1", 10)
 
-	ctx := context.Background()
-
-	// This test requires full database setup
-	results := service.bm25SearchExperience(ctx, "test query", "tenant-1", 10)
-
-	// Results should be a slice (may be empty if no database)
 	assert.NotNil(t, results)
-	assert.IsType(t, []*SearchResult{}, results)
+	assert.Empty(t, results)
 }
 
-// TestBm25SearchTools tests BM25 search in tools.
-func TestBm25SearchTools(t *testing.T) {
-	// Skip if not implemented
-	t.Skip("ToolRepository not yet implemented")
+// TestBm25SearchExperience_NoRepository guards the degraded path.
+func TestBm25SearchExperience_NoRepository(t *testing.T) {
+	service := newRepoLessService()
 
-	service := &RetrievalService{}
+	results := service.bm25SearchExperience(context.Background(), "test query", "tenant-1", 10)
 
-	ctx := context.Background()
-
-	// This test requires full database setup
-	results := service.bm25SearchTools(ctx, "test query", "tenant-1", 10)
-
-	// Results should be a slice (may be empty if no database)
 	assert.NotNil(t, results)
-	assert.IsType(t, []*SearchResult{}, results)
+	assert.Empty(t, results)
+}
+
+// TestBm25SearchTools_NoRepository guards the degraded path.
+func TestBm25SearchTools_NoRepository(t *testing.T) {
+	service := newRepoLessService()
+
+	results := service.bm25SearchTools(context.Background(), "test query", "tenant-1", 10)
+
+	assert.NotNil(t, results)
+	assert.Empty(t, results)
 }

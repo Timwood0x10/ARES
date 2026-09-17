@@ -238,3 +238,105 @@ func TestEngine_ParallelProviders(t *testing.T) {
 		t.Errorf("expected 5 services, got %d", len(list))
 	}
 }
+
+// TestEngine_DiscoverNowPreservesRegisteredServices is the #51 regression:
+// Register() saves a service with a "register"-source record, but the next
+// DiscoverNow diffed provider records against the whole store and deleted
+// anything the providers did not report — including manually registered
+// services. Passive registrations must survive discovery cycles.
+func TestEngine_DiscoverNowPreservesRegisteredServices(t *testing.T) {
+	store := NewMemoryStore()
+	engine := NewEngine(store, nil)
+	handler := &mockHandler{}
+	engine.AddHandler(handler)
+
+	ctx := context.Background()
+
+	// Provider discovers one service.
+	engine.AddProvider(&mockProvider{
+		name: "test",
+		records: []DiscoveryRecord{
+			{Source: "test", Confidence: ConfidenceHigh, Endpoint: "tool-a"},
+		},
+	})
+	_ = engine.DiscoverNow(ctx)
+
+	// Manually register a second service the provider does NOT know.
+	err := engine.Register(ctx, RegisterRequest{
+		Name:     "my-registered-tool",
+		Endpoint: "/usr/local/bin/my-registered-tool",
+	})
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	// A later discovery cycle with no provider reporting the manual service.
+	_ = engine.DiscoverNow(ctx)
+
+	svc, err := store.Get(ctx, "my-registered-tool")
+	if err != nil || svc == nil {
+		t.Fatal("manually registered service was deleted by DiscoverNow")
+	}
+	if svc.BestSource != "register" {
+		t.Errorf("BestSource = %q, want register", svc.BestSource)
+	}
+
+	// And no removal event may be emitted for it.
+	for _, e := range handler.Events() {
+		if e.Type == EventServiceRemoved && e.ServiceID == "my-registered-tool" {
+			t.Error("EventServiceRemoved emitted for a manually registered service")
+		}
+	}
+}
+
+// TestEngine_DiscoverNowStillRemovesDiscoveredServices guards the flip side:
+// services that came from providers (not registration) must still be removed
+// when providers stop reporting them.
+func TestEngine_DiscoverNowStillRemovesDiscoveredServices(t *testing.T) {
+	store := NewMemoryStore()
+	engine := NewEngine(store, nil)
+	ctx := context.Background()
+
+	engine.AddProvider(&mockProvider{
+		name:    "test",
+		records: []DiscoveryRecord{{Source: "test", Endpoint: "tool-a"}},
+	})
+	_ = engine.DiscoverNow(ctx)
+	if _, err := store.Get(ctx, "tool-a"); err != nil {
+		t.Fatalf("tool-a must be discovered first: %v", err)
+	}
+
+	// Provider stops reporting tool-a.
+	engine = NewEngine(store, nil)
+	engine.AddProvider(&mockProvider{name: "test", records: nil})
+	_ = engine.DiscoverNow(ctx)
+
+	if svc, _ := store.Get(ctx, "tool-a"); svc != nil {
+		t.Error("provider-discovered service must still be removed when no longer reported")
+	}
+}
+
+// TestEngine_DiscoverNowMergesRegisteredWithDiscovered: when a provider also
+// reports the same endpoint as a manual registration, the discovery cycle
+// must not clobber the registered service into removal — it updates it.
+func TestEngine_DiscoverNowMergesRegisteredWithDiscovered(t *testing.T) {
+	store := NewMemoryStore()
+	engine := NewEngine(store, nil)
+	ctx := context.Background()
+
+	engine.AddProvider(&mockProvider{
+		name:    "test",
+		records: []DiscoveryRecord{{Source: "test", Endpoint: "tool-a"}},
+	})
+	_ = engine.DiscoverNow(ctx)
+	_ = engine.Register(ctx, RegisterRequest{Name: "tool-a", Endpoint: "tool-a", Tags: []string{"manual"}})
+
+	// Next cycle: provider still reports tool-a; the registered record and
+	// the provider record describe the same endpoint (normalized "tool-a").
+	_ = engine.DiscoverNow(ctx)
+
+	svc, err := store.Get(ctx, "tool-a")
+	if err != nil || svc == nil {
+		t.Fatal("service merged from register+provider disappeared")
+	}
+}

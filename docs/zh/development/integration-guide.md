@@ -399,7 +399,7 @@ func main() {
 }
 ```
 
-**代码位置**: `examples/travel/main.go:50-100`
+**代码位置**: `examples/_fixtures/01-quickstart/main.go`
 
 ### 场景 3: 微服务集成
 
@@ -604,10 +604,10 @@ func TestEndToEndIntegration(t *testing.T) {
 
 ## 参考文档
 
-- [快速开始](quick_start.md)
-- [架构文档](arch.md)
-- [配置参考](../examples/travel/config/server.yaml)
-- [API 文档](storage/api.md)
+- [快速开始](../guides/quick-start.md)
+- [架构文档](../../../ARCHITECTURE.md)
+- [配置参考](../../../examples/_fixtures/01-quickstart/ares.yaml)
+- [API 文档](../../en/api-reference.md)
 
 ## 支持
 

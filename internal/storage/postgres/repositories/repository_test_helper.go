@@ -10,9 +10,9 @@ import (
 	golog "log"
 	"testing"
 
-	"github.com/Timwood0x10/ares/internal/errors"
-
 	_ "github.com/jackc/pgx/v5/stdlib"
+
+	"github.com/Timwood0x10/ares/internal/errors"
 )
 
 // getTestDB returns a test database connection.
@@ -84,14 +84,31 @@ func createTestTables(t *testing.T, db *sql.DB) error {
 			metadata JSONB DEFAULT '{}'::jsonb,
 			document_id UUID,
 			chunk_index INTEGER,
-			content_hash TEXT UNIQUE,
+			content_hash TEXT,
 			access_count INTEGER DEFAULT 0,
 			created_at TIMESTAMP DEFAULT NOW(),
-			updated_at TIMESTAMP DEFAULT NOW()
+			updated_at TIMESTAMP DEFAULT NOW(),
+			-- Mirror production (migrate_storage.go): content_hash dedup is
+			-- tenant-scoped. Production drops any single-column UNIQUE on
+			-- content_hash and adds this tenant composite, which is what the
+			-- repository's ON CONFLICT (tenant_id, content_hash) targets.
+			UNIQUE (tenant_id, content_hash)
 		)`
 
 	if _, err := db.Exec(knowledgeTableSQL); err != nil {
 		return errors.Wrap(err, "failed to create knowledge_chunks_1024 table")
+	}
+
+	// Populate tsv with the same trigger production uses (migrate_storage.go):
+	// SearchByKeyword matches on `tsv @@ plainto_tsquery`, so without this the
+	// column stays NULL and keyword search returns nothing.
+	if _, err := db.Exec(`DROP TRIGGER IF EXISTS tsvector_update_knowledge_1024 ON knowledge_chunks_1024`); err != nil {
+		return errors.Wrap(err, "failed to drop knowledge tsvector trigger")
+	}
+	if _, err := db.Exec(`CREATE TRIGGER tsvector_update_knowledge_1024 BEFORE INSERT OR UPDATE ON knowledge_chunks_1024
+		FOR EACH ROW EXECUTE FUNCTION
+		tsvector_update_trigger(tsv, 'pg_catalog.simple', content)`); err != nil {
+		return errors.Wrap(err, "failed to create knowledge tsvector trigger")
 	}
 
 	// Create experiences_1024 table
@@ -102,7 +119,11 @@ func createTestTables(t *testing.T, db *sql.DB) error {
 			type VARCHAR(50) NOT NULL CHECK (type IN ('success', 'failure', 'query', 'solution', 'pattern', 'distilled')),
 			input TEXT,
 			output TEXT,
-			embedding VECTOR(1024) NOT NULL,
+			-- Nullable, matching storageMigrations: the async embedding worker
+			-- inserts the row first and backfills the vector later. A NOT NULL
+			-- here would let tests pass against a schema production does not
+			-- have, and would reject the pending rows readers must skip.
+			embedding VECTOR(1024),
 			embedding_model TEXT NOT NULL DEFAULT 'intfloat/e5-large',
 			embedding_version INT NOT NULL DEFAULT 1,
 			score FLOAT DEFAULT 0.5 CHECK (score >= 0 AND score <= 1),
@@ -221,6 +242,7 @@ func cleanupTestDB(t *testing.T, db *sql.DB) {
 		"conversations",
 		"task_results_1024",
 		"secrets",
+		"evolution_strategies",
 	}
 
 	for _, table := range tables {

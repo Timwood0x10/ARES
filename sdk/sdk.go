@@ -24,7 +24,7 @@
 //	}
 package sdk
 
-//nolint: errcheck // best-effort operations: ResponseWriter writes, cleanup Close/Wait, deferred shutdown
+//nolint:errcheck // Close() only: shutdown paths use deliberate `_ =` assignments (drained errgroup, best-effort MCP/client closes) where a second failure during teardown has no recovery action
 import (
 	"context"
 	"fmt"
@@ -34,25 +34,23 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
-	"github.com/Timwood0x10/ares/api/core"
-	apiembed "github.com/Timwood0x10/ares/api/embedding"
-	"github.com/Timwood0x10/ares/api/mcp"
-	"github.com/Timwood0x10/ares/api/service/llm"
-	"github.com/Timwood0x10/ares/api/tools"
-	"github.com/Timwood0x10/ares/internal/agentfabric"
-	"github.com/Timwood0x10/ares/internal/agentloop"
+	"github.com/Timwood0x10/ares/internal/agentruntime"
+	"github.com/Timwood0x10/ares/internal/agents/sub"
+	"github.com/Timwood0x10/ares/internal/agentsyscall"
+	tools "github.com/Timwood0x10/ares/internal/apitools"
 	ares_bootstrap "github.com/Timwood0x10/ares/internal/ares_bootstrap"
 	ares_events "github.com/Timwood0x10/ares/internal/ares_events"
-	aresexp "github.com/Timwood0x10/ares/internal/ares_experience"
-	memory "github.com/Timwood0x10/ares/internal/ares_memory"
-	"github.com/Timwood0x10/ares/internal/kernelscheduler"
+	agentfabric "github.com/Timwood0x10/ares/internal/fabric/agent"
+	taskfabric "github.com/Timwood0x10/ares/internal/fabric/task"
+	"github.com/Timwood0x10/ares/internal/kernel"
 	"github.com/Timwood0x10/ares/internal/knowledge"
 	"github.com/Timwood0x10/ares/internal/knowledge/adapter"
 	khruntime "github.com/Timwood0x10/ares/internal/knowledge/runtime"
+	llmcore "github.com/Timwood0x10/ares/internal/llmcore"
+	mcp "github.com/Timwood0x10/ares/internal/mcpclient"
+	memory "github.com/Timwood0x10/ares/internal/runtime/memory"
+	aresexp "github.com/Timwood0x10/ares/internal/runtime/memory/experience"
 	"github.com/Timwood0x10/ares/internal/storage/postgres"
-	"github.com/Timwood0x10/ares/internal/storage/postgres/repositories"
-	"github.com/Timwood0x10/ares/internal/system_runtime"
-	"github.com/Timwood0x10/ares/internal/taskfabric"
 )
 
 const strategyPriority = "priority"
@@ -81,8 +79,8 @@ const (
 // without spinning up a real provider. *llm.Service satisfies it; the field
 // is assigned the concrete service in New().
 type llmService interface {
-	Generate(ctx context.Context, req *core.GenerateRequest) (*core.GenerateResponse, error)
-	GetProvider() core.LLMProvider
+	Generate(ctx context.Context, req *llmcore.GenerateRequest) (*llmcore.GenerateResponse, error)
+	GetProvider() llmcore.LLMProvider
 	GetModel() string
 	Close()
 }
@@ -109,11 +107,11 @@ type llmService interface {
 //	ares := sdk.NewRuntime(opts...)       // ares = new ARES runtime
 //	defer ares.Close()
 //
-//	// H1: 极简闭环 — 注册平等 capability agent，按 capability 提交任务。
+//	// Minimal closed loop — register peer capability agents, submit tasks by capability.
 //	ares.RegisterAgent("coder", sdk.WithInstruction("You fix code."))
 //	result, _ := ares.Submit(ctx, sdk.Task{Capability: "coder", Input: "hello"})
 //
-//	// 或直接用 agent 运行（Agent.Run 保留为细粒度入口）。
+//	// Or run an agent directly (Agent.Run stays as the fine-grained entry point).
 //	agent := ares.NewAgent("assistant", sdk.WithInstruction("You are helpful."))
 //	result, _ = agent.Run(ctx, "hello")
 type Runtime struct {
@@ -143,7 +141,7 @@ type Runtime struct {
 	// stops Bootstrap's background goroutines before WaitBackground drains them.
 	bootstrapCancel context.CancelFunc
 	// evidencePool, when non-nil, is a PostgreSQL pool created for the
-	// evidence store (T1.3). Closed in Close() to prevent connection leaks.
+	// evidence store. Closed in Close() to prevent connection leaks.
 	// Typed as *postgres.Pool (not io.Closer) so a nil pool stays a nil
 	// pointer — assigning a nil *postgres.Pool to an interface would make
 	// the interface non-nil and Close() would dereference a nil db.
@@ -164,32 +162,66 @@ type Runtime struct {
 	// AKG distiller or knowledge store is unavailable.
 	akgBridge *adapter.DistillBridge
 	// agentByCapability maps a capability to the agent registered to handle it
-	// (H1: 极简 SDK 调度面 — RegisterAgent/Submit). Guarded by agentMu.
+	// (minimal SDK scheduling surface — RegisterAgent/Submit). Guarded by agentMu.
 	agentByCapability map[string]*Agent
 	agentMu           sync.Mutex
-	// ---- shared scheduler (H1/H2 merge) ----
-	// sdkExecutors maps capability → the shared-scheduler executor wrapping
-	// the registered agent. Guarded by agentMu (same lock as
-	// agentByCapability). The map is passed BY REFERENCE to the shared
-	// scheduler, so late RegisterAgent calls are visible to the next drain.
-	sdkExecutors map[string]kernelscheduler.CapabilityExecutor
+	// ---- shared scheduler (SDK/kernel merge) ----
+	// sdkExecutors is the scheduler's static-executor map, passed by
+	// reference to kernel.New. Since the L2 convergence nothing populates
+	// it — every task drains through the L2 router — and it remains only
+	// as the constructor's compatibility slot.
+	sdkExecutors map[string]kernel.CapabilityExecutor
 	// sdkFabric is the runtime's own Task Fabric; sched is the shared
-	// kernelscheduler.Scheduler driving submitted tasks (the SAME engine the
+	// kernel.Scheduler driving submitted tasks (the SAME engine the
 	// kernel uses). Lazily started on the first Submit; schedOnce guards it.
 	sdkFabric   *taskfabric.Fabric
-	sched       *kernelscheduler.Scheduler
+	sched       *kernel.Scheduler
 	schedOnce   sync.Once
 	schedCtx    context.Context
 	schedCancel context.CancelFunc
+	// schedDone closes when the scheduler drain goroutine has returned; nil
+	// until the first Submit starts it. Close waits on it so a drain in
+	// flight cannot touch executors/stores after they are torn down.
+	schedDone chan struct{}
 	// agentsFabric is the runtime's Agent Fabric, backing spawn_agent syscalls
-	// (D1: SDK now wires the same kernel syscalls as peer mode). Created in
+	// (the SDK wires the same kernel syscalls as peer mode). Created in
 	// ensureScheduler alongside sdkFabric; nil until the first Submit.
 	agentsFabric *agentfabric.Fabric
+	// l2Exec is the shared L2 execution core (agentruntime.Execution — the
+	// same core serve/start use): session registry, compile coordinator,
+	// L2 router, reaper, submitter. Built lazily by ensureL2 on first
+	// use; nil until wired (and permanently nil when no LLM is configured).
+	l2Exec *agentruntime.Execution
+	// l2Binder is the runtime's shared tool binder for the L2 planner
+	// (bridged from the tool registry including syscall tools). Kept so a
+	// tool registered after the L2 peer was spawned can be re-synced into
+	// the planner's view and the peer's tool/* capability set
+	// (resyncL2Tools, run on the L2 submit path).
+	l2Binder sub.ToolBinder
+	// l2Once guards l2Exec construction (same pattern as schedOnce).
+	l2Once sync.Once
+	// gov is the cognitive-execution budget injected into the L2 peer's
+	// SpawnSpec and syscall-spawned peers (WithAgentGovernance; zero =
+	// unlimited). Enforced by the scheduler via sched.WithGovernance.
+	//
+	// govMu guards gov's post-construction mutation: NewAgent's
+	// WithMaxTokens bridge (sdk.go) writes it while ensureL2's l2Once body
+	// (l2.go) reads it, and NewAgent is legal to call concurrently with
+	// another agent's first Run. Construction (builder.go) completes before
+	// any handle exists, so reads before the first NewAgent are lock-free
+	// by construction.
+	govMu sync.Mutex
+	gov   agentfabric.Governance
 	// syscallTools are the LLM-facing spawn_agent/create_task definitions
 	// appended to every agent's tool list so SDK users can autonomously
 	// decompose tasks. Populated by wireSyscalls; nil before the first
 	// Submit.
-	syscallTools []core.Tool
+	syscallTools []llmcore.Tool
+	// syscallKernel is the agentsyscall kernel built by wireSyscalls, kept so
+	// the loop lifetime (WithLoopLifetime) wiring is observable and plan-loop
+	// control (LivePlanLoops/StopPlanLoop) is reachable from the runtime. Nil
+	// before the first Submit.
+	syscallKernel *agentsyscall.Kernel
 }
 
 // ---- constructors ----
@@ -203,7 +235,7 @@ type Runtime struct {
 //
 // Quick start:
 //
-//	ares := sdk.NewRuntime(sdk.WithConfigFromEnv())
+//	ares := sdk.NewRuntime(sdk.WithConfig("ares.yaml"))
 //	defer ares.Close()
 //	agent := ares.NewAgent("assistant")
 //	result, _ := agent.Run(ctx, "hello")
@@ -236,167 +268,64 @@ func New(opts ...Option) (*Runtime, error) {
 		slog.Warn(hint)
 	}
 
-	// ---- LLM ----
-	llmCfg := &llm.Config{
-		BaseConfig: cfg.baseCfg,
-		LLMConfig:  cfg.llmCfg,
-		Fallbacks:  cfg.fallbacks,
-	}
-	llmSvc, err := llm.NewService(llmCfg)
+	// The heavy lifting lives in the sdkBuilder methods (builder.go); this
+	// function only orders the phases, arms the failure-cleanup defer, and maps
+	// phase errors to the caller.
+	b, err := newSDKBuilder(cfg)
 	if err != nil {
-		return nil, agentloop.FriendlyErr("llm", cfg.llmCfg.Provider, err)
+		return nil, err
 	}
-
-	toolReg := tools.NewRegistry()
-
-	// ---- Stage 8: assemble the core component graph through the single
-	// Bootstrap kernel so the SDK reuses the same EventStore / NewEvolution /
-	// System Runtime instances as serve and start. Falls back to SDK wiring
-	// when the config is not Bootstrap-capable (sqlite/extra providers) or
-	// assembly fails, preserving prior behavior.
-	// The bootstrap ctx is cancelled in Close so Bootstrap's background
-	// goroutines exit before WaitBackground drains them. Ownership is
-	// transferred to the Runtime on the success path; on any error path the
-	// deferred cancel prevents a context leak (vet lostcancel).
-	bootstrapCtx, bootstrapCancel := context.WithCancel(context.Background())
-	bootstrapCancelTaken := false
-	// mcpClients and bootstrapComp are declared here (before the cleanup defer)
-	// so the deferred cleanup can reference them; variables referenced by a
-	// defer must already be in scope at the defer statement.
-	var mcpClients []*mcp.Client
-	var bootstrapComp *ares_bootstrap.Components
+	// On any error path below, release everything created so far; on success
+	// the builder sets bootstrapCancelTaken and hands ownership to Close().
 	defer func() {
-		if !bootstrapCancelTaken {
-			// Error path: release everything created so far. The success path
-			// sets bootstrapCancelTaken and hands ownership to Runtime.Close().
-			bootstrapCancel()
-			// Drain Bootstrap background goroutines (they exit on ctx.Done()) so
-			// none outlives the failed construction, mirroring Runtime.Close().
-			if bootstrapComp != nil {
-				bootstrapComp.WaitBackground()
-			}
-			llmSvc.Close()
-			for _, c := range mcpClients {
-				_ = c.Close()
-			}
+		if !b.bootstrapCancelTaken {
+			b.cleanupOnError()
 		}
 	}()
-	bootstrapComp = newBootstrapCore(bootstrapCtx, cfg)
 
-	// ---- Memory (production MemoryManager: compression + RAG + distillation) ----
-	var memMgr memory.MemoryManager
-	var distillCleanup func()
-	var embClient apiembed.EmbeddingService
-	var expRepo repositories.ExperienceRepositoryInterface
-	var distillSvc *aresexp.DistillationService
-	var akgDistiller adapter.ConversationDistiller
-	if cfg.memCfg.Enabled {
-		w, err := wireMemory(context.Background(), cfg)
-		if err != nil {
-			return nil, fmt.Errorf("memory: %w", err)
-		}
-		memMgr = w.mgr
-		embClient = w.embClient
-		expRepo = w.expRepo
-		distillCleanup = w.cleanup
-		distillSvc = w.distillSvc
-		akgDistiller = w.akgDistiller
-	}
-
-	// ---- MCP ----
-	mcpClients, err = wireMCPClients(cfg, toolReg)
-	if err != nil {
+	b.assembleCore()
+	if err := b.wireMemoryPhase(); err != nil {
 		return nil, err
 	}
-
-	// ---- AKF Knowledge Fabric ----
-	embModelForAKG := resolveAKGEmbeddingModel(cfg)
-	kw, err := wireKnowledge(cfg, memMgr, embClient, embModelForAKG)
-	if err != nil {
+	if err := b.wireMCPPhase(); err != nil {
 		return nil, err
 	}
-
-	// ---- Stage 9 (SDK unification): keep the SDK's own KnowledgeRuntime
-	// (its providers carry the live memSearcher/embedding backends) and bind
-	// the Bootstrap NewEvolution's KnowledgePatchExecutor to THAT instance via
-	// UpdateLiveKnowledgeRuntime. This satisfies §5.2 (KnowledgePatchExecutor
-	// and AKF tools share one runtime) without replacing the SDK runtime with
-	// the Bootstrap one, whose memory provider has no searcher.
-	if bootstrapComp != nil && bootstrapComp.NewEvolution != nil && kw.rt != nil {
-		bootstrapComp.NewEvolution.UpdateLiveKnowledgeRuntime(kw.rt)
-	}
-
-	// ---- AKF knowledge tools (auto-registered so the agent can call them) ----
-	if cfg.knlCfg.Enabled && kw.rt != nil {
-		if err := registerAKFTools(toolReg, kw.rt); err != nil {
-			return nil, fmt.Errorf("akf tools: %w", err)
-		}
-	}
-
-	// ---- Evolution hot-update + evidence store ----
-	// Stage 8: reuse the Bootstrap-assembled NewEvolution when available;
-	// otherwise keep the SDK dual-track wiring as a compatibility fallback.
-	// (wireSDKEvolution owns the T1.3 evidence-persistence gating.)
-	evoComponents, pgPool, err := wireSDKEvolution(cfg, kw, bootstrapComp)
-	if err != nil {
+	if err := b.wireKnowledgePhase(); err != nil {
 		return nil, err
 	}
-
-	// ---- RAG retriever wiring (best-effort, non-fatal) ----
-	if cfg.memCfg.EnableRAG && memMgr != nil {
-		wireSDKRetrievers(context.Background(), cfg, memMgr, embClient, expRepo,
-			kw.rt, kw.store, embModelForAKG)
+	if err := b.wireEvolutionPhase(); err != nil {
+		return nil, err
 	}
+	b.wireRetrieversAndBridge()
+	b.wireEventBackendPhase()
 
-	// ---- AKG DistillBridge (write loop: conversations → knowledge store) ----
-	akgBridge := buildAKGBridge(cfg, akgDistiller, kw.store, embClient, embModelForAKG)
-
-	// ---- Event backend ----
-	// Stage 8: when the Bootstrap core is available, subscribe distillation to
-	// Bootstrap's shared EventStore (single store across entry points) instead
-	// of a private SDK store; otherwise fall back to the SDK event backend.
-	rtCtx, rtCancel, eg, eventStore := wireSDKEventBackend(bootstrapComp, distillSvc, akgBridge)
-
-	runtime := &Runtime{
-		llmSvc:            llmSvc,
-		toolReg:           toolReg,
-		memMgr:            memMgr,
-		distillCleanup:    distillCleanup,
-		memEnabled:        cfg.memCfg.Enabled,
-		evoEnabled:        cfg.evoCfg.Enabled,
-		knowledgeEnabled:  cfg.knlCfg.Enabled,
-		knowledgeRT:       kw.rt,
-		knowledgeStore:    kw.store,
-		evolutionStore:    kw.evolutionStore,
-		evoComponents:     evoComponents,
-		eventStore:        eventStore,
-		mcpClients:        mcpClients,
-		trace:             cfg.trace,
-		bootstrap:         bootstrapComp,
-		bootstrapCancel:   bootstrapCancel,
-		evidencePool:      pgPool,
-		ctx:               rtCtx,
-		cancel:            rtCancel,
-		eg:                eg,
-		distillSvc:        distillSvc,
-		akgBridge:         akgBridge,
-		agentByCapability: make(map[string]*Agent),
-		sdkExecutors:      make(map[string]kernelscheduler.CapabilityExecutor),
-	}
+	rt := b.buildRuntime()
 	// Transfer Bootstrap ctx ownership to the Runtime on the success path so
 	// the deferred cancel above does not fire; Close owns cancellation now.
-	bootstrapCancelTaken = true
-	return runtime, nil
+	b.bootstrapCancelTaken = true
+	return rt, nil
 }
 
 // Close releases all resources held by the Runtime (LLM connections, memory
 // store, MCP connections). Call once when the Runtime is no longer needed.
 func (r *Runtime) Close() {
-	// Stop the shared scheduler's drain loop first (H1/H2 merge): it runs on
+	// Stop the shared scheduler's drain loop first (SDK/kernel merge): it runs on
 	// its own context so a Submit in flight is cancelled before the executor
-	// agents and stores it depends on are torn down.
+	// agents and stores it depends on are torn down. The join is bounded so a
+	// stuck quantum cannot hang Close forever; drain's wg.Wait honors ctx
+	// cancellation, so the loop exits promptly under normal operation.
 	if r.schedCancel != nil {
 		r.schedCancel()
+	}
+	if r.schedDone != nil {
+		select {
+		case <-r.schedDone:
+		case <-time.After(30 * time.Second):
+			// Best-effort teardown must remain bounded: a drain wedged past
+			// the budget is logged (visible, not silent) and the teardown
+			// proceeds — the components below are closing either way.
+			slog.Warn("sdk: scheduler drain did not exit within 30s; proceeding with teardown")
+		}
 	}
 	// Stop background goroutines (event-driven distillation subscriber) first
 	// and wait for in-flight work, so the subscriber stops accepting new events
@@ -420,7 +349,7 @@ func (r *Runtime) Close() {
 		}
 		r.bootstrap.WaitBackground()
 	}
-	// Close the evidence PostgreSQL pool to prevent connection leaks (T1.3).
+	// Close the evidence PostgreSQL pool to prevent connection leaks.
 	// The pool is nil when no Postgres was configured, so this is a safe no-op.
 	if r.evidencePool != nil {
 		_ = r.evidencePool.Close()
@@ -444,15 +373,18 @@ func (r *Runtime) Close() {
 // the Runtime is not backed by Bootstrap (SDK-only options) or when
 // Bootstrap failed before wiring completed — callers can always consume
 // a valid value without nil guards.
-func (r *Runtime) Snapshot() system_runtime.Snapshot {
+func (r *Runtime) Snapshot() kernel.Snapshot {
 	if r.bootstrap == nil {
-		return system_runtime.Snapshot{}
+		return kernel.Snapshot{}
 	}
 	return r.bootstrap.Snapshot()
 }
 
 // ToolRegistry returns the internal tool registry. Use this to register custom
-// tools before creating agents.
+// tools before creating agents. A tool registered after the first Submit is
+// picked up by the L2 path on the next submission (resyncL2Tools re-bridges
+// the registry and extends the L2 peer's tool/* capabilities); registering
+// before the first Submit simply avoids that one-time re-sync.
 func (r *Runtime) ToolRegistry() *tools.Registry {
 	return r.toolReg
 }
@@ -475,12 +407,51 @@ func (r *Runtime) KnowledgeStore() knowledge.KnowledgeStore {
 	return r.knowledgeStore
 }
 
+// governanceSnapshot returns the current governance budget under govMu.
+// Every post-construction read of r.gov goes through here: NewAgent's
+// WithMaxTokens bridge writes concurrently, so a bare field read races
+// (found in code review; locked pattern mirrors the once-body reads in
+// ensureL2 and wireSyscalls).
+func (r *Runtime) governanceSnapshot() agentfabric.Governance {
+	r.govMu.Lock()
+	defer r.govMu.Unlock()
+	return r.gov
+}
+
 // NewAgent creates a new Agent bound to this Runtime. The agent carries a name,
 // an optional system instruction, and an optional set of tools.
 func (r *Runtime) NewAgent(name string, opts ...AgentOption) *Agent {
 	ac := defaultAgentConfig()
 	for _, o := range opts {
 		o(ac)
+	}
+	// Bridge WithMaxTokens into the runtime's governance budget (Phase 7):
+	// the shared L2 path enforces token limits exclusively through
+	// Governance at quantum boundaries, so an agent-level WithMaxTokens
+	// that stops at the agentConfig would be a silent no-op — exactly the
+	// "stored but ignored bound" the option's old doc admitted to. The
+	// bridge happens here, before the first Run/Submit can call ensureL2,
+	// which stamps r.gov into the L2 peer ONCE (l2Once): a WithMaxTokens
+	// applied after the first run of ANY agent on this runtime cannot take
+	// effect — NewAgent is the last bridge point. Only a positive value
+	// bridges; a later agent with a SMALLER budget would otherwise silently
+	// tighten every other agent (documented: first positive value wins,
+	// WithAgentGovernance remains the explicit runtime-level control).
+	r.govMu.Lock()
+	if ac.maxTokens > 0 && r.gov.TokenBudget <= 0 {
+		r.gov.TokenBudget = ac.maxTokens
+	}
+	r.govMu.Unlock()
+	// Custom tools attached via WithTools must reach the runtime registry:
+	// the L2 planner only sees tools bridged from toolReg (resyncL2Tools),
+	// so leaving them solely on the Agent made WithTools a silent no-op on
+	// the L2 execution path. Registry.Register overwrites by name, so
+	// re-creating an agent with the same tool name is idempotent.
+	for _, t := range ac.tools {
+		if err := r.toolReg.Register(t); err != nil {
+			slog.Warn("sdk: register agent tool failed",
+				"agent", name, "tool", t.Name(), "error", err)
+		}
 	}
 	return &Agent{
 		name:        name,

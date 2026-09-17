@@ -73,7 +73,9 @@ func (e *PhaseExecutor) Execute(ctx context.Context, fn func(ctx context.Context
 	var lastErr error
 
 	for attempt := 0; attempt <= e.maxRetries; attempt++ {
+		e.mu.Lock()
 		e.retries = attempt
+		e.mu.Unlock()
 
 		select {
 		case <-ctx.Done():
@@ -116,8 +118,10 @@ func (e *PhaseExecutor) Execute(ctx context.Context, fn func(ctx context.Context
 				continue
 			}
 
-			e.setState(PhaseStateFailed)
+			e.mu.Lock()
 			e.error = lastErr
+			e.mu.Unlock()
+			e.setState(PhaseStateFailed)
 			return lastErr
 		}
 
@@ -125,8 +129,10 @@ func (e *PhaseExecutor) Execute(ctx context.Context, fn func(ctx context.Context
 		break
 	}
 
-	e.setState(PhaseStateCompleted)
+	e.mu.Lock()
 	e.endTime = time.Now()
+	e.mu.Unlock()
+	e.setState(PhaseStateCompleted)
 
 	// Snapshot onComplete under the lock; call it outside to avoid holding the
 	// read lock during user-provided callbacks (which may re-enter this struct).

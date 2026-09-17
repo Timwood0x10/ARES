@@ -289,38 +289,9 @@ CREATE INDEX idx_events_stream_version ON events (stream_id, version);
 CREATE INDEX idx_events_created_at ON events (created_at);
 ```
 
-## Integration with Leader Failover
-
-Event sourcing replaces checkpoint-based recovery with a complete event log. Instead of periodic snapshots, every state transition is recorded:
-
-```mermaid
-sequenceDiagram
-    participant Leader
-    participant Store as EventStore
-    participant Super as Supervisor
-    participant New as New Leader
-
-    Leader->>Store: Append(failover.triggered)
-    Leader--xSuper: Heartbeat timeout
-
-    Super->>Store: Read("leader-main")
-    Store-->>Super: [agent.started, task.created, task.dispatched, ...]
-
-    Super->>New: Replay events
-    New->>New: Rebuild state from event stream
-    New->>Store: Append(failover.completed)
-```
-
-The new leader replays the event stream to reconstruct:
-- Which tasks were dispatched but not completed
-- Which agents were active
-- The last known session state
-
-This is more reliable than checkpoints because no state is lost between snapshots.
-
 ## DLQ Auto-Retry
 
-Failed message processing integrates with the Dead Letter Queue (DLQ) in `internal/ares_protocol/ahp/dlq.go`. The `DLQProcessor` retries failed entries on a configurable interval:
+Failed message processing integrates with the Dead Letter Queue (DLQ) in `internal/runtime/protocol/ahp/dlq.go`. The `DLQProcessor` retries failed entries on a configurable interval:
 
 ```go
 dlq := ahp.NewDLQ(10000)

@@ -2,6 +2,7 @@ package builtin
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -234,7 +235,7 @@ func TestFileToolsRead_Success(t *testing.T) {
 		t.Errorf("operation = %v, want 'read'", data["operation"])
 	}
 
-	// The operation reports the symlink-resolved secure path (M11), which
+	// The operation reports the symlink-resolved secure path, which
 	// may differ from the input on platforms where TempDir passes through a
 	// symlink (e.g. macOS /var -> /private/var).
 	resolvedFile, err := filepath.EvalSymlinks(testFile)
@@ -1006,5 +1007,67 @@ func TestFileToolsList_Recursive(t *testing.T) {
 				t.Errorf("directory count = %v, want %d", totals["directories"], tt.expectedDirs)
 			}
 		})
+	}
+}
+
+// TestFileToolsRead_UnboundedReadIsCapped locks the memory bound on the
+// default read.
+//
+// Regression: `read` with limit=0 (the default) accumulated EVERY line into
+// resultLines and then returned both "content" (a joined copy) and "lines"
+// (the slice) — two full copies of the file resident at once. The scanner's
+// 10MB cap bounds a single LINE, not the total, so a multi-GB file inside
+// the sandbox OOMed the process. The tool is reachable from an LLM-driven
+// agent calling its own tools, so "the caller asked for everything" is not a
+// defence.
+func TestFileToolsRead_UnboundedReadIsCapped(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+	tools := NewFileTools(WithAllowedDir(tmpDir))
+	testFile := filepath.Join(tmpDir, "big.txt")
+
+	// Comfortably more lines than the default cap, small enough to stay fast.
+	const written = 5000
+	var b strings.Builder
+	for i := 0; i < written; i++ {
+		fmt.Fprintf(&b, "line %d\n", i)
+	}
+	if err := os.WriteFile(testFile, []byte(b.String()), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	result, err := tools.Execute(ctx, map[string]interface{}{
+		"operation": "read",
+		"file_path": testFile,
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !result.Success {
+		t.Fatalf("read must succeed, got %s", result.Error)
+	}
+	data, ok := result.Data.(map[string]interface{})
+	if !ok {
+		t.Fatal("Result.Data should be a map")
+	}
+	lines, ok := data["lines"].([]string)
+	if !ok {
+		t.Fatalf("lines should be []string, got %T", data["lines"])
+	}
+	if len(lines) > defaultReadMaxLines {
+		t.Fatalf("default read returned %d lines, want at most %d — an uncapped "+
+			"default read is an OOM vector on a large file", len(lines), defaultReadMaxLines)
+	}
+	// The caller must be able to tell the read was truncated rather than
+	// concluding the file really is this short.
+	total, ok := data["total_lines"].(int)
+	if !ok {
+		t.Fatalf("total_lines should be int, got %T", data["total_lines"])
+	}
+	if total != written {
+		t.Fatalf("total_lines = %d, want the true %d so truncation is visible", total, written)
+	}
+	if truncated, _ := data["truncated"].(bool); !truncated {
+		t.Fatal("a capped read must report truncated=true")
 	}
 }

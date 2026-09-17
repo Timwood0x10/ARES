@@ -12,7 +12,7 @@ import (
 	"testing"
 
 	"github.com/Timwood0x10/ares/internal/ares_config"
-	"github.com/Timwood0x10/ares/internal/ares_skills"
+	"github.com/Timwood0x10/ares/internal/runtime/protocol/skills"
 )
 
 // chdir changes the working directory for the duration of the test and
@@ -55,8 +55,8 @@ func TestStatusConfigToStatusMinimal(t *testing.T) {
 	if !out.Minimal {
 		t.Fatal("expected minimal=true")
 	}
-	if out.Server.Host != "localhost" || out.Server.Port != 8080 {
-		t.Fatalf("server = %s:%d, want localhost:8080", out.Server.Host, out.Server.Port)
+	if out.Server.Host != "127.0.0.1" || out.Server.Port != 8080 {
+		t.Fatalf("server = %s:%d, want 127.0.0.1:8080 (loopback default bind)", out.Server.Host, out.Server.Port)
 	}
 	if out.LLM.Provider != "ollama" || out.LLM.Model != "llama3.2" {
 		t.Fatalf("llm = %s/%s, want ollama/llama3.2", out.LLM.Provider, out.LLM.Model)
@@ -152,7 +152,7 @@ func TestStatusProbeRuntime(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	rt := probeStatusRuntime(context.Background(), srv.URL)
+	rt := probeStatusRuntime(context.Background(), srv.URL, "")
 	if !rt.Running {
 		t.Fatalf("expected running, error=%q", rt.Error)
 	}
@@ -165,7 +165,7 @@ func TestStatusProbeRuntime(t *testing.T) {
 }
 
 func TestStatusProbeRuntimeDead(t *testing.T) {
-	rt := probeStatusRuntime(context.Background(), "http://127.0.0.1:1")
+	rt := probeStatusRuntime(context.Background(), "http://127.0.0.1:1", "")
 	if rt.Running {
 		t.Fatal("expected not running")
 	}
@@ -183,7 +183,7 @@ func TestStatusProbeRuntimeTrailingSlash(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	rt := probeStatusRuntime(context.Background(), srv.URL+"/")
+	rt := probeStatusRuntime(context.Background(), srv.URL+"/", "")
 	if !rt.Running {
 		t.Fatalf("expected running with trailing slash, error=%q", rt.Error)
 	}

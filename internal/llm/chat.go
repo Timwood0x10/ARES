@@ -9,9 +9,9 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/Timwood0x10/ares/api/core"
 	"github.com/Timwood0x10/ares/internal/ares_callbacks"
 	"github.com/Timwood0x10/ares/internal/errors"
+	llmcore "github.com/Timwood0x10/ares/internal/llmcore"
 )
 
 // Chat sends a chat request with tool support to the LLM.
@@ -27,9 +27,9 @@ import (
 //
 // Returns:
 //
-//	*core.GenerateResponse - the chat response including optional tool_calls.
+//	*llmcore.GenerateResponse - the chat response including optional tool_calls.
 //	error - request, decode, or unsupported provider error.
-func (c *Client) Chat(ctx context.Context, messages []*core.LLMMessage, tools []core.Tool, params map[string]any) (*core.GenerateResponse, error) {
+func (c *Client) Chat(ctx context.Context, messages []*llmcore.LLMMessage, tools []llmcore.Tool, params map[string]any) (*llmcore.GenerateResponse, error) {
 	start := time.Now()
 	model := ""
 	if c.config != nil {
@@ -51,7 +51,7 @@ func (c *Client) Chat(ctx context.Context, messages []*core.LLMMessage, tools []
 	// Apply rate limiter before making the API call.
 	if c.limiter != nil {
 		if waitErr := c.limiter.Wait(ctx); waitErr != nil {
-			c.recordLLMCall(ctx, "chat", "", 0, start, waitErr)
+			c.recordLLMCall(ctx, "chat", "", llmcore.TokenUsage{}, start, waitErr)
 			c.emitCallback(&ares_callbacks.Context{
 				Event: ares_callbacks.EventLLMError,
 				Model: model,
@@ -66,13 +66,13 @@ func (c *Client) Chat(ctx context.Context, messages []*core.LLMMessage, tools []
 		Model: model,
 	})
 
-	var result *core.GenerateResponse
+	var result *llmcore.GenerateResponse
 	var err error
 
 	// Run the provider call under the retry policy and circuit breaker:
 	// 429/5xx/transport errors are retried with exponential backoff, and the
 	// breaker fails fast while a provider is degraded.
-	result, err = withRetry(c, ctx, func() (*core.GenerateResponse, error) {
+	result, err = withRetry(c, ctx, func() (*llmcore.GenerateResponse, error) {
 		switch ProviderType(c.config.Provider) {
 		case ProviderOllama:
 			return c.chatOllama(ctx, messages, tools, overrides)
@@ -88,12 +88,12 @@ func (c *Client) Chat(ctx context.Context, messages []*core.LLMMessage, tools []
 	duration := time.Since(start)
 	promptSummary := summarizeMessages(messages)
 	var responseContent string
-	var tokenCount int
+	var usage llmcore.TokenUsage
 	if result != nil {
 		responseContent = result.Content
-		tokenCount = result.Usage.TotalTokens
+		usage = result.Usage
 	}
-	c.recordLLMCall(ctx, promptSummary, responseContent, tokenCount, start, err)
+	c.recordLLMCall(ctx, promptSummary, responseContent, usage, start, err)
 
 	if err != nil {
 		c.emitCallback(&ares_callbacks.Context{
@@ -115,7 +115,7 @@ func (c *Client) Chat(ctx context.Context, messages []*core.LLMMessage, tools []
 }
 
 // summarizeMessages returns a brief summary of messages for logging/tracing.
-func summarizeMessages(messages []*core.LLMMessage) string {
+func summarizeMessages(messages []*llmcore.LLMMessage) string {
 	return fmt.Sprintf("chat(%d messages)", len(messages))
 }
 
@@ -130,9 +130,9 @@ func summarizeMessages(messages []*core.LLMMessage) string {
 //
 // Returns:
 //
-//	*core.GenerateResponse - the chat response, including tool_calls if present.
+//	*llmcore.GenerateResponse - the chat response, including tool_calls if present.
 //	error - request or decode error.
-func (c *Client) chatOllama(ctx context.Context, messages []*core.LLMMessage, tools []core.Tool, o requestOverrides) (*core.GenerateResponse, error) {
+func (c *Client) chatOllama(ctx context.Context, messages []*llmcore.LLMMessage, tools []llmcore.Tool, o requestOverrides) (*llmcore.GenerateResponse, error) {
 	body := map[string]any{
 		"model":    c.config.Model,
 		"messages": buildOpenAIChatMessages(messages),
@@ -162,6 +162,7 @@ func (c *Client) chatOllama(ctx context.Context, messages []*core.LLMMessage, to
 		return nil, errors.Wrap(err, "create ollama chat request")
 	}
 	req.Header.Set("Content-Type", "application/json")
+	c.applyExtraHeaders(req)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -197,19 +198,29 @@ func (c *Client) chatOllama(ctx context.Context, messages []*core.LLMMessage, to
 				} `json:"function"`
 			} `json:"tool_calls"`
 		} `json:"message"`
+		// Ollama's native token accounting: prompt_eval_count (input) and
+		// eval_count (output). Previously never decoded, so every Ollama
+		// run reported zero usage — token budgets and cost dashboards saw
+		// nothing for the whole provider.
+		PromptEvalCount int `json:"prompt_eval_count"`
+		EvalCount       int `json:"eval_count"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&ollamaResp); err != nil {
 		return nil, errors.Wrap(err, "decode ollama chat response")
 	}
 
-	respCore := &core.GenerateResponse{
+	respCore := &llmcore.GenerateResponse{
 		Content: ollamaResp.Message.Content,
+		Usage: llmcore.TokenUsage{
+			PromptTokens:     ollamaResp.PromptEvalCount,
+			CompletionTokens: ollamaResp.EvalCount,
+		},
 	}
 	for _, tc := range ollamaResp.Message.ToolCalls {
-		respCore.ToolCalls = append(respCore.ToolCalls, core.ToolCall{
+		respCore.ToolCalls = append(respCore.ToolCalls, llmcore.ToolCall{
 			ID:   tc.ID,
 			Type: tc.Type,
-			Function: core.FunctionCall{
+			Function: llmcore.FunctionCall{
 				Name:      tc.Function.Name,
 				Arguments: string(tc.Function.Arguments),
 			},
@@ -229,11 +240,11 @@ func (c *Client) chatOllama(ctx context.Context, messages []*core.LLMMessage, to
 //
 // Returns:
 //
-//	*core.GenerateResponse - the chat response, including tool_calls if present.
+//	*llmcore.GenerateResponse - the chat response, including tool_calls if present.
 //	error - request or decode error.
-func (c *Client) chatOpenAI(ctx context.Context, messages []*core.LLMMessage, tools []core.Tool, o requestOverrides) (*core.GenerateResponse, error) {
+func (c *Client) chatOpenAI(ctx context.Context, messages []*llmcore.LLMMessage, tools []llmcore.Tool, o requestOverrides) (*llmcore.GenerateResponse, error) {
 	if c.config.APIKey == "" {
-		return nil, fmt.Errorf("API key is required for OpenAI/OpenRouter chat")
+		return nil, errors.New("API key is required for OpenAI/OpenRouter chat")
 	}
 
 	maxTokens := o.applyMaxTokens(c.config.MaxTokens)
@@ -264,12 +275,13 @@ func (c *Client) chatOpenAI(ctx context.Context, messages []*core.LLMMessage, to
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+c.config.APIKey)
 	req.Header.Set("X-Title", "ARES")
+	c.applyExtraHeaders(req)
 
 	return c.decodeOpenAIChatResponse(ctx, req)
 }
 
 // decodeOpenAIChatResponse sends the request and decodes the OpenAI chat response.
-func (c *Client) decodeOpenAIChatResponse(ctx context.Context, req *http.Request) (*core.GenerateResponse, error) {
+func (c *Client) decodeOpenAIChatResponse(ctx context.Context, req *http.Request) (*llmcore.GenerateResponse, error) {
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("openai chat: %w", err)
@@ -308,7 +320,7 @@ func (c *Client) decodeOpenAIChatResponse(ctx context.Context, req *http.Request
 			FinishReason string `json:"finish_reason"`
 		} `json:"choices"`
 		// Usage carries token counts so the caller's cost tracking is not
-		// stuck at zero (M7).
+		// stuck at zero.
 		Usage struct {
 			PromptTokens     int `json:"prompt_tokens"`
 			CompletionTokens int `json:"completion_tokens"`
@@ -320,19 +332,24 @@ func (c *Client) decodeOpenAIChatResponse(ctx context.Context, req *http.Request
 	}
 
 	if len(chatResp.Choices) == 0 {
-		return nil, fmt.Errorf("no choices in openai chat response")
+		return nil, errors.New("no choices in openai chat response")
 	}
 
 	choice := chatResp.Choices[0]
-	respCore := &core.GenerateResponse{
+	respCore := &llmcore.GenerateResponse{
 		Content:      choice.Message.Content,
 		FinishReason: choice.FinishReason,
+		Usage: llmcore.TokenUsage{
+			PromptTokens:     chatResp.Usage.PromptTokens,
+			CompletionTokens: chatResp.Usage.CompletionTokens,
+			TotalTokens:      chatResp.Usage.TotalTokens,
+		},
 	}
 	for _, tc := range choice.Message.ToolCalls {
-		respCore.ToolCalls = append(respCore.ToolCalls, core.ToolCall{
+		respCore.ToolCalls = append(respCore.ToolCalls, llmcore.ToolCall{
 			ID:   tc.ID,
 			Type: tc.Type,
-			Function: core.FunctionCall{
+			Function: llmcore.FunctionCall{
 				Name:      tc.Function.Name,
 				Arguments: tc.Function.Arguments,
 			},
@@ -341,9 +358,9 @@ func (c *Client) decodeOpenAIChatResponse(ctx context.Context, req *http.Request
 	return respCore, nil
 }
 
-// buildOpenAIChatMessages converts core.LLMMessage slice to OpenAI chat format.
+// buildOpenAIChatMessages converts llmcore.LLMMessage slice to OpenAI chat format.
 // Handles tool-role and assistant messages with tool_calls.
-func buildOpenAIChatMessages(messages []*core.LLMMessage) []map[string]any {
+func buildOpenAIChatMessages(messages []*llmcore.LLMMessage) []map[string]any {
 	result := make([]map[string]any, 0, len(messages))
 	for _, msg := range messages {
 		switch {
@@ -386,8 +403,8 @@ func buildOpenAIChatMessages(messages []*core.LLMMessage) []map[string]any {
 	return result
 }
 
-// buildOpenAIChatTools converts core.Tool slice to OpenAI tools format.
-func buildOpenAIChatTools(tools []core.Tool) []map[string]any {
+// buildOpenAIChatTools converts llmcore.Tool slice to OpenAI tools format.
+func buildOpenAIChatTools(tools []llmcore.Tool) []map[string]any {
 	result := make([]map[string]any, 0, len(tools))
 	for _, t := range tools {
 		result = append(result, map[string]any{
@@ -413,11 +430,11 @@ func buildOpenAIChatTools(tools []core.Tool) []map[string]any {
 //
 // Returns:
 //
-//	*core.GenerateResponse - the chat response, including tool_calls if present.
+//	*llmcore.GenerateResponse - the chat response, including tool_calls if present.
 //	error - request or decode error.
-func (c *Client) chatAnthropic(ctx context.Context, messages []*core.LLMMessage, tools []core.Tool, o requestOverrides) (*core.GenerateResponse, error) {
+func (c *Client) chatAnthropic(ctx context.Context, messages []*llmcore.LLMMessage, tools []llmcore.Tool, o requestOverrides) (*llmcore.GenerateResponse, error) {
 	if c.config.APIKey == "" {
-		return nil, fmt.Errorf("API key is required for Anthropic chat")
+		return nil, errors.New("API key is required for Anthropic chat")
 	}
 
 	maxTokens := o.applyMaxTokens(c.config.MaxTokens)
@@ -433,7 +450,7 @@ func (c *Client) chatAnthropic(ctx context.Context, messages []*core.LLMMessage,
 		"max_tokens": maxTokens,
 	}
 	// Anthropic rejects top_k=0 with an API 400; only send it when a
-	// positive override is present (M9).
+	// positive override is present.
 	if topK := o.applyTopK(0); topK > 0 {
 		reqBody["top_k"] = topK
 	}
@@ -456,12 +473,13 @@ func (c *Client) chatAnthropic(ctx context.Context, messages []*core.LLMMessage,
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-api-key", c.config.APIKey)
 	req.Header.Set("anthropic-version", "2023-06-01")
+	c.applyExtraHeaders(req)
 
 	return c.decodeAnthropicChatResponse(ctx, req)
 }
 
 // decodeAnthropicChatResponse sends the request and decodes the Anthropic chat response.
-func (c *Client) decodeAnthropicChatResponse(ctx context.Context, req *http.Request) (*core.GenerateResponse, error) {
+func (c *Client) decodeAnthropicChatResponse(ctx context.Context, req *http.Request) (*llmcore.GenerateResponse, error) {
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("anthropic chat: %w", err)
@@ -493,7 +511,7 @@ func (c *Client) decodeAnthropicChatResponse(ctx context.Context, req *http.Requ
 		} `json:"content"`
 		StopReason string `json:"stop_reason"`
 		// Usage carries token counts so the caller's cost tracking is not
-		// stuck at zero (M7).
+		// stuck at zero.
 		Usage struct {
 			InputTokens  int `json:"input_tokens"`
 			OutputTokens int `json:"output_tokens"`
@@ -503,8 +521,8 @@ func (c *Client) decodeAnthropicChatResponse(ctx context.Context, req *http.Requ
 		return nil, errors.Wrap(err, "decode anthropic chat response")
 	}
 
-	respCore := &core.GenerateResponse{
-		Usage: core.TokenUsage{
+	respCore := &llmcore.GenerateResponse{
+		Usage: llmcore.TokenUsage{
 			PromptTokens:     chatResp.Usage.InputTokens,
 			CompletionTokens: chatResp.Usage.OutputTokens,
 			TotalTokens:      chatResp.Usage.InputTokens + chatResp.Usage.OutputTokens,
@@ -520,10 +538,10 @@ func (c *Client) decodeAnthropicChatResponse(ctx context.Context, req *http.Requ
 				log.Error("llm: marshal tool call input", "error", err)
 				continue
 			}
-			respCore.ToolCalls = append(respCore.ToolCalls, core.ToolCall{
+			respCore.ToolCalls = append(respCore.ToolCalls, llmcore.ToolCall{
 				ID:   block.ID,
 				Type: "function",
-				Function: core.FunctionCall{
+				Function: llmcore.FunctionCall{
 					Name:      block.Name,
 					Arguments: string(argsJSON),
 				},
@@ -536,31 +554,44 @@ func (c *Client) decodeAnthropicChatResponse(ctx context.Context, req *http.Requ
 	return respCore, nil
 }
 
-// buildAnthropicChatMessages converts core.LLMMessage slice to Anthropic format.
+// buildAnthropicChatMessages converts llmcore.LLMMessage slice to Anthropic format.
 // System-role messages are extracted into a separate system prompt string.
-// Tool-result messages are converted to Anthropic's user+tool_result format.
+// Consecutive tool-result messages are batched into a single user message
+// with multiple tool_result content blocks — Anthropic rejects consecutive
+// user messages (HTTP 400), which is exactly what parallel tool calls and
+// user text following tool results would otherwise produce.
 // Returns (messages, systemPrompt).
-func buildAnthropicChatMessages(messages []*core.LLMMessage) ([]map[string]any, string) {
+func buildAnthropicChatMessages(messages []*llmcore.LLMMessage) ([]map[string]any, string) {
 	var systemParts []string
 	result := make([]map[string]any, 0, len(messages))
+
+	// pendingToolResults accumulates tool_result blocks from consecutive
+	// tool-role messages so they become one user message.
+	var pendingToolResults []map[string]any
+
+	flushToolResults := func() {
+		if len(pendingToolResults) == 0 {
+			return
+		}
+		result = append(result, map[string]any{
+			"role":    "user",
+			"content": pendingToolResults,
+		})
+		pendingToolResults = nil
+	}
 
 	for _, msg := range messages {
 		switch {
 		case msg.Role == "system":
 			systemParts = append(systemParts, msg.Content)
 		case msg.Role == "tool":
-			// Anthropic requires tool results as user messages with tool_result content blocks.
-			result = append(result, map[string]any{
-				"role": "user",
-				"content": []map[string]any{
-					{
-						"type":        "tool_result",
-						"tool_use_id": msg.ToolCallID,
-						"content":     msg.Content,
-					},
-				},
+			pendingToolResults = append(pendingToolResults, map[string]any{
+				"type":        "tool_result",
+				"tool_use_id": msg.ToolCallID,
+				"content":     msg.Content,
 			})
 		case msg.Role == "assistant" && len(msg.ToolCalls) > 0:
+			flushToolResults()
 			content := make([]map[string]any, 0, len(msg.ToolCalls)+1)
 			if msg.Content != "" {
 				content = append(content, map[string]any{
@@ -585,12 +616,36 @@ func buildAnthropicChatMessages(messages []*core.LLMMessage) ([]map[string]any, 
 				"content": content,
 			})
 		default:
+			// A plain message right after pending tool results: flushing the
+			// results first and then emitting this message would produce two
+			// CONSECUTIVE user messages when this one is itself user-role —
+			// the exact HTTP 400 shape Anthropic rejects. Merge the user's
+			// text into the tool-result message instead (tool_result blocks
+			// plus a text block are valid in one user message).
+			if msg.Role == "user" && len(pendingToolResults) > 0 {
+				content := make([]map[string]any, 0, len(pendingToolResults)+1)
+				content = append(content, pendingToolResults...)
+				if msg.Content != "" {
+					content = append(content, map[string]any{
+						"type": "text",
+						"text": msg.Content,
+					})
+				}
+				result = append(result, map[string]any{
+					"role":    "user",
+					"content": content,
+				})
+				pendingToolResults = nil
+				continue
+			}
+			flushToolResults()
 			result = append(result, map[string]any{
 				"role":    msg.Role,
 				"content": msg.Content,
 			})
 		}
 	}
+	flushToolResults()
 
 	var systemPrompt string
 	if len(systemParts) > 0 {
@@ -602,10 +657,10 @@ func buildAnthropicChatMessages(messages []*core.LLMMessage) ([]map[string]any, 
 	return result, systemPrompt
 }
 
-// buildAnthropicChatTools converts core.Tool slice to Anthropic flat tool format.
+// buildAnthropicChatTools converts llmcore.Tool slice to Anthropic flat tool format.
 // Anthropic uses {name, description, input_schema} instead of OpenAI's
 // {type:"function", function:{name,description,parameters}} wrapper.
-func buildAnthropicChatTools(tools []core.Tool) []map[string]any {
+func buildAnthropicChatTools(tools []llmcore.Tool) []map[string]any {
 	result := make([]map[string]any, 0, len(tools))
 	for _, t := range tools {
 		result = append(result, map[string]any{

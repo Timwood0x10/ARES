@@ -2,15 +2,17 @@ package adapter
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 
 	"github.com/Timwood0x10/ares/internal/knowledge"
 	knowledgeruntime "github.com/Timwood0x10/ares/internal/knowledge/runtime"
 	"github.com/Timwood0x10/ares/internal/scoreutil"
+	"github.com/Timwood0x10/ares/internal/tenantctx"
 )
 
-// ContextSnippet matches context.ContextSnippet in internal/ares_memory/context.
+// ContextSnippet matches context.ContextSnippet in internal/runtime/memory/context.
 // Kept as a local struct to avoid the import cycle knowledge → ares_memory
 // (ares_memory already depends on knowledge via distillation). The main agent
 // adapts this shape to the canonical ares_memory/context.ContextSnippet.
@@ -72,6 +74,16 @@ func WithMinRelevance(v float64) Option {
 	}
 }
 
+// WithNamespace scopes the store-backed HybridSearch to one namespace. Wire
+// the same value the write path stamps (store_adapter passes tenantID as
+// Namespace) — an empty namespace made every store-backed Retrieve a
+// cross-namespace scan.
+func WithNamespace(ns string) Option {
+	return func(r *KnowledgeRetriever) {
+		r.namespace = ns
+	}
+}
+
 // Shared metadata keys and source identifiers used by both the store path and
 // the runtime path (and their tests). Centralised so the literals are not
 // repeated across the package (goconst).
@@ -117,6 +129,12 @@ type KnowledgeRetriever struct {
 	store    knowledge.KnowledgeStore // optional; nil = fall back to runtime.Execute
 	model    string                   // embedding model name for HybridSearch
 	minScore float64
+	// namespace scopes HybridSearch to one namespace when the store path is
+	// used. akf_objects is namespace-scoped (no tenant column); leaving this
+	// empty made every store-backed Retrieve a cross-namespace scan — only
+	// safe for single-namespace deployments. Wire the same value the write
+	// path stamps (store_adapter passes tenantID as Namespace).
+	namespace string
 	// minRelevance is the runtime-path Relevance filter: collectSnippets
 	// drops objects with Relevance < minRelevance. Defaults to
 	// DefaultMinRelevance (0.3). The store path uses minScore (forwarded to
@@ -130,7 +148,7 @@ type KnowledgeRetriever struct {
 //
 // Args:
 //   - ctx: context reserved for future initialization I/O (currently unused
-//     but kept to satisfy §4.3 constructor conventions).
+//     but kept to satisfy the constructor convention).
 //   - runtime: AKG KnowledgeRuntime. Must be non-nil.
 //   - minScore: minimum Confidence score for a snippet to be returned on
 //     the store path (forwarded to HybridSearch.MinScore). Pass 0 (or any
@@ -149,7 +167,7 @@ func NewKnowledgeRetriever(
 	opts ...Option,
 ) (*KnowledgeRetriever, error) {
 	if runtime == nil {
-		return nil, fmt.Errorf("knowledge retriever: runtime is nil")
+		return nil, errors.New("knowledge retriever: runtime is nil")
 	}
 	if minScore <= 0 {
 		minScore = DefaultMinScore
@@ -175,7 +193,7 @@ func NewKnowledgeRetriever(
 //
 // Args:
 //   - ctx: context reserved for future initialization I/O (currently unused
-//     but kept to satisfy §4.3 constructor conventions).
+//     but kept to satisfy the constructor convention).
 //   - runtime: AKG KnowledgeRuntime. Must be non-nil even when store is set,
 //     because the fallback path needs it. The store path itself does not call
 //     runtime.Execute.
@@ -203,7 +221,7 @@ func NewKnowledgeRetrieverWithStore(
 	opts ...Option,
 ) (*KnowledgeRetriever, error) {
 	if runtime == nil {
-		return nil, fmt.Errorf("knowledge retriever: runtime is nil")
+		return nil, errors.New("knowledge retriever: runtime is nil")
 	}
 	if minScore <= 0 {
 		minScore = DefaultMinScore
@@ -246,10 +264,10 @@ func (r *KnowledgeRetriever) Retrieve(
 	topK int,
 ) ([]ContextSnippet, error) {
 	if r == nil {
-		return nil, fmt.Errorf("knowledge retriever: receiver is nil")
+		return nil, errors.New("knowledge retriever: receiver is nil")
 	}
 	if r.runtime == nil {
-		return nil, fmt.Errorf("knowledge retriever: runtime is nil")
+		return nil, errors.New("knowledge retriever: runtime is nil")
 	}
 	if input == "" {
 		return []ContextSnippet{}, nil
@@ -264,8 +282,17 @@ func (r *KnowledgeRetriever) Retrieve(
 	// cap again here. Vector recall (TopK) is over-fetched 3x relative to the
 	// caller's topK so the FinalK ranking has a richer candidate pool.
 	if r.store != nil {
+		// Resolve the namespace per-request: an explicit r.namespace always
+		// wins; otherwise fall back to the request-scoped tenant. When both
+		// are empty the store's global scan is the DESIRED single-tenant
+		// behaviour — do not invent a default namespace here.
+		ns := r.namespace
+		if ns == "" {
+			ns = tenantctx.From(ctx)
+		}
 		req := knowledge.HybridSearchRequest{
 			Query:        input,
+			Namespace:    ns,
 			TopK:         topK * 3,
 			FinalK:       topK,
 			MinScore:     r.minScore,

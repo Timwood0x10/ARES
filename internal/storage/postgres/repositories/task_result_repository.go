@@ -51,8 +51,12 @@ func (r *TaskResultRepository) Create(ctx context.Context, result *storage_model
 		return errors.Wrap(err, "marshal metadata")
 	}
 
-	// Convert embedding to pgvector format
-	embeddingStr := postgres.FormatVector(result.Embedding)
+	// Convert embedding to pgvector format. An empty embedding must be
+	// NULL, not "[]" — the ::vector cast rejects an empty array literal.
+	var embeddingStr any
+	if len(result.Embedding) > 0 {
+		embeddingStr = postgres.FormatVector(result.Embedding)
+	}
 
 	// Build query based on whether ID is provided
 	var query string
@@ -142,25 +146,29 @@ func (r *TaskResultRepository) Create(ctx context.Context, result *storage_model
 // ctx - database operation context.
 // id - task result ID, must be non-empty.
 // Returns task result or error if not found or invalid argument.
-func (r *TaskResultRepository) GetByID(ctx context.Context, id string) (*storage_models.TaskResult, error) {
+func (r *TaskResultRepository) GetByID(ctx context.Context, tenantID, id string) (*storage_models.TaskResult, error) {
 	if id == "" {
 		return nil, errors.ErrInvalidArgument
 	}
+	if tenantID == "" {
+		return nil, postgres.ErrMissingTenantID
+	}
 
 	query := `
-		SELECT id, tenant_id, session_id, task_type, agent_id, input, output,
+		SELECT id, tenant_id, session_id, task_type, agent_id, input, output, embedding::text,
 			   embedding_model, embedding_version, status, error, latency_ms, metadata::text, created_at
 		FROM ` + storage_models.TaskResultsTable + `
-		WHERE id = $1
+		WHERE id = $1 AND tenant_id = $2
 	`
 
 	result := &storage_models.TaskResult{}
 	var inputJSON, outputJSON []byte
+	var embeddingStr sql.NullString
 	var metadataStr string
 
-	err := r.db.QueryRowContext(ctx, query, id).Scan(
+	err := r.db.QueryRowContext(ctx, query, id, tenantID).Scan(
 		&result.ID, &result.TenantID, &result.SessionID, &result.TaskType,
-		&result.AgentID, &inputJSON, &outputJSON,
+		&result.AgentID, &inputJSON, &outputJSON, &embeddingStr,
 		&result.EmbeddingModel, &result.EmbeddingVersion, &result.Status,
 		&result.Error, &result.LatencyMs, &metadataStr, &result.CreatedAt,
 	)
@@ -170,6 +178,16 @@ func (r *TaskResultRepository) GetByID(ctx context.Context, id string) (*storage
 	}
 	if err != nil {
 		return nil, errors.Wrap(err, "get task result by id")
+	}
+
+	// Parse embedding vector. Nullable: the async embedding worker inserts the
+	// row first and backfills the vector later, so a NULL is legitimate.
+	if embeddingStr.Valid && embeddingStr.String != "" {
+		embedding, err := postgres.ParseVectorString(embeddingStr.String)
+		if err != nil {
+			return nil, errors.Wrap(err, "parse embedding")
+		}
+		result.Embedding = embedding
 	}
 
 	// Parse input JSON
@@ -200,6 +218,9 @@ func (r *TaskResultRepository) GetByID(ctx context.Context, id string) (*storage
 // result - task result with updated values.
 // Returns error if update operation fails.
 func (r *TaskResultRepository) Update(ctx context.Context, result *storage_models.TaskResult) error {
+	if result.TenantID == "" {
+		return postgres.ErrMissingTenantID
+	}
 	inputJSON, err := json.Marshal(result.Input)
 	if err != nil {
 		return errors.Wrap(err, "marshal input")
@@ -219,21 +240,26 @@ func (r *TaskResultRepository) Update(ctx context.Context, result *storage_model
 		return errors.Wrap(err, "marshal metadata")
 	}
 
-	// Convert embedding to pgvector format
-	embeddingStr := postgres.FormatVector(result.Embedding)
+	// Convert embedding to pgvector format. An empty embedding must be
+	// NULL, not "[]" — the ::vector cast rejects an empty array literal
+	// (same contract as Create).
+	var embeddingStr any
+	if len(result.Embedding) > 0 {
+		embeddingStr = postgres.FormatVector(result.Embedding)
+	}
 
 	query := `
 		UPDATE ` + storage_models.TaskResultsTable + `
 		SET task_type = $2, agent_id = $3, input = $4, output = $5, embedding = $6::vector,
 			embedding_model = $7, embedding_version = $8, status = $9, error = $10,
 			latency_ms = $11, metadata = $12
-		WHERE id = $1
+		WHERE id = $1 AND tenant_id = $13
 	`
 
 	resultSQL, err := r.db.ExecContext(ctx, query,
 		result.ID, result.TaskType, result.AgentID, inputJSON, outputJSON,
 		embeddingStr, result.EmbeddingModel, result.EmbeddingVersion,
-		result.Status, result.Error, result.LatencyMs, metadataJSON,
+		result.Status, result.Error, result.LatencyMs, metadataJSON, result.TenantID,
 	)
 	if err != nil {
 		return errors.Wrap(err, "update task result")
@@ -269,9 +295,13 @@ func (r *TaskResultRepository) Delete(ctx context.Context, id, tenantID string) 
 // limit - maximum number of results to return.
 // Returns list of similar task results ordered by similarity.
 func (r *TaskResultRepository) SearchByVector(ctx context.Context, embedding []float64, tenantID string, limit int) ([]*storage_models.TaskResult, error) {
-	// Handle empty embedding - return empty results
+	// An empty embedding is an invalid vector-search input, not "no
+	// constraint": `1 - (embedding <=> $1::vector)` needs a real vector, and
+	// silently returning no rows here used to hide the caller's failure to
+	// produce an embedding. Fail closed, matching every other repository's
+	// SearchByVector and the empty-tenant guard above.
 	if len(embedding) == 0 {
-		return []*storage_models.TaskResult{}, nil
+		return nil, errors.New("search by vector: embedding must not be empty")
 	}
 
 	// Convert embedding to pgvector format
@@ -383,7 +413,7 @@ func (r *TaskResultRepository) SearchByVector(ctx context.Context, embedding []f
 // Returns list of task results ordered by created time (descending).
 func (r *TaskResultRepository) ListByType(ctx context.Context, taskType, tenantID string, limit int) ([]*storage_models.TaskResult, error) {
 	query := `
-		SELECT id, tenant_id, session_id, task_type, agent_id, input, output,
+		SELECT id, tenant_id, session_id, task_type, agent_id, input, output, embedding::text,
 			   embedding_model, embedding_version, status, error, latency_ms, metadata::text, created_at
 		FROM ` + storage_models.TaskResultsTable + `
 		WHERE task_type = $1 AND tenant_id = $2
@@ -406,11 +436,11 @@ func (r *TaskResultRepository) ListByType(ctx context.Context, taskType, tenantI
 	for rows.Next() {
 		result := &storage_models.TaskResult{}
 		var inputJSON, outputJSON []byte
-		var metadataStr string
+		var embeddingStr, metadataStr string
 
 		err := rows.Scan(
 			&result.ID, &result.TenantID, &result.SessionID, &result.TaskType,
-			&result.AgentID, &inputJSON, &outputJSON,
+			&result.AgentID, &inputJSON, &outputJSON, &embeddingStr,
 			&result.EmbeddingModel, &result.EmbeddingVersion, &result.Status,
 			&result.Error, &result.LatencyMs, &metadataStr, &result.CreatedAt,
 		)
@@ -418,6 +448,17 @@ func (r *TaskResultRepository) ListByType(ctx context.Context, taskType, tenantI
 			log.Error("Failed to scan task result row", "error", err)
 			skippedCount++
 			continue
+		}
+
+		// Parse embedding vector (nullable, e.g. async worker backfills later).
+		if embeddingStr != "" {
+			embedding, perr := postgres.ParseVectorString(embeddingStr)
+			if perr != nil {
+				log.Error("Failed to parse embedding vector", "task_id", result.ID, "error", perr)
+				skippedCount++
+				continue
+			}
+			result.Embedding = embedding
 		}
 
 		// Parse input JSON
@@ -469,7 +510,7 @@ func (r *TaskResultRepository) ListByType(ctx context.Context, taskType, tenantI
 // Returns list of task results ordered by created time (descending).
 func (r *TaskResultRepository) ListBySession(ctx context.Context, sessionID, tenantID string, limit int) ([]*storage_models.TaskResult, error) {
 	query := `
-		SELECT id, tenant_id, session_id, task_type, agent_id, input, output,
+		SELECT id, tenant_id, session_id, task_type, agent_id, input, output, embedding::text,
 			   embedding_model, embedding_version, status, error, latency_ms, metadata::text, created_at
 		FROM ` + storage_models.TaskResultsTable + `
 		WHERE session_id = $1 AND tenant_id = $2
@@ -491,16 +532,25 @@ func (r *TaskResultRepository) ListBySession(ctx context.Context, sessionID, ten
 	for rows.Next() {
 		result := &storage_models.TaskResult{}
 		var inputJSON, outputJSON []byte
-		var metadataStr string
+		var embeddingStr, metadataStr string
 
 		err := rows.Scan(
 			&result.ID, &result.TenantID, &result.SessionID, &result.TaskType,
-			&result.AgentID, &inputJSON, &outputJSON,
+			&result.AgentID, &inputJSON, &outputJSON, &embeddingStr,
 			&result.EmbeddingModel, &result.EmbeddingVersion, &result.Status,
 			&result.Error, &result.LatencyMs, &metadataStr, &result.CreatedAt,
 		)
 		if err != nil {
 			continue
+		}
+
+		// Parse embedding vector (nullable, e.g. async worker backfills later).
+		if embeddingStr != "" {
+			embedding, perr := postgres.ParseVectorString(embeddingStr)
+			if perr != nil {
+				continue
+			}
+			result.Embedding = embedding
 		}
 
 		// Parse input JSON
@@ -543,17 +593,25 @@ func (r *TaskResultRepository) ListBySession(ctx context.Context, sessionID, ten
 // model - embedding model name.
 // version - embedding model version.
 // Returns error if update operation fails.
-func (r *TaskResultRepository) UpdateEmbedding(ctx context.Context, id string, embedding []float64, model string, version int) error {
+func (r *TaskResultRepository) UpdateEmbedding(ctx context.Context, tenantID, id string, embedding []float64, model string, version int) error {
+	if tenantID == "" {
+		return postgres.ErrMissingTenantID
+	}
+	// An explicit "set the vector" call must carry a vector: FormatVector
+	// would otherwise bind "[]", which pgvector rejects.
+	if len(embedding) == 0 {
+		return errors.ErrInvalidArgument
+	}
 	// Convert embedding to pgvector format
 	embeddingStr := postgres.FormatVector(embedding)
 
 	query := `
 		UPDATE ` + storage_models.TaskResultsTable + `
 		SET embedding = $2::vector, embedding_model = $3, embedding_version = $4
-		WHERE id = $1
+		WHERE id = $1 AND tenant_id = $5
 	`
 
-	result, err := r.db.ExecContext(ctx, query, id, embeddingStr, model, version)
+	result, err := r.db.ExecContext(ctx, query, id, embeddingStr, model, version, tenantID)
 	if err != nil {
 		return errors.Wrap(err, "update embedding")
 	}
@@ -578,14 +636,17 @@ func (r *TaskResultRepository) UpdateEmbedding(ctx context.Context, id string, e
 // errorMsg - error message if status is failed.
 // latencyMs - execution latency in milliseconds.
 // Returns error if update operation fails.
-func (r *TaskResultRepository) UpdateStatus(ctx context.Context, id, status, errorMsg string, latencyMs int) error {
+func (r *TaskResultRepository) UpdateStatus(ctx context.Context, tenantID, id, status, errorMsg string, latencyMs int) error {
+	if tenantID == "" {
+		return postgres.ErrMissingTenantID
+	}
 	query := `
 		UPDATE ` + storage_models.TaskResultsTable + `
 		SET status = $2, error = $3, latency_ms = $4
-		WHERE id = $1
+		WHERE id = $1 AND tenant_id = $5
 	`
 
-	result, err := r.db.ExecContext(ctx, query, id, status, errorMsg, latencyMs)
+	result, err := r.db.ExecContext(ctx, query, id, status, errorMsg, latencyMs, tenantID)
 	if err != nil {
 		return errors.Wrap(err, "update status")
 	}

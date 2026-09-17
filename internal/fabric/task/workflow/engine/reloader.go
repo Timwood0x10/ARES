@@ -1,0 +1,550 @@
+package engine
+
+//nolint: errcheck // best-effort operations: ResponseWriter writes, cleanup Close/Wait, deferred shutdown
+import (
+	"context"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sync"
+	"time"
+
+	"github.com/fsnotify/fsnotify"
+	"golang.org/x/sync/errgroup"
+
+	"github.com/Timwood0x10/ares/internal/errors"
+)
+
+// ReloadCallback is called when workflows are reloaded.
+type ReloadCallback func(workflows map[string]*Workflow)
+
+// callbackWithID wraps a ReloadCallback with an ID.
+type callbackWithID struct {
+	id string
+	fn ReloadCallback
+}
+
+// FileWatcher watches files for changes using fsnotify.
+type FileWatcher struct {
+	watcher      *fsnotify.Watcher
+	workflows    map[string]*Workflow
+	loader       WorkflowLoader
+	callbacks    []callbackWithID
+	callbackID   uint64
+	mu           sync.RWMutex
+	pollInterval time.Duration // Fallback polling interval (only used if fsnotify fails)
+	wg           sync.WaitGroup
+	stopCtx      context.Context
+	stopCancel   context.CancelFunc
+	g            *errgroup.Group
+	// fileIDs remembers which workflow ID each source file last produced, so
+	// a workflow whose file is present but transiently unloadable (parse/stat
+	// failure) can be distinguished from one whose file was deleted.
+	fileIDs map[string]string
+}
+
+// NewFileWatcher creates a new FileWatcher.
+func NewFileWatcher(loader WorkflowLoader, workflows map[string]*Workflow) (*FileWatcher, error) {
+	if loader == nil {
+		return nil, errors.New("loader cannot be nil")
+	}
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		log.Warn("FileWatcher: fsnotify not available, falling back to polling", "error", err)
+	} else {
+		log.Info("FileWatcher: using fsnotify for real-time file monitoring")
+	}
+
+	stopCtx, stopCancel := context.WithCancel(context.Background())
+
+	return &FileWatcher{
+		watcher:      watcher,
+		loader:       loader,
+		workflows:    workflows,
+		callbacks:    make([]callbackWithID, 0),
+		pollInterval: 5 * time.Second,
+		stopCtx:      stopCtx,
+		stopCancel:   stopCancel,
+		fileIDs:      make(map[string]string),
+	}, nil
+}
+
+// Watch starts watching workflow files for changes.
+func (w *FileWatcher) Watch(ctx context.Context, dir string) error {
+	if err := w.scanAndLoad(ctx, dir); err != nil {
+		return err
+	}
+
+	// Create errgroup for goroutine management
+	w.g, ctx = errgroup.WithContext(ctx)
+
+	// If we have fsnotify watcher, use event-driven approach
+	if w.watcher != nil {
+		// Add directory to watch
+		if err := w.watcher.Add(dir); err != nil {
+			return errors.Wrap(err, "watch directory")
+		}
+
+		// Watch subdirectories for workflow files
+		w.watchDirectory(ctx, dir)
+
+		w.wg.Add(1)
+		w.g.Go(func() error {
+			w.fsnotifyLoop(ctx, dir)
+			return nil
+		})
+	} else {
+		// Fallback to polling
+		w.wg.Add(1)
+		w.g.Go(func() error {
+			w.watchLoop(ctx, dir)
+			return nil
+		})
+	}
+
+	return nil
+}
+
+// watchDirectory recursively adds directories to fsnotify watch.
+func (w *FileWatcher) watchDirectory(ctx context.Context, dir string) {
+	if w.watcher == nil {
+		return
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() {
+			path := filepath.Join(dir, entry.Name())
+			if err := w.watcher.Add(path); err != nil {
+				continue
+			}
+			// Recursively watch subdirectories
+			w.watchDirectory(ctx, path)
+		}
+	}
+}
+
+// fsnotifyLoop watches for file change events.
+// The watcher is closed by Close() after this goroutine exits, so no
+// deferred close is needed here (fixing a double-close bug).
+// fsnotifyLoop consumes watcher events until EITHER stop context (Close) or
+// the Watch context is cancelled (F-17): a caller cancelling its ctx without
+// calling Close must not leave the event loop — and its fsnotify handle —
+// alive.
+func (w *FileWatcher) fsnotifyLoop(ctx context.Context, dir string) {
+	defer w.wg.Done()
+
+	for {
+		select {
+		case <-w.stopCtx.Done():
+			return
+		case <-ctx.Done():
+			return
+		case event, ok := <-w.watcher.Events:
+			if !ok {
+				return
+			}
+			// Handle write/create/remove/rename: removals and renames
+			// change the directory's content too — a deleted workflow file
+			// must leave the loaded map on the next scan, so ignoring
+			// Remove/Rename left a stale workflow registered forever.
+			ops := event.Op & (fsnotify.Write | fsnotify.Create | fsnotify.Remove | fsnotify.Rename)
+			if ops == 0 {
+				continue
+			}
+			// Check if it's a workflow file
+			ext := filepath.Ext(event.Name)
+			if ext != ".json" && ext != ".yaml" && ext != ".yml" {
+				continue
+			}
+			// Reload on file change
+			if err := w.scanAndLoad(w.stopCtx, dir); err != nil {
+				continue
+			}
+		case err, ok := <-w.watcher.Errors:
+			if !ok {
+				return
+			}
+			log.Error("FileWatcher error", "error", err)
+		}
+	}
+}
+
+// watchLoop periodically checks for file changes (fallback when fsnotify unavailable).
+// watchLoop polls the directory until EITHER stop context (Close) or the
+// Watch context is cancelled (F-17), mirroring fsnotifyLoop.
+func (w *FileWatcher) watchLoop(ctx context.Context, dir string) {
+	defer w.wg.Done()
+	ticker := time.NewTicker(w.pollInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-w.stopCtx.Done():
+			return
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := w.scanAndLoad(w.stopCtx, dir); err != nil {
+				continue
+			}
+		}
+	}
+}
+
+// Close closes the file watcher and releases resources.
+func (w *FileWatcher) Close() {
+	if w.stopCancel != nil {
+		w.stopCancel()
+	}
+	w.wg.Wait()
+	// Wait for errgroup to complete (ignoring errors as we're shutting down)
+	if w.g != nil {
+		_ = w.g.Wait()
+	}
+	// Swap the handle under the lock (F-17): the loops have exited by now
+	// (wg.Wait above), but the lock keeps the nil-out race-free against any
+	// other accessor and makes a double Close a no-op.
+	w.mu.Lock()
+	watcher := w.watcher
+	w.watcher = nil
+	w.mu.Unlock()
+	if watcher != nil {
+		if err := watcher.Close(); err != nil {
+			log.Warn("reloader: close watcher failed", "error", err)
+		}
+	}
+}
+
+// scanAndLoad scans and loads workflows from directory.
+// Hold Lock across the entire compare-and-swap cycle to prevent
+// TOCTOU race where concurrent scanAndLoad calls interleave read and write.
+func (w *FileWatcher) scanAndLoad(ctx context.Context, dir string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return errors.Wrap(err, "read directory")
+	}
+
+	// Build loaded workflows outside the lock (I/O is slow).
+	type loadedEntry struct {
+		workflow *Workflow
+		modTime  time.Time
+	}
+	loaded := make(map[string]loadedEntry)
+	// seenPaths records every workflow file the scan touched, whether or not
+	// it loaded. A file present but unloadable (parse/stat failure) is NOT a
+	// deletion — its last-good entry is kept.
+	seenPaths := make(map[string]bool)
+	// freshIDs maps filename → the ID it produced this pass, applied to
+	// w.fileIDs at the CAS so future scans can attribute unloadable files.
+	freshIDs := make(map[string]string)
+
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+
+		ext := filepath.Ext(entry.Name())
+		if ext != ".json" && ext != ".yaml" && ext != ".yml" {
+			continue
+		}
+
+		path := filepath.Join(dir, entry.Name())
+		seenPaths[entry.Name()] = true
+		stat, err := os.Stat(path)
+		if err != nil {
+			continue // transient stat failure: keep last-good
+		}
+
+		workflow, err := w.loader.Load(ctx, path)
+		if err != nil {
+			// Transient parse failure (fsnotify Write fires mid-save on a
+			// non-atomic editor write). NOT a deletion — seenPaths keeps the
+			// last-good entry alive below.
+			continue
+		}
+
+		loaded[workflow.ID] = loadedEntry{workflow: workflow, modTime: stat.ModTime()}
+		freshIDs[entry.Name()] = workflow.ID
+	}
+
+	// Hold Lock for the entire compare-and-swap to prevent interleaving.
+	w.mu.Lock()
+	if w.fileIDs == nil {
+		w.fileIDs = make(map[string]string, len(freshIDs))
+	}
+	for name, id := range freshIDs {
+		w.fileIDs[name] = id
+	}
+	// forget file→ID bindings for files no longer on disk
+	for name := range w.fileIDs {
+		if !seenPaths[name] {
+			delete(w.fileIDs, name)
+		}
+	}
+
+	// keepIDs: freshly loaded entries + last-good entries whose source file
+	// is still present but failed to load this pass.
+	keepIDs := make(map[string]bool, len(loaded)+len(w.fileIDs))
+	for id := range loaded {
+		keepIDs[id] = true
+	}
+	for name, id := range w.fileIDs {
+		if seenPaths[name] {
+			keepIDs[id] = true
+		}
+	}
+
+	modified := false
+	for id, le := range loaded {
+		oldWF, exists := w.workflows[id]
+		if !exists || le.modTime.After(oldWF.UpdatedAt) {
+			modified = true
+			break
+		}
+	}
+	if !modified {
+		// A registered workflow absent from keepIDs has no source file on
+		// disk any more — the directory is the source of truth, so the entry
+		// must go. A transiently unloadable file stays in keepIDs via
+		// fileIDs and is never treated as deleted.
+		for id := range w.workflows {
+			if !keepIDs[id] {
+				modified = true
+				break
+			}
+		}
+	}
+	if modified {
+		newWorkflows := make(map[string]*Workflow, len(keepIDs))
+		for id, le := range loaded {
+			newWorkflows[id] = le.workflow
+		}
+		// Re-add last-good entries for files still on disk but unloadable
+		// this pass, so a transient parse failure never unregisters them.
+		for id, wf := range w.workflows {
+			if _, ok := newWorkflows[id]; ok {
+				continue
+			}
+			if keepIDs[id] && wf != nil {
+				newWorkflows[id] = wf
+			}
+		}
+		w.workflows = newWorkflows
+	}
+	w.mu.Unlock()
+
+	if modified {
+		w.notifyCallbacks()
+	}
+	return nil
+}
+
+// notifyCallbacks notifies all registered callbacks.
+// Deep-copy the workflows map before passing to callbacks so that
+// callbacks cannot mutate the shared map or see inconsistent state.
+func (w *FileWatcher) notifyCallbacks() {
+	w.mu.RLock()
+	workflowsCopy := make(map[string]*Workflow, len(w.workflows))
+	for k, v := range w.workflows {
+		workflowsCopy[k] = v
+	}
+	callbacks := w.callbacks
+	w.mu.RUnlock()
+
+	for _, cb := range callbacks {
+		cb.fn(workflowsCopy)
+	}
+}
+
+// RegisterCallback registers a callback for reload events and returns the callback ID.
+func (w *FileWatcher) RegisterCallback(callback ReloadCallback) string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	w.callbackID++
+	id := fmt.Sprintf("callback-%d", w.callbackID)
+	w.callbacks = append(w.callbacks, callbackWithID{
+		id: id,
+		fn: callback,
+	})
+	return id
+}
+
+// UnregisterCallback removes a callback by ID.
+func (w *FileWatcher) UnregisterCallback(callbackID string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	for i, cb := range w.callbacks {
+		if cb.id == callbackID {
+			w.callbacks = append(w.callbacks[:i], w.callbacks[i+1:]...)
+			return
+		}
+	}
+}
+
+// WorkflowReloader manages workflow hot reloading.
+type WorkflowReloader struct {
+	loader     WorkflowLoader
+	workflows  map[string]*Workflow
+	callbackID uint64
+	callbacks  map[string]ReloadCallback // Use map for O(1) lookup
+	mu         sync.RWMutex
+	watcher    *FileWatcher
+	cancel     context.CancelFunc
+	cancelCtx  context.Context
+}
+
+// NewWorkflowReloader creates a new WorkflowReloader.
+func NewWorkflowReloader(loader WorkflowLoader) *WorkflowReloader {
+	ctx, cancel := context.WithCancel(context.Background())
+	return &WorkflowReloader{
+		loader:    loader,
+		workflows: make(map[string]*Workflow),
+		callbacks: make(map[string]ReloadCallback),
+		cancelCtx: ctx,
+		cancel:    cancel,
+	}
+}
+
+// Load workflows from a directory.
+func (r *WorkflowReloader) Load(ctx context.Context, dir string) error {
+	loader, ok := r.loader.(*FileLoader)
+	if !ok {
+		return ErrInvalidLoader
+	}
+
+	dirLoader := NewDirectoryLoader(loader)
+	workflows, err := dirLoader.LoadAll(ctx, dir)
+	if err != nil {
+		return errors.Wrap(err, "load workflows")
+	}
+
+	r.mu.Lock()
+	r.workflows = workflows
+	r.mu.Unlock()
+
+	return nil
+}
+
+// StartWatching starts watching for file changes.
+func (r *WorkflowReloader) StartWatching(ctx context.Context, dir string) error {
+	loader, ok := r.loader.(*FileLoader)
+	if !ok {
+		return ErrInvalidLoader
+	}
+
+	dirLoader := NewDirectoryLoader(loader)
+	workflows, err := dirLoader.LoadAll(ctx, dir)
+	if err != nil {
+		return errors.Wrap(err, "load workflows")
+	}
+
+	r.mu.Lock()
+	r.workflows = workflows
+	r.mu.Unlock()
+
+	watcher, err := NewFileWatcher(r.loader, r.workflows)
+	if err != nil {
+		return errors.Wrap(err, "create file watcher")
+	}
+	watcher.RegisterCallback(r.onReload)
+
+	// Use reloader's cancel context for watching. On failure the watcher's
+	// fsnotify handle and stop context must be released here (F-17): the
+	// caller only sees the error and has no other reference to close.
+	if err := watcher.Watch(r.cancelCtx, dir); err != nil {
+		watcher.Close()
+		return errors.Wrap(err, "start watcher")
+	}
+
+	r.watcher = watcher
+
+	return nil
+}
+
+// onReload handles workflow reload events.
+func (r *WorkflowReloader) onReload(workflows map[string]*Workflow) {
+	r.mu.Lock()
+	r.workflows = workflows
+	r.mu.Unlock()
+
+	r.notifyCallbacks()
+}
+
+// notifyCallbacks notifies all registered callbacks.
+// Deep-copy the workflows map before passing to callbacks so that
+// callbacks cannot mutate the shared map or see inconsistent state.
+func (r *WorkflowReloader) notifyCallbacks() {
+	r.mu.RLock()
+	workflowsCopy := make(map[string]*Workflow, len(r.workflows))
+	for k, v := range r.workflows {
+		workflowsCopy[k] = v
+	}
+	callbacksCopy := make(map[string]ReloadCallback, len(r.callbacks))
+	for k, v := range r.callbacks {
+		callbacksCopy[k] = v
+	}
+	r.mu.RUnlock()
+
+	for _, callback := range callbacksCopy {
+		callback(workflowsCopy)
+	}
+}
+
+// RegisterCallback registers a callback for reload events and returns the callback ID.
+func (r *WorkflowReloader) RegisterCallback(callback ReloadCallback) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.callbackID++
+	id := fmt.Sprintf("callback-%d", r.callbackID)
+	r.callbacks[id] = callback
+	return id
+}
+
+// UnregisterCallback removes a callback by ID.
+func (r *WorkflowReloader) UnregisterCallback(callbackID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	delete(r.callbacks, callbackID)
+}
+
+// GetWorkflow returns a workflow by ID.
+func (r *WorkflowReloader) GetWorkflow(id string) (*Workflow, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	workflow, exists := r.workflows[id]
+	return workflow, exists
+}
+
+// ListWorkflows returns all loaded workflows.
+func (r *WorkflowReloader) ListWorkflows() []*Workflow {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	workflows := make([]*Workflow, 0, len(r.workflows))
+	for _, wf := range r.workflows {
+		workflows = append(workflows, wf)
+	}
+
+	return workflows
+}
+
+// StopWatching stops watching for file changes.
+func (r *WorkflowReloader) StopWatching() {
+	if r.cancel != nil {
+		r.cancel()
+	}
+	if r.watcher != nil {
+		r.watcher.Close()
+		r.watcher = nil
+	}
+}

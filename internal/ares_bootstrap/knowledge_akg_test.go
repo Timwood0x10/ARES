@@ -3,17 +3,20 @@ package ares_bootstrap
 import (
 	"testing"
 
-	"github.com/Timwood0x10/ares/internal/ares_config"
 	"github.com/stretchr/testify/require"
+
+	"github.com/Timwood0x10/ares/internal/ares_config"
 )
 
 // TestBuildBootstrapKnowledgeStore_DefaultInMemory verifies the AKG store
 // defaults to in-memory when no postgres storage is configured — the product
 // decision (2026-08-03): no external DB required by default.
 func TestBuildBootstrapKnowledgeStore_DefaultInMemory(t *testing.T) {
-	store, err := buildBootstrapKnowledgeStore(&ares_config.Config{})
+	store, closeStore, err := buildBootstrapKnowledgeStore(&ares_config.Config{})
 	require.NoError(t, err)
 	require.NotNil(t, store)
+	require.NotNil(t, closeStore)
+	closeStore() // in-memory close is a safe no-op
 }
 
 // TestBuildBootstrapKnowledgeStore_PGUnreachable verifies that a postgres
@@ -33,14 +36,14 @@ func TestBuildBootstrapKnowledgeStore_PGUnreachable(t *testing.T) {
 			SSLMode:  "disable",
 		},
 	}
-	_, err := buildBootstrapKnowledgeStore(cfg)
+	_, _, err := buildBootstrapKnowledgeStore(cfg)
 	require.Error(t, err)
 }
 
 // TestWireAKGLoop_Disabled verifies the AKG loop is skipped entirely when
 // knowledge retrieval is not enabled — minimal configs keep prior behavior.
 func TestWireAKGLoop_Disabled(t *testing.T) {
-	store, bridge := wireAKGLoop(&ares_config.Config{}, nil, nil)
+	store, bridge := wireAKGLoop(&ares_config.Config{}, nil, nil, nil)
 	require.Nil(t, store)
 	require.Nil(t, bridge)
 }
@@ -51,9 +54,14 @@ func TestWireAKGLoop_Disabled(t *testing.T) {
 func TestWireAKGLoop_StoreOnly(t *testing.T) {
 	cfg := &ares_config.Config{}
 	cfg.Knowledge.RetrievalEnabled = true
-	store, bridge := wireAKGLoop(cfg, nil, nil)
+	var cleanups []func()
+	store, bridge := wireAKGLoop(cfg, nil, nil, &cleanups)
 	require.NotNil(t, store)
 	require.Nil(t, bridge)
+	// The in-memory store registers its no-op closer so callers can run it
+	// unconditionally.
+	require.Len(t, cleanups, 1)
+	cleanups[0]()
 }
 
 // TestAKGModelName_NilEmb verifies the model helper returns "" for a nil

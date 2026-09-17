@@ -5,9 +5,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	memstore "github.com/Timwood0x10/ares/internal/knowledge/store/memory"
 	"github.com/Timwood0x10/ares/internal/storage"
-	"github.com/stretchr/testify/require"
 )
 
 // TestBuildKnowledgeRuntime_NoVectorDeps verifies the runtime is created
@@ -50,10 +51,10 @@ func TestBuildKnowledgeRuntime_WithStoreDeps(t *testing.T) {
 // testVectorStore is a minimal in-memory storage.VectorStore for wiring tests.
 type testVectorStore struct{}
 
-func (s *testVectorStore) Search(context.Context, string, []float64, int) ([]*storage.SearchResult, error) {
+func (s *testVectorStore) Search(context.Context, string, string, []float64, int) ([]*storage.SearchResult, error) {
 	return nil, nil
 }
-func (s *testVectorStore) AddEmbedding(context.Context, string, string, []float64, map[string]any) error {
+func (s *testVectorStore) AddEmbedding(context.Context, string, string, string, []float64, map[string]any) error {
 	return nil
 }
 func (s *testVectorStore) CreateCollection(context.Context, string, int) error {

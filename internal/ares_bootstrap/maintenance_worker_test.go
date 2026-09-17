@@ -8,8 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/ares_config"
 	"github.com/stretchr/testify/require"
+
+	"github.com/Timwood0x10/ares/internal/ares_config"
 )
 
 // fakeCleaner counts CleanupExpired invocations and can be made to fail.
@@ -66,8 +67,8 @@ func TestStartExpiryCleanupWorker_NoCleanersIsNoOp(t *testing.T) {
 	}
 }
 
-// TestWireExpiryCleaners_RegistersAllTables verifies the remainder of REVIEW
-// #7: given a non-nil *sql.DB, sessions, conversations, knowledge_chunks_1024
+// TestWireExpiryCleaners_RegistersAllTables verifies that given a non-nil
+// *sql.DB, sessions, conversations, knowledge_chunks_1024
 // and secrets are all registered as named cleaners on Components. No DB
 // connection is opened here — sql.Open is lazy — so this exercises pure
 // wiring without a live Postgres.

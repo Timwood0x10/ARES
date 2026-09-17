@@ -5,8 +5,21 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync/atomic"
 	"time"
 )
+
+// evidenceSeq disambiguates evidence created within the same clock tick.
+//
+// UnixNano alone collided (coarse clocks, high concurrency), and the Postgres
+// store's ON CONFLICT (id) DO NOTHING silently dropped the second record — the
+// digest fallback (generatedEvidenceID) never ran because these IDs are
+// pre-assigned, so the collision-safety the store documents existed only for
+// records handed to it with an empty ID.
+//
+// The sequence is read once, at construction: the ID stored on an Evidence
+// value is stable, so retrying an Append is still idempotent.
+var evidenceSeq atomic.Uint64
 
 // NewEvidence creates a new Evidence record with the current timestamp
 // and a generated ID. This is the canonical way to produce evidence.
@@ -17,10 +30,18 @@ import (
 //	    evidence.WithMetadata("task_id", taskID),
 //	)
 func NewEvidence(source string, kind EvidenceKind, payload any, opts ...EvidenceOption) Evidence {
-	id := fmt.Sprintf("ev_%x", time.Now().UnixNano())
+	id := fmt.Sprintf("ev_%x_%x", time.Now().UnixNano(), evidenceSeq.Add(1))
 	var raw json.RawMessage
 	if payload != nil {
-		raw, _ = json.Marshal(payload)
+		// Marshal failures are practically impossible for the map/struct
+		// payloads producers pass, but the constructor's signature cannot
+		// return an error (it is the canonical producer entry point): on
+		// failure keep the zero RawMessage, which stores/queries already
+		// treat as "no payload" — visible, not silently wrong.
+		b, err := json.Marshal(payload)
+		if err == nil {
+			raw = b
+		}
 	}
 	e := Evidence{
 		ID:        id,

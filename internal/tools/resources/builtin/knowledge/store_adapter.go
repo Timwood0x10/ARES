@@ -35,7 +35,7 @@ func NewStoreAdapter(store knowledge.KnowledgeStore) *StoreAdapter {
 // no embedding is wired). Results are ranked by FinalScore descending.
 func (a *StoreAdapter) Search(ctx context.Context, tenantID, query string) ([]*RetrievalResult, error) {
 	if a == nil || a.store == nil {
-		return nil, fmt.Errorf("knowledge store adapter: store is nil")
+		return nil, errors.New("knowledge store adapter: store is nil")
 	}
 	scored, err := a.store.HybridSearch(ctx, knowledge.HybridSearchRequest{
 		Query:     query,
@@ -64,13 +64,13 @@ func (a *StoreAdapter) Search(ctx context.Context, tenantID, query string) ([]*R
 // GetKnowledge implements KnowledgeService.GetKnowledge.
 func (a *StoreAdapter) GetKnowledge(ctx context.Context, tenantID, itemID string) (*KnowledgeItem, error) {
 	if a == nil || a.store == nil {
-		return nil, fmt.Errorf("knowledge store adapter: store is nil")
+		return nil, errors.New("knowledge store adapter: store is nil")
 	}
-	obj, err := a.store.Get(ctx, itemID)
+	obj, err := a.store.Get(ctx, tenantID, itemID)
 	if err != nil {
 		return nil, err
 	}
-	if obj == nil || obj.Namespace != tenantID {
+	if obj == nil {
 		return nil, errObjectNotFound
 	}
 	return toKnowledgeItem(obj), nil
@@ -79,13 +79,65 @@ func (a *StoreAdapter) GetKnowledge(ctx context.Context, tenantID, itemID string
 // UpdateKnowledge implements KnowledgeService.UpdateKnowledge.
 func (a *StoreAdapter) UpdateKnowledge(ctx context.Context, tenantID string, item *KnowledgeItem) (*KnowledgeItem, error) {
 	if a == nil || a.store == nil {
-		return nil, fmt.Errorf("knowledge store adapter: store is nil")
+		return nil, errors.New("knowledge store adapter: store is nil")
 	}
 	if item == nil {
-		return nil, fmt.Errorf("knowledge item is nil")
+		return nil, errors.New("knowledge item is nil")
 	}
 	obj := fromKnowledgeItem(item)
 	obj.Namespace = tenantID
+	// Fetch the existing row for field preservation only — NOT for ownership.
+	// A tenant-scoped Get reports a foreign-namespace row as absent, so the
+	// adapter cannot distinguish "no such row" from "another tenant's row", and
+	// must not try: that would reopen the ID-enumeration hole the scoped Get
+	// closed. Ownership is enforced in the store instead: Save refuses to
+	// overwrite a row whose namespace differs (ErrObjectNotFound), which is
+	// what stops a cross-tenant knowledge_update from migrating the victim row
+	// into the caller's namespace via the upsert-on-miss path below.
+	existing, gerr := a.store.Get(ctx, tenantID, item.ID)
+	if gerr != nil {
+		existing = nil
+	}
+	// Preserve the fields the round trip through KnowledgeItem cannot
+	// carry (Raw, Representations, EmbeddingModel, Confidence, Version,
+	// Type, Status, Quality, Relations). Overwriting the stored object
+	// with a bare conversion previously dropped the embedding metadata, so
+	// every knowledge_update silently degraded that object's semantic
+	// recall to lexical-only.
+	if existing != nil {
+		if obj.Raw == nil {
+			obj.Raw = existing.Raw
+		}
+		if len(existing.Representations) > 0 {
+			obj.Representations = existing.Representations
+		}
+		if existing.EmbeddingModel != "" {
+			obj.EmbeddingModel = existing.EmbeddingModel
+		}
+		if existing.Type != "" {
+			obj.Type = existing.Type
+		}
+		if existing.Status != "" {
+			obj.Status = existing.Status
+		}
+		if existing.Quality != nil {
+			obj.Quality = existing.Quality
+		}
+		if len(existing.Relations) > 0 {
+			obj.Relations = existing.Relations
+		}
+		if existing.Confidence != 0 {
+			obj.Confidence = existing.Confidence
+		}
+		if existing.Version > obj.Version {
+			obj.Version = existing.Version
+		}
+	}
+	// Ownership on the write path is the store's Save guard (refuses to
+	// overwrite a row owned by a different namespace), not anything checkable
+	// here: a cross-tenant update reaches Save with the foreign row invisible
+	// to the scoped Get above, and the guard is what turns that silent
+	// migration into ErrObjectNotFound.
 	if err := a.store.Save(ctx, obj); err != nil {
 		return nil, err
 	}
@@ -95,10 +147,10 @@ func (a *StoreAdapter) UpdateKnowledge(ctx context.Context, tenantID string, ite
 // AddKnowledge implements KnowledgeService.AddKnowledge.
 func (a *StoreAdapter) AddKnowledge(ctx context.Context, item *KnowledgeItem) (*KnowledgeItem, error) {
 	if a == nil || a.store == nil {
-		return nil, fmt.Errorf("knowledge store adapter: store is nil")
+		return nil, errors.New("knowledge store adapter: store is nil")
 	}
 	if item == nil {
-		return nil, fmt.Errorf("knowledge item is nil")
+		return nil, errors.New("knowledge item is nil")
 	}
 	obj := fromKnowledgeItem(item)
 	if err := a.store.Save(ctx, obj); err != nil {
@@ -110,16 +162,23 @@ func (a *StoreAdapter) AddKnowledge(ctx context.Context, item *KnowledgeItem) (*
 // DeleteKnowledge implements KnowledgeService.DeleteKnowledge.
 func (a *StoreAdapter) DeleteKnowledge(ctx context.Context, tenantID, itemID string) error {
 	if a == nil || a.store == nil {
-		return fmt.Errorf("knowledge store adapter: store is nil")
+		return errors.New("knowledge store adapter: store is nil")
 	}
-	obj, err := a.store.Get(ctx, itemID)
+	obj, err := a.store.Get(ctx, tenantID, itemID)
 	if err != nil {
 		return err
 	}
-	if obj != nil && obj.Namespace != tenantID {
+	// A nil object must be rejected, not treated as deletable: the pre-fix
+	// check was `obj != nil && obj.Namespace != tenantID`, which skipped the
+	// tenant test entirely when a store returned (nil, nil) and then deleted
+	// by ID. The write path was therefore MORE permissive than the read path
+	// (GetKnowledge already rejected nil). Any store backend that answers
+	// (nil, nil) instead of an ErrObjectNotFound sentinel turned that
+	// asymmetry into an unguarded delete.
+	if obj == nil || obj.Namespace != tenantID {
 		return errObjectNotFound
 	}
-	return a.store.Delete(ctx, itemID)
+	return a.store.Delete(ctx, tenantID, itemID)
 }
 
 // objectText returns the most complete text representation of an object.

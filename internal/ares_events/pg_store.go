@@ -27,12 +27,64 @@ const defaultEventReadLimit = 100
 // Compile-time interface compliance check.
 var _ EventStore = (*PostgresEventStore)(nil)
 
-// NewPostgresEventStore creates a PostgresEventStore backed by the given pool.
+// NewPostgresEventStore creates a PostgresEventStore backed by the given pool
+// and ensures the events table exists (see ensureEventsTable). Following the
+// evidence store's construction pattern, a schema that cannot be ensured
+// fails construction loudly — a store that only discovered a missing table on
+// the first Append would turn a setup problem into a mid-flight write
+// failure. Zero production callers before M4.1; serve wires it when
+// cfg.Storage points at Postgres.
 func NewPostgresEventStore(pool *postgres.Pool) (*PostgresEventStore, error) {
 	if pool == nil {
 		return nil, apperrors.New("pool must not be nil")
 	}
-	return &PostgresEventStore{pool: pool}, nil
+	s := &PostgresEventStore{pool: pool}
+	if err := s.ensureEventsTable(context.Background()); err != nil {
+		return nil, apperrors.Wrap(err, "ensure events table")
+	}
+	return s, nil
+}
+
+// Close releases the underlying pool. The sql.DB below it is idempotent, so
+// repeated Close calls are safe. Bootstrap's System Runtime registers this as
+// the eventstore stop hook: reverse-topological shutdown has already stopped
+// every dependent by the time it runs, so closing cannot cut a live writer.
+func (s *PostgresEventStore) Close() error {
+	if s == nil || s.pool == nil {
+		return nil
+	}
+	return s.pool.Close()
+}
+
+// ensureEventsTable creates the events table and its indexes when missing.
+// The DDL mirrors internal/storage/postgres/migrate.go's core migrations so
+// this constructor and `ares db migrate` converge on the same schema
+// regardless of which runs first. The extra created_at index backs
+// Subscribe's polling window (created_at >= cursor ORDER BY created_at) and
+// ReadAll's cross-stream ordering — without it every 1s poll is a sequential
+// scan.
+func (s *PostgresEventStore) ensureEventsTable(ctx context.Context) error {
+	stmts := []string{
+		`CREATE TABLE IF NOT EXISTS events (
+			id VARCHAR(255) NOT NULL,
+			stream_id VARCHAR(255) NOT NULL,
+			type VARCHAR(100) NOT NULL,
+			payload JSONB NOT NULL,
+			metadata JSONB DEFAULT '{}',
+			version BIGINT NOT NULL,
+			created_at TIMESTAMP DEFAULT NOW(),
+			PRIMARY KEY (id)
+		)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS uq_events_stream_version ON events(stream_id, version)`,
+		`CREATE INDEX IF NOT EXISTS idx_events_type ON events(type)`,
+		`CREATE INDEX IF NOT EXISTS idx_events_created ON events(created_at)`,
+	}
+	for i, stmt := range stmts {
+		if _, err := s.pool.Exec(ctx, stmt); err != nil {
+			return apperrors.Wrapf(err, "statement %d", i+1)
+		}
+	}
+	return nil
 }
 
 // Append persists events to the given stream with optimistic concurrency control.
@@ -72,6 +124,19 @@ func (s *PostgresEventStore) Append(
 			}
 		}
 	}()
+
+	// Per-stream serialization: take a transaction-scoped advisory lock on
+	// the stream id BEFORE reading the current max version. Pre-fix, two
+	// concurrent Appends on the same stream both read the same MAX(version)
+	// under READ COMMITTED, both assigned the same next version, and the
+	// loser failed on the unique index — an expectedVersion<=0 ("append
+	// after current, no conflict") caller got a spurious
+	// ErrVersionConflict and its batch was silently dropped unless the
+	// caller retried. The advisory lock is released automatically at
+	// commit/rollback and only serializes appends on the SAME stream.
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, streamID); err != nil {
+		return apperrors.Wrap(err, "acquire stream append lock")
+	}
 
 	// Read current max version under the transaction lock.
 	var currentVersion int64
@@ -315,6 +380,12 @@ func buildStreamReadQuery(streamID string, opts ReadOptions) (string, []any) {
 		argIdx++
 	}
 
+	if opts.ToVersion > 0 {
+		query += fmt.Sprintf(" AND version <= $%d", argIdx)
+		args = append(args, opts.ToVersion)
+		argIdx++
+	}
+
 	if !opts.Since.IsZero() {
 		query += fmt.Sprintf(" AND created_at >= $%d", argIdx)
 		args = append(args, opts.Since)
@@ -355,7 +426,11 @@ func buildAllReadQuery(opts ReadOptions) (string, []any) {
 	if opts.Direction == ReadDescending {
 		direction = "DESC"
 	}
-	query += fmt.Sprintf(" ORDER BY created_at %s", direction)
+	// version is the per-stream monotonic tie-break for equal created_at
+	// (F-03, same rationale as the memory store): a timestamp-only ORDER BY
+	// let a later-lifecycle event sort ahead of an earlier one on a tie and
+	// restore's fold reset a terminal task back to READY.
+	query += fmt.Sprintf(" ORDER BY created_at %s, version %s, id %s", direction, direction, direction)
 
 	if opts.Limit > 0 {
 		query += fmt.Sprintf(" LIMIT $%d", argIdx)
@@ -366,16 +441,19 @@ func buildAllReadQuery(opts ReadOptions) (string, []any) {
 }
 
 // pgSubscription carries the per-subscriber poll state. The cursor advances
-// ONLY when a poll drained the window completely (fewer than LIMIT rows);
-// otherwise the SAME `created_at >= cursor` window is re-polled and already
-// delivered events are skipped by id. This closes the timestamp-tie loss: the
-// previous strictly-greater cursor permanently skipped same-microsecond
-// siblings that fell past the LIMIT cut.
+// by composite keyset pagination on (created_at, id): every poll with a
+// non-empty query page moves the cursor to the page's last row, and the
+// `(created_at, id) >= cursor` window plus delivered-id dedup absorb ties at
+// the boundary. The id component is what lets a full page of
+// timestamp-tied rows make progress — a pure created_at cursor would fill
+// every LIMIT with the tied rows and never reach anything written after the
+// tie block.
 type pgSubscription struct {
 	filter EventFilter
 	ch     chan<- *Event
 
 	cursor    time.Time
+	cursorID  string
 	delivered map[string]bool // event ids already sent on ch (bounded)
 }
 
@@ -392,6 +470,22 @@ func (p *pgSubscription) markDelivered(events []*Event) {
 		// worst re-deliver old events — never lose new ones.
 		p.delivered = make(map[string]bool, 1024)
 	}
+}
+
+// eventPageQuery abstracts the store's page fetch so pollOnce is unit-testable
+// without a live pool (the keyset-cursor decision is pure logic; only the
+// fetch needs a database).
+type eventPageQuery func(ctx context.Context, filter EventFilter, cursor time.Time, cursorID string) ([]*Event, error)
+
+// queryEventPage is the production eventPageQuery over the pool.
+func (s *PostgresEventStore) queryEventPage(
+	ctx context.Context,
+	filter EventFilter,
+	cursor time.Time,
+	cursorID string,
+) ([]*Event, error) {
+	query, args := buildSubscribeQuery(filter, cursor, cursorID)
+	return s.queryEvents(ctx, query, args...)
 }
 
 // pollEvents periodically queries for new events matching the filter and sends them to ch.
@@ -421,7 +515,7 @@ func (s *PostgresEventStore) pollEvents(
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if err := s.pollOnce(ctx, sub); err != nil {
+			if err := pollOnce(ctx, sub, s.queryEventPage); err != nil {
 				log.Error("event subscription poll failed", "error", err)
 				continue
 			}
@@ -430,11 +524,13 @@ func (s *PostgresEventStore) pollEvents(
 }
 
 // pollOnce executes a single poll cycle over [cursor, +inf) with an overlap
-// window; it advances sub.cursor only after the window was fully drained.
-func (s *PostgresEventStore) pollOnce(ctx context.Context, sub *pgSubscription) error {
-	query, args := buildSubscribeQuery(sub.filter, sub.cursor)
-
-	events, err := s.queryEvents(ctx, query, args...)
+// window; it advances sub.cursor by keyset pagination on every non-empty page.
+func pollOnce(
+	ctx context.Context,
+	sub *pgSubscription,
+	query eventPageQuery,
+) error {
+	events, err := query(ctx, sub.filter, sub.cursor, sub.cursorID)
 	if err != nil {
 		return err
 	}
@@ -454,32 +550,44 @@ func (s *PostgresEventStore) pollOnce(ctx context.Context, sub *pgSubscription) 
 
 	sub.markDelivered(batch)
 
-	// Advance the cursor only when the query returned fewer than the LIMIT —
-	// proof that everything with created_at >= cursor has been delivered.
-	// On a full batch, keep the cursor so the next poll re-reads the tail of
-	// the window (deduped by delivered-ids).
-	if len(events) < defaultEventReadLimit && len(batch) > 0 {
-		maxTS := batch[len(batch)-1].Timestamp
-		for _, evt := range batch {
-			if evt.Timestamp.After(maxTS) {
-				maxTS = evt.Timestamp
-			}
-		}
-		sub.cursor = maxTS
+	if nextTS, nextID, ok := nextPollCursor(events); ok {
+		sub.cursor = nextTS
+		sub.cursorID = nextID
 	}
 	return nil
 }
 
-// buildSubscribeQuery constructs a parameterized query for the subscription
-// poll. The window is `>= cursor` (inclusive): combined with the delivered-id
-// dedup in pollOnce this makes ties at the cursor timestamp observable instead
-// of silently skipped.
-func buildSubscribeQuery(filter EventFilter, cursor time.Time) (string, []any) {
-	query := `SELECT id, stream_id, type, payload, metadata, version, created_at
-		FROM events WHERE created_at >= $1`
+// nextPollCursor decides the subscription cursor after a poll. Keyset
+// pagination on (created_at, id): ANY non-empty page advances the cursor to
+// the page's last row — even when every row was already delivered (batch
+// empty). A delivered-only page proves nothing new exists below the page
+// tail; keeping the old cursor would wedge the subscriber.
+//
+// Tie semantics: the window is `(created_at, id) >= (cursorTS, cursorID)`
+// (inclusive), so rows sharing the page-tail timestamp but with a LATER id
+// are still returned next poll and deduped by the delivered set — that is
+// its job. A full page of tied timestamps advances cursorID to the page's
+// last id, so the next poll reaches rows past the tie block instead of
+// re-reading the same 100 forever.
+func nextPollCursor(events []*Event) (time.Time, string, bool) {
+	if len(events) == 0 {
+		return time.Time{}, "", false
+	}
+	tail := events[len(events)-1]
+	return tail.Timestamp, tail.ID, true
+}
 
-	args := []any{cursor}
-	argIdx := 2
+// buildSubscribeQuery constructs a parameterized query for the subscription
+// poll. The window is `(created_at, id) >= (cursor, cursorID)` (inclusive):
+// combined with the delivered-id dedup in pollOnce this makes ties at the
+// cursor boundary observable instead of silently skipped, and lets a full
+// tied page make forward progress via the id component.
+func buildSubscribeQuery(filter EventFilter, cursor time.Time, cursorID string) (string, []any) {
+	query := `SELECT id, stream_id, type, payload, metadata, version, created_at
+		FROM events WHERE (created_at, id) >= ($1, $2)`
+
+	args := []any{cursor, cursorID}
+	argIdx := 3
 
 	if len(filter.StreamIDs) > 0 {
 		query += fmt.Sprintf(" AND stream_id = ANY($%d)", argIdx)
@@ -496,7 +604,35 @@ func buildSubscribeQuery(filter EventFilter, cursor time.Time) (string, []any) {
 		args = append(args, typeStrs)
 	}
 
-	query += fmt.Sprintf(" ORDER BY created_at ASC LIMIT %d", defaultEventReadLimit)
+	query += fmt.Sprintf(" ORDER BY created_at ASC, id ASC LIMIT %d", defaultEventReadLimit)
 
 	return query, args
+}
+
+// CleanupExpiredBefore deletes every event row created strictly before the
+// cutoff and reports how many were removed. It is the events-table
+// retention primitive for PG mode: the table is the durable history (no
+// round_N.json archive, no compaction trim), so unbounded growth is bounded
+// ONLY by this cleaner. Idempotent and safe to call repeatedly.
+//
+// The caller owns the retention policy. Deleting events destroys the task
+// fabric's cross-restart restore window for any task whose lifecycle events
+// fall before the cutoff — a retention shorter than the operator's recovery
+// horizon silently breaks old-task recovery, so wiring layers must keep it
+// opt-in with a deliberately long default (see bootstrap's
+// storage.events_retention_days).
+func (s *PostgresEventStore) CleanupExpiredBefore(ctx context.Context, cutoff time.Time) (int64, error) {
+	if s == nil || s.pool == nil {
+		return 0, ErrEventStoreClosed
+	}
+	res, err := s.pool.Exec(ctx,
+		`DELETE FROM events WHERE created_at < $1`, cutoff)
+	if err != nil {
+		return 0, apperrors.Wrap(err, "delete expired events")
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, apperrors.Wrap(err, "count deleted events")
+	}
+	return n, nil
 }

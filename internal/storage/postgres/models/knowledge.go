@@ -27,10 +27,17 @@ type KnowledgeChunk struct {
 	UpdatedAt        time.Time              `json:"updated_at"`
 }
 
+// KnowledgeChunksTable is the physical table knowledge chunks live in. The
+// `_1024` suffix encodes the embedding dimension of its
+// `embedding VECTOR(1024)` column, so a dimension change means a new table plus
+// a migration. Kept here, next to the model, so the storage layer is the single
+// source of truth and domain packages do not re-declare the literal.
+const KnowledgeChunksTable = "knowledge_chunks_1024"
+
 // TableName returns the table name for this model.
 // Different dimensions use different tables to avoid mixing vector spaces.
 func (k *KnowledgeChunk) TableName() string {
-	return "knowledge_chunks_1024"
+	return KnowledgeChunksTable
 }
 
 // EmbeddingStatus constants.

@@ -1,0 +1,19 @@
+package taskfabric
+
+import "time"
+
+// Lease is a TTL-based ownership lease (abstracted from SessionLease).
+// The same shape serves TaskLease / ResourceLease / CapabilityLease.
+type Lease struct {
+	// Owner is the agent identity holding the lease.
+	Owner string
+	// ExpiresAt is the wall-clock expiry; a lease is renewable before expiry.
+	ExpiresAt time.Time
+	// Epoch is bumped on every acquisition, making stale renews observable.
+	Epoch uint64
+}
+
+// IsExpired reports whether the lease has passed its expiry.
+func (l Lease) IsExpired(now time.Time) bool {
+	return !l.ExpiresAt.After(now)
+}

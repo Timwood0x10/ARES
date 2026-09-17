@@ -62,33 +62,52 @@ func TestKnowledgeSearch_New(t *testing.T) {
 	assert.Equal(t, "knowledge_search", ks.Name())
 }
 
-func TestKnowledgeSearch_Execute_MissingTenantID(t *testing.T) {
+// TestKnowledgeSearch_Execute_ServerTenantWithoutParam is the #63
+// regression: tenant_id used to be a required LLM-supplied parameter, so
+// isolation depended on the model's honesty. The tenant is now server-side:
+// a request WITHOUT any tenant_id must be served under serverTenantID.
+func TestKnowledgeSearch_Execute_ServerTenantWithoutParam(t *testing.T) {
 	s := &mockSearcher{}
+	s.On("Search", mock.Anything, serverTenantID, "test").Return([]*RetrievalResult{}, nil)
 	ks := NewKnowledgeSearch(s)
 	result, err := ks.Execute(context.Background(), map[string]interface{}{
 		"query": "test",
 	})
 	assert.NoError(t, err)
-	assert.False(t, result.Success)
+	assert.True(t, result.Success)
+	s.AssertExpectations(t)
+}
+
+// TestKnowledgeSearch_Execute_IgnoresCallerTenantID is the #63 hostile-path
+// regression: an LLM-supplied tenant_id (here pretending to be another
+// tenant) must be IGNORED — the searcher still sees serverTenantID.
+func TestKnowledgeSearch_Execute_IgnoresCallerTenantID(t *testing.T) {
+	s := &mockSearcher{}
+	s.On("Search", mock.Anything, serverTenantID, "test").Return([]*RetrievalResult{}, nil)
+	ks := NewKnowledgeSearch(s)
+	result, err := ks.Execute(context.Background(), map[string]interface{}{
+		"tenant_id": "some-other-tenant",
+		"query":     "test",
+	})
+	assert.NoError(t, err)
+	assert.True(t, result.Success)
+	s.AssertExpectations(t)
 }
 
 func TestKnowledgeSearch_Execute_MissingQuery(t *testing.T) {
 	s := &mockSearcher{}
 	ks := NewKnowledgeSearch(s)
-	result, err := ks.Execute(context.Background(), map[string]interface{}{
-		"tenant_id": "t1",
-	})
+	result, err := ks.Execute(context.Background(), map[string]interface{}{})
 	assert.NoError(t, err)
 	assert.False(t, result.Success)
 }
 
 func TestKnowledgeSearch_Execute_SearcherError(t *testing.T) {
 	s := &mockSearcher{}
-	s.On("Search", mock.Anything, "t1", "test").Return(nil, errors.New("search failed"))
+	s.On("Search", mock.Anything, "default", "test").Return(nil, errors.New("search failed"))
 	ks := NewKnowledgeSearch(s)
 	result, err := ks.Execute(context.Background(), map[string]interface{}{
-		"tenant_id": "t1",
-		"query":     "test",
+		"query": "test",
 	})
 	assert.NoError(t, err)
 	assert.False(t, result.Success)
@@ -97,13 +116,12 @@ func TestKnowledgeSearch_Execute_SearcherError(t *testing.T) {
 
 func TestKnowledgeSearch_Execute_Success(t *testing.T) {
 	s := &mockSearcher{}
-	s.On("Search", mock.Anything, "t1", "test").Return([]*RetrievalResult{
+	s.On("Search", mock.Anything, "default", "test").Return([]*RetrievalResult{
 		{ID: "1", Score: 0.95, Content: "result content", Source: "src", Metadata: map[string]interface{}{"key": "val"}},
 	}, nil)
 	ks := NewKnowledgeSearch(s)
 	result, err := ks.Execute(context.Background(), map[string]interface{}{
-		"tenant_id": "t1",
-		"query":     "test",
+		"query": "test",
 	})
 	assert.NoError(t, err)
 	assert.True(t, result.Success)
@@ -115,11 +133,10 @@ func TestKnowledgeSearch_Execute_Success(t *testing.T) {
 
 func TestKnowledgeSearch_Execute_EmptyResults(t *testing.T) {
 	s := &mockSearcher{}
-	s.On("Search", mock.Anything, "t1", "test").Return([]*RetrievalResult{}, nil)
+	s.On("Search", mock.Anything, "default", "test").Return([]*RetrievalResult{}, nil)
 	ks := NewKnowledgeSearch(s)
 	result, err := ks.Execute(context.Background(), map[string]interface{}{
-		"tenant_id": "t1",
-		"query":     "test",
+		"query": "test",
 	})
 	assert.NoError(t, err)
 	assert.True(t, result.Success)
@@ -134,23 +151,27 @@ func TestKnowledgeUpdate_New(t *testing.T) {
 	assert.Equal(t, "knowledge_update", ku.Name())
 }
 
-func TestKnowledgeUpdate_Execute_MissingTenantID(t *testing.T) {
+// TestKnowledgeUpdate_Execute_ServerTenantWithoutParam is the #63
+// regression: tenant_id is no longer a tool parameter; the update path
+// operates on serverTenantID.
+func TestKnowledgeUpdate_Execute_ServerTenantWithoutParam(t *testing.T) {
 	svc := &mockKnowledgeService{}
+	svc.On("GetKnowledge", mock.Anything, serverTenantID, "1").Return(nil, nil)
 	ku := NewKnowledgeUpdate(svc)
 	result, err := ku.Execute(context.Background(), map[string]interface{}{
 		"item_id": "1",
 		"content": "new content",
 	})
 	assert.NoError(t, err)
-	assert.False(t, result.Success)
+	assert.False(t, result.Success) // item not found under the server tenant
+	svc.AssertExpectations(t)
 }
 
 func TestKnowledgeUpdate_Execute_MissingItemID(t *testing.T) {
 	svc := &mockKnowledgeService{}
 	ku := NewKnowledgeUpdate(svc)
 	result, err := ku.Execute(context.Background(), map[string]interface{}{
-		"tenant_id": "t1",
-		"content":   "new content",
+		"content": "new content",
 	})
 	assert.NoError(t, err)
 	assert.False(t, result.Success)
@@ -160,8 +181,7 @@ func TestKnowledgeUpdate_Execute_MissingContent(t *testing.T) {
 	svc := &mockKnowledgeService{}
 	ku := NewKnowledgeUpdate(svc)
 	result, err := ku.Execute(context.Background(), map[string]interface{}{
-		"tenant_id": "t1",
-		"item_id":   "1",
+		"item_id": "1",
 	})
 	assert.NoError(t, err)
 	assert.False(t, result.Success)
@@ -169,12 +189,11 @@ func TestKnowledgeUpdate_Execute_MissingContent(t *testing.T) {
 
 func TestKnowledgeUpdate_Execute_GetError(t *testing.T) {
 	svc := &mockKnowledgeService{}
-	svc.On("GetKnowledge", mock.Anything, "t1", "1").Return(nil, errors.New("not found"))
+	svc.On("GetKnowledge", mock.Anything, "default", "1").Return(nil, errors.New("not found"))
 	ku := NewKnowledgeUpdate(svc)
 	result, err := ku.Execute(context.Background(), map[string]interface{}{
-		"tenant_id": "t1",
-		"item_id":   "1",
-		"content":   "new content",
+		"item_id": "1",
+		"content": "new content",
 	})
 	assert.NoError(t, err)
 	assert.False(t, result.Success)
@@ -184,21 +203,20 @@ func TestKnowledgeUpdate_Execute_GetError(t *testing.T) {
 func TestKnowledgeUpdate_Execute_Success(t *testing.T) {
 	svc := &mockKnowledgeService{}
 	now := time.Now()
-	svc.On("GetKnowledge", mock.Anything, "t1", "1").Return(&KnowledgeItem{
-		ID: "1", TenantID: "t1", Content: "old", CreatedAt: now, UpdatedAt: now,
+	svc.On("GetKnowledge", mock.Anything, "default", "1").Return(&KnowledgeItem{
+		ID: "1", TenantID: "default", Content: "old", CreatedAt: now, UpdatedAt: now,
 	}, nil)
-	svc.On("UpdateKnowledge", mock.Anything, "t1", mock.MatchedBy(func(item *KnowledgeItem) bool {
+	svc.On("UpdateKnowledge", mock.Anything, "default", mock.MatchedBy(func(item *KnowledgeItem) bool {
 		return item.Content == "updated content" && item.Source == "new-source"
 	})).Return(&KnowledgeItem{
 		ID: "1", Content: "updated content", UpdatedAt: now,
 	}, nil)
 	ku := NewKnowledgeUpdate(svc)
 	result, err := ku.Execute(context.Background(), map[string]interface{}{
-		"tenant_id": "t1",
-		"item_id":   "1",
-		"content":   "updated content",
-		"source":    "new-source",
-		"reason":    "correction",
+		"item_id": "1",
+		"content": "updated content",
+		"source":  "new-source",
+		"reason":  "correction",
 	})
 	assert.NoError(t, err)
 	assert.True(t, result.Success)
@@ -208,20 +226,19 @@ func TestKnowledgeUpdate_Execute_Success(t *testing.T) {
 func TestKnowledgeUpdate_Execute_WithTags(t *testing.T) {
 	svc := &mockKnowledgeService{}
 	now := time.Now()
-	svc.On("GetKnowledge", mock.Anything, "t1", "1").Return(&KnowledgeItem{
-		ID: "1", TenantID: "t1", Content: "old", CreatedAt: now, UpdatedAt: now,
+	svc.On("GetKnowledge", mock.Anything, "default", "1").Return(&KnowledgeItem{
+		ID: "1", TenantID: "default", Content: "old", CreatedAt: now, UpdatedAt: now,
 	}, nil)
-	svc.On("UpdateKnowledge", mock.Anything, "t1", mock.MatchedBy(func(item *KnowledgeItem) bool {
+	svc.On("UpdateKnowledge", mock.Anything, "default", mock.MatchedBy(func(item *KnowledgeItem) bool {
 		return item.Content == "updated" && len(item.Tags) == 2 && item.Tags[0] == "tag1"
 	})).Return(&KnowledgeItem{
 		ID: "1", Content: "updated", UpdatedAt: now,
 	}, nil)
 	ku := NewKnowledgeUpdate(svc)
 	result, err := ku.Execute(context.Background(), map[string]interface{}{
-		"tenant_id": "t1",
-		"item_id":   "1",
-		"content":   "updated",
-		"tags":      []interface{}{"tag1", "tag2"},
+		"item_id": "1",
+		"content": "updated",
+		"tags":    []interface{}{"tag1", "tag2"},
 	})
 	assert.NoError(t, err)
 	assert.True(t, result.Success)
@@ -231,15 +248,14 @@ func TestKnowledgeUpdate_Execute_WithTags(t *testing.T) {
 func TestKnowledgeUpdate_Execute_UpdateError(t *testing.T) {
 	svc := &mockKnowledgeService{}
 	now := time.Now()
-	svc.On("GetKnowledge", mock.Anything, "t1", "1").Return(&KnowledgeItem{
-		ID: "1", TenantID: "t1", Content: "old", CreatedAt: now, UpdatedAt: now,
+	svc.On("GetKnowledge", mock.Anything, "default", "1").Return(&KnowledgeItem{
+		ID: "1", TenantID: "default", Content: "old", CreatedAt: now, UpdatedAt: now,
 	}, nil)
-	svc.On("UpdateKnowledge", mock.Anything, "t1", mock.Anything).Return(nil, errors.New("db error"))
+	svc.On("UpdateKnowledge", mock.Anything, "default", mock.Anything).Return(nil, errors.New("db error"))
 	ku := NewKnowledgeUpdate(svc)
 	result, err := ku.Execute(context.Background(), map[string]interface{}{
-		"tenant_id": "t1",
-		"item_id":   "1",
-		"content":   "updated",
+		"item_id": "1",
+		"content": "updated",
 	})
 	assert.NoError(t, err)
 	assert.False(t, result.Success)
@@ -253,22 +269,28 @@ func TestKnowledgeAdd_New(t *testing.T) {
 	assert.Equal(t, "knowledge_add", ka.Name())
 }
 
-func TestKnowledgeAdd_Execute_MissingTenantID(t *testing.T) {
+// TestKnowledgeAdd_Execute_ServerTenant is the #63 regression: items are
+// always created under serverTenantID regardless of any caller-supplied
+// tenant_id.
+func TestKnowledgeAdd_Execute_ServerTenant(t *testing.T) {
 	svc := &mockKnowledgeService{}
+	svc.On("AddKnowledge", mock.Anything, mock.MatchedBy(func(item *KnowledgeItem) bool {
+		return item.TenantID == serverTenantID && item.Content == "test"
+	})).Return(&KnowledgeItem{ID: "new-id", TenantID: serverTenantID, Content: "test"}, nil)
 	ka := NewKnowledgeAdd(svc)
 	result, err := ka.Execute(context.Background(), map[string]interface{}{
-		"content": "test",
+		"tenant_id": "attacker-tenant",
+		"content":   "test",
 	})
 	assert.NoError(t, err)
-	assert.False(t, result.Success)
+	assert.True(t, result.Success)
+	svc.AssertExpectations(t)
 }
 
 func TestKnowledgeAdd_Execute_MissingContent(t *testing.T) {
 	svc := &mockKnowledgeService{}
 	ka := NewKnowledgeAdd(svc)
-	result, err := ka.Execute(context.Background(), map[string]interface{}{
-		"tenant_id": "t1",
-	})
+	result, err := ka.Execute(context.Background(), map[string]interface{}{})
 	assert.NoError(t, err)
 	assert.False(t, result.Success)
 }
@@ -277,15 +299,14 @@ func TestKnowledgeAdd_Execute_Success(t *testing.T) {
 	svc := &mockKnowledgeService{}
 	now := time.Now()
 	svc.On("AddKnowledge", mock.Anything, mock.MatchedBy(func(item *KnowledgeItem) bool {
-		return item.TenantID == "t1" && item.Content == "test content" && item.Source == "src"
+		return item.TenantID == "default" && item.Content == "test content" && item.Source == "src"
 	})).Return(&KnowledgeItem{
 		ID: "1", Content: "test content", CreatedAt: now,
 	}, nil)
 	ka := NewKnowledgeAdd(svc)
 	result, err := ka.Execute(context.Background(), map[string]interface{}{
-		"tenant_id": "t1",
-		"content":   "test content",
-		"source":    "src",
+		"content": "test content",
+		"source":  "src",
 	})
 	assert.NoError(t, err)
 	assert.True(t, result.Success)
@@ -297,8 +318,7 @@ func TestKnowledgeAdd_Execute_AddError(t *testing.T) {
 	svc.On("AddKnowledge", mock.Anything, mock.Anything).Return(nil, errors.New("db error"))
 	ka := NewKnowledgeAdd(svc)
 	result, err := ka.Execute(context.Background(), map[string]interface{}{
-		"tenant_id": "t1",
-		"content":   "test",
+		"content": "test",
 	})
 	assert.NoError(t, err)
 	assert.False(t, result.Success)
@@ -315,10 +335,9 @@ func TestKnowledgeAdd_Execute_WithOptionalFields(t *testing.T) {
 	}, nil)
 	ka := NewKnowledgeAdd(svc)
 	result, err := ka.Execute(context.Background(), map[string]interface{}{
-		"tenant_id": "t1",
-		"content":   "test",
-		"category":  "cat",
-		"tags":      []interface{}{"a"},
+		"content":  "test",
+		"category": "cat",
+		"tags":     []interface{}{"a"},
 	})
 	assert.NoError(t, err)
 	assert.True(t, result.Success)
@@ -332,34 +351,36 @@ func TestKnowledgeDelete_New(t *testing.T) {
 	assert.Equal(t, "knowledge_delete", kd.Name())
 }
 
-func TestKnowledgeDelete_Execute_MissingTenantID(t *testing.T) {
+// TestKnowledgeDelete_Execute_ServerTenant is the #63 regression: deletion
+// runs under serverTenantID; a caller-supplied tenant_id is ignored.
+func TestKnowledgeDelete_Execute_ServerTenant(t *testing.T) {
 	svc := &mockKnowledgeService{}
+	svc.On("DeleteKnowledge", mock.Anything, serverTenantID, "1").Return(nil)
 	kd := NewKnowledgeDelete(svc)
 	result, err := kd.Execute(context.Background(), map[string]interface{}{
-		"item_id": "1",
+		"tenant_id": "attacker-tenant",
+		"item_id":   "1",
 	})
 	assert.NoError(t, err)
-	assert.False(t, result.Success)
+	assert.True(t, result.Success)
+	svc.AssertExpectations(t)
 }
 
 func TestKnowledgeDelete_Execute_MissingItemID(t *testing.T) {
 	svc := &mockKnowledgeService{}
 	kd := NewKnowledgeDelete(svc)
-	result, err := kd.Execute(context.Background(), map[string]interface{}{
-		"tenant_id": "t1",
-	})
+	result, err := kd.Execute(context.Background(), map[string]interface{}{})
 	assert.NoError(t, err)
 	assert.False(t, result.Success)
 }
 
 func TestKnowledgeDelete_Execute_Success(t *testing.T) {
 	svc := &mockKnowledgeService{}
-	svc.On("DeleteKnowledge", mock.Anything, "t1", "1").Return(nil)
+	svc.On("DeleteKnowledge", mock.Anything, "default", "1").Return(nil)
 	kd := NewKnowledgeDelete(svc)
 	result, err := kd.Execute(context.Background(), map[string]interface{}{
-		"tenant_id": "t1",
-		"item_id":   "1",
-		"reason":    "outdated",
+		"item_id": "1",
+		"reason":  "outdated",
 	})
 	assert.NoError(t, err)
 	assert.True(t, result.Success)
@@ -368,11 +389,10 @@ func TestKnowledgeDelete_Execute_Success(t *testing.T) {
 
 func TestKnowledgeDelete_Execute_DeleteError(t *testing.T) {
 	svc := &mockKnowledgeService{}
-	svc.On("DeleteKnowledge", mock.Anything, "t1", "1").Return(errors.New("db error"))
+	svc.On("DeleteKnowledge", mock.Anything, "default", "1").Return(errors.New("db error"))
 	kd := NewKnowledgeDelete(svc)
 	result, err := kd.Execute(context.Background(), map[string]interface{}{
-		"tenant_id": "t1",
-		"item_id":   "1",
+		"item_id": "1",
 	})
 	assert.NoError(t, err)
 	assert.False(t, result.Success)

@@ -4,17 +4,18 @@ import (
 	"context"
 	"testing"
 
-	aresmemory "github.com/Timwood0x10/ares/internal/ares_memory"
-	"github.com/Timwood0x10/ares/internal/evolution/patch"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/Timwood0x10/ares/internal/runtime/evolution/patch"
+	aresmemory "github.com/Timwood0x10/ares/internal/runtime/memory"
 )
 
 // TestProvideNewEvolution_LiveMemoryStore verifies that when a live
 // MemoryConfigStore is passed to ProvideNewEvolution, the MemoryPatchExecutor
 // mutates the live config (not an isolated copy).
 //
-// This is the Step 2 closure fix: pre-fix the bootstrap passed an isolated
+// Previously the bootstrap passed an isolated
 // Minimal manager, so evolution patches never reached the agent's real config.
 func TestProvideNewEvolution_LiveMemoryStore(t *testing.T) {
 	ctx := context.Background()
@@ -24,7 +25,7 @@ func TestProvideNewEvolution_LiveMemoryStore(t *testing.T) {
 	require.NoError(t, err)
 
 	// Type-assert to MemoryConfigStore — this is the exact assertion
-	// bootstrap.go performs at Step 2.
+	// bootstrap.go performs there.
 	liveStore, ok := liveMem.(aresmemory.MemoryConfigStore)
 	require.True(t, ok, "*memoryManager must implement MemoryConfigStore")
 

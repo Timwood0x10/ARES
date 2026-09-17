@@ -2,6 +2,7 @@ package planner
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -27,7 +28,7 @@ type defaultPlanner struct{}
 
 func (p *defaultPlanner) Plan(_ context.Context, goal string, budget knowledge.TokenBudget) (*KnowledgePlan, error) {
 	if goal == "" {
-		return nil, fmt.Errorf("goal cannot be empty")
+		return nil, errors.New("goal cannot be empty")
 	}
 
 	reqs := generateRequirements(goal, budget)
@@ -40,7 +41,7 @@ func (p *defaultPlanner) Plan(_ context.Context, goal string, budget knowledge.T
 
 // generateRequirements creates KnowledgeRequirements based on task goal keywords.
 // MaxResults for each requirement are computed dynamically from the token budget
-// so that the total loaded KnowledgeObjects fit within ForGraph (P1-11).
+// so that the total loaded KnowledgeObjects fit within ForGraph.
 func generateRequirements(goal string, budget knowledge.TokenBudget) []KnowledgeRequirement {
 	goalLower := strings.ToLower(goal)
 
@@ -229,7 +230,7 @@ func NewQueryPlanner() QueryPlanner {
 
 func (q *defaultQueryPlanner) PlanQuery(_ context.Context, req KnowledgeRequirement, providerName, providerType string) (*QueryPlan, error) {
 	if req.Description == "" {
-		return nil, fmt.Errorf("requirement description cannot be empty")
+		return nil, errors.New("requirement description cannot be empty")
 	}
 	return &QueryPlan{
 		Query:      req.Description,

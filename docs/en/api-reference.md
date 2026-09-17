@@ -185,10 +185,10 @@ for i, result := range results {
 ## File Locations
 
 - **Plugin System**: `internal/tools/resources/core/factory.go`
-- **Evaluation Types**: `internal/ares_eval/types.go`
-- **Evaluators**: `internal/ares_eval/evaluator.go`
-- **Test Runner**: `internal/ares_eval/runner.go`, `internal/ares_eval/agent_runner.go`
-- **Report Generator**: `internal/ares_eval/report.go`
-- **Test Suite Loader**: `internal/ares_eval/loader.go`
+- **Evaluation Types**: `internal/runtime/eval/types.go`
+- **Evaluators**: `internal/runtime/eval/evaluator.go`
+- **Test Runner**: `internal/runtime/eval/runner.go`, `internal/runtime/eval/agent_runner.go`
+- **Report Generator**: `internal/runtime/eval/report.go`
+- **Test Suite Loader**: `internal/runtime/eval/loader.go`
 - **Example Test Cases**: `test/eval/basic.yaml`, `test/eval/tools.yaml`
 - **Integration Example**: `examples/integration_example.go`

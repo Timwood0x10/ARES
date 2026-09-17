@@ -27,6 +27,10 @@ func NewConversationRepository(db postgres.DBTX) *ConversationRepository {
 	return &ConversationRepository{db: db}
 }
 
+// defaultConversationLimit bounds GetBySession when the caller passes a
+// non-positive limit.
+const defaultConversationLimit = 100
+
 // Create inserts a new conversation message into the database.
 // Args:
 // ctx - database operation context.
@@ -114,28 +118,46 @@ func (r *ConversationRepository) Create(ctx context.Context, conv *storage_model
 	return nil
 }
 
-// GetByID retrieves a conversation by ID.
+// conversationGetByIDQuery is the tenant-scoped lookup used by GetByID.
+//
+// It is a package-level constant (not an inline literal) so the tenant
+// predicate can be locked by a fast test that needs no database. RLS is not
+// enforced on this code path (repositories query pool.GetDB() directly, see
+// docs/reviews/0.3.1-final-deep-review.md finding S-5), so an unscoped read here
+// is a genuine cross-tenant leak — it is not covered by any second line of
+// defence.
+const conversationGetByIDQuery = `
+		SELECT id, session_id, tenant_id, user_id, agent_id, role, content, metadata, expires_at, created_at
+		FROM conversations
+		WHERE id = $1 AND tenant_id = $2
+	`
+
+// GetByID retrieves a conversation by ID, scoped to one tenant.
 // Args:
 // ctx - database operation context.
+// tenantID - tenant identifier for isolation; empty is rejected.
 // id - conversation ID, must be non-empty.
 // Returns conversation or error if not found or invalid argument.
-func (r *ConversationRepository) GetByID(ctx context.Context, id string) (*storage_models.Conversation, error) {
+func (r *ConversationRepository) GetByID(ctx context.Context, tenantID, id string) (*storage_models.Conversation, error) {
 	if id == "" {
 		return nil, errors.ErrInvalidArgument
 	}
+	if tenantID == "" {
+		return nil, postgres.ErrMissingTenantID
+	}
 
-	query := `
-		SELECT id, session_id, tenant_id, user_id, agent_id, role, content, metadata, expires_at, created_at
-		FROM conversations
-		WHERE id = $1
-	`
+	query := conversationGetByIDQuery
 
 	conv := &storage_models.Conversation{}
 	var metadataBytes []byte
-	err := r.db.QueryRowContext(ctx, query, id).Scan(
+	var expiresAt sql.NullTime
+	err := r.db.QueryRowContext(ctx, query, id, tenantID).Scan(
 		&conv.ID, &conv.SessionID, &conv.TenantID, &conv.UserID,
-		&conv.AgentID, &conv.Role, &conv.Content, &metadataBytes, &conv.ExpiresAt, &conv.CreatedAt,
+		&conv.AgentID, &conv.Role, &conv.Content, &metadataBytes, &expiresAt, &conv.CreatedAt,
 	)
+	if expiresAt.Valid {
+		conv.ExpiresAt = expiresAt.Time
+	}
 	if metadataBytes != nil {
 		if err := json.Unmarshal(metadataBytes, &conv.Metadata); err != nil {
 			log.Warn("Failed to unmarshal metadata", "error", err)
@@ -157,9 +179,14 @@ func (r *ConversationRepository) GetByID(ctx context.Context, id string) (*stora
 // ctx - database operation context.
 // sessionID - session identifier.
 // tenantID - tenant identifier for isolation.
-// limit - maximum number of results to return.
+// limit - maximum number of results to return; <= 0 falls back to a sane
+// default (a bare LIMIT 0 would silently return nothing, LIMIT -1 is a
+// Postgres error).
 // Returns list of conversation messages ordered by created time (ascending).
 func (r *ConversationRepository) GetBySession(ctx context.Context, sessionID, tenantID string, limit int) ([]*storage_models.Conversation, error) {
+	if limit <= 0 {
+		limit = defaultConversationLimit
+	}
 	query := `
 		SELECT id, session_id, tenant_id, user_id, agent_id, role, content, metadata, expires_at, created_at
 		FROM conversations
@@ -182,13 +209,19 @@ func (r *ConversationRepository) GetBySession(ctx context.Context, sessionID, te
 	for rows.Next() {
 		conv := &storage_models.Conversation{}
 		var metadataBytes []byte
+		// expires_at is nullable; a bare time.Time scan fails on NULL,
+		// and the old error-then-continue silently dropped the row.
+		var expiresAt sql.NullTime
 		err := rows.Scan(
 			&conv.ID, &conv.SessionID, &conv.TenantID, &conv.UserID,
-			&conv.AgentID, &conv.Role, &conv.Content, &metadataBytes, &conv.ExpiresAt, &conv.CreatedAt,
+			&conv.AgentID, &conv.Role, &conv.Content, &metadataBytes, &expiresAt, &conv.CreatedAt,
 		)
 		if err != nil {
 			log.Error("Failed to scan conversation row", "error", err)
 			continue
+		}
+		if expiresAt.Valid {
+			conv.ExpiresAt = expiresAt.Time
 		}
 		if metadataBytes != nil {
 			if err := json.Unmarshal(metadataBytes, &conv.Metadata); err != nil {
@@ -270,13 +303,19 @@ func (r *ConversationRepository) GetByUser(ctx context.Context, userID, tenantID
 	for rows.Next() {
 		conv := &storage_models.Conversation{}
 		var metadataBytes []byte
+		// expires_at is nullable; a bare time.Time scan fails on NULL,
+		// and the old error-then-continue silently dropped the row.
+		var expiresAt sql.NullTime
 		err := rows.Scan(
 			&conv.ID, &conv.SessionID, &conv.TenantID, &conv.UserID,
-			&conv.AgentID, &conv.Role, &conv.Content, &metadataBytes, &conv.ExpiresAt, &conv.CreatedAt,
+			&conv.AgentID, &conv.Role, &conv.Content, &metadataBytes, &expiresAt, &conv.CreatedAt,
 		)
 		if err != nil {
 			log.Warn("Failed to scan conversation row", "error", err)
 			continue
+		}
+		if expiresAt.Valid {
+			conv.ExpiresAt = expiresAt.Time
 		}
 		if metadataBytes != nil {
 			if err := json.Unmarshal(metadataBytes, &conv.Metadata); err != nil {
@@ -324,13 +363,19 @@ func (r *ConversationRepository) GetByAgent(ctx context.Context, agentID, tenant
 	for rows.Next() {
 		conv := &storage_models.Conversation{}
 		var metadataBytes []byte
+		// expires_at is nullable; a bare time.Time scan fails on NULL,
+		// and the old error-then-continue silently dropped the row.
+		var expiresAt sql.NullTime
 		err := rows.Scan(
 			&conv.ID, &conv.SessionID, &conv.TenantID, &conv.UserID,
-			&conv.AgentID, &conv.Role, &conv.Content, &metadataBytes, &conv.ExpiresAt, &conv.CreatedAt,
+			&conv.AgentID, &conv.Role, &conv.Content, &metadataBytes, &expiresAt, &conv.CreatedAt,
 		)
 		if err != nil {
 			log.Error("Failed to scan conversation row", "error", err)
 			continue
+		}
+		if expiresAt.Valid {
+			conv.ExpiresAt = expiresAt.Time
 		}
 		if metadataBytes != nil {
 			if err := json.Unmarshal(metadataBytes, &conv.Metadata); err != nil {
@@ -351,14 +396,21 @@ func (r *ConversationRepository) GetByAgent(ctx context.Context, agentID, tenant
 // CleanupExpired removes conversation messages that have expired.
 // Args:
 // ctx - database operation context.
+// tenantID - tenant identifier for isolation; empty is rejected.
 // Returns number of deleted messages or error if operation fails.
-func (r *ConversationRepository) CleanupExpired(ctx context.Context) (int64, error) {
+func (r *ConversationRepository) CleanupExpired(ctx context.Context, tenantID string) (int64, error) {
+	// Fail closed on an empty tenant: a tenant-less DELETE purges every
+	// tenant's conversations (S-10).
+	if tenantID == "" {
+		return 0, postgres.ErrMissingTenantID
+	}
 	query := `
 		DELETE FROM conversations
 		WHERE expires_at IS NOT NULL AND expires_at < NOW()
+		  AND tenant_id = $1
 	`
 
-	result, err := r.db.ExecContext(ctx, query)
+	result, err := r.db.ExecContext(ctx, query, tenantID)
 	if err != nil {
 		return 0, errors.Wrap(err, "cleanup expired conversations")
 	}

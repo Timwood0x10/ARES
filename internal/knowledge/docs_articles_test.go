@@ -59,7 +59,7 @@ func TestAKG_BuildFromDocsArticles(t *testing.T) {
 	promoted := 0
 	for _, obj := range objects {
 		if obj.Confidence >= gate.MinFinalScore {
-			if err := store.Promote(ctx, obj.ID, obj.Quality); err != nil {
+			if err := store.Promote(ctx, obj.Namespace, obj.ID, obj.Quality); err != nil {
 				t.Fatalf("promote %s: %v", obj.ID, err)
 			}
 			promoted++

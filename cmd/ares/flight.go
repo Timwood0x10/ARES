@@ -3,15 +3,17 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"strings"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/ares_events"
-	flight "github.com/Timwood0x10/ares/internal/ares_flight"
 	"github.com/spf13/cobra"
+
+	"github.com/Timwood0x10/ares/internal/ares_events"
+	flight "github.com/Timwood0x10/ares/internal/runtime/observability/flight"
 )
 
 var flightCmd = &cobra.Command{
@@ -37,7 +39,7 @@ var flightInspectCmd = &cobra.Command{
 			return fmt.Errorf("load events: %w", err)
 		}
 		if len(evts) == 0 {
-			return fmt.Errorf("no events found")
+			return errors.New("no events found")
 		}
 
 		var taskEvts []*ares_events.Event
@@ -161,7 +163,7 @@ func loadFlightEvents(path string) ([]*ares_events.Event, error) {
 		return nil, fmt.Errorf("read input: %w", err)
 	}
 	if len(data) == 0 {
-		return nil, fmt.Errorf("input is empty")
+		return nil, errors.New("input is empty")
 	}
 
 	var evts []*ares_events.Event

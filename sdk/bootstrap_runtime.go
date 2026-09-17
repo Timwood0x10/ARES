@@ -34,6 +34,14 @@ func buildBootstrapConfig(cfg *config) *ares_config.Config {
 			BaseURL:  cfg.llmCfg.BaseURL,
 			Model:    cfg.llmCfg.Model,
 			Timeout:  cfg.llmCfg.Timeout,
+			// Tuning knobs the Bootstrap path previously dropped: without
+			// these, an SDK user's WithMaxTokens/MaxPromptLength tuning was
+			// silently replaced by the ares_config defaults.
+			MaxTokens:       cfg.llmCfg.MaxTokens,
+			MaxPromptLength: cfg.llmCfg.MaxPromptLength,
+			// NOTE: Temperature has no ares_config.LLMConfig slot, so an
+			// SDK Temperature tuning cannot ride through the Bootstrap
+			// path (it is still honored by the SDK fallback wiring).
 		},
 		Memory: ares_config.MemoryConfig{
 			Enabled:     &cfg.memCfg.Enabled,
@@ -48,6 +56,14 @@ func buildBootstrapConfig(cfg *config) *ares_config.Config {
 			Enabled: cfg.evoCfg.Enabled,
 		},
 		MCP: ares_config.MCPConfig{Servers: []ares_config.MCPServerEntry{}},
+	}
+	// Memory size knobs the Bootstrap path previously dropped: without
+	// MaxHistory the closed-loop memory context fell back to the
+	// ares_config default (10) regardless of WithMemoryConfig tuning.
+	// (memCfg.MaxSessions has no ares_config slot — it is still honored by
+	// the SDK fallback wiring.)
+	if cfg.memCfg.MaxHistory > 0 {
+		out.Memory.MaxHistory = cfg.memCfg.MaxHistory
 	}
 	if cfg.dbCfg.Host != "" {
 		out.Storage = ares_config.StorageConfig{

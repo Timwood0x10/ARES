@@ -45,6 +45,19 @@ type Schema struct {
 	Description string             `json:"description,omitempty"`
 	Format      string             `json:"format,omitempty"`
 	Ref         string             `json:"$ref,omitempty"`
+
+	// AllowEmpty means an empty string is treated as absent for Enum validation.
+	//
+	// Needed because ValidateRecommendResult emits every struct field, so an
+	// optional domain field the caller never populated arrives as "" rather than
+	// being missing, and judging "" against the enum would reject valid results.
+	//
+	// It is opt-in per field on purpose: as a global default it also let a
+	// REQUIRED enum field pass with "", because Required only checks that the key
+	// exists and never inspects the value.
+	//
+	// Not a JSON Schema keyword, so it stays out of the serialized contract.
+	AllowEmpty bool `json:"-"`
 }
 
 // GetRecommendResultSchema returns the schema for RecommendResult.
@@ -82,12 +95,17 @@ func GetRecommendResultSchema() *Schema {
 				Enum: []interface{}{
 					"casual", "business", "formal", "party", "date", "sports", "outdoor",
 				},
+				// models.RecommendResult.Occasion is optional and arrives as ""
+				// when unset.
+				AllowEmpty: true,
 			},
 			"season": {
 				Type: schemaTypeString,
 				Enum: []interface{}{
 					"spring", "summer", "autumn", "winter", "all_season",
 				},
+				// Optional domain field: "" means "not set", not "invalid".
+				AllowEmpty: true,
 			},
 			"metadata": {
 				Type: schemaTypeObject,
@@ -111,6 +129,9 @@ func GetRecommendItemSchema() *Schema {
 				Enum: []interface{}{
 					"top", "bottom", "dress", "outerwear", "shoes", "accessory", "bag", "hat",
 				},
+				// Required + enum is not enough: Required only checks key presence,
+				// so express "must not be empty" in the schema itself.
+				MinLength: pointerToInt(1),
 			},
 			"name": {
 				Type:      "string",

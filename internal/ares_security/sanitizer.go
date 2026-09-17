@@ -2,8 +2,8 @@ package ares_security
 
 import (
 	"encoding/json"
-	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -38,12 +38,22 @@ type Sanitizer struct {
 }
 
 // SanitizeOptions controls sanitization behavior.
+//
+// All three fields are honored by Sanitizer.Sanitize: MaskChar replaces
+// the default '*' in masked output, PreserveLengthFor overrides the preserved
+// visible prefix for a field type, and KeepLength pads masked output to the
+// original length. Zero-value fields fall back to the built-in mask behavior.
 type SanitizeOptions struct {
-	// KeepLength preserves the original string length
+	// KeepLength pads the masked output with MaskChar so its rune length
+	// matches the original input. Masks that are already longer than the
+	// original (fixed-format masks such as email) are left unchanged.
 	KeepLength bool
-	// MaskChar is the character used for masking
+	// MaskChar is the character used for masking; zero value means '*'.
 	MaskChar rune
-	// PreserveLengthFor keeps the specified length from beginning/end
+	// PreserveLengthFor keeps exactly N leading characters of the original
+	// match visible for the given field type, replacing the mask function's
+	// built-in preserve behavior. Absent entries keep the defaults baked
+	// into each mask function. Negative values are ignored.
 	PreserveLengthFor map[SensitiveFieldType]int
 }
 
@@ -57,28 +67,23 @@ type SensitivePattern struct {
 
 // NewSanitizer creates a new sanitizer with default patterns.
 func NewSanitizer() *Sanitizer {
-	options := DefaultSanitizeOptions()
-	return NewSanitizerWithOptions(options)
-}
-
-// NewSanitizerWithOptions creates a new sanitizer with custom options.
-func NewSanitizerWithOptions(options SanitizeOptions) *Sanitizer {
 	return &Sanitizer{
 		patterns: defaultSensitivePatterns(),
-		options:  options,
+		options:  DefaultSanitizeOptions(),
 	}
 }
 
 // DefaultSanitizeOptions returns default sanitization options.
+// DefaultSanitizeOptions returns default sanitization options.
+//
+// PreserveLengthFor is intentionally empty: the per-type preserved-character
+// defaults live in the mask functions themselves (maskAPIKey, maskPhone, …).
+// An empty map keeps "map entry present" meaning an explicit caller override
+// in applyMaskOptions.
 func DefaultSanitizeOptions() SanitizeOptions {
 	return SanitizeOptions{
 		KeepLength: false,
 		MaskChar:   '*',
-		PreserveLengthFor: map[SensitiveFieldType]int{
-			SensitiveFieldTypeAPIKey:     4, // Keep first 4 and last 4 chars
-			SensitiveFieldTypeCreditCard: 4, // Keep first 4 and last 4 chars
-			SensitiveFieldTypePhone:      3, // Keep first 3 and last 3 chars
-		},
 	}
 }
 
@@ -139,11 +144,45 @@ func (s *Sanitizer) Sanitize(input string) string {
 	result := input
 	for _, pattern := range s.patterns {
 		result = pattern.Pattern.ReplaceAllStringFunc(result, func(match string) string {
-			return pattern.MaskFunc(match)
+			return s.applyMaskOptions(pattern.Type, match, pattern.MaskFunc(match))
 		})
 	}
 
 	return result
+}
+
+// applyMaskOptions adapts a mask function's output to the configured
+// SanitizeOptions: an explicit PreserveLengthFor entry re-masks the
+// original match with exactly N leading visible characters, MaskChar swaps
+// the default '*', and KeepLength pads short masks up to the original length.
+func (s *Sanitizer) applyMaskOptions(t SensitiveFieldType, orig, masked string) string {
+	mc := s.maskChar()
+
+	if n, ok := s.options.PreserveLengthFor[t]; ok && n >= 0 {
+		o := []rune(orig)
+		if n > len(o) {
+			n = len(o)
+		}
+		masked = string(o[:n]) + strings.Repeat(string(mc), len(o)-n)
+	} else if mc != '*' {
+		masked = strings.ReplaceAll(masked, "*", string(mc))
+	}
+
+	if s.options.KeepLength {
+		diff := len([]rune(orig)) - len([]rune(masked))
+		if diff > 0 {
+			masked += strings.Repeat(string(mc), diff)
+		}
+	}
+	return masked
+}
+
+// maskChar returns the configured masking character, defaulting to '*'.
+func (s *Sanitizer) maskChar() rune {
+	if s.options.MaskChar != 0 {
+		return s.options.MaskChar
+	}
+	return '*'
 }
 
 // SanitizeJSON sanitizes a JSON string, preserving its structure. It parses
@@ -155,8 +194,13 @@ func (s *Sanitizer) SanitizeJSON(jsonStr string) string {
 		return jsonStr
 	}
 
+	// Use json.Number: without UseNumber the decoder converts all
+	// numbers to float64, making the json.Number case in sanitizeValue
+	// unreachable and losing precision for large integers.
+	dec := json.NewDecoder(strings.NewReader(jsonStr))
+	dec.UseNumber()
 	var data interface{}
-	if err := json.Unmarshal([]byte(jsonStr), &data); err != nil {
+	if err := dec.Decode(&data); err != nil {
 		// Not valid JSON; fall back to plain string sanitization.
 		return s.Sanitize(jsonStr)
 	}
@@ -171,10 +215,17 @@ func (s *Sanitizer) SanitizeJSON(jsonStr string) string {
 }
 
 // sanitizeValue recursively walks a decoded JSON value and sanitizes strings.
+// Numeric values are checked too: a number whose digit form matches a
+// sensitive pattern (card/phone/SSN) is degraded to its masked string form —
+// masking wins over type fidelity.
 func (s *Sanitizer) sanitizeValue(v interface{}) interface{} {
 	switch val := v.(type) {
 	case string:
 		return s.Sanitize(val)
+	case json.Number:
+		return s.maybeMaskNumeric(val.String(), val)
+	case float64:
+		return s.maybeMaskNumeric(strconv.FormatFloat(val, 'f', -1, 64), val)
 	case map[string]interface{}:
 		result := make(map[string]interface{}, len(val))
 		for k, vv := range val {
@@ -188,9 +239,24 @@ func (s *Sanitizer) sanitizeValue(v interface{}) interface{} {
 		}
 		return result
 	default:
-		// Numbers, booleans, nil — no sanitization needed.
+		// Booleans and nil cannot carry sensitive digit runs.
 		return v
 	}
+}
+
+// maybeMaskNumeric sanitizes the decimal string form of a JSON number. An
+// unchanged value is returned as-is so the caller re-emits it as a number;
+// a hit returns the masked string (quoted in the re-serialized JSON).
+// maybeMaskNumeric sanitizes a numeric digit run, preserving the ORIGINAL JSON
+// value — and hence its numeric type — when no sensitive pattern matches:
+// returning the original float64/json.Number keeps benign numbers like
+// {"count": 42} as JSON numbers instead of degrading them to masked strings.
+func (s *Sanitizer) maybeMaskNumeric(digits string, original interface{}) interface{} {
+	masked := s.Sanitize(digits)
+	if masked == digits {
+		return original
+	}
+	return masked
 }
 
 // maskAPIKey masks an API key while preserving some context.
@@ -375,68 +441,21 @@ func maskString(s string, preserveLength int) string {
 		return s
 	}
 
-	length := len(s)
+	runes := []rune(s)
+	length := len(runes)
 
 	if length <= preserveLength {
 		return strings.Repeat("*", length)
 	}
 
 	if length <= preserveLength*2 {
-		prefix := s[:preserveLength]
+		prefix := string(runes[:preserveLength])
 		return prefix + strings.Repeat("*", length-preserveLength)
 	}
 
-	prefix := s[:preserveLength]
-	suffix := s[length-preserveLength:]
+	prefix := string(runes[:preserveLength])
+	suffix := string(runes[length-preserveLength:])
 	maskLength := length - preserveLength*2
 
 	return prefix + strings.Repeat(string('*'), maskLength) + suffix
-}
-
-// SanitizeLog sanitizes a log message, removing sensitive information.
-func SanitizeLog(message string) string {
-	sanitizer := NewSanitizer()
-	return sanitizer.Sanitize(message)
-}
-
-// SafeLogger wraps a logging function to automatically sanitize messages.
-type SafeLogger struct {
-	underlying func(string)
-	sanitizer  *Sanitizer
-}
-
-// NewSafeLogger creates a new safe logger.
-func NewSafeLogger(underlying func(string)) *SafeLogger {
-	return &SafeLogger{
-		underlying: underlying,
-		sanitizer:  NewSanitizer(),
-	}
-}
-
-// Log logs a message with sensitive information sanitized.
-func (l *SafeLogger) Log(message string) {
-	sanitized := l.sanitizer.Sanitize(message)
-	l.underlying(sanitized)
-}
-
-// Logf logs a formatted message with sensitive information sanitized.
-func (l *SafeLogger) Logf(format string, args ...interface{}) {
-	// Sanitize format string first to catch sensitive data in format
-	sanitizedFormat := l.sanitizer.Sanitize(format)
-
-	// Convert args to strings and sanitize them
-	sanitizedArgs := make([]interface{}, len(args))
-	for i, arg := range args {
-		if s, ok := arg.(string); ok {
-			sanitizedArgs[i] = l.sanitizer.Sanitize(s)
-		} else {
-			sanitizedArgs[i] = arg
-		}
-	}
-
-	// Format the message with sanitized format and args, then sanitize
-	// the final result to catch sensitive data that emerges only after
-	// format substitution (e.g., "api_key: sk-xxx" from Logf("api_key: %s", key)).
-	message := fmt.Sprintf(sanitizedFormat, sanitizedArgs...)
-	l.underlying(l.sanitizer.Sanitize(message))
 }

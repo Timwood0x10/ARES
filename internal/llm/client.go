@@ -10,16 +10,17 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/ares_callbacks"
-	"github.com/Timwood0x10/ares/internal/ares_observability"
 	"github.com/Timwood0x10/ares/internal/ares_ratelimit"
 	"github.com/Timwood0x10/ares/internal/ares_security"
 	"github.com/Timwood0x10/ares/internal/errors"
+	llmcore "github.com/Timwood0x10/ares/internal/llmcore"
+	"github.com/Timwood0x10/ares/internal/runtime/observability"
 )
 
 // Default configuration constants for LLM client.
@@ -53,10 +54,20 @@ func isRateLimitError(err error) bool {
 	if goerrors.As(err, &httpErr) {
 		return httpErr.StatusCode == http.StatusTooManyRequests
 	}
-	// Fallback: check error message for edge cases.
+	// Fallback for edge cases where no typed status survived wrapping.
+	// "429" is matched only as a digit-delimited token — a bare substring
+	// match flagged any message that merely CONTAINED the digits ("port
+	// 4290", "id 1429").
 	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "429") || strings.Contains(msg, "rate limit") || strings.Contains(msg, "rate_limit")
+	if strings.Contains(msg, "too many requests") || strings.Contains(msg, "rate limit") || strings.Contains(msg, "rate_limit") {
+		return true
+	}
+	return reStatus429.MatchString(msg)
 }
+
+// reStatus429 matches the literal 429 bounded by non-digits (or string
+// edges), so "status code: 429" matches but "port 4290" / "id 1429" do not.
+var reStatus429 = regexp.MustCompile(`(?:^|[^0-9])429(?:[^0-9]|$)`)
 
 // ProviderType represents the LLM provider type.
 type ProviderType string
@@ -97,13 +108,26 @@ type Client struct {
 	config         *Config
 	httpClient     *http.Client
 	streamClient   *http.Client // No Timeout — streaming uses context for cancellation.
-	tracer         ares_observability.Tracer
+	tracer         observability.Tracer
 	ares_callbacks ares_callbacks.Emitter   // Optional: emits lifecycle events for LLM calls.
 	limiter        ares_ratelimit.Limiter   // Optional: rate limiter for API calls.
 	sanitizer      *ares_security.Sanitizer // Optional: masks secrets in recorded prompts/responses.
 	retryPolicy    RetryPolicy              // Retry policy for transient failures (default: 3 attempts).
 	circuit        *CircuitBreaker          // Guards against sustained provider failures (default: enabled).
 	closeOnce      sync.Once                // Ensures Close() is idempotent and safe for concurrent calls.
+}
+
+// applyExtraHeaders sets the user-configured Config.Extra entries as HTTP
+// headers on req. It runs AFTER the built-in provider headers so a proxy or
+// gateway in front of the provider can override reserved fields
+// (Authorization, X-Title) — the "custom provider credentials ride here"
+// contract that ares_config.LLMConfig.Extra documents. (independent-review
+// F-16: Extra was previously a dead config — bootstrap assigned it into
+// Config.Extra but no request path read it.)
+func (c *Client) applyExtraHeaders(req *http.Request) {
+	for k, v := range c.config.Extra {
+		req.Header.Set(k, v)
+	}
 }
 
 // Option configures a Client instance during construction.
@@ -170,9 +194,9 @@ func (c *Client) Close() {
 	})
 }
 
-// SetTracer sets an optional ares_observability tracer on the client.
+// SetTracer sets an optional observability tracer on the client.
 // When set, Generate and GenerateStream will record LLM call spans.
-func (c *Client) SetTracer(t ares_observability.Tracer) {
+func (c *Client) SetTracer(t observability.Tracer) {
 	c.tracer = t
 }
 
@@ -234,8 +258,10 @@ func NewClient(config *Config, opts ...Option) (*Client, error) {
 	return c, nil
 }
 
-// recordLLMCall records an LLM call via the tracer if set.
-func (c *Client) recordLLMCall(ctx context.Context, prompt, response string, tokens int, start time.Time, err error) {
+// recordLLMCall records an LLM call via the tracer if set. The usage split
+// (prompt/completion) is carried through so cost attribution uses the real
+// input/output ratio instead of a hardcoded 50/50.
+func (c *Client) recordLLMCall(ctx context.Context, prompt, response string, usage llmcore.TokenUsage, start time.Time, err error) {
 	// Scrub secrets from the recorded copy only — the live request to the
 	// provider is never modified, so functionality is preserved while logs
 	// and traces no longer leak credentials.
@@ -250,21 +276,41 @@ func (c *Client) recordLLMCall(ctx context.Context, prompt, response string, tok
 	if c.config != nil {
 		model = c.config.Model
 	}
-	c.tracer.RecordLLMCall(ctx, &ares_observability.LLMCall{
-		TraceID:    c.tracer.GetTraceID(ctx),
-		Model:      model,
-		Prompt:     prompt,
-		Response:   response,
-		TokensUsed: tokens,
-		Duration:   time.Since(start),
-		Error:      err,
+	// Some providers report only the split; derive the total so consumers
+	// reading TokensUsed alone stay correct.
+	total := usage.TotalTokens
+	if total == 0 {
+		total = usage.PromptTokens + usage.CompletionTokens
+	}
+	c.tracer.RecordLLMCall(ctx, &observability.LLMCall{
+		TraceID:      c.tracer.GetTraceID(ctx),
+		Model:        model,
+		Prompt:       prompt,
+		Response:     response,
+		TokensUsed:   total,
+		InputTokens:  usage.PromptTokens,
+		OutputTokens: usage.CompletionTokens,
+		Duration:     time.Since(start),
+		Error:        err,
 	})
 }
 
 // emitCallback emits a lifecycle event via the callback emitter if set.
+// Input/Output are sanitized first: callbacks flow to external observers
+// (UI, logs, audit) and must not carry secrets embedded in the raw prompt,
+// mirroring the scrubbing recordLLMCall applies to traces. The live request
+// to the provider is never modified.
 func (c *Client) emitCallback(ctx *ares_callbacks.Context) {
 	if c.ares_callbacks == nil {
 		return
+	}
+	if c.sanitizer != nil {
+		if ctx.Input != "" {
+			ctx.Input = c.sanitizer.Sanitize(ctx.Input)
+		}
+		if ctx.Output != "" {
+			ctx.Output = c.sanitizer.Sanitize(ctx.Output)
+		}
 	}
 	c.ares_callbacks.Emit(ctx)
 }
@@ -301,37 +347,7 @@ func (c *Client) GetModel() string {
 	return ""
 }
 
-// NewClientFromEnv creates an LLM client from environment variables.
-func NewClientFromEnv() (*Client, error) {
-	config := &Config{
-		Provider: os.Getenv("LLM_PROVIDER"),
-		APIKey:   os.Getenv("LLM_API_KEY"),
-		BaseURL:  os.Getenv("LLM_BASE_URL"),
-		Model:    os.Getenv("LLM_MODEL"),
-	}
-
-	// Set defaults
-	if config.Provider == "" {
-		config.Provider = "ollama"
-	}
-	if config.BaseURL == "" {
-		if config.Provider == "openrouter" || config.Provider == "openai" {
-			config.BaseURL = DefaultOpenRouterBaseURL
-		} else {
-			config.BaseURL = DefaultOllamaBaseURL
-		}
-	}
-	if config.Model == "" {
-		if config.Provider == "ollama" {
-			config.Model = DefaultOllamaModel
-		} else {
-			config.Model = DefaultOpenRouterModel
-		}
-	}
-
-	return NewClient(config)
-}
-
+// NewClientFromEnv removed (0 production calls — use NewClient with Config directly).
 // StreamChunk represents a single chunk in a streaming response.
 type StreamChunk struct {
 	Content string
@@ -363,14 +379,14 @@ func (c *Client) GenerateStream(ctx context.Context, prompt string) (<-chan Stre
 
 	// Derive a cancellable stream context so the wrapper goroutine can stop
 	// the underlying provider stream (and free its HTTP connection) when the
-	// caller abandons the returned channel without cancelling ctx (M6).
+	// caller abandons the returned channel without cancelling ctx.
 	streamCtx, cancelStream := context.WithCancel(ctx)
 
 	// Apply rate limiter before making the API call.
 	if c.limiter != nil {
 		if waitErr := c.limiter.Wait(ctx); waitErr != nil {
 			cancelStream()
-			c.recordLLMCall(ctx, prompt, "", 0, start, waitErr)
+			c.recordLLMCall(ctx, prompt, "", llmcore.TokenUsage{}, start, waitErr)
 			c.emitCallback(&ares_callbacks.Context{
 				Event: ares_callbacks.EventLLMError,
 				Model: model,
@@ -402,7 +418,7 @@ func (c *Client) GenerateStream(ctx context.Context, prompt string) (<-chan Stre
 
 	if err != nil {
 		cancelStream()
-		c.recordLLMCall(ctx, prompt, "", 0, start, err)
+		c.recordLLMCall(ctx, prompt, "", llmcore.TokenUsage{}, start, err)
 		c.emitCallback(&ares_callbacks.Context{
 			Event: ares_callbacks.EventLLMError,
 			Model: model,
@@ -469,7 +485,7 @@ func (c *Client) GenerateStream(ctx context.Context, prompt string) (<-chan Stre
 		}
 		fullResponse := builder.String()
 		duration := time.Since(start)
-		c.recordLLMCall(ctx, prompt, fullResponse, 0, start, streamErr)
+		c.recordLLMCall(ctx, prompt, fullResponse, llmcore.TokenUsage{}, start, streamErr)
 
 		// Emit LLM end or error event for streaming.
 		if streamErr != nil {
@@ -521,8 +537,9 @@ func (c *Client) streamOllama(ctx context.Context, prompt string) (<-chan Stream
 	}
 
 	req.Header.Set("Content-Type", "application/json")
+	c.applyExtraHeaders(req)
 
-	resp, err := c.streamClient.Do(req)
+	resp, err := c.streamClient.Do(req) //nolint:bodyclose // body is closed in the goroutine below and in the error-status branch
 	if err != nil {
 		return nil, errors.Wrap(err, "send stream request")
 	}
@@ -583,7 +600,7 @@ func (c *Client) streamOllama(ctx context.Context, prompt string) (<-chan Stream
 // Anthropic streaming uses Server-Sent Events (SSE) with event: content_block_delta.
 func (c *Client) streamAnthropic(ctx context.Context, prompt string) (<-chan StreamChunk, error) {
 	if c.config.APIKey == "" {
-		return nil, fmt.Errorf("API key is required for Anthropic streaming")
+		return nil, errors.New("API key is required for Anthropic streaming")
 	}
 
 	// Use configured MaxTokens, fallback to reasonable default for Anthropic.
@@ -614,8 +631,9 @@ func (c *Client) streamAnthropic(ctx context.Context, prompt string) (<-chan Str
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-api-key", c.config.APIKey)
 	req.Header.Set("anthropic-version", "2023-06-01")
+	c.applyExtraHeaders(req)
 
-	resp, err := c.streamClient.Do(req)
+	resp, err := c.streamClient.Do(req) //nolint:bodyclose // body is closed in the goroutine below and in the error-status branch
 	if err != nil {
 		return nil, errors.Wrap(err, "send anthropic stream request")
 	}
@@ -697,7 +715,7 @@ func (c *Client) streamAnthropic(ctx context.Context, prompt string) (<-chan Str
 // streamOpenRouter streams text generation using OpenRouter API.
 func (c *Client) streamOpenRouter(ctx context.Context, prompt string) (<-chan StreamChunk, error) {
 	if c.config.APIKey == "" {
-		return nil, fmt.Errorf("API key is required for OpenRouter streaming")
+		return nil, errors.New("API key is required for OpenRouter streaming")
 	}
 
 	// Use configured MaxTokens, fallback to defaultMaxTokens if not set or invalid.
@@ -729,8 +747,9 @@ func (c *Client) streamOpenRouter(ctx context.Context, prompt string) (<-chan St
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+c.config.APIKey)
 	req.Header.Set("X-Title", "ARES")
+	c.applyExtraHeaders(req)
 
-	resp, err := c.streamClient.Do(req)
+	resp, err := c.streamClient.Do(req) //nolint:bodyclose // body is closed in the goroutine below and in the error-status branch
 	if err != nil {
 		return nil, errors.Wrap(err, "send stream request")
 	}

@@ -1,0 +1,85 @@
+package taskfabric
+
+import "time"
+
+// Task is the durable-intent object (docs/zh/architecture/ares-runtime.md).
+// Agents are disposable; a Task survives its owner via lease expiry and
+// preserved checkpoints.
+type Task struct {
+	// ID is the stable task identifier.
+	ID string
+	// Capability is the required capability (e.g. "rust/unsafe-analysis");
+	// the capability-aware scheduler scores agents against it.
+	Capability string
+	// State is the current lifecycle state.
+	State TaskState
+	// Priority drives preemption decisions (higher wins).
+	Priority int
+	// Owner is the current lease holder ("" when unowned).
+	Owner string
+	// Lease is the current TaskLease (nil when unowned).
+	Lease *Lease
+	// Checkpoint is durable progress preserved across preemption/requeue.
+	Checkpoint any
+	// Dependencies are prerequisite task IDs; is_ready = all completed.
+	Dependencies []string
+	// Deadline is the latest acceptable completion time.
+	Deadline time.Time
+	// RetryPolicy carries the retry budget.
+	RetryPolicy RetryPolicy
+	// Origin is the agent ID that created the task ("" = root: user-submitted
+	// or system-bootstrapped, no agent caller). It is Kernel-validated: the
+	// create_task syscall stamps the caller from the tool context
+	// (kernel.CallerID), never from LLM-supplied arguments, so provenance
+	// such as "B.origin = A" is auditable end-to-end.
+	Origin string
+	// FailedDependency names the prerequisite task whose terminal FAILED
+	// cascaded into this one ("" = this task failed on its own, or is not
+	// failed). It exists because a FAILED prerequisite can never satisfy
+	// depsCompletedLocked: without cascading the whole downstream subgraph
+	// would sit READY forever — unschedulable, invisible to the reaper and a
+	// permanent "round still active" for PlanLoop. Provenance is recorded so
+	// operators can tell a subgraph that died of a root cause from one that
+	// executed and failed. Guarded by f.mu like every other Task field.
+	FailedDependency string
+	// Quantum counts how many execution quanta (agent steps) this task has
+	// run across ALL lease holders (accumulated across yield→resume cycles,
+	// preemptions and chaos-recovery replacements). It is the "semantic step"
+	// number the observability UI shows as Quantum #N (
+	// "Agent is executing semantic quantum #18"). Guarded by f.mu like every
+	// other Task field.
+	Quantum int
+	// CreatedAt is when the task entered the fabric; UpdatedAt is the last
+	// state/lease mutation (both injectable-clock aware). Used by the panel
+	// for age/recency display.
+	CreatedAt time.Time
+	// UpdatedAt is the last state transition or quantum boundary time.
+	UpdatedAt time.Time
+}
+
+// RetryPolicy bounds re-queueing after failures.
+type RetryPolicy struct {
+	// MaxRetries is the TOTAL attempt budget: the first try counts, so
+	// MaxRetries=2 allows exactly one requeue after the first failure
+	// (CanRetry: Attempts < MaxRetries, checked after Attempts is
+	// incremented by Fail). 0 — and any negative value — means no retries:
+	// the first Fail transitions the task straight to terminal FAILED.
+	MaxRetries int
+	// Attempts counts executions so far.
+	Attempts int
+}
+
+// CanRetry reports whether another attempt is allowed.
+func (t *Task) CanRetry() bool {
+	return t.RetryPolicy.Attempts < t.RetryPolicy.MaxRetries
+}
+
+// transition moves the task to a new state, rejecting illegal transitions
+// (see canTransition in state.go).
+func (t *Task) transition(to TaskState) error {
+	if !canTransition(t.State, to) {
+		return ErrIllegalState
+	}
+	t.State = to
+	return nil
+}

@@ -1,0 +1,707 @@
+package agentfabric
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log/slog"
+	"strings"
+	"sync"
+
+	"github.com/Timwood0x10/ares/internal/core/models"
+	"github.com/Timwood0x10/ares/internal/fabric/task/workflow/engine"
+	kctx "github.com/Timwood0x10/ares/internal/kernel/ctx"
+	llmcore "github.com/Timwood0x10/ares/internal/llmcore"
+)
+
+// L2Graph is the per-session execution plan of one agent run: a session-local
+// engine.MutableDAG whose nodes are TOOL INSTANCES — one node per actual tool
+// execution — together with the session root that carries the durable,
+// session-invariant prompt/params. It is an independent, testable container
+// over a frozen tool DAG, and it is the production serve path (peers
+// run the L2 router; the ReAct loop is deleted).
+//
+// The L2 graph is a first-class engine.MutableDAG so it reuses every workflow
+// primitive (topological order, patch/differ, node Metadata) and so evolution
+// can later constrain its growth by reading the capability graph's
+// enabled/budget/prior into node Metadata. The graph holds topology +
+// Metadata ONLY — it does not carry execution facts. Each non-root node maps
+// 1:1 to a fabric task by ID; a node's execution result (Output) is read from
+// that task's checkpoint envelope (execution facts always live in the fabric,
+// never on the node).
+type L2Graph struct {
+	mu sync.RWMutex // guards dag and root
+
+	// dag is the session execution plan. Nodes are tool/answer instances.
+	dag *engine.MutableDAG
+
+	// root is the session root node carrying the session-invariant prompt and
+	// params (Metadata). Answers and tool input are linked off it.
+	root string
+}
+
+// NewL2Graph builds an empty L2 execution plan with the given session root.
+//
+// Args:
+//   - rootID: the id of the session root node (durable across the session).
+//   - prompt: the session-invariant prompt, stored on the root node.
+//   - params: the session-invariant params, flattened onto the root node's
+//     Metadata.
+//
+// Returns:
+//   - *L2Graph, or error when the root node cannot be created.
+func NewL2Graph(rootID, prompt string, params map[string]any) (*L2Graph, error) {
+	if strings.TrimSpace(rootID) == "" {
+		return nil, fmt.Errorf("agentfabric: L2 graph root id is required")
+	}
+	rootStep := &engine.Step{
+		ID:        rootID,
+		AgentType: "ares/root",
+		Input:     prompt,
+		Metadata:  metadataFromParams(params),
+	}
+	dag, err := engine.NewMutableDAG([]*engine.Step{rootStep})
+	if err != nil {
+		return nil, fmt.Errorf("agentfabric: create L2 graph: %w", err)
+	}
+	return &L2Graph{
+		dag:  dag,
+		root: rootID,
+	}, nil
+}
+
+// Root returns the session root node id.
+func (g *L2Graph) Root() string { return g.root }
+
+// planAgentType is the L2 capability for plan nodes. Used by PlanDepth
+// to count plan nodes and by AddToolNode to stamp the right AgentType.
+const planAgentType = "ares/plan"
+
+// answerAgentType is the L2 capability for terminal answer nodes.
+const answerAgentType = "ares/answer"
+
+// rootAgentType is the L2 capability for session admission roots.
+const rootAgentType = "ares/root"
+
+// L2 capability vocabulary, exported for the shared runtime assembly
+// (internal/agentruntime) and cmd/ares, so the strings have a single source.
+const (
+	// PlanCapability is the L2 capability of plan/tool-growing nodes.
+	PlanCapability = planAgentType
+	// AnswerCapability is the L2 capability of terminal answer nodes.
+	AnswerCapability = answerAgentType
+	// RootCapability is the L2 capability of session admission roots.
+	RootCapability = rootAgentType
+)
+
+// IsL2Capability reports whether a capability is dispatched by the L2
+// session router (tool/<name> instances and the ares/root,
+// ares/plan, ares/answer session nodes. Everything else is legacy ReAct
+// traffic. The two sets partition scheduler routing by construction —
+// canary peers advertise only the L2 set, legacy peers only primary types.
+func IsL2Capability(capability string) bool {
+	if strings.HasPrefix(capability, "tool/") {
+		return len(capability) > len("tool/")
+	}
+	switch capability {
+	case rootAgentType, planAgentType, answerAgentType:
+		return true
+	default:
+		return false
+	}
+}
+
+// PlanDepth returns the current plan-tool growth depth of the L2 graph
+// (the growth-depth upper-bound guard). Depth is the number of plan nodes in
+// the graph minus the root (which is an admission node, not a plan node). The
+// planner reads this to enforce the growth-depth upper bound.
+func (g *L2Graph) PlanDepth() int {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	// CountByAgentType is a single RLocked pass — StepIndex deep-copies the
+	// whole graph, which the planner cannot afford per quantum.
+	return g.dag.CountByAgentType(planAgentType)
+}
+
+// Ancestors returns every ancestor of nodeID reachable through DependsOn
+// edges, nearest-first: BFS from the node, each level expanded in DependsOn
+// declaration order, with a seen-set so diamond dependencies contribute each
+// node exactly once. The root node is NOT special-cased — callers filter it.
+// Used by the planner's context walk so a node's sibling dependencies are
+// all present in the LLM history, not just the first edge.
+func (g *L2Graph) Ancestors(nodeID string) []string {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	// ReadDeps copies only the walked nodes' dependency lists; StepIndex
+	// would deep-copy the entire graph for what is a sparse chain walk.
+	seen := map[string]struct{}{nodeID: {}}
+	var out []string
+	queue := []string{nodeID}
+	for len(queue) > 0 {
+		current := queue
+		queue = nil
+		for _, id := range current {
+			for _, dep := range g.dag.ReadDeps(id) {
+				if _, dup := seen[dep]; dup {
+					continue
+				}
+				seen[dep] = struct{}{}
+				out = append(out, dep)
+				queue = append(queue, dep)
+			}
+		}
+	}
+	return out
+}
+
+// HasNode reports whether the given node ID exists in the L2 graph. The
+// planner uses this to decide whether to add the current plan node before
+// growing tool nodes that depend on it.
+func (g *L2Graph) HasNode(nodeID string) bool {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return g.dag.HasNode(nodeID)
+}
+
+// AncestorPlanCount walks the predecessor chains from nodeID to the root and
+// counts PLAN nodes on the deepest one. It is the STABLE derivation of a plan
+// task's own round: unlike PlanDepth (which counts every plan node in the
+// graph), the ancestor count of a given plan node never changes when a LATER
+// round grows — which is what makes re-executed plan quanta (fabric retry,
+// lease expiry after the graph already advanced) derive the SAME growth round
+// as their first execution.
+//
+// A multi-dependency node takes the MAXIMUM plan count across all its
+// dependency edges: the chain reaching deepest into the plan history defines
+// the round. Following only one edge (the old deps[0] walk) undercounts when
+// a plan node fans in from several predecessors, shifting its derived round
+// and breaking replay stability.
+func (g *L2Graph) AncestorPlanCount(nodeID string) int {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return g.ancestorPlanCount(nodeID, make(map[string]int))
+}
+
+// ancestorPlanCount is the memoized DFS core of AncestorPlanCount. The caller
+// must hold at least a read lock. The memo map keeps diamond-shaped
+// dependency subgraphs linear instead of exponential; the pre-seeded zero
+// makes even a hypothetical cycle in an externally built graph terminate.
+func (g *L2Graph) ancestorPlanCount(id string, memo map[string]int) int {
+	if id == "" || id == g.root {
+		return 0
+	}
+	if count, ok := memo[id]; ok {
+		return count
+	}
+	memo[id] = 0
+	best := 0
+	for _, dep := range g.dag.ReadDeps(id) {
+		count := g.ancestorPlanCount(dep, memo)
+		if dep != g.root && g.dag.AgentTypeOf(dep) == planAgentType {
+			count++
+		}
+		if count > best {
+			best = count
+		}
+	}
+	memo[id] = best
+	return best
+}
+
+// CountToolClass counts how many L2 tool-instance nodes of the given tool
+// currently exist in the graph. The planner uses this to enforce the L1 budget
+// constraint (budget=N caps instances per session).
+//
+// One tool name is one ToolClass: the class shape is derived from the tool's
+// DECLARED schema (resources.ToolArgShape), which is a property of the tool,
+// not of any single call. Counting by capability is therefore exact — no need
+// to re-derive a per-node shape.
+func (g *L2Graph) CountToolClass(toolName string) int {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return g.dag.CountByAgentType("tool/" + toolName)
+}
+
+// DAG returns the underlying execution graph. Callers must treat it as
+// read-only unless initiated through graph mutations; the returned graph is
+// the live object so mutation events propagate.
+func (g *L2Graph) DAG() *engine.MutableDAG {
+	return g.dag
+}
+
+// argMetadataPrefix namespaces planned tool arguments inside Step.Metadata.
+// The projection merges every Metadata entry into the task payload, so an
+// unprefixed arg key is indistinguishable from envelope plumbing ("input",
+// the scheduler-restore "checkpoint" key) once it reaches the executing
+// cognition. Only argMetadataPrefix-stripped keys are passed to CallTool;
+// everything else is ignored, so envelope plumbing never reaches the tool.
+const argMetadataPrefix = "arg."
+
+// sessionMetadataKey rides Step.Metadata UNPREFIXED because it is envelope
+// plumbing, not a tool argument: planprojection.parseSessionID reads this
+// exact key to populate Task.SessionID, and argsFromPayload ignores every
+// unprefixed key. Prefixing it would break both ends at once — the session id
+// would never reach the envelope (so the next plan quantum could not find its
+// graph) and it WOULD reach CallTool as an undeclared argument, which a
+// strict-schema tool (additionalProperties:false) rejects.
+const sessionMetadataKey = "session_id"
+
+// tenantMetadataKey rides Step.Metadata UNPREFIXED for the same reason as
+// sessionMetadataKey: it is envelope plumbing (planprojection.parseTenantID
+// reads this exact key to populate the grown task's checkpoint TenantID),
+// not a tool argument. It is declared here so l2graph and planner_cognition
+// share one definition; prefixing it would keep the tenant off the envelope
+// AND leak it into CallTool as an undeclared argument.
+const tenantMetadataKey = "tenant_id"
+
+// AddToolNode grows a tool-instance node into the session graph in ONE AddNode
+// call, with the predecessor already in step DependsOn (the session root, or
+// the last tool node in a chain).
+//
+// Single-call growth is load-bearing, not cosmetic: AddNode publishes exactly
+// one ChangeAddNode event whose Step already carries the full dependency list,
+// so the incremental compiler creates the task with its dependencies. The old
+// two-step form (AddNode with empty DependsOn, then AddEdge) published a
+// dependency-less node first — the compiler created a READY task for it and
+// the later SetDependencies bounced off ErrTaskNotMutable, losing the edge
+// forever — and AddEdge mutated the already-published *Step in place, racing
+// any goroutine that received it.
+//
+// Args:
+//   - ctx: bounds the graph mutation.
+//   - id: the instance node id (unique within this session's L2 graph).
+//   - tool: the tool name for a tool node; "answer" creates the terminal
+//     answer node instead.
+//   - args: the concrete tool arguments; written as node Metadata under the
+//     argMetadataPrefix namespace so the executing cognition can read them
+//     without a graph walk.
+//   - dependsOn: the node this instance depends on (output feeding into it);
+//     empty means no predecessor.
+func (g *L2Graph) AddToolNode(ctx context.Context, id, tool string, args map[string]any, dependsOn string) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	var agentType string
+	switch tool {
+	case "answer":
+		agentType = answerAgentType
+	case "plan":
+		agentType = planAgentType
+	default:
+		agentType = "tool/" + tool
+	}
+	step := &engine.Step{
+		ID:        id,
+		AgentType: agentType,
+		Metadata:  argsMetadata(args),
+	}
+	if strings.TrimSpace(dependsOn) != "" {
+		step.DependsOn = []string{dependsOn}
+	}
+	if err := g.dag.AddNode(ctx, step); err != nil {
+		return fmt.Errorf("agentfabric: add tool node %q: %w", id, err)
+	}
+	return nil
+}
+
+// routerCognition dispatches ONE agent's quantum to the sub-cognition named by
+// the scheduled task's capability: tool/<name> → toolCognition, ares/answer →
+// answerCognition, ares/root → rootCognition (session admission). It is the
+// production-forward seed of the dispatch: a
+// session agent declares its FULL capability set and the cognition factory
+// returns ONE router that picks the body by the task's capability at execute
+// time. The routing key (Task.Capability → candidate overlap →
+// fabricAgentExecutor → this Cognition) is the same key the scheduler already
+// resolves, so no new dispatch mechanism is introduced.
+//
+// Execution facts do NOT land on graph nodes: outputs live on the fabric task
+// envelope. This Cognition only returns a StepOutcome; the scheduler's
+// buildQuantumStep re-wraps Result into the envelope and the dispatcher reads
+// it from there. The L2 graph holds topology + Metadata (the plan) only.
+type routerCognition struct {
+	binder  ToolBinder
+	planner Cognition // optional: ares/plan dispatch body
+	// sessions is released by the answer body when the terminal node
+	// completes. Nil unless built with session wiring.
+	sessions *SessionRegistry
+	// synthesis is the answer body's optional synthesizer (M4.2). It is
+	// derived from the planner at construction time — see
+	// NewRouterCognitionWithPlanner. Nil = no synthesis (tests, degraded
+	// wiring): the answer body emits the gap body.
+	synthesis *answerSynthesizer
+	logger    *slog.Logger
+}
+
+var _ Cognition = (*routerCognition)(nil)
+
+// NewRouterCognition builds the capability-dispatch Cognition for an L2
+// session agent. binder executes tool nodes (may be nil only when the agent
+// declares no tool capabilities); logger is shared by the tool/answer bodies.
+// planner is the optional ares/plan dispatch body (the plannerCognition
+// that grows the L2 graph); when nil, an ares/plan task returns an error
+// instead of silently no-op'ing.
+func NewRouterCognition(binder ToolBinder, logger *slog.Logger) Cognition {
+	return &routerCognition{binder: binder, logger: logger}
+}
+
+// NewRouterCognitionWithPlanner builds a router that also dispatches ares/plan
+// to the given planner Cognition. This is the production constructor: the
+// planner carries session-scoped dependencies (L2 graph registry, fabric
+// reader, LLM client) that the router itself does not own. sessions wires
+// session teardown into the answer body (nil = no release, test path).
+//
+// When planner is the concrete plannerCognition, the router also derives the
+// answer body's synthesizer from it (M4.2): a content-less terminal node
+// must synthesize its answer from the predecessor history, which is
+// reachable only through the planner's session registry + fabric reader.
+// Deriving it here keeps the Cognition interface unwidened (a Cognition's
+// only input stays its own task — the mainline invariant) and every
+// existing call site unchanged. Any other planner value (nil, a test
+// double) yields no synthesis; the answer body keeps its gap-body contract.
+func NewRouterCognitionWithPlanner(binder ToolBinder, planner Cognition, sessions *SessionRegistry, logger *slog.Logger) Cognition {
+	r := &routerCognition{binder: binder, planner: planner, sessions: sessions, logger: logger}
+	if pc, ok := planner.(*plannerCognition); ok {
+		r.synthesis = &answerSynthesizer{
+			chat:     pc.chat,
+			assemble: pc.assembleAnswerMessages,
+		}
+	}
+	return r
+}
+
+// ExecuteStep routes by task.AgentType (the node's capability). Tool nodes
+// tool/<name> run one CallTool; ares/answer emits the terminal result;
+// ares/root admits the session (zero-work, emits the session prompt).
+func (r *routerCognition) ExecuteStep(ctx context.Context, task *models.Task) (*StepOutcome, error) {
+	name := string(task.AgentType)
+	switch {
+	case strings.HasPrefix(name, "tool/"):
+		tool := strings.TrimPrefix(name, "tool/")
+		if strings.TrimSpace(tool) == "" || r.binder == nil {
+			return nil, fmt.Errorf("agentfabric: tool node %q has no binder", name)
+		}
+		return (&toolCognition{tool: tool, binder: r.binder, logger: r.logger}).ExecuteStep(ctx, task)
+	case name == answerAgentType:
+		return (&answerCognition{
+			logger:    r.logger,
+			sessions:  r.sessions,
+			synthesis: r.synthesis,
+		}).ExecuteStep(ctx, task)
+	case name == planAgentType:
+		// The planner cognition is injected by the session wiring (it
+		// carries the L2 graph + fabric handles); the router does not
+		// construct it because it needs session-scoped dependencies.
+		// If the router received a planner, dispatch to it; otherwise
+		// this is a wiring error (the peer was spawned without a planner).
+		if r.planner != nil {
+			return r.planner.ExecuteStep(ctx, task)
+		}
+		return nil, fmt.Errorf("agentfabric: plan node %q has no planner cognition", name)
+	case name == rootAgentType:
+		return (&rootCognition{}).ExecuteStep(ctx, task)
+	default:
+		return nil, fmt.Errorf("agentfabric: unsupported L2 capability %q", name)
+	}
+}
+
+// rootCognition admits one L2 session in a single zero-work quantum. The
+// session root IS compiled as a fabric task like every other node — otherwise
+// tool nodes could never resolve their DependsOn against it (CompileNode
+// rejects dangling dependencies, and stripping the root edge is not an
+// option: the edge pins the session order). Completing the admission emits
+// the session prompt (the task payload's "input") as the root output, so the
+// prompt lives in the root task's envelope — readable by the planner through
+// the same ID-join used for any predecessor output — instead of only in graph
+// Metadata.
+type rootCognition struct{}
+
+var _ Cognition = (*rootCognition)(nil)
+
+// ExecuteStep completes the admission quantum with the session prompt.
+func (c *rootCognition) ExecuteStep(_ context.Context, task *models.Task) (*StepOutcome, error) {
+	prompt, _ := task.Payload["input"].(string)
+	result := models.NewTaskResult(task.TaskID, task.AgentType)
+	result.SetSuccess([]*models.RecommendItem{{ItemID: task.TaskID, Content: prompt}}, "session admitted")
+	return &StepOutcome{Done: true, Result: result}, nil
+}
+
+// toolCognition executes ONE tool call and completes the step in a single
+// quantum. It is stateless — all inputs ride the task — so one instance can
+// drive many tool nodes.
+type toolCognition struct {
+	tool   string
+	binder ToolBinder
+	logger *slog.Logger
+}
+
+var _ Cognition = (*toolCognition)(nil)
+
+// ExecuteStep runs the single tool call. Args are read from the task payload
+// keys under the argMetadataPrefix namespace only (the node's Metadata,
+// namespaced at AddToolNode time) — the tool name is the node's capability.
+// Envelope plumbing ("input", scheduler-restore keys) never reaches CallTool,
+// so strict-schema tools (additionalProperties:false) accept the call.
+func (c *toolCognition) ExecuteStep(ctx context.Context, task *models.Task) (*StepOutcome, error) {
+	// Stamp the executing agent's identity so the Kernel syscalls
+	// (agentsyscall) enforce provenance — spawn parentage and Task.Origin —
+	// from the context, never from LLM-supplied arguments. This contract
+	// predates the L2 convergence (the retired SDK engine enforced it too);
+	// without it the production serve path let spawn_agent fall back to the LLM's
+	// parent_id and create_task stamp an empty Origin. One shared Cognition
+	// serves every agent, so the id rides the quantum-scoped executingAgentKey
+	// on the task payload (executor.go withExecutingAgent).
+	ctx = kctx.WithCallerID(ctx, executingAgentID(task.Payload))
+	res, err := c.binder.CallTool(ctx, c.tool, argsFromPayload(task.Payload))
+	if err != nil {
+		return nil, fmt.Errorf("agentfabric: tool %q call: %w", c.tool, err)
+	}
+	result := models.NewTaskResult(task.TaskID, task.AgentType)
+	result.SetSuccess([]*models.RecommendItem{{ItemID: task.TaskID, Content: stringify(res)}}, "tool "+c.tool+" completed")
+	return &StepOutcome{Done: true, Result: result}, nil
+}
+
+// executingAgentID reads the quantum-scoped executing-agent stamp the
+// scheduler's executor writes into the model task payload (executor.go
+// withExecutingAgent). Empty when no caller identity is available (tests,
+// direct/recovery paths) — kctx.WithCallerID then treats it as a root call.
+func executingAgentID(payload map[string]any) string {
+	id, _ := payload[executingAgentKey].(string)
+	return id
+}
+
+// answerContentKey is the arg a terminal answer node reads its body from,
+// e.g. AddToolNode(ctx, id, "answer", map[string]any{"content": ...}, dep).
+const answerContentKey = "content"
+
+// unansweredBody is the body emitted when a terminal answer node carries no
+// supplied content. It states the absence instead of reading like a result:
+// nothing has summarized anything, and a success-sounding constant here would
+// be a constant masquerading as logic.
+const unansweredBody = "no answer content supplied"
+
+// answerSynthesisInstruction is the closing instruction appended to the
+// assembled context on the synthesis call. It rides LAST, after the tool
+// history, as a user message (a system message after tool turns is
+// nonstandard for several providers). It tells the model to CLOSE the
+// session with a final answer — the call carries no tool schemas precisely
+// because a tool call here could never execute: its node would grow into a
+// graph whose session this very quantum releases.
+const answerSynthesisInstruction = "Produce the final answer to the original request using the tool results above. This call has no tools: answer directly."
+
+// answerSynthesizer bundles the answer body's optional synthesis
+// dependencies (M4.2). It is derived by NewRouterCognitionWithPlanner from
+// the concrete plannerCognition — the planner owns the session-scoped
+// handles (graph registry, fabric reader, LLM client) that assembling the
+// predecessors' history requires — so the answer body reaches the fabric
+// envelopes WITHOUT widening the Cognition interface (the mainline
+// invariant: a Cognition's only input is its own task). A nil synthesizer
+// means no synthesis (tests, degraded wiring): the answer body emits the
+// gap body.
+type answerSynthesizer struct {
+	// chat makes the ONE synthesis LLM call. Non-nil by construction
+	// (NewPlannerCognition validates its client); the nil check in
+	// synthesizeAnswer keeps a hand-built zero value usable.
+	chat ChatClient
+	// assemble rebuilds the session's LLM context (root prompt, tool
+	// history, experience prior) from the answer task's predecessor
+	// chain. false = context unavailable (session released, unreadable
+	// root); the caller degrades to the gap body instead of failing.
+	assemble func(ctx context.Context, task *models.Task) ([]*llmcore.LLMMessage, bool)
+}
+
+// answerCognition terminates the session on its terminal node. The normal
+// path emits the content its own node carries: the planner stamps the LLM's
+// final-turn content onto the answer node (growAnswerNode → answerContentKey
+// arg), so the pass-through IS the primary answer path and must never be
+// bypassed. A content-less node — the LLM spent its final turn on tool calls
+// the L1 constraints then skipped, or returned empty content — synthesizes
+// instead: the synthesizer assembles the predecessor history (the same
+// context the planner would send on its next quantum) and makes ONE LLM
+// call with tools disabled. Unwired or failed synthesis emits the explicit
+// gap body (unansweredBody) plus a warning instead of failing the quantum —
+// see synthesizeAnswer for why a gap body rather than an error.
+type answerCognition struct {
+	logger *slog.Logger
+	// sessions releases the L2 graph when the terminal node completes
+	// (session teardown). Nil on routers without session wiring —
+	// the legacy path never releases what it never admitted.
+	sessions *SessionRegistry
+	// synthesis synthesizes a content-less terminal node's answer (M4.2).
+	// Nil = no synthesis (tests, degraded wiring).
+	synthesis *answerSynthesizer
+}
+
+var _ Cognition = (*answerCognition)(nil)
+
+// ExecuteStep completes the terminal node with the answer content supplied
+// on the node; a content-less node completes with the synthesized answer
+// when synthesis is wired, else with the explicit gap body.
+func (c *answerCognition) ExecuteStep(ctx context.Context, task *models.Task) (*StepOutcome, error) {
+	body, ok := argsFromPayload(task.Payload)[answerContentKey].(string)
+	if !ok || strings.TrimSpace(body) == "" {
+		body = c.synthesizeAnswer(ctx, task)
+	}
+	if strings.TrimSpace(body) == "" {
+		body = unansweredBody
+		c.logAnswerGap(task)
+	}
+	result := models.NewTaskResult(task.TaskID, task.AgentType)
+	result.SetSuccess([]*models.RecommendItem{{ItemID: task.TaskID, Content: body}}, "answer node terminated session")
+	if c.sessions != nil && strings.TrimSpace(task.SessionID) != "" {
+		// The session ends here: drop the graph handle and stop the
+		// incremental-compile subscription so no new nodes can grow into
+		// a finished session (the reaper harvests the tasks). A release
+		// miss (already released) is attributable via the log, not fatal:
+		// the postcondition — no live session — already holds.
+		if err := c.sessions.ReleaseSession(task.SessionID); err != nil {
+			if c.logger != nil {
+				c.logger.Warn("agentfabric: answer released an unknown session",
+					"session", task.SessionID, "error", err)
+			}
+		}
+	}
+	return &StepOutcome{Done: true, Result: result}, nil
+}
+
+// synthesizeAnswer makes the answer path's ONE LLM call: assemble the
+// predecessor history and ask for the final answer with tools DISABLED.
+//
+// Failure contract: ANY failure — no wiring, nil internals, assembly miss,
+// LLM error, empty response — returns "" and the caller emits the gap body.
+// Returning an error instead would fail the quantum and burn the fabric's
+// retry budget on an LLM that is failing for every session, while a gap
+// body is the honest degraded output: the session terminates, the gap is
+// logged, the user sees an explicit absence instead of a session that
+// loops on retries.
+func (c *answerCognition) synthesizeAnswer(ctx context.Context, task *models.Task) string {
+	if c.synthesis == nil || c.synthesis.chat == nil || c.synthesis.assemble == nil {
+		// Zero-value usable: routers without synthesis wiring (tests,
+		// degraded construction) keep the documented gap-body degrade.
+		return ""
+	}
+	msgs, ok := c.synthesis.assemble(ctx, task)
+	if !ok {
+		return "" // the assembler already logged why
+	}
+	msgs = append(msgs, &llmcore.LLMMessage{Role: "user", Content: answerSynthesisInstruction})
+	// No tool schemas and no param overrides: this is a plain completion
+	// over the session's history, not a planning call — the session is
+	// terminating, so a tool call could never execute, and strategy
+	// steering (which shapes tool choice) has nothing left to steer.
+	resp, err := c.synthesis.chat.Chat(ctx, msgs, nil, nil)
+	if err != nil {
+		if c.logger != nil {
+			c.logger.Warn("agentfabric: answer synthesis LLM call failed",
+				"task_id", task.TaskID, "session", task.SessionID, "error", err)
+		}
+		return ""
+	}
+	if resp == nil || strings.TrimSpace(resp.Content) == "" {
+		if c.logger != nil {
+			c.logger.Warn("agentfabric: answer synthesis returned no content",
+				"task_id", task.TaskID, "session", task.SessionID)
+		}
+		return ""
+	}
+	return resp.Content
+}
+
+// logAnswerGap reports why the terminal node emits the gap body: no
+// synthesis wiring at all (tests, degraded wiring — the pre-M4.2 message,
+// pinned by TestL2Cognition_AnswerWithoutContentSaysSo) versus a synthesis
+// that ran and failed (synthesizeAnswer already logged the cause). The
+// distinction is operational: the first is a wiring gap, the second an
+// LLM/provider event.
+func (c *answerCognition) logAnswerGap(task *models.Task) {
+	if c.logger == nil {
+		return
+	}
+	if c.synthesis == nil {
+		c.logger.Warn("agentfabric: answer node has no content and no summarizer is wired",
+			"task_id", task.TaskID, "capability", string(task.AgentType))
+		return
+	}
+	c.logger.Warn("agentfabric: answer synthesis failed; emitting gap body",
+		"task_id", task.TaskID, "session", task.SessionID)
+}
+
+// metadataFromParams flattens a params map into the string-only Step.Metadata
+// shape the workflow engine stores.
+func metadataFromParams(params map[string]any) map[string]string {
+	if len(params) == 0 {
+		return nil
+	}
+	md := make(map[string]string, len(params))
+	for k, v := range params {
+		md[k] = stringify(v)
+	}
+	return md
+}
+
+// argsMetadata namespaces tool arguments for storage in Step.Metadata (see
+// argMetadataPrefix). A nil/empty args map yields nil Metadata, same as a
+// hand-built arg-less node.
+func argsMetadata(args map[string]any) map[string]string {
+	if len(args) == 0 {
+		return nil
+	}
+	md := make(map[string]string, len(args))
+	for k, v := range args {
+		// Unprefixed keys are envelope plumbing, not tool arguments.
+		if k == sessionMetadataKey || k == tenantMetadataKey {
+			md[k] = stringify(v)
+			continue
+		}
+		md[argMetadataPrefix+k] = stringify(v)
+	}
+	return md
+}
+
+// argsFromPayload re-extracts the tool arguments from a node's payload,
+// reading ONLY argMetadataPrefix-namespaced keys (prefix stripped). The
+// engine stores Metadata as strings, so a JSON-encoded value round-trips; the
+// result is a fresh map the caller may mutate. Unprefixed keys (projection
+// "input", scheduler-restore plumbing) are not tool args and are ignored.
+//
+// Extraction cannot fail: a namespaced value that looks like JSON but does not
+// parse is a legitimate plain string (Metadata is stringly typed), so it is
+// passed through rather than rejected.
+func argsFromPayload(payload map[string]any) map[string]any {
+	out := make(map[string]any, len(payload))
+	for k, v := range payload {
+		name, ok := strings.CutPrefix(k, argMetadataPrefix)
+		if !ok {
+			continue
+		}
+		switch vt := v.(type) {
+		case string:
+			// Only values that look like JSON objects are decoded; plain strings
+			// (e.g. a file path) pass through as themselves.
+			if len(vt) > 0 && (vt[0] == '{' || vt[0] == '[') {
+				var decoded any
+				if err := json.Unmarshal([]byte(vt), &decoded); err == nil {
+					out[name] = decoded
+					continue
+				}
+			}
+			out[name] = vt
+		default:
+			out[name] = vt
+		}
+	}
+	return out
+}
+
+// stringify renders an arbitrary value as a stable string for storage in
+// Step.Metadata / node outputs. JSON is used when possible so structured
+// values survive a round-trip through argsFromPayload.
+func stringify(v any) string {
+	if s, ok := v.(string); ok {
+		return s
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return fmt.Sprintf("%v", v)
+	}
+	return string(b)
+}

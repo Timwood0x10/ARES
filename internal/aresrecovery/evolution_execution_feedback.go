@@ -8,14 +8,14 @@ import (
 	"time"
 )
 
-// ExecutionAttribution is the W4 feedback loop's data source: it collects
+// ExecutionAttribution is the feedback loop's data source: it collects
 // per-agent, per-capability execution outcomes (success/failure) so the
 // Evolution system can attribute results to capabilities and feed them back
 // into scheduler scoring. The loadTracker in cmd/ares/scheduler.go tracks
 // per-agent outcomes; this struct adds the capability dimension and the
 // query interface the Evolution system uses.
 //
-// The attribution is the first half of the W4 feedback loop:
+// The attribution is the first half of the feedback loop:
 //
 //	Agent executes task (capability C) → outcome (success/fail) →
 //	ExecutionAttribution.Record(agentID, C, success) →
@@ -26,16 +26,30 @@ import (
 type ExecutionAttribution struct {
 	mu sync.Mutex
 	// results maps "agentID|capability" → outcome counts.
+	// Capped at maxAttributionEntries: when exceeded both maps are cleared
+	// entirely (losing old attribution data is preferable to unbounded
+	// memory growth and ever-longer Snapshot scans under the mutex).
 	results map[string]*capabilityOutcome
 	// agentResults maps agentID → aggregated outcome (all capabilities).
 	agentResults map[string]*capabilityOutcome
 }
 
+// maxAttributionEntries bounds the attribution maps. Once exceeded both are
+// cleared — the evolution system only needs recent data to score strategies.
+const maxAttributionEntries = 50000
+
 // capabilityOutcome tracks success/failure counts for one (agent, capability)
 // pair (or one agent's aggregate).
+//
+// Extended fields: latency (nanoseconds), retries, and recovery
+// count — these feed the deterministic scorer so the evolution
+// system can score strategies without calling an LLM.
 type capabilityOutcome struct {
-	success int
-	fail    int
+	success       int
+	fail          int
+	totalLatency  time.Duration
+	totalRetries  int
+	totalRecovers int
 }
 
 // NewExecutionAttribution creates an empty attribution store.
@@ -61,6 +75,27 @@ func NewExecutionAttribution() *ExecutionAttribution {
 // rejected with a log line instead of corrupting the key (EDGE-5: the
 // invariant is enforced here, not only assumed by splitAttributionKey).
 func (a *ExecutionAttribution) Record(agentID, capability string, success bool) {
+	a.RecordWithMetrics(agentID, capability, success, 0, 0, 0)
+}
+
+// RecordWithMetrics is the extended Record that accepts latency,
+// retry count, and recovery count alongside the success/failure outcome.
+// These feed the deterministic scorer so attribution → strategy
+// score works without any LLM call.
+//
+// Args:
+//   - agentID: the executor that ran the task.
+//   - capability: the task's required capability.
+//   - success: true when the task completed, false when it failed.
+//   - latency: the quantum's wall-clock duration (0 if unknown).
+//   - retries: how many retries the task used (0 for first attempt).
+//   - recovers: how many recovery replacements were needed (0 normally).
+func (a *ExecutionAttribution) RecordWithMetrics(
+	agentID, capability string,
+	success bool,
+	latency time.Duration,
+	retries, recovers int,
+) {
 	if strings.Contains(agentID, "|") || strings.Contains(capability, "|") {
 		slog.Warn("aresrecovery: reject attribution record: contains '|'",
 			slog.String("agent_id", agentID), slog.String("capability", capability))
@@ -69,6 +104,13 @@ func (a *ExecutionAttribution) Record(agentID, capability string, success bool) 
 	key := agentID + "|" + capability
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	// Bound the maps: clear entirely when the key count exceeds the cap.
+	// Losing old attribution data is preferable to unbounded memory growth
+	// and ever-longer Snapshot scans under the mutex on the scheduler path.
+	if _, exists := a.results[key]; !exists && len(a.results) >= maxAttributionEntries {
+		a.results = make(map[string]*capabilityOutcome)
+		a.agentResults = make(map[string]*capabilityOutcome)
+	}
 	out, ok := a.results[key]
 	if !ok {
 		out = &capabilityOutcome{}
@@ -79,6 +121,10 @@ func (a *ExecutionAttribution) Record(agentID, capability string, success bool) 
 	} else {
 		out.fail++
 	}
+	out.totalLatency += latency
+	out.totalRetries += retries
+	out.totalRecovers += recovers
+
 	agent, ok := a.agentResults[agentID]
 	if !ok {
 		agent = &capabilityOutcome{}
@@ -89,6 +135,9 @@ func (a *ExecutionAttribution) Record(agentID, capability string, success bool) 
 	} else {
 		agent.fail++
 	}
+	agent.totalLatency += latency
+	agent.totalRetries += retries
+	agent.totalRecovers += recovers
 }
 
 // CapabilityConfidence returns the success rate [0,1] for an agent on a
@@ -138,20 +187,29 @@ type AttributionSnapshot struct {
 }
 
 // CapabilityResult is one (agent, capability) pair's outcome summary.
+// Extended with AvgLatency, AvgRetries, AvgRecovers for the
+// deterministic scorer.
 type CapabilityResult struct {
-	AgentID    string
-	Capability string
-	Success    int
-	Fail       int
-	Rate       float64
+	AgentID     string
+	Capability  string
+	Success     int
+	Fail        int
+	Rate        float64
+	AvgLatency  time.Duration
+	AvgRetries  float64
+	AvgRecovers float64
 }
 
 // AgentResult is one agent's aggregate outcome summary.
+// Extended with AvgLatency, AvgRetries, AvgRecovers.
 type AgentResult struct {
-	AgentID string
-	Success int
-	Fail    int
-	Rate    float64
+	AgentID     string
+	Success     int
+	Fail        int
+	Rate        float64
+	AvgLatency  time.Duration
+	AvgRetries  float64
+	AvgRecovers float64
 }
 
 // Snapshot returns a point-in-time copy of the attribution data. The
@@ -165,29 +223,45 @@ func (a *ExecutionAttribution) Snapshot() AttributionSnapshot {
 		agentID, cap := splitAttributionKey(key)
 		total := out.success + out.fail
 		rate := 1.0
+		var avgLatency time.Duration
+		var avgRetries, avgRecovers float64
 		if total > 0 {
 			rate = float64(out.success) / float64(total)
+			avgLatency = out.totalLatency / time.Duration(total)
+			avgRetries = float64(out.totalRetries) / float64(total)
+			avgRecovers = float64(out.totalRecovers) / float64(total)
 		}
 		caps = append(caps, CapabilityResult{
-			AgentID:    agentID,
-			Capability: cap,
-			Success:    out.success,
-			Fail:       out.fail,
-			Rate:       rate,
+			AgentID:     agentID,
+			Capability:  cap,
+			Success:     out.success,
+			Fail:        out.fail,
+			Rate:        rate,
+			AvgLatency:  avgLatency,
+			AvgRetries:  avgRetries,
+			AvgRecovers: avgRecovers,
 		})
 	}
 	agents := make([]AgentResult, 0, len(a.agentResults))
 	for agentID, out := range a.agentResults {
 		total := out.success + out.fail
 		rate := 1.0
+		var avgLatency time.Duration
+		var avgRetries, avgRecovers float64
 		if total > 0 {
 			rate = float64(out.success) / float64(total)
+			avgLatency = out.totalLatency / time.Duration(total)
+			avgRetries = float64(out.totalRetries) / float64(total)
+			avgRecovers = float64(out.totalRecovers) / float64(total)
 		}
 		agents = append(agents, AgentResult{
-			AgentID: agentID,
-			Success: out.success,
-			Fail:    out.fail,
-			Rate:    rate,
+			AgentID:     agentID,
+			Success:     out.success,
+			Fail:        out.fail,
+			Rate:        rate,
+			AvgLatency:  avgLatency,
+			AvgRetries:  avgRetries,
+			AvgRecovers: avgRecovers,
 		})
 	}
 	return AttributionSnapshot{
@@ -211,7 +285,7 @@ func splitAttributionKey(key string) (string, string) {
 }
 
 // ExecutionResultSource is the interface the Evolution system uses to read
-// execution attribution (W4 §8.3.1: 采集真实执行结果). The scheduler's
+// execution attribution (collecting real execution results). The scheduler's
 // ExecutionAttribution implements this; the Evolution system reads the
 // snapshot and updates its strategy based on the results.
 type ExecutionResultSource interface {
@@ -223,7 +297,7 @@ type ExecutionResultSource interface {
 var _ ExecutionResultSource = (*ExecutionAttribution)(nil)
 
 // ConfidenceInjector is the interface for feeding evolution-derived
-// confidence back into the scheduler's scoring (W4 §8.3.2). The loadTracker
+// confidence back into the scheduler's scoring. The loadTracker
 // implements this, so the Evolution system can update the scheduler's
 // confidence without importing the scheduler package — the adapter is wired
 // at the Kernel level.
@@ -243,7 +317,7 @@ type ConfidenceInjector interface {
 }
 
 // EvolutionFeedbackAdapter wires the ExecutionAttribution to the scheduler's
-// ConfidenceInjector (W4 §8.3.2). It is the second half of the feedback loop:
+// ConfidenceInjector. It is the second half of the feedback loop:
 //
 //	ExecutionAttribution.Snapshot() → EvolutionFeedbackAdapter.Apply() →
 //	ConfidenceInjector.SetAgentConfidence() → next Schedule sees the new
@@ -269,7 +343,7 @@ func NewEvolutionFeedbackAdapter(source ExecutionResultSource, injector Confiden
 // failure-heavy agent is downweighted, a success-heavy agent is preferred.
 // The per-capability pushes (SetCapabilityConfidence) let the scheduler score
 // an agent against the task's exact capability instead of a single aggregate
-// value (design-fix: per-capability attribution is consumed, not collected only).
+// value (per-capability attribution is consumed, not collected only).
 //
 // Args:
 //   - ctx: unused (kept for signature symmetry with other Apply methods).
@@ -303,7 +377,7 @@ func (a *EvolutionFeedbackAdapter) Apply(_ context.Context) int {
 }
 
 // RunEvolutionFeedbackLoop periodically reads execution attribution and
-// pushes the per-agent confidence into the scheduler (W4). It applies once at
+// pushes the per-agent confidence into the scheduler. It applies once at
 // startup so already-collected results are effective immediately, then
 // re-applies on a fixed interval. Apply is idempotent.
 //
@@ -321,9 +395,11 @@ func RunEvolutionFeedbackLoop(ctx context.Context, adapter *EvolutionFeedbackAda
 	apply := func(phase string) int {
 		defer func() {
 			if r := recover(); r != nil {
-				// A panic must not kill the loop (M2: kernel loops must
-				// not crash the process).
-				_ = r
+				// A panic must not kill the loop (kernel loops must
+				// not crash the process), but it must be logged for
+				// observability.
+				slog.Error("feedback loop panic recovered",
+					"phase", phase, "panic", r)
 			}
 		}()
 		return adapter.Apply(ctx)

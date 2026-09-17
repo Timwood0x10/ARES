@@ -13,7 +13,7 @@ import (
 // cancelled / a hard cap trips), returning every node result plus the final
 // shared state.
 //
-// Execution model (docs/design/sdk-graph-v030.md):
+// Execution model:
 //   - Rounds are barriers: every currently-runnable node launches in parallel,
 //     the round ends when they all settle.
 //   - LLM (*Agent) nodes go through the kernel scheduling path — the same
@@ -46,21 +46,19 @@ func (r *Runtime) RunGraph(ctx context.Context, g *Graph) (*GraphResult, error) 
 		return nil, err
 	}
 
-	// Register every *Agent node's executor ONCE, up front, single-threaded.
-	// This uses the retained *Agent pointer so an agent added via AddNode
-	// (never through RegisterAgent) keeps its own instruction/tools instead of
-	// falling back to a bare capability-named stand-in. Doing it here — before
-	// any round goroutine starts — also means the parallel rounds never write
-	// r.sdkExecutors concurrently (the scheduler reads it lock-free).
-	r.registerGraphAgents(snap)
+	// Node agents run via their retained *Agent pointer, so an agent added
+	// via AddNode (never through RegisterAgent) keeps its own
+	// instruction/tools instead of falling back to a bare capability-named
+	// stand-in. Since the L2 convergence no per-capability static executors
+	// are registered — Agent.Run routes through the shared L2 core itself.
 
 	st := newGraphRun()
-	maxIter := g.MaxIterations
+	maxIter := snap.maxIterations
 	if maxIter <= 0 {
 		maxIter = defaultGraphMaxIterations
 	}
 
-	// Apply graph-level timeout (design §6): derive a child context so
+	// Apply graph-level timeout: derive a child context so
 	// in-flight nodes are cancelled when the deadline expires.
 	runCtx := ctx
 	if snap.timeout > 0 {
@@ -215,7 +213,12 @@ func (r *Runtime) execGraphNode(ctx context.Context, snap graphSnapshot, st *gra
 		st.mu.Lock()
 		input := st.agentInput(snap, id)
 		st.mu.Unlock()
-		res, err := r.Submit(ctx, Task{Capability: n.agentName, Input: input})
+		// Agent nodes run the agent's own path (Agent.Run — since the B3
+		// convergence an L2 session with the agent's instruction/memory
+		// context composed in). Routing through Submit here would only
+		// strip the agent's identity: capability matching in L2 is
+		// planner-driven and ignores agentByCapability.
+		res, err := n.agent.Run(ctx, input)
 		st.mu.Lock()
 		defer st.mu.Unlock()
 		if err != nil {
@@ -276,7 +279,7 @@ func (r *Runtime) execGraphNode(ctx context.Context, snap graphSnapshot, st *gra
 			iter:     make(map[string]int),
 			edgeDead: make(map[[2]string]bool),
 		}
-		err := r.runGraphRounds(ctx, subSnap, child, orDefault(n.sub.MaxIterations))
+		err := r.runGraphRounds(ctx, subSnap, child, orDefault(subSnap.maxIterations))
 		st.mu.Lock()
 		defer st.mu.Unlock()
 		if err != nil {
@@ -293,28 +296,6 @@ func (r *Runtime) execGraphNode(ctx context.Context, snap graphSnapshot, st *gra
 		return nil
 	}
 	return fmt.Errorf("graph node %q has no executable kind", id)
-}
-
-// registerGraphAgents installs an executor for every *Agent node before the
-// run starts, single-threaded. It uses the retained *Agent pointer so a node
-// added via AddNode (never through RegisterAgent) resolves the INTENDED agent
-// (instruction/tools intact) instead of Submit auto-creating a bare
-// capability-named stand-in. Running once up front also keeps r.sdkExecutors
-// free of concurrent writes during the parallel rounds (the scheduler reads it
-// without the agent lock).
-func (r *Runtime) registerGraphAgents(snap graphSnapshot) {
-	r.ensureScheduler()
-	r.agentMu.Lock()
-	defer r.agentMu.Unlock()
-	for _, n := range snap.nodes {
-		if n.agent == nil {
-			continue
-		}
-		if _, ok := r.sdkExecutors[n.agentName]; ok {
-			continue // already registered (e.g. via RegisterAgent) — keep it
-		}
-		r.sdkExecutors[n.agentName] = &sdkAgentExecutor{agent: n.agent}
-	}
 }
 
 // agentInput resolves the input for an agent node. Pipeline data flow: a node

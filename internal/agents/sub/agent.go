@@ -5,13 +5,12 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/Timwood0x10/ares/internal/agents/actionlog"
 	"github.com/Timwood0x10/ares/internal/agents/base"
 	"github.com/Timwood0x10/ares/internal/agents/outputguard"
 	"github.com/Timwood0x10/ares/internal/ares_events"
-	"github.com/Timwood0x10/ares/internal/ares_protocol/ahp"
 	"github.com/Timwood0x10/ares/internal/core/models"
 	"github.com/Timwood0x10/ares/internal/errors"
+	llmcore "github.com/Timwood0x10/ares/internal/llmcore"
 	resources "github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
 
@@ -24,7 +23,7 @@ const (
 )
 
 // Agent represents the Sub Agent interface. Agents are execution units only
-// (ares-runtime.md: agents are not orchestrated, they are scheduled): the
+// (ares-runtime: agents are not orchestrated, they are scheduled): the
 // Kernel owns dispatch and drives each task quantum-by-quantum via
 // ExecuteStep (taskfabric.RunQuantum). There is deliberately no self-dispatch
 // entry point here — an agent never subscribes to events and runs tasks on
@@ -34,14 +33,13 @@ type Agent interface {
 	// Execute runs a task to completion and returns its result (used by the
 	// message-driven path).
 	Execute(ctx context.Context, task *models.Task) (*models.TaskResult, error)
-	// ExecuteStep runs one execution quantum (plan P1.1 Execution Quantum).
+	// ExecuteStep runs one execution quantum.
 	// Done=false carries a resumable checkpoint: the task is SUSPENDED with
 	// the checkpoint preserved and a later quantum resumes from it.
 	ExecuteStep(ctx context.Context, task *models.Task) (*StepOutcome, error)
 }
 
-// StepOutcome is the result of one execution quantum (plan P1.1 Execution
-// Quantum). Done=false carries a resumable checkpoint so the caller (the
+// StepOutcome is the result of one execution quantum. Done=false carries a resumable checkpoint so the caller (the
 // kernel scheduler's RunQuantum step) can yield and resume the task in a later
 // quantum; Done=true carries the finalized task result.
 type StepOutcome struct {
@@ -50,10 +48,11 @@ type StepOutcome struct {
 	Checkpoint any
 }
 
-// stepExecutor is the optional quantum-capable contract implemented by the
-// production taskExecutor. The interface lives at the consumer (sub.Agent)
-// per code_rules_v2 §5.2; executors that predate quantum execution simply do
-// not implement it and subAgent falls back to one-shot Execute.
+// stepExecutor is the optional quantum-capable contract. The interface lives
+// at the consumer (sub.Agent); executors that predate quantum
+// execution simply do not implement it and subAgent falls back to one-shot
+// Execute. (The only implementation left is the cognition-backed
+// adapter — the ReAct tool loop is deleted.)
 type stepExecutor interface {
 	ExecuteStep(ctx context.Context, task *models.Task) (*StepOutcome, error)
 }
@@ -66,9 +65,18 @@ type TaskExecutor interface {
 	RegisterFallback(agentType models.AgentType, handler FallbackHandler)
 }
 
-// MessageHandler handles incoming messages.
-type MessageHandler interface {
-	Handle(ctx context.Context, msg *ahp.AHPMessage) error
+// FallbackHandler computes a degraded result when normal execution is
+// unavailable. (Kept from the retired tool-loop executor: part of
+// the TaskExecutor contract.)
+type FallbackHandler func(ctx context.Context, task *models.Task) ([]*models.RecommendItem, string, error)
+
+// ChatClient is the minimal LLM chat surface an executor needs (interface
+// at the consumer). The optional params map carries per-call
+// overrides (temperature, max_tokens, top_k) from the active evolution
+// strategy. (Relocated from the retired tool-loop executor; the
+// contract is unchanged.)
+type ChatClient interface {
+	Chat(ctx context.Context, messages []*llmcore.LLMMessage, tools []llmcore.Tool, params map[string]any) (*llmcore.GenerateResponse, error)
 }
 
 // ToolBinder binds tools to the agent.
@@ -98,52 +106,49 @@ func WithEventStore(store ares_events.EventStore) SubAgentOption {
 	}
 }
 
-// WithActionLog attaches an append-only action store. When set, every task
-// executed via Execute (the Kernel's RunQuantum step) records an
-// actionlog.Entry (task result, success/failure) for audit and replay
-// (ares-vs-prime-agent 5.3: action store).
-func WithActionLog(store *actionlog.Store) SubAgentOption {
-	return func(a *subAgent) {
-		a.actionLog = store
-	}
-}
-
 // subAgent implements a Sub Agent.
 type subAgent struct {
-	mu           sync.RWMutex
-	id           string
-	agentType    models.AgentType
-	status       models.AgentStatus
-	config       *SubAgentConfig
-	executor     TaskExecutor
-	handler      MessageHandler
-	tools        map[string]func(ctx context.Context, args map[string]any) (any, error)
-	messageQueue *ahp.MessageQueue
-	heartbeatMon *ahp.HeartbeatMonitor
-	eventStore   ares_events.EventStore
-	// actionLog, when non-nil, records every executed task as an
-	// actionlog.Entry for audit/replay. Set via WithActionLog.
-	actionLog *actionlog.Store
+	mu         sync.RWMutex
+	id         string
+	agentType  models.AgentType
+	status     models.AgentStatus
+	config     *SubAgentConfig
+	executor   TaskExecutor
+	eventStore ares_events.EventStore
 
 	// Lifecycle management
 	stopCh   chan struct{}  // Signals goroutines to stop.
 	streamWg sync.WaitGroup // Tracks active ProcessStream goroutines.
+
+	// stopped marks an agent that was explicitly Stop()ped (guarded by mu).
+	// Status Offline alone cannot distinguish "never started" from
+	// "stopped", but the distinction matters: Process/ProcessStream
+	// auto-Start an Offline agent (lazy start), which would silently
+	// resurrect a stopped one (#58). Only an explicit Start clears it.
+	stopped bool
 }
 
 // SubAgentConfig holds configuration for SubAgent.
 type SubAgentConfig struct {
 	base.Config
-	EnableTools bool
 }
 
 // New creates a new SubAgent instance.
+//
+// TODO(tech-debt): the msgQueue parameter (and the SendMessage/
+// ReceiveMessage surface it backed) was removed as dead: production peers
+// were always constructed with a nil queue, so peer direct messaging never
+// delivered — only the kernel-session collaboration topics are live.
+// The handler and hbMon parameters (and the messageHandler /
+// heartbeatSender files they backed) were removed the same way: the
+// handler's Handle had zero call sites (protocol-ACK stubs only) and the
+// heartbeat monitor was always constructed with nil in production.
+// WithActionLog and the agents/actionlog package went with them: the store
+// had zero production constructors, so the audit path never executed.
 func New(
 	id string,
 	agentType models.AgentType,
 	executor TaskExecutor,
-	handler MessageHandler,
-	msgQueue *ahp.MessageQueue,
-	hbMon *ahp.HeartbeatMonitor,
 	cfg *SubAgentConfig,
 	opts ...SubAgentOption,
 ) Agent {
@@ -154,15 +159,11 @@ func New(
 	cfg.Type = agentType
 
 	a := &subAgent{
-		id:           id,
-		agentType:    agentType,
-		status:       models.AgentStatusOffline,
-		config:       cfg,
-		executor:     executor,
-		handler:      handler,
-		tools:        make(map[string]func(ctx context.Context, args map[string]any) (any, error)),
-		messageQueue: msgQueue,
-		heartbeatMon: hbMon,
+		id:        id,
+		agentType: agentType,
+		status:    models.AgentStatusOffline,
+		config:    cfg,
+		executor:  executor,
 	}
 
 	for _, opt := range opts {
@@ -175,8 +176,7 @@ func New(
 // DefaultSubAgentConfig returns default configuration.
 func DefaultSubAgentConfig(agentType models.AgentType) *SubAgentConfig {
 	return &SubAgentConfig{
-		Config:      *base.DefaultConfig(agentType),
-		EnableTools: true,
+		Config: *base.DefaultConfig(agentType),
 	}
 }
 
@@ -211,6 +211,7 @@ func (a *subAgent) Start(ctx context.Context) error {
 		return errors.ErrAgentAlreadyStarted
 	}
 	a.status = models.AgentStatusStarting
+	a.stopped = false // explicit Start clears a previous Stop (#58)
 	a.stopCh = make(chan struct{})
 	a.mu.Unlock()
 
@@ -240,15 +241,37 @@ func (a *subAgent) Stop(ctx context.Context) error {
 		a.mu.Unlock()
 		return errors.ErrAgentNotRunning
 	}
+	if a.status == models.AgentStatusStopping {
+		// A concurrent Stop already owns the shutdown; treat the stop as
+		// done rather than error — the caller's goal (agent stopped) is
+		// being achieved, and erroring would race the winner for no gain.
+		a.mu.Unlock()
+		return nil
+	}
 	a.status = models.AgentStatusStopping
+	a.stopped = true // Process/ProcessStream must not resurrect after Stop (#58)
+	// Detach the channel under the lock so exactly one Stop closes it;
+	// a second closer would panic ("close of closed channel") and take
+	// the process down with it.
 	stopCh := a.stopCh
+	a.stopCh = nil
 	a.mu.Unlock()
 
-	// Signal all goroutines to stop and wait for them.
 	if stopCh != nil {
 		close(stopCh)
 	}
-	a.streamWg.Wait()
+	// Wait for stream goroutines, but honour ctx cancellation so a stuck
+	// goroutine cannot block Stop forever.
+	waitDone := make(chan struct{})
+	go func() {
+		a.streamWg.Wait()
+		close(waitDone)
+	}()
+	select {
+	case <-waitDone:
+	case <-ctx.Done():
+		log.Warn("sub agent stop: stream wait timed out", KeyAgentID, a.id, "error", ctx.Err())
+	}
 
 	a.emitEvent(ctx, ares_events.EventAgentStopped, map[string]any{
 		KeyAgentID: a.id,
@@ -264,6 +287,13 @@ func (a *subAgent) Process(ctx context.Context, input any) (any, error) {
 	a.mu.Lock()
 	status := a.status
 	if status == models.AgentStatusOffline {
+		if a.stopped {
+			// Explicitly stopped: do NOT auto-Start — that would resurrect
+			// the agent behind an explicit Stop (#58). Restart requires an
+			// explicit Start call.
+			a.mu.Unlock()
+			return nil, errors.ErrAgentNotRunning
+		}
 		// Temporarily release lock for Start (which acquires its own lock).
 		// If Start fails or another goroutine already started us, handle gracefully.
 		a.mu.Unlock()
@@ -280,6 +310,8 @@ func (a *subAgent) Process(ctx context.Context, input any) (any, error) {
 	a.status = models.AgentStatusBusy
 	a.mu.Unlock()
 
+	a.streamWg.Add(1)
+	defer a.streamWg.Done()
 	defer a.setStatus(models.AgentStatusReady)
 
 	task, ok := input.(*models.Task)
@@ -291,31 +323,39 @@ func (a *subAgent) Process(ctx context.Context, input any) (any, error) {
 		return nil, errors.ErrInvalidState
 	}
 
-	return a.executor.Execute(ctx, task)
-}
-
-// SendMessage sends a message to another agent.
-func (a *subAgent) SendMessage(ctx context.Context, msg *ahp.AHPMessage) error {
-	if a.messageQueue == nil {
-		return errors.ErrQueueNotInitialized
+	// Honour the stop signal (#58): a Stop that races this call must abort
+	// the task instead of letting it run to completion after Stop returned.
+	a.mu.RLock()
+	stopCh := a.stopCh
+	a.mu.RUnlock()
+	if stopCh == nil {
+		return nil, errors.ErrAgentNotRunning
 	}
-	return a.messageQueue.Enqueue(ctx, msg)
-}
-
-// ReceiveMessage receives a message from the message queue.
-func (a *subAgent) ReceiveMessage(ctx context.Context) (*ahp.AHPMessage, error) {
-	if a.messageQueue == nil {
-		return nil, errors.ErrQueueNotInitialized
+	select {
+	case <-stopCh:
+		// Stop was signaled between admission and execution — abort.
+		return nil, errors.ErrAgentNotRunning
+	default:
 	}
-	return a.messageQueue.Dequeue(ctx)
+	// Also cancel the executor if Stop fires mid-execution: a ctx-honoring
+	// executor (LLM call, tool call) aborts promptly instead of running on.
+	execCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go func() {
+		select {
+		case <-stopCh:
+			cancel()
+		case <-execCtx.Done():
+		}
+	}()
+
+	return a.executor.Execute(execCtx, task)
 }
 
-// Heartbeat sends a heartbeat signal.
+// Heartbeat is the base.Heartbeater surface. It is a no-op since the
+// heartbeatSender/monitor wiring was removed as dead (production always
+// constructed the agent with a nil monitor); liveness is judged by IsAlive.
 func (a *subAgent) Heartbeat(ctx context.Context) error {
-	if a.heartbeatMon == nil {
-		return nil
-	}
-	a.heartbeatMon.RecordHeartbeat(a.id)
 	return nil
 }
 
@@ -326,6 +366,9 @@ func (a *subAgent) IsAlive() bool {
 
 // Execute executes a task to completion and returns its result.
 func (a *subAgent) Execute(ctx context.Context, task *models.Task) (*models.TaskResult, error) {
+	if task == nil {
+		return nil, errors.ErrInvalidInput
+	}
 	if a.executor == nil {
 		return nil, errors.ErrNilPointer
 	}
@@ -394,10 +437,10 @@ func (a *subAgent) finalizeErr(ctx context.Context, task *models.Task, result *m
 			KeyError:                             execErr.Error(),
 			ares_events.EventKeyTask:             taskEventText(task),
 			ares_events.EventKeyResult:           execErr.Error(),
-			ares_events.EventKeyTenantID:         distillTenantID(),
+			ares_events.EventKeyTenantID:         distillTenantID(task),
 			ares_events.EventKeyUsedExperienceID: task.UsedExperienceID,
+			ares_events.EventKeyStrategyID:       task.StrategyID,
 		})
-		a.recordAction(ctx, task.TaskID, false, execErr.Error())
 		return nil, execErr
 	}
 
@@ -411,10 +454,10 @@ func (a *subAgent) finalizeErr(ctx context.Context, task *models.Task, result *m
 			KeyError:                             guardErr.Error(),
 			ares_events.EventKeyTask:             taskEventText(task),
 			ares_events.EventKeyResult:           guardErr.Error(),
-			ares_events.EventKeyTenantID:         distillTenantID(),
+			ares_events.EventKeyTenantID:         distillTenantID(task),
 			ares_events.EventKeyUsedExperienceID: task.UsedExperienceID,
+			ares_events.EventKeyStrategyID:       task.StrategyID,
 		})
-		a.recordAction(ctx, task.TaskID, false, guardErr.Error())
 		return result, fmt.Errorf("sub agent %s output guard rejected result: %w", a.id, guardErr)
 	}
 
@@ -423,34 +466,12 @@ func (a *subAgent) finalizeErr(ctx context.Context, task *models.Task, result *m
 		KeyAgentID:                           a.id,
 		ares_events.EventKeyTask:             taskEventText(task),
 		ares_events.EventKeyResult:           resultEventText(result),
-		ares_events.EventKeyTenantID:         distillTenantID(),
+		ares_events.EventKeyTenantID:         distillTenantID(task),
 		ares_events.EventKeyUsedExperienceID: task.UsedExperienceID,
+		ares_events.EventKeyStrategyID:       task.StrategyID,
 	})
-	a.recordAction(ctx, task.TaskID, result.Success, "")
 
 	return result, nil
-}
-
-// recordAction appends an actionlog entry for a finished task, when an action
-// store is configured (ares-vs-prime-agent 5.3: action store). Append errors
-// are logged and non-fatal: audit must never break the execution path.
-func (a *subAgent) recordAction(ctx context.Context, taskID string, success bool, errMsg string) {
-	if a.actionLog == nil {
-		return
-	}
-	entry := actionlog.Entry{
-		ID:      "task:" + taskID,
-		AgentID: a.id,
-		Action:  "task.result",
-		Payload: map[string]any{
-			"success": success,
-			"error":   errMsg,
-		},
-	}
-	if appendErr := a.actionLog.Append(ctx, entry); appendErr != nil {
-		log.Error("sub agent action log append failed",
-			KeyAgentID, a.id, KeyTaskID, taskID, "error", appendErr)
-	}
 }
 
 // ProcessStream handles input and returns a stream of ares_events.
@@ -466,6 +487,11 @@ func (a *subAgent) ProcessStream(ctx context.Context, input any) (<-chan base.Ag
 	a.mu.Lock()
 	status := a.status
 	if status == models.AgentStatusOffline {
+		if a.stopped {
+			// Explicitly stopped: no silent resurrection (#58) — see Process.
+			a.mu.Unlock()
+			return nil, errors.ErrAgentNotRunning
+		}
 		a.mu.Unlock()
 		if err := a.Start(ctx); err != nil && err != errors.ErrAgentAlreadyStarted {
 			return nil, err
@@ -480,14 +506,14 @@ func (a *subAgent) ProcessStream(ctx context.Context, input any) (<-chan base.Ag
 	a.status = models.AgentStatusBusy
 	a.mu.Unlock()
 
-	defer a.setStatus(models.AgentStatusReady)
-
 	task, ok := input.(*models.Task)
 	if !ok {
+		a.setStatus(models.AgentStatusReady)
 		return nil, errors.ErrInvalidInput
 	}
 
 	if a.executor == nil {
+		a.setStatus(models.AgentStatusReady)
 		return nil, errors.ErrInvalidState
 	}
 
@@ -501,9 +527,13 @@ func (a *subAgent) ProcessStream(ctx context.Context, input any) (<-chan base.Ag
 	go func() {
 		defer close(ch)
 		defer a.streamWg.Done()
+		// Reset to Ready only when the task goroutine finishes — NOT when
+		// the outer function returns the channel. The previous outer defer
+		// fired immediately, breaking Busy/Ready admission control.
+		defer a.setStatus(models.AgentStatusReady)
 		defer func() {
 			if r := recover(); r != nil {
-				// Capture panic to prevent process crash (code_rules_v2 §4.2).
+				// Capture panic to prevent process crash.
 				// Emit failure event and send error on channel so consumers don't hang.
 				panicErr := fmt.Errorf("sub agent %s panic: %v", a.id, r)
 				a.emitEvent(ctx, ares_events.EventSubAgentFailed, map[string]any{
@@ -563,8 +593,9 @@ func (a *subAgent) runTaskAndEmit(
 			KeyError:                             err.Error(),
 			ares_events.EventKeyTask:             taskEventText(task),
 			ares_events.EventKeyResult:           err.Error(),
-			ares_events.EventKeyTenantID:         distillTenantID(),
+			ares_events.EventKeyTenantID:         distillTenantID(task),
 			ares_events.EventKeyUsedExperienceID: task.UsedExperienceID,
+			ares_events.EventKeyStrategyID:       task.StrategyID,
 		})
 
 		select {
@@ -580,8 +611,9 @@ func (a *subAgent) runTaskAndEmit(
 		KeyAgentID:                           a.id,
 		ares_events.EventKeyTask:             taskEventText(task),
 		ares_events.EventKeyResult:           resultEventText(result),
-		ares_events.EventKeyTenantID:         distillTenantID(),
+		ares_events.EventKeyTenantID:         distillTenantID(task),
 		ares_events.EventKeyUsedExperienceID: task.UsedExperienceID,
+		ares_events.EventKeyStrategyID:       task.StrategyID,
 	})
 
 	// Send task complete event

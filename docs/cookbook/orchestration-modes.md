@@ -47,8 +47,9 @@ Pin-by-identity is intentionally not offered.
 ## HTTP usage
 
 ```bash
+# TOKEN: bin/ares auth token --config ares.yaml --role admin --sub curl
 curl -X POST http://localhost:8080/api/graphs \
-  -H "Authorization: Bearer $ARES_API_KEY" \
+  -H "Authorization: Bearer $TOKEN" \
   -d '{
     "schema_version": 1,
     "run_id": "review-pipeline",

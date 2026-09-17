@@ -6,6 +6,7 @@ import (
 	"errors"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -253,8 +254,12 @@ func TestStream_SummaryTruncation(t *testing.T) {
 	}
 
 	require.Len(t, objs, 1)
-	// Summary should be truncated to 200 chars + "..."
-	assert.Equal(t, 203, len(objs[0].Summary))
+	// Truncation is rune-safe and bounded: the summary (ellipsis included)
+	// never exceeds maxSummaryRunes, and — the reason it is rune-based —
+	// never contains a multi-byte rune cut in half.
+	assert.LessOrEqual(t, utf8.RuneCountInString(objs[0].Summary), maxSummaryRunes)
+	assert.True(t, utf8.ValidString(objs[0].Summary),
+		"a byte-index cut emits invalid UTF-8 when it lands inside a multi-byte rune")
 	assert.Contains(t, objs[0].Summary, "...")
 }
 

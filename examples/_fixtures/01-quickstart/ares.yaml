@@ -1,0 +1,22 @@
+# 01-quickstart configuration
+llm:
+  provider: ollama # openai | anthropic | openrouter
+  model: gemma4
+
+memory:
+  enabled: false
+  # When enabled, the fields below tune the memory subsystem; left at zero
+  # they fall back to component defaults. See examples/_fixtures/12-yaml-driven-flags.
+  # max_history: 0
+  # max_sessions: 0
+  # enable_distillation: false
+  # distillation_threshold: 0  # 0 = ungated (fire every event); N = gate every N rounds
+
+tools:
+  builtin: true
+
+reflection:
+  enabled: false
+
+evolution:
+  enabled: false

@@ -10,6 +10,29 @@
 # Override config path via the ARES_YAML environment variable.
 # ═══════════════════════════════════════════════════════════════
 
+# ── HTTP server ──────────────────────────────────────────────
+server:
+  # host: actual HTTP bind address (default "127.0.0.1" — explicit loopback,
+  # not the "localhost" name, so a hosts-file remap cannot widen the bind).
+  # The introspect read API (/api/v1/introspect/*) carries task payloads, so
+  # serve binds loopback by default. To accept connections from other hosts
+  # (e.g. inside docker), set host: 0.0.0.0 AND enable security.auth_enabled
+  # (or set introspect.token below) to keep the read side closed.
+  # host: 127.0.0.1
+  # port: 8080
+
+# ── Introspection read side ──────────────────────────────────
+# The /introspect panel, its JSON feed (/api/v1/introspect/*), the cost
+# dashboard and the read-only /api/* control surfaces.
+introspect:
+  # token: static bearer token for the read side. Empty (default): the read
+  # side is open, protected only by the loopback default bind (server.host
+  # 127.0.0.1) — startup logs a Warn describing that posture. Non-empty:
+  # non-loopback clients must send "Authorization: Bearer <token>";
+  # loopback clients stay open. Composes with security.auth_enabled and
+  # ARES_API_KEY (any one credential passes).
+  # token: change-me-panels-are-read-only
+
 # ── LLM provider ─────────────────────────────────────────────
 llm:
   # provider: openai | ollama | anthropic | openrouter
@@ -47,7 +70,6 @@ memory:
   # max_sessions: 100
   # enable_distillation: when true, raw conversation is distilled into structured
   #   Experience records after each dialogue round
-  enable_distillation: false
   # distillation_threshold: fire distillation every N rounds. 3 = every 3rd
   #   conversation round. 0 = fire on every event (legacy ungated behaviour)
   distillation_threshold: 3
@@ -99,6 +121,178 @@ evolution:
   #   behaviour (tool selection, search depth, scheduler) over time
   enabled: false
 
+  # min_interval: heartbeat period of the evolution ticker. Each tick goes
+  #   through scheduler.Tick, which re-applies the same shouldEvolve +
+  #   guardrail throttling as event-triggered evolution.
+  # min_interval: 5m
+
+  # The blocks below configure the strategy control plane. Every knob is
+  # optional: an absent field (or 0) keeps the built-in default shown after
+  # the "default:" marker, so the whole section can be omitted safely.
+
+  # lifecycle: the JUDGE stage — how runtime evidence is aggregated into a
+  #   single [0,1] fitness, and how often rollback is re-evaluated.
+  # lifecycle:
+  #   fitness_window: 50              # runtime samples kept per source
+  #   min_samples_before_judge: 10    # below this, no promote/rollback verdict
+  #   cold_start_score: 0.5           # fallback fitness when no evidence exists
+  #   watch_interval: 30s             # rollback watch-loop period
+  #   min_active_duration: 90s        # how long a promoted strategy must stay
+  #                                   # active before another candidate may
+  #                                   # replace it. Default: 3 × watch_interval.
+  #                                   # Throttles promote churn so the rollback
+  #                                   # window can accumulate evidence between
+  #                                   # promotions.
+  #   # JUDGE weights. Set none to use the defaults below; set any and the
+  #   # unset ones become 0 (partial specs are used verbatim, never blended
+  #   # with defaults, so the operator gets exactly the mix they wrote).
+  #   outcome_weight: 0.40
+  #   dimension_eval_weight: 0.25
+  #   workflow_weight: 0.15
+  #   scheduler_weight: 0.15
+  #   recovery_weight: 0.05
+
+  # rollback: degradation detection for the active strategy. The threshold is
+  #   on the same [0,1] scale as the fitness window mean. `enabled` is
+  #   tri-state (defaults true): the rollback net is part of the promote path's
+  #   safety contract, so omitting it arms the net. An explicit `enabled: false`
+  #   disarms rollback AND re-arms the G2 shadow gate fail-closed (see shadow
+  #   below) — with neither pre- nor post-deployment verification, refusing
+  #   promotion is the only correct behavior.
+  # rollback:
+  #   enabled: true
+  #   degradation_threshold: 0.15
+  #   window_size: 5
+  #   min_samples: 3
+
+  # shadow: the G2 verify gate. Its registration is decided by the wiring layer
+  #   (shadowGateMode), not hardcoded here, so the gate is an honest check
+  #   rather than a rubber stamp. The decision table:
+  #     - independent scorer wired    → G2 is registered (REAL verification).
+  #     - no scorer + rollback armed  → G2 is NOT registered (honest absence);
+  #       candidates promote directly and degradation triggers automatic
+  #       rollback — promotion is reversible, so the pre-deployment gate is
+  #       dispensed with instead of being a permanent wall.
+  #     - no scorer + rollback disarmed → G2 stays registered and FAIL-CLOSED
+  #       (the safety floor: with neither verification, refuse promotion).
+  #   In the default config (DreamCycle disabled + LLM scoring off) the second
+  #   row applies: `evolution.enabled: true` MEANS "the GA keeps shipping new
+  #   strategies", and automatic rollback is reachable because the open promote
+  #   path establishes a `previous`. Enable `evolution.llm_scoring` (or wire a
+  #   scorer) to flip to the first row — real comparison-driven promotion — and
+  #   tune min_samples/min_win_rate via YAML.
+  #   CAVEAT: the sampler scores the SAME candidate/active pair min_samples
+  #   times, so the comparisons are only independent under a non-deterministic
+  #   (LLM) scorer. With a deterministic scorer min_samples counts repetitions,
+  #   not independent evidence.
+  # shadow:
+  #   min_samples: 20
+  #   min_win_rate: 0.55
+
+  # shadow_execution: real-execution A/B for candidate strategies (closure
+  #   plan Step 4 / N-1). When enabled, each judged candidate AND the active
+  #   strategy are executed on buffered copies of recent real tasks inside an
+  #   isolated runner whose side effects are denied at the interface level
+  #   (no production memory writes, tool calls intercepted), and the G2 gate
+  #   judges the paired result — candidate-specific evidence, unlike the
+  #   replay-only fallback (which reads each strategy's own history and is
+  #   NOT candidate-specific for a never-executed candidate).
+  #   Default: disabled. sample_size = how many recent tasks each judgment
+  #   executes in isolation (both arms per task); default 3.
+  # shadow_execution:
+  #   enabled: false
+  #   sample_size: 3
+
+  # channel_feedback: the two perception channels evolution was previously blind
+  #   to (closure plan Step Y.2/Y.3). An agent can only perceive the outside
+  #   world through three channels — its own task outcomes, the tools it called,
+  #   and the collaboration receipts other agents sent back. Task outcomes
+  #   already feed the loop (RuntimeObserver); these two knobs add the other
+  #   two, each as its OWN evidence source ("collaboration" / "tool_call") so
+  #   they never contaminate the strategy/shadow verdicts.
+  #   Without them, evolution cannot learn "stop asking that agent" or "stop
+  #   calling that tool" — the reason N-11 forbade claiming the loop covers
+  #   collaboration and tool selection.
+  #
+  #   `*_enabled` controls RECORDING; `*_weight` controls whether the channel
+  #   COUNTS in the fitness aggregate. They are separate so an operator can
+  #   inspect the evidence in the audit trail before letting it move a verdict.
+  #   A weight without its enabled flag is ignored (nothing would be recorded to
+  #   weigh); a weight of 0 leaves the channel inert — it adds neither score nor
+  #   sample count. Default: both channels off, matching pre-Step-Y behavior.
+  # channel_feedback:
+  #   collab_enabled: false
+  #   collab_weight: 0.0              # e.g. 0.15 once the evidence looks sane
+  #   tool_enabled: false
+  #   tool_weight: 0.0                # e.g. 0.15
+
+  # tool_projection: the production trigger for the ToolStep projection (Y1
+  #   Y1 item 12-1). It is NOT a duplicate of channel_feedback.tool_enabled above:
+  #   that writes ONE evidence record per tool call as it happens, while this
+  #   worker periodically projects the tool-call EVENT LOG into
+  #   per-(tool#arg_shape) success rates carrying `tool_step_id` — the key the
+  #   tool_step-scoped fitness read filters on. Without this worker that
+  #   dimension has no live producer and stays an on-demand audit read only.
+  #   Both may be enabled: they answer "did this call work" versus "does this
+  #   WAY of calling this tool work".
+  #
+  #   Requires a wired event store — with none, the projection is permanently
+  #   empty, so the worker refuses to start (logged) instead of writing empty
+  #   graphs on a timer.
+  #
+  #   Each tick reads only events since the previous successful tick, so
+  #   records are not re-emitted for calls already projected. Startup begins
+  #   the window at "now": projecting the whole history in one burst would
+  #   judge the CURRENT strategy on behavior it never produced.
+  #
+  #   min_samples drops steps with too few calls — a single call yields a
+  #   success rate of exactly 0 or 1, which carries no statistical signal.
+  #   Default: disabled, matching pre-Y1 behavior.
+  # tool_projection:
+  #   enabled: false
+  #   interval: 10m                   # projection period
+  #   min_samples: 3                  # skip steps with fewer calls
+
+  # gates: the remaining verify-gate thresholds.
+  # gates:
+  #   eval_min_score: 0.7             # minimum G3 eval-suite score
+  #   # eval_strict: M-G1 semantics — true = a MISSING eval_suite is fatal at
+  #   # bootstrap (default false = degrade to G1+G2 with a Warn). A CONFIGURED
+  #   # suite with missing infrastructure (registry/LLM client) is ALWAYS
+  #   # fatal; a built gate is always runtime-strict.
+  #   eval_strict: false
+  #   # regression_enabled: M-G2 tri-state — unset (default) = the arena
+  #   # regression gate arms AUTOMATICALLY when eval_suite + LLM client
+  #   # exist; false = explicit opt-out (Warn-logged); true = armed AND
+  #   # missing prerequisites are fatal. Each check costs 2×regression_runs
+  #   # LLM scoring rounds.
+  #   # regression_enabled: true
+  #   regression_runs: 5                # per-strategy runs (A/B sides)
+  #   regression_min_win_rate: 0.55     # informational floor (reject is significance-based)
+  #   # require_manual_approval holds every candidate in SHADOW until an
+  #   # operator calls POST /api/evolution/approve.
+  #   require_manual_approval: false
+
+  # tool_pool: the tool-whitelist configurations the GA mutator may emit as
+  #   Params["tools"] (each entry is a comma-separated registered tool list).
+  #   Empty disables pool-based tool mutation; guided mutation may still produce
+  #   tool choices from experience hints. Values MUST name REGISTERED tools —
+  #   a whitelist naming unknown tools intersects to zero at runtime and the
+  #   executors fall back to the FULL set (see guardrails.known_tools below).
+  # tool_pool:
+  #   - "web_search,calculator"
+  #   - "web_search,calculator,code_runner,file_tools"
+
+  # guardrails: the tool-set selection guards. All opt-in — absent defaults are
+  #   the pre-existing permissive behavior (no bound, no vocabulary check).
+  # guardrails:
+  #   max_tools_enabled: 4             # reject whitelists enabling >4 tools
+  #   require_any_tool: false          # true = reject zero-tool strategies
+  #   known_tools:                     # registered vocabulary; unknown names rejected
+  #     - "web_search"
+  #     - "calculator"
+  #     - "code_runner"
+
 # ── Agents ───────────────────────────────────────────────────
 # C1 flat peer structure (DEFAULT): a flat set of equal capability agents
 # spawned into the Agent Fabric and scheduled by the kernel scheduler. There
@@ -117,6 +311,30 @@ agents:
       capabilities: ["review", "audit"]
     - id: researcher
       capabilities: ["research"]
+
+# ── Kernel (no-leader scheduler) ─────────────────────────────
+# The kernel scheduler drives every execution via
+# Schedule → Acquire → RunQuantum → finalize. The knobs below only affect the
+# loop CLOCK (the evolution round boundary); they never gate the task flow, so
+# an exhausted round budget still leaves the scheduler draining tasks.
+kernel:
+  # loop_round_quanta: how many scheduler quanta constitute one loop round.
+  #   0 or unset → 1 (every quantum closes a round). Raise it to amortise
+  #   round-end work (checkpoint flush / memory advise / evolution record)
+  #   over more quanta. Negative is a config error.
+  # loop_round_quanta: 1
+  #
+  # loop_max_iterations: cap on how many rounds the clock advances.
+  #   0 or unset → unlimited. When the budget is exhausted the round clock
+  #   stops and logs once; task scheduling is unaffected. Negative is a
+  #   config error.
+  # loop_max_iterations: 0
+  #
+  # dag_execution: L2 session-graph execution tuning (M4-D: the only path,
+  # no gate anymore — `enabled` is gone; old files carrying it still parse).
+  # dag_execution:
+  #   max_plan_depth: 10              # growth-depth guard (0 = default 10)
+  #   reaper_grace: 30s               # terminal-task reaper grace (0 = 30s)
 
 # ── Tool system ──────────────────────────────────────────────
 tools:
@@ -139,7 +357,7 @@ database:
   # host: localhost
   # port: 5432
   # user: postgres
-  # password: postgres
+  # password: REPLACE_WITH_YOUR_PASSWORD
   # database: ares
   # ssl_mode: disable | require | verify-full
   # ssl_mode: disable
@@ -200,7 +418,7 @@ embedding:
 #     host: localhost
 #     port: 5432
 #     user: postgres
-#     password: postgres
+#     password: REPLACE_WITH_YOUR_PASSWORD
 #     database: ares
 #
 #   embedding:

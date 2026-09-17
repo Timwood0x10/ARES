@@ -52,8 +52,8 @@ const (
 	EventSubTaskResult    EventType = "sub_task.result"    // sub returns result (success or failure)
 	EventSubAgentFailed   EventType = "sub_agent.failed"   // sub crashed (panic captured)
 
-	// Task Fabric lifecycle events (ares-runtime P2-C, 2026-08-16): published
-	// by internal/taskfabric on every task state transition so scheduler /
+	// Task Fabric lifecycle events (ares-runtime): published
+	// by internal/fabric/task on every task state transition so scheduler /
 	// task / lease state can be rebuilt from the stream. Pure addition —
 	// EventTaskCreated / EventTaskCompleted / EventTaskFailed already exist
 	// above; the remaining lifecycle states are added here.
@@ -65,13 +65,10 @@ const (
 	EventTaskPreempted    EventType = "task.preempted"
 	EventTaskReleased     EventType = "task.released"
 	EventTaskExpired      EventType = "task.expired"
-	EventTaskStolen       EventType = "task.stolen"
-
-	// EventMemoryFinalize requests async memory finalization (update task output,
-	// record assistant message, distill). Emitted by the leader after aggregating
-	// results; consumed by a dedicated memory worker so the leader loop does not
-	// perform memory writes itself (leader/sub decoupling, C phase).
-	EventMemoryFinalize EventType = "memory.finalize"
+	// EventTaskDeleted is the tombstone published when a task is removed from
+	// the fabric. Must-persist: without it the durable log's task.created
+	// rebuilds the task after a restart.
+	EventTaskDeleted EventType = "task.deleted"
 
 	// Service discovery events (REVIEW #10 closure): forwarded by the
 	// bootstrap discovery bridge from the discovery Engine so detected MCP
@@ -83,6 +80,14 @@ const (
 	EventDiscoveryServiceUpdated EventType = "discovery.service.updated"
 	EventDiscoveryHealthChanged  EventType = "discovery.health.changed"
 	EventDiscoveryCycleCompleted EventType = "discovery.cycle.complete"
+
+	// EventComponentFailed reports a managed background component loop that
+	// panicked or died while the system was running (system_runtime
+	// GoBackground). Stream ID is "system_runtime/<component>"; payload
+	// carries the component name and the failure reason. Consumed read-only
+	// by the flight recorder / introspection feed — nothing subscribes with
+	// a filter on it, so the emitter contract is unaffected.
+	EventComponentFailed EventType = "component.failed"
 )
 
 // Event payload keys for enriched task-lifecycle events.
@@ -99,6 +104,12 @@ const (
 	// EventKeyUsedExperienceID carries the experience ID the task consumed
 	// (bandit feedback linkage), if any.
 	EventKeyUsedExperienceID = "used_experience_id"
+	// EventKeyStrategyID carries the evolution strategy that was active when
+	// the task was submitted (evolution loop closure). RuntimeObserver
+	// attributes fitness samples by it, so a promote mid-flight cannot
+	// mis-credit the newly promoted strategy for samples produced by tasks
+	// that the previous strategy chose the prompt/params for.
+	EventKeyStrategyID = "strategy_id"
 	// EventKeyHandoffFrom carries the sending role ID of a handoff.
 	EventKeyHandoffFrom = "handoff_from"
 	// EventKeyHandoffTo carries the receiving role ID of a handoff.
@@ -129,6 +140,11 @@ const (
 type ReadOptions struct {
 	// FromVersion specifies the starting version (inclusive).
 	FromVersion int64
+	// ToVersion specifies the inclusive upper version bound. Zero means no
+	// cap. Callers that only need a prefix of a stream (the compactor reads
+	// everything except the keep-recent tail) use this to bound the read
+	// instead of loading the whole stream into memory.
+	ToVersion int64
 	// Limit caps the number of events returned. Zero means no limit.
 	Limit int
 	// Direction controls sort order. Defaults to ReadAscending.

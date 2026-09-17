@@ -3,16 +3,18 @@ package runtime
 //nolint: errcheck // best-effort operations: ResponseWriter writes, cleanup Close/Wait, deferred shutdown
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 
+	"golang.org/x/sync/errgroup"
+
 	"github.com/Timwood0x10/ares/internal/evidence"
-	"github.com/Timwood0x10/ares/internal/evolution/patch"
 	"github.com/Timwood0x10/ares/internal/knowledge"
 	"github.com/Timwood0x10/ares/internal/knowledge/pipeline"
 	"github.com/Timwood0x10/ares/internal/knowledge/planner"
 	"github.com/Timwood0x10/ares/internal/knowledge/provider"
-	"golang.org/x/sync/errgroup"
+	"github.com/Timwood0x10/ares/internal/runtime/evolution/patch"
 )
 
 // KnowledgeRuntime is the central execution engine of AKF.
@@ -108,7 +110,17 @@ func (r *KnowledgeRuntime) ProviderNames() []string {
 // Config holds optional runtime configuration.
 type Config struct {
 	MaxConcurrentProviders int  // Max parallel provider loads (default 5)
-	LazyLoading            bool // Enable lazy graph mode (default false)
+	LazyLoading            bool // Clamp the graph budget when set; full lazy loading was removed with LazyGraph (tech-debt: see plan/0.3.1plan)
+	// Types restricts recall to these object types. It is forwarded to every
+	// provider as Intent.Scope.Types, which StoreProvider already honours.
+	// Empty means no type restriction.
+	//
+	// It exists because the query_knowledge MCP tool has always DECLARED a
+	// types filter in its parameter schema and advertised it in its tool
+	// description, but Execute gave callers no way to express one — the
+	// filter was silently ignored and a caller filtering by type received an
+	// unfiltered graph it could not tell apart from a correct one.
+	Types []knowledge.ObjectType
 }
 
 // maxLazyForGraph caps the graph budget in lazy mode before Reduce.
@@ -120,7 +132,7 @@ const maxLazyForGraph = 2000
 // Execute runs the full AKF pipeline: Plan → Load → Link → Reduce → Graph.
 func (r *KnowledgeRuntime) Execute(ctx context.Context, goal string, budget knowledge.TokenBudget, cfg *Config) (*knowledge.WorkingGraph, error) {
 	if r == nil {
-		return nil, fmt.Errorf("runtime: planner is not configured")
+		return nil, errors.New("runtime: planner is not configured")
 	}
 	// Snapshot the planner under planMu: SetPlanConfig swaps the interface
 	// field at runtime (KnowledgePatchExecutor.Apply), and a bare read here
@@ -129,7 +141,7 @@ func (r *KnowledgeRuntime) Execute(ctx context.Context, goal string, budget know
 	planner := r.planner
 	r.planMu.RUnlock()
 	if planner == nil {
-		return nil, fmt.Errorf("runtime: planner is not configured")
+		return nil, errors.New("runtime: planner is not configured")
 	}
 	if cfg == nil {
 		cfg = &Config{MaxConcurrentProviders: 5}
@@ -153,11 +165,11 @@ func (r *KnowledgeRuntime) Execute(ctx context.Context, goal string, budget know
 		return nil, fmt.Errorf("discover: %w", err)
 	}
 	if len(sources) == 0 {
-		return nil, fmt.Errorf("discover: no providers matched requirements")
+		return nil, errors.New("discover: no providers matched requirements")
 	}
 
 	// 3. Load & Pipeline: stream from providers, normalize, resolve, summarize.
-	objects, err := r.loadAndProcess(ctx, sources, cfg)
+	objects, partial, err := r.loadAndProcess(ctx, sources, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("load: %w", err)
 	}
@@ -194,6 +206,10 @@ func (r *KnowledgeRuntime) Execute(ctx context.Context, goal string, budget know
 	if err != nil {
 		return nil, fmt.Errorf("reduce: %w", err)
 	}
+	// Attached AFTER reduce so a replaced graph still carries it: the graph
+	// is incomplete whenever a provider stream died, and a caller must be
+	// able to tell that apart from a complete answer.
+	graph.PartialErrors = partial
 
 	// Emit insight evidence to the unified Evidence Store.
 	if r.evColl != nil {
@@ -223,9 +239,10 @@ func (r *KnowledgeRuntime) Execute(ctx context.Context, goal string, budget know
 
 // loadAndProcess streams objects from all selected providers concurrently,
 // runs the KnowledgePipeline on each object, and collects results.
-// Uses errgroup for goroutine lifecycle management (§4.5: no bare goroutines).
-func (r *KnowledgeRuntime) loadAndProcess(ctx context.Context, sources []planner.PlannedSource, cfg *Config) (map[string]*knowledge.KnowledgeObject, error) {
+// Uses errgroup for goroutine lifecycle management (no bare goroutines).
+func (r *KnowledgeRuntime) loadAndProcess(ctx context.Context, sources []planner.PlannedSource, cfg *Config) (map[string]*knowledge.KnowledgeObject, []string, error) {
 	objects := make(map[string]*knowledge.KnowledgeObject)
+	var partial []string
 	var mu sync.Mutex
 
 	g, ctx := errgroup.WithContext(ctx)
@@ -248,6 +265,7 @@ func (r *KnowledgeRuntime) loadAndProcess(ctx context.Context, sources []planner
 				Goal: src.Requirement.Description,
 				Scope: knowledge.Scope{
 					MaxObjects: src.MaxResults,
+					Types:      cfg.Types,
 				},
 			}
 			if src.Query != nil && src.Query.Query != "" {
@@ -283,11 +301,17 @@ func (r *KnowledgeRuntime) loadAndProcess(ctx context.Context, sources []planner
 				}
 			}
 
-			// Check stream error.
+			// Check stream error. A provider that died mid-stream leaves the
+			// graph missing an entire source; that must be visible to the
+			// caller rather than logged and dropped, which presented a
+			// partial graph as a complete one.
 			select {
 			case sErr := <-streamErrCh:
 				if sErr != nil {
 					log.Warn("provider stream error (partial data may remain)", "provider", src.ProviderName, "error", sErr)
+					mu.Lock()
+					partial = append(partial, fmt.Sprintf("%s: %v", src.ProviderName, sErr))
+					mu.Unlock()
 				}
 			default:
 			}
@@ -296,14 +320,14 @@ func (r *KnowledgeRuntime) loadAndProcess(ctx context.Context, sources []planner
 	}
 
 	if err := g.Wait(); err != nil {
-		return nil, fmt.Errorf("load: %w", err)
+		return nil, nil, fmt.Errorf("load: %w", err)
 	}
 
 	if len(objects) == 0 {
-		return nil, fmt.Errorf("load: no objects loaded from any provider")
+		return nil, nil, errors.New("load: no objects loaded from any provider")
 	}
 
-	return objects, nil
+	return objects, partial, nil
 }
 
 // link runs all linkers to generate relations between objects.
@@ -326,7 +350,23 @@ func (r *KnowledgeRuntime) link(ctx context.Context, objects map[string]*knowled
 		}
 		allEdges = append(allEdges, edges...)
 	}
-	return allEdges, nil
+
+	// Defensive dedup on the (From, To, Name) triple: individual
+	// linkers cannot produce duplicates today, but nothing enforces that
+	// invariant across current or future linkers, and downstream aggregation
+	// has no dedup either. First occurrence wins; Properties/Score of the
+	// duplicate are dropped.
+	seen := make(map[knowledge.RelationKey]struct{}, len(allEdges))
+	deduped := make([]knowledge.Relation, 0, len(allEdges))
+	for _, e := range allEdges {
+		k := knowledge.RelationKey{From: e.From, To: e.To, Name: e.Name}
+		if _, dup := seen[k]; dup {
+			continue
+		}
+		seen[k] = struct{}{}
+		deduped = append(deduped, e)
+	}
+	return deduped, nil
 }
 
 // reduce runs reducers in sequence to prune and compress the graph.

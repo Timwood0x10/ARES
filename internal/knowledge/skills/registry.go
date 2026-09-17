@@ -6,7 +6,7 @@
 package skills
 
 import (
-	"fmt"
+	"errors"
 	"sort"
 	"strings"
 	"sync"
@@ -48,7 +48,7 @@ func NewRegistry() *Registry {
 // Register adds or replaces a skill. Name must be non-empty.
 func (r *Registry) Register(s Skill) error {
 	if s.Name == "" {
-		return fmt.Errorf("skills: name must not be empty")
+		return errors.New("skills: name must not be empty")
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -142,8 +142,16 @@ func (r *Registry) Search(query string, limit int) []Skill {
 	sort.Slice(descHits, func(i, j int) bool { return descHits[i].Name < descHits[j].Name })
 
 	merged := make([]Skill, 0, len(nameHits)+len(descHits))
-	merged = append(merged, nameHits...)
-	merged = append(merged, descHits...)
+	// Strip Detail like List does: the registry's contract keeps the full
+	// body out of bulk results (load it via LoadDetail); Search previously
+	// returned complete skills, defeating the on-demand Detail design and
+	// inflating every search payload.
+	for _, s := range nameHits {
+		merged = append(merged, Skill{Name: s.Name, Description: s.Description})
+	}
+	for _, s := range descHits {
+		merged = append(merged, Skill{Name: s.Name, Description: s.Description})
+	}
 	if limit > 0 && len(merged) > limit {
 		merged = merged[:limit]
 	}

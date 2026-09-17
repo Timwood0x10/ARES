@@ -8,9 +8,10 @@ import (
 	"fmt"
 	"strings"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/Timwood0x10/ares/internal/errors"
 	storage_models "github.com/Timwood0x10/ares/internal/storage/postgres/models"
-	"gopkg.in/yaml.v3"
 )
 
 // SecretFormat defines supported import/export formats.
@@ -64,15 +65,28 @@ func (a *SecretAdapter) ParseFrom(data []byte, format SecretFormat) ([]byte, err
 }
 
 // parseJSON parses JSON input format.
+// Accepts both the object form ({"secrets": [...]}) and a bare top-level
+// array of items ([...]), matching parseYAML's dual-format tolerance. The
+// array form is what SecretRepository.Export produces, so an export can be
+// fed straight back into Import.
 func (a *SecretAdapter) parseJSON(data []byte) ([]byte, error) {
-	// Validate JSON format
+	// Try object format ({"secrets": [...]}).
 	var importData ImportData
-	if err := json.Unmarshal(data, &importData); err != nil {
-		return nil, errors.Wrap(err, "invalid JSON format")
+	if err := json.Unmarshal(data, &importData); err == nil {
+		// Return as-is (already JSON in the internal object form).
+		return data, nil
 	}
 
-	// Return as-is (already JSON)
-	return data, nil
+	// Try sequence format (a direct list of items) and normalize to object form.
+	var items []SecretImportItem
+	if err := json.Unmarshal(data, &items); err != nil {
+		return nil, errors.Wrap(err, "invalid JSON format")
+	}
+	normalized, err := json.Marshal(ImportData{Secrets: items})
+	if err != nil {
+		return nil, errors.Wrap(err, "normalize import data")
+	}
+	return normalized, nil
 }
 
 // parseYAML parses YAML input format and converts to JSON using gopkg.in/yaml.v3.
@@ -108,13 +122,13 @@ func (a *SecretAdapter) parseCSV(data []byte) ([]byte, error) {
 	}
 
 	if len(records) == 0 {
-		return nil, fmt.Errorf("empty CSV data")
+		return nil, errors.New("empty CSV data")
 	}
 
 	// Extract headers
 	headers := records[0]
 	if len(headers) < 2 {
-		return nil, fmt.Errorf("CSV must have at least 2 columns (key, value)")
+		return nil, errors.New("CSV must have at least 2 columns (key, value)")
 	}
 
 	// Find column indices
@@ -134,7 +148,7 @@ func (a *SecretAdapter) parseCSV(data []byte) ([]byte, error) {
 	}
 
 	if keyIdx == -1 || valueIdx == -1 {
-		return nil, fmt.Errorf("CSV must contain 'key' and 'value' columns")
+		return nil, errors.New("CSV must contain 'key' and 'value' columns")
 	}
 
 	// Convert to JSON structure
@@ -182,30 +196,16 @@ func (a *SecretAdapter) ConvertTo(data []byte, format SecretFormat) ([]byte, err
 	}
 }
 
-// convertToYAML converts JSON to YAML format.
+// convertToYAML converts JSON to YAML format using yaml.Marshal so values
+// containing ':', '#', quotes or newlines are properly quoted. The previous
+// hand-built writer emitted raw key/value pairs, which produced structurally
+// broken YAML for any such value (REVIEW 3.5b).
 func (a *SecretAdapter) convertToYAML(data []byte) ([]byte, error) {
 	var importData ImportData
 	if err := json.Unmarshal(data, &importData); err != nil {
 		return nil, errors.Wrap(err, "unmarshal JSON")
 	}
-
-	var yamlBuilder strings.Builder
-
-	for _, secret := range importData.Secrets {
-		yamlBuilder.WriteString("- key: ")
-		yamlBuilder.WriteString(secret.Key)
-		yamlBuilder.WriteString("\n  value: ")
-		yamlBuilder.WriteString(secret.Value)
-
-		if secret.ExpiresAt != "" {
-			yamlBuilder.WriteString("\n  expires_at: ")
-			yamlBuilder.WriteString(secret.ExpiresAt)
-		}
-
-		yamlBuilder.WriteString("\n\n")
-	}
-
-	return []byte(yamlBuilder.String()), nil
+	return yaml.Marshal(&importData)
 }
 
 // convertToCSV converts JSON to CSV format.

@@ -157,8 +157,17 @@ func (s *RetrievalService) buildQueries(ctx context.Context, original string, pl
 	}
 
 	// 2. LLM-based rewriting (optional, high quality but lower weight + fail-safe)
-	if plan.EnableQueryRewrite {
+	//
+	// Gated by shouldRewriteQuery, which enforces the minimum-length rule and
+	// the query cache. Without the gate every Search paid an LLM round-trip
+	// whenever EnableQueryRewrite was set, and the cache was written but never
+	// read — a repeat query hit the LLM again.
+	if plan.EnableQueryRewrite && s.shouldRewriteQuery(original) {
 		llmRewrites, err := s.llmBasedRewrite(ctx, original)
+		// Record the attempt either way: the gate's cache is the mechanism that
+		// stops a repeat Search from re-paying the LLM, and it must be written
+		// even when the rewrite produced nothing (nil client, provider error).
+		s.markQueryCached(original)
 		if err != nil {
 			s.logger.Warn("LLM rewrite failed, using rule-based only", "error", err)
 		} else {
@@ -193,11 +202,27 @@ func (s *RetrievalService) buildQueries(ctx context.Context, original string, pl
 	return queries
 }
 
-// loadSynonymRules loads synonym rules from configuration file.
-// This provides better maintainability and allows runtime configuration.
+// loadSynonymRules loads synonym rules from the configs/synonyms.yaml file
+// next to the deployment layout (resolved relative to the executable; a
+// relative fallback covers `go run`). No environment override exists — the
+// config file is the single entry point.
 // Returns map of original terms to their synonyms.
-// Uses CONFIG_PATH environment variable if set, otherwise uses relative path.
 func loadSynonymRules() map[string][]string {
+	// Resolve the absolute path from the executable location; fall back to
+	// the relative path under `go run` / test binaries.
+	configPath := "configs/synonyms.yaml"
+	if execPath, err := os.Executable(); err == nil {
+		configPath = filepath.Join(filepath.Dir(execPath), "..", "..", "configs", "synonyms.yaml")
+	}
+	return loadSynonymRulesFrom(configPath)
+}
+
+// loadSynonymRulesFrom reads the synonym rules from an explicit configPath,
+// enforcing the SetAllowedSynonymDir boundary first. Returns the built-in
+// default rules whenever the path is rejected, missing, unreadable, or
+// malformed — the rules are a best-effort rewrite aid, never a hard
+// dependency.
+func loadSynonymRulesFrom(configPath string) map[string][]string {
 	// Default rules if config file not found
 	defaultRules := map[string][]string{
 		"how to":   {"how do i", "what is the best way to", "how can i"},
@@ -206,18 +231,6 @@ func loadSynonymRules() map[string][]string {
 		"并发":       {"并行", "多线程", "异步"},
 		"database": {"db", "data storage"},
 		"api":      {"interface", "web service"},
-	}
-
-	// Use environment variable if set, otherwise fall back to relative path
-	configPath := os.Getenv("SYNONYM_CONFIG_PATH")
-	if configPath == "" {
-		// Try to get the absolute path based on executable location
-		execPath, err := os.Executable()
-		if err == nil {
-			configPath = filepath.Join(filepath.Dir(execPath), "..", "..", "configs", "synonyms.yaml")
-		} else {
-			configPath = "configs/synonyms.yaml"
-		}
 	}
 
 	// Security: validate path is within allowed directory
@@ -230,7 +243,17 @@ func loadSynonymRules() map[string][]string {
 		if err != nil {
 			return defaultRules
 		}
-		if !strings.HasPrefix(absPath, absDir) {
+		// Require a path-separator boundary after the allowed dir: a bare
+		// HasPrefix(absPath, absDir) also accepts sibling directories that
+		// merely share the prefix (e.g. /etc/synonyms-evil next to an
+		// allowed /etc/synonyms). Both paths are already Clean'ed by
+		// filepath.Abs, so appending the separator is sufficient (a root
+		// allowed-dir "/" already ends with it and is left as-is).
+		prefix := absDir
+		if !strings.HasSuffix(prefix, string(filepath.Separator)) {
+			prefix += string(filepath.Separator)
+		}
+		if !strings.HasPrefix(absPath, prefix) {
 			return defaultRules
 		}
 	}

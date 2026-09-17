@@ -4,9 +4,10 @@ import (
 	"context"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/Timwood0x10/ares/internal/ares_config"
 	"github.com/Timwood0x10/ares/internal/ares_events"
-	"github.com/stretchr/testify/require"
 )
 
 // TestBootstrapMinimalConfig verifies the "only LLM url + api key" path is

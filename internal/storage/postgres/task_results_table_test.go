@@ -4,8 +4,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Timwood0x10/ares/internal/storage/postgres/models"
 	"github.com/stretchr/testify/assert"
+
+	"github.com/Timwood0x10/ares/internal/storage/postgres/models"
 )
 
 // TestTaskResultsTable_ConstantValue verifies the shared constant still

@@ -63,7 +63,7 @@ func TestVectorSearcher_Search(t *testing.T) {
 			embedding[i] = 0.1
 		}
 
-		results, err := searcher.Search(context.Background(), "embeddings", embedding, 10)
+		results, err := searcher.Search(context.Background(), "embeddings", "default", embedding, 10)
 		if err != nil {
 			t.Logf("Expected error without database: %v", err)
 		}
@@ -86,7 +86,7 @@ func TestVectorSearcher_Search(t *testing.T) {
 
 		embedding := []float64{}
 
-		_, err = searcher.Search(context.Background(), "embeddings", embedding, 10)
+		_, err = searcher.Search(context.Background(), "embeddings", "default", embedding, 10)
 		if err != nil {
 			t.Logf("Expected error with empty embedding: %v", err)
 		}
@@ -109,7 +109,7 @@ func TestVectorSearcher_Search(t *testing.T) {
 			embedding[i] = 0.1
 		}
 
-		_, err = searcher.Search(context.Background(), "embeddings", embedding, 0)
+		_, err = searcher.Search(context.Background(), "embeddings", "default", embedding, 0)
 		if err != nil {
 			t.Logf("Expected error with zero limit: %v", err)
 		}
@@ -132,7 +132,7 @@ func TestVectorSearcher_Search(t *testing.T) {
 			embedding[i] = 0.1
 		}
 
-		_, err = searcher.Search(context.Background(), "embeddings", embedding, -10)
+		_, err = searcher.Search(context.Background(), "embeddings", "default", embedding, -10)
 		if err != nil {
 			t.Logf("Expected error with negative limit: %v", err)
 		}
@@ -165,7 +165,7 @@ func TestVectorSearcher_AddEmbedding(t *testing.T) {
 			"brand":    "nike",
 		}
 
-		err = searcher.AddEmbedding(context.Background(), "embeddings", "test-embedding-1", embedding, metadata)
+		err = searcher.AddEmbedding(context.Background(), "embeddings", "default", "test-embedding-1", embedding, metadata)
 		if err != nil {
 			t.Logf("Expected error without database: %v", err)
 		}
@@ -188,7 +188,7 @@ func TestVectorSearcher_AddEmbedding(t *testing.T) {
 			embedding[i] = 0.1
 		}
 
-		err = searcher.AddEmbedding(context.Background(), "embeddings", "", embedding, map[string]any{})
+		err = searcher.AddEmbedding(context.Background(), "embeddings", "default", "", embedding, map[string]any{})
 		if err != nil {
 			t.Logf("Expected error with empty id: %v", err)
 		}
@@ -211,7 +211,7 @@ func TestVectorSearcher_AddEmbedding(t *testing.T) {
 			embedding[i] = 0.1
 		}
 
-		err = searcher.AddEmbedding(context.Background(), "embeddings", "test-embedding-2", embedding, nil)
+		err = searcher.AddEmbedding(context.Background(), "embeddings", "default", "test-embedding-2", embedding, nil)
 		if err != nil {
 			t.Logf("Expected error with nil metadata: %v", err)
 		}
@@ -232,7 +232,7 @@ func TestVectorSearcher_DeleteEmbedding(t *testing.T) {
 
 		searcher := NewVectorSearcher(pool, embeddingConfig)
 
-		err = searcher.DeleteEmbedding(context.Background(), "embeddings", "test-embedding-1")
+		err = searcher.DeleteEmbedding(context.Background(), "embeddings", "default", "test-embedding-1")
 		if err != nil {
 			t.Logf("Expected error without database: %v", err)
 		}
@@ -250,9 +250,20 @@ func TestVectorSearcher_DeleteEmbedding(t *testing.T) {
 
 		searcher := NewVectorSearcher(pool, embeddingConfig)
 
-		err = searcher.DeleteEmbedding(context.Background(), "embeddings", "non-existent-embedding")
+		err = searcher.DeleteEmbedding(context.Background(), "embeddings", "default", "non-existent-embedding")
 		if err != nil {
 			t.Logf("Expected error without database: %v", err)
+		}
+	})
+
+	t.Run("rejects empty tenant before any DB access", func(t *testing.T) {
+		// Fail-closed posture shared with Search/AddEmbedding: the tenant
+		// check runs before any db access, so a nil DB is safe and the test
+		// needs no database.
+		searcher := NewVectorSearcherWithDB(nil, embeddingConfig)
+		err := searcher.DeleteEmbedding(context.Background(), "embeddings", "", "doc-1")
+		if err == nil {
+			t.Fatal("DeleteEmbedding with empty tenantID must be rejected (tenant-scoped delete)")
 		}
 	})
 }
@@ -367,8 +378,8 @@ func TestVectorSearcher_Integration(t *testing.T) {
 		metadata1 := map[string]any{"item_id": "item-1", "category": "clothing"}
 		metadata2 := map[string]any{"item_id": "item-2", "category": "shoes"}
 
-		_ = searcher.AddEmbedding(context.Background(), "integration_test", "embedding-1", embedding1, metadata1)
-		_ = searcher.AddEmbedding(context.Background(), "integration_test", "embedding-2", embedding2, metadata2)
+		_ = searcher.AddEmbedding(context.Background(), "integration_test", "default", "embedding-1", embedding1, metadata1)
+		_ = searcher.AddEmbedding(context.Background(), "integration_test", "default", "embedding-2", embedding2, metadata2)
 
 		// Step 3: Search
 		searchEmbedding := make([]float64, 1536)
@@ -376,7 +387,7 @@ func TestVectorSearcher_Integration(t *testing.T) {
 			searchEmbedding[i] = 0.15
 		}
 
-		results, err := searcher.Search(context.Background(), "integration_test", searchEmbedding, 5)
+		results, err := searcher.Search(context.Background(), "integration_test", "default", searchEmbedding, 5)
 		if err != nil {
 			t.Logf("Step 3 - Search error: %v", err)
 		}
@@ -385,9 +396,70 @@ func TestVectorSearcher_Integration(t *testing.T) {
 		}
 
 		// Step 4: Delete
-		_ = searcher.DeleteEmbedding(context.Background(), "integration_test", "embedding-1")
-		_ = searcher.DeleteEmbedding(context.Background(), "integration_test", "embedding-2")
+		_ = searcher.DeleteEmbedding(context.Background(), "integration_test", "default", "embedding-1")
+		_ = searcher.DeleteEmbedding(context.Background(), "integration_test", "default", "embedding-2")
 	})
 }
 
 // nolint: errcheck // Test code may ignore return values
+
+// TestVectorSearcher_DeleteEmbeddingTenantScope pins the tenant boundary of
+// the delete path: a row written under one tenant cannot be deleted through
+// another tenant's id — the wrong-tenant delete is a silent no-op and the
+// row stays retrievable for its owner (DB-gated; skips without a database).
+//
+// nolint: errcheck // Test code may ignore return values
+func TestVectorSearcher_DeleteEmbeddingTenantScope(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Host = "localhost"
+
+	pool, err := NewPool(cfg)
+	if err != nil {
+		t.Skipf("Skipping test without database: %v", err)
+	}
+	defer pool.Close()
+
+	searcher := NewVectorSearcher(pool, embeddingConfig)
+	ctx := context.Background()
+
+	_ = searcher.CreateVectorTable(ctx, "tenant_scope_test", "")
+	vec := make([]float64, 1536)
+	for i := range vec {
+		vec[i] = 0.1
+	}
+	_ = searcher.AddEmbedding(ctx, "tenant_scope_test", "tenant-a", "scoped-1", vec, map[string]any{})
+
+	// Wrong tenant: no error, no effect.
+	if err := searcher.DeleteEmbedding(ctx, "tenant_scope_test", "tenant-b", "scoped-1"); err != nil {
+		t.Fatalf("wrong-tenant delete must be a no-op, got error: %v", err)
+	}
+
+	// The owner still finds the row.
+	results, err := searcher.Search(ctx, "tenant_scope_test", "tenant-a", vec, 1)
+	if err != nil {
+		t.Skipf("search requires a live pgvector database: %v", err)
+	}
+	found := false
+	for _, r := range results {
+		if r.ID == "scoped-1" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("wrong-tenant delete must not remove the owner's row (scoped-1 no longer searchable)")
+	}
+
+	// The owner CAN delete it.
+	if err := searcher.DeleteEmbedding(ctx, "tenant_scope_test", "tenant-a", "scoped-1"); err != nil {
+		t.Fatalf("owner delete failed: %v", err)
+	}
+	results, err = searcher.Search(ctx, "tenant_scope_test", "tenant-a", vec, 1)
+	if err != nil {
+		t.Skipf("search requires a live pgvector database: %v", err)
+	}
+	for _, r := range results {
+		if r.ID == "scoped-1" {
+			t.Fatal("owner delete must remove the row (scoped-1 still searchable)")
+		}
+	}
+}

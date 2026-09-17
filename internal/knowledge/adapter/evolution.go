@@ -1,13 +1,21 @@
 package adapter
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
 	"time"
 
-	ares_evolution "github.com/Timwood0x10/ares/internal/ares_evolution"
+	"github.com/Timwood0x10/ares/internal/evidence"
 	"github.com/Timwood0x10/ares/internal/knowledge"
+	ares_evolution "github.com/Timwood0x10/ares/internal/runtime/ares_evolution"
+	"github.com/Timwood0x10/ares/internal/truncate"
 )
+
+// maxSummaryRunes bounds a generated object summary. Rune count, not byte
+// count — a byte-index cut emits invalid UTF-8 when it lands inside a
+// multi-byte rune.
+const maxSummaryRunes = 200
 
 // FromStrategy converts an evolution Strategy into a KnowledgeObject.
 // The object type is set to ObjectDecision so it appears in decision-related queries.
@@ -20,9 +28,9 @@ func FromStrategy(s *ares_evolution.Strategy, ns string) *knowledge.KnowledgeObj
 	if summary == "" {
 		summary = fmt.Sprintf("Strategy %s (v%d)", s.ID, s.Version)
 	}
-	if len(summary) > 200 {
-		summary = summary[:200] + "..."
-	}
+	// Rune-safe: a byte-index cut lands inside a multi-byte rune and emits
+	// invalid UTF-8 into a stored Summary.
+	summary = truncate.WithEllipsis(summary, maxSummaryRunes)
 
 	tags := []string{"evolution", "strategy"}
 	if s.StrategyMutationType != "" {
@@ -46,6 +54,79 @@ func FromStrategy(s *ares_evolution.Strategy, ns string) *knowledge.KnowledgeObj
 			"mutation_desc":          s.MutationDesc,
 			"score":                  s.Score,
 			"strategy_prompt_length": len(s.PromptTemplate),
+		},
+	}
+}
+
+// FromDecisionEvidence converts one lifecycle decision-evidence record
+// (promote/rollback, source="lifecycle", evolution loop closure) into a
+// decision KnowledgeObject. It is the counterpart of FromStrategy: lineage
+// answers "where did this strategy come from", decision evidence answers
+// "why was it promoted or rolled back, and at what score" — only the latter
+// can answer an agent asking "why did we roll back last time".
+//
+// Double filtering contract (mirrors the provider side):
+//   - Source filtering happens at query time ("lifecycle");
+//   - payload filtering happens HERE: a record without an "action" field is
+//     NOT a decision and yields nil, so a future emitter sharing the source
+//     cannot leak into decision queries.
+//
+// Malformed JSON yields nil too — one corrupt record must not break the
+// stream, and it must never panic.
+//
+// Args:
+//   - ev: the evidence record (Payload is JSON with action/value/strategy_id/reason).
+//   - ns: the knowledge namespace.
+//
+// Returns:
+//   - *knowledge.KnowledgeObject: the decision object, or nil when the record
+//     is not a decision (no action) or is undecodable.
+func FromDecisionEvidence(ev evidence.Evidence, ns string) *knowledge.KnowledgeObject {
+	if len(ev.Payload) == 0 {
+		return nil
+	}
+	var payload struct {
+		Action     string  `json:"action"`
+		Value      float64 `json:"value"`
+		StrategyID string  `json:"strategy_id"`
+		Reason     string  `json:"reason"`
+		Timestamp  string  `json:"timestamp"`
+	}
+	if err := json.Unmarshal(ev.Payload, &payload); err != nil {
+		return nil
+	}
+	if payload.Action == "" {
+		return nil // not a decision — a plain fitness/observability record
+	}
+
+	summary := fmt.Sprintf("Strategy %s %s", payload.StrategyID, payload.Action)
+	if payload.Reason != "" {
+		summary += ": " + payload.Reason
+	}
+	// Rune-safe: see FromStrategy.
+	summary = truncate.WithEllipsis(summary, maxSummaryRunes)
+
+	createdAt := ev.Timestamp
+	if payload.Timestamp != "" {
+		if ts, err := time.Parse(time.RFC3339, payload.Timestamp); err == nil {
+			createdAt = ts
+		}
+	}
+
+	return &knowledge.KnowledgeObject{
+		ID:         ev.ID,
+		Type:       knowledge.ObjectDecision,
+		Namespace:  ns,
+		Summary:    summary,
+		Confidence: scoreToConfidence(payload.Value),
+		CreatedAt:  createdAt,
+		UpdatedAt:  time.Now(),
+		Tags:       []string{"evolution", "decision", payload.Action},
+		Metadata: map[string]any{
+			"action":      payload.Action,
+			"strategy_id": payload.StrategyID,
+			"score":       payload.Value,
+			"reason":      payload.Reason,
 		},
 	}
 }

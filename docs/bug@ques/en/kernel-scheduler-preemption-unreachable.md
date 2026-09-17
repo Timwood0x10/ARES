@@ -4,7 +4,7 @@
 - **Severity**: P2 / Medium (wired-but-dead feature: API and tests exist, the production path can never trigger it)
 - **Status**: Fixed
 - **Date**: 2026-08-22
-- **Packages**: `internal/kernelscheduler`
+- **Packages**: `internal/kernel`
 
 ## Symptom
 
@@ -47,7 +47,7 @@ previous drain" — i.e. RUNNING was expected to survive across drains; the
 ## Fix
 
 `Run` gains one managed watcher goroutine (exits on ctx cancellation, each
-sweep recover-guarded — code_rules_v2 §4.1/§4.2) that calls
+sweep recover-guarded — code_rules_v2 Section 4.1/ Section 4.2) that calls
 `PreemptLowerPriority(ResumableTasks())` once per poll tick, independent of
 the blocking drain loop.
 
@@ -62,7 +62,7 @@ safe by epoch fencing.
 
 ## Reproduction & regression test
 
-`internal/kernelscheduler/scheduler_contract_test.go`:
+`internal/kernel/scheduler_contract_test.go`:
 
 ```
 TestPreemptLowerPriorityHandsBackRunningTask

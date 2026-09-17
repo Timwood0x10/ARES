@@ -20,17 +20,17 @@ import (
 	"log/slog"
 	"time"
 
-	apiembed "github.com/Timwood0x10/ares/api/embedding"
-	aresexp "github.com/Timwood0x10/ares/internal/ares_experience"
-	memory "github.com/Timwood0x10/ares/internal/ares_memory"
-	memctx "github.com/Timwood0x10/ares/internal/ares_memory/context"
-	"github.com/Timwood0x10/ares/internal/ares_memory/distillation"
-	memembed "github.com/Timwood0x10/ares/internal/ares_memory/embedding"
-	"github.com/Timwood0x10/ares/internal/ares_memory/experienceadapters"
+	apiembed "github.com/Timwood0x10/ares/internal/embedding"
 	"github.com/Timwood0x10/ares/internal/knowledge"
 	"github.com/Timwood0x10/ares/internal/knowledge/adapter"
 	khruntime "github.com/Timwood0x10/ares/internal/knowledge/runtime"
 	"github.com/Timwood0x10/ares/internal/llm"
+	memory "github.com/Timwood0x10/ares/internal/runtime/memory"
+	memctx "github.com/Timwood0x10/ares/internal/runtime/memory/context"
+	"github.com/Timwood0x10/ares/internal/runtime/memory/distillation"
+	memembed "github.com/Timwood0x10/ares/internal/runtime/memory/embedding"
+	aresexp "github.com/Timwood0x10/ares/internal/runtime/memory/experience"
+	"github.com/Timwood0x10/ares/internal/runtime/memory/experienceadapters"
 	"github.com/Timwood0x10/ares/internal/storage/postgres"
 	pgembedding "github.com/Timwood0x10/ares/internal/storage/postgres/embedding"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/repositories"
@@ -48,9 +48,9 @@ var ErrDistillDepsMissing = errors.New("distillation dependencies unavailable")
 const defaultEmbeddingTimeout = 30 * time.Second
 
 // retrieverSetter is the minimal interface for injecting ContextRetrievers
-// into a MemoryManager. Both *memory.memoryManager and
-// *memory.ProductionMemoryManager satisfy it, but the public MemoryManager
-// interface does not expose SetRetrievers (retrieval is an optional
+// into a MemoryManager. Only *memory.memoryManager satisfies it — the
+// config-only ProductionMemoryManager fallback exposes no retrieval surface —
+// but the public MemoryManager interface does not expose SetRetrievers (retrieval is an optional
 // capability), so we type-assert at wiring time instead of widening the
 // interface. Mirrors internal/ares_bootstrap.retrieverSetter.
 type retrieverSetter interface {

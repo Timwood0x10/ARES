@@ -8,16 +8,27 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/storage/postgres"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/spf13/cobra"
+
+	"github.com/Timwood0x10/ares/internal/storage/postgres"
 )
+
+// testEnvOr reads a test-only override variable. TEST_POSTGRES_DSN and the
+// DB_* test knobs are CI integration-test gates, not runtime configuration —
+// runtime reads the ares.yaml config file only.
+func testEnvOr(key, defaultValue string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return defaultValue
+}
 
 var dbSetupTestCmd = &cobra.Command{
 	Use:   "setup-test",
 	Short: "Setup test database",
-	Long: `Creates and migrates the test database.
-Respects TEST_POSTGRES_DSN first, then falls back to DB_* env vars.
+	Long: `Creates and migrates the test database (integration-test helper).
+Respects TEST_POSTGRES_DSN first, then falls back to the test DB_* variables.
 Default: postgres://postgres:postgres@localhost:5432/ARES_test?sslmode=disable`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runDbSetupTest()
@@ -31,11 +42,11 @@ func init() {
 func runDbSetupTest() error {
 	dsn := os.Getenv("TEST_POSTGRES_DSN")
 	if dsn == "" {
-		host := getEnv("DB_HOST", "localhost")
-		port := getEnv("DB_PORT", "5433")
-		user := getEnv("DB_USER", "postgres")
-		password := getEnv("DB_PASSWORD", "postgres")
-		dbname := getEnv("DB_NAME", "ARES_test")
+		host := testEnvOr("DB_HOST", "localhost")
+		port := testEnvOr("DB_PORT", "5433")
+		user := testEnvOr("DB_USER", "postgres")
+		password := testEnvOr("DB_PASSWORD", "postgres")
+		dbname := testEnvOr("DB_NAME", "ARES_test")
 		dsn = fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=disable",
 			url.QueryEscape(user), url.QueryEscape(password),
 			host, port, dbname)
@@ -59,7 +70,7 @@ func runDbSetupTest() error {
 		User:            parsed.User.Username(),
 		Password:        passwordFromURL(parsed),
 		Database:        dbname,
-		SSLMode:         getEnv("DB_SSL_MODE", "disable"),
+		SSLMode:         testEnvOr("DB_SSL_MODE", "disable"),
 		MaxOpenConns:    5,
 		MaxIdleConns:    2,
 		ConnMaxLifetime: 0,

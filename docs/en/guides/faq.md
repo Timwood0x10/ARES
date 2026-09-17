@@ -428,8 +428,8 @@ go build ./...
 
 ## Get More Help
 
-- Read [Architecture Documentation](arch_en.md)
-- Read [Quick Start Guide](quick_start_en.md)
+- Read [Architecture Documentation](../../../ARCHITECTURE.md)
+- Read [Quick Start Guide](quick-start.md)
 - Submit [Issue](https://github.com/Timwood0x10/ares/issues)
 
 ---

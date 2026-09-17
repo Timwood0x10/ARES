@@ -2,15 +2,16 @@ package aresrecovery
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/agentfabric"
+	"github.com/Timwood0x10/ares/internal/fabric/agent"
 )
 
 // PopulationPolicy is the evolution-produced agent population decision for one
-// point in time (P6: Runtime Adaptation — agent population). The Evolution
+// point in time (Runtime Adaptation: agent population). The Evolution
 // system computes the desired population delta; the Kernel enforces it through
 // the existing spawn/retire primitives.
 //
@@ -32,7 +33,7 @@ type PopulationPolicySource interface {
 }
 
 // PopulationAdapter is the Kernel-side adapter that applies evolution's agent
-// population decisions (P6: Runtime Adaptation). It wraps the EvolutionAdapter
+// population decisions (Runtime Adaptation). It wraps the EvolutionAdapter
 // with a policy source so the kernel loop can periodically call AdaptPopulation
 // without understanding evolution semantics.
 //
@@ -71,7 +72,7 @@ func NewPopulationAdapter(agents *agentfabric.Fabric, source PopulationPolicySou
 //   - error: the first spawn/retire error encountered.
 func (a *PopulationAdapter) Apply(ctx context.Context) ([]string, error) {
 	if a.adapter == nil || a.adapter.agents == nil {
-		return nil, fmt.Errorf("aresrecovery: population adapter has no agent fabric")
+		return nil, errors.New("aresrecovery: population adapter has no agent fabric")
 	}
 	if a.source == nil {
 		return nil, nil // no evolution source wired — leave population untouched
@@ -96,7 +97,7 @@ const evolutionApplyInterval = time.Minute
 const evolutionApplyTimeout = 30 * time.Second
 
 // RunKernelEvolutionLoop periodically applies the evolution population policy
-// to the Agent Fabric (P6: Runtime Adaptation — agent population). It applies
+// to the Agent Fabric (Runtime Adaptation: agent population). It applies
 // once at startup so an already-deployed policy is effective immediately,
 // then re-applies on a fixed interval — Apply is idempotent (an empty policy
 // is a no-op).

@@ -1,6 +1,6 @@
-// Package ares_bootstrap — System Runtime wiring (Stage 1).
+// Package ares_bootstrap — System Runtime wiring.
 //
-// This file bridges the system-level control plane (internal/system_runtime)
+// This file bridges the system-level control plane (internal/kernel)
 // into the Bootstrap assembly: after all components are constructed, they are
 // registered with the System Runtime registry so entry points (serve, start,
 // SDK) observe a uniform component graph, lifecycle state, and readiness
@@ -11,10 +11,11 @@ package ares_bootstrap
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/Timwood0x10/ares/internal/ares_config"
-	"github.com/Timwood0x10/ares/internal/system_runtime"
+	"github.com/Timwood0x10/ares/internal/kernel"
 )
 
 // System Runtime component names — stable identifiers used by the registry.
@@ -24,7 +25,6 @@ const (
 	sysCompMemory         = "memory"
 	sysCompMCP            = "mcp"
 	sysCompLLM            = "llm"
-	sysCompDashboard      = "dashboard"
 	sysCompEvidenceStore  = "evidence"
 	sysCompFlightRecorder = "flight"
 	sysCompKnowledge      = "knowledge"
@@ -32,14 +32,20 @@ const (
 	sysCompDiscovery      = "discovery"
 )
 
+// SysCompEventStore is the System Runtime registry name of the shared event
+// store. Exported for kernel-side adoption: the kernel
+// pillar adapters declare it as their dependency edge so Shutdown stops them
+// before the store.
+const SysCompEventStore = sysCompEventStore
+
 // runtimeComponentAdapter adapts an already-constructed Bootstrap component
 // to the System Runtime Component interface. Identity and dependency metadata
 // drive registry ordering; optional stop/wait hooks let the orchestrator's
-// Shutdown drive real teardown in reverse topological order (Stage 9) instead
+// Shutdown drive real teardown in reverse topological order instead
 // of leaving teardown only to entry-point shutdown managers. Nil hooks are
 // safe no-ops, so components without a dedicated teardown still transition.
 // An optional readyFn lets a Degraded-mode component report a missing
-// capability instead of silently claiming Ready (F03, Stage 9).
+// capability instead of silently claiming Ready.
 type runtimeComponentAdapter struct {
 	name    string
 	deps    []string
@@ -73,7 +79,7 @@ func (a *runtimeComponentAdapter) Wait() error {
 // Ready reports whether the component is fully operational. A nil readyFn
 // means no readiness constraint (component is Ready by construction). A
 // non-nil readyFn returning an error signals a missing capability, which the
-// orchestrator records as Degraded for Degraded-mode components (F03).
+// orchestrator records as Degraded for Degraded-mode components.
 func (a *runtimeComponentAdapter) Ready(ctx context.Context) error {
 	if a.readyFn == nil {
 		return nil
@@ -87,13 +93,13 @@ func (a *runtimeComponentAdapter) Ready(ctx context.Context) error {
 // Registration failures are logged, never fatal: the registry is observational
 // and a metadata problem must not block Bootstrap on an otherwise healthy
 // assembly.
-func registerSystemComponent(reg *system_runtime.Registry, name string, present bool, deps []string, mode system_runtime.Mode, stopFn func(ctx context.Context) error, waitFn func() error, readyFn func(ctx context.Context) error) {
+func registerSystemComponent(reg *kernel.Registry, name string, present bool, deps []string, mode kernel.Mode, stopFn func(ctx context.Context) error, waitFn func() error, readyFn func(ctx context.Context) error) {
 	if !present {
 		return
 	}
 	adapter := &runtimeComponentAdapter{name: name, deps: deps, stopFn: stopFn, waitFn: waitFn, readyFn: readyFn}
 	if err := reg.Register(adapter, mode); err != nil {
-		log.Warn("system_runtime: component registration skipped",
+		log.Warn("kernel: component registration skipped",
 			"component", name, "error", err)
 	}
 }
@@ -101,7 +107,7 @@ func registerSystemComponent(reg *system_runtime.Registry, name string, present 
 // wireSystemRuntime registers every constructed component with the System
 // Runtime registry and creates the orchestrator that observes their states.
 // It runs after construction completes so the full component graph is known.
-// Teardown hooks (Stage 9) let Orchestrator.Shutdown own real Stop/Wait in
+// Teardown hooks let Orchestrator.Shutdown own real Stop/Wait in
 // reverse topological order, so entry points no longer duplicate teardown.
 //
 // Args:
@@ -113,43 +119,58 @@ func registerSystemComponent(reg *system_runtime.Registry, name string, present 
 // orch - the System Runtime orchestrator, or nil on error.
 // reg - the backing registry (same instance the orchestrator observes).
 // err - error when the orchestrator fails to observe startup.
-func wireSystemRuntime(ctx context.Context, cfg *ares_config.Config, comp *Components) (*system_runtime.Orchestrator, *system_runtime.Registry, error) {
-	reg := system_runtime.NewRegistry()
+func wireSystemRuntime(ctx context.Context, cfg *ares_config.Config, comp *Components) (*kernel.Orchestrator, *kernel.Registry, error) {
+	reg := kernel.NewRegistry()
 
-	registerSystemComponent(reg, sysCompEventStore, comp.EventStore != nil, nil, system_runtime.ModeRequired, nil, nil, nil)
-	registerSystemComponent(reg, sysCompRuntime, comp.Runtime != nil, []string{sysCompEventStore}, system_runtime.ModeRequired,
+	// The eventstore is the dependency leaf: reverse-topological shutdown
+	// stops every dependent (runtime, memory, flight recorder, and the kernel
+	// pillars, which declare it as their edge) BEFORE this hook runs, so
+	// closing the store cannot cut a live writer. This is what releases the
+	// Postgres pool of a persistence-wired serve (PostgresEventStore.Close)
+	// and joins the compactable store's in-flight compaction workers; a plain
+	// memory store without Close is a no-op.
+	registerSystemComponent(reg, sysCompEventStore, comp.EventStore != nil, nil, kernel.ModeRequired,
+		func(context.Context) error {
+			if closer, ok := comp.EventStore.(interface{ Close() error }); ok {
+				return closer.Close()
+			}
+			return nil
+		}, nil, nil)
+	registerSystemComponent(reg, sysCompRuntime, comp.Runtime != nil, []string{sysCompEventStore}, kernel.ModeRequired,
 		func(ctx context.Context) error { return comp.Runtime.Stop() }, nil, nil)
-	registerSystemComponent(reg, sysCompMemory, comp.Memory != nil, []string{sysCompEventStore}, system_runtime.ModeRequired,
+	registerSystemComponent(reg, sysCompMemory, comp.Memory != nil, []string{sysCompEventStore}, kernel.ModeRequired,
 		func(ctx context.Context) error { return comp.Memory.Stop(ctx) }, nil, nil)
-	registerSystemComponent(reg, sysCompMCP, comp.MCP != nil, nil, system_runtime.ModeRequired,
+	registerSystemComponent(reg, sysCompMCP, comp.MCP != nil, nil, kernel.ModeRequired,
 		func(ctx context.Context) error { return comp.MCP.Stop(ctx) }, nil, nil)
-	registerSystemComponent(reg, sysCompLLM, comp.LLM != nil, nil, system_runtime.ModeRequired, nil, nil, nil)
-	registerSystemComponent(reg, sysCompDashboard, comp.Dashboard != nil, []string{sysCompMCP}, system_runtime.ModeRequired,
-		func(ctx context.Context) error { return comp.Dashboard.Stop(ctx) }, nil, nil)
-	registerSystemComponent(reg, sysCompEvidenceStore, comp.EvidenceStore != nil, nil, system_runtime.ModeRequired, nil, nil, nil)
-	registerSystemComponent(reg, sysCompFlightRecorder, comp.FlightRecorder != nil, []string{sysCompEventStore, sysCompEvidenceStore}, system_runtime.ModeRequired,
+	registerSystemComponent(reg, sysCompLLM, comp.LLM != nil, nil, kernel.ModeRequired, nil, nil, nil)
+	registerSystemComponent(reg, sysCompEvidenceStore, comp.EvidenceStore != nil, nil, kernel.ModeRequired, nil, nil, nil)
+	registerSystemComponent(reg, sysCompFlightRecorder, comp.FlightRecorder != nil, []string{sysCompEventStore, sysCompEvidenceStore}, kernel.ModeRequired,
 		func(ctx context.Context) error { comp.FlightRecorder.Stop(); return nil }, nil, nil)
 
 	// Knowledge component: when AKG retrieval is enabled but the write-side
 	// dependency (DistillBridge) is missing, the component must NOT silently
-	// claim Ready — it registers as Degraded with a readiness error (F03).
+	// claim Ready — it registers as Degraded with a readiness error.
 	// Otherwise it is a normal Required component.
-	knowledgeMode := system_runtime.ModeRequired
+	knowledgeMode := kernel.ModeRequired
 	var knowledgeReady func(ctx context.Context) error
 	if cfg.Knowledge.RetrievalEnabled && comp.AKGBridge == nil {
-		knowledgeMode = system_runtime.ModeDegraded
+		knowledgeMode = kernel.ModeDegraded
 		knowledgeReady = func(ctx context.Context) error {
-			return fmt.Errorf("knowledge: AKG retrieval enabled but write deps missing (AKGBridge nil)")
+			return errors.New("knowledge: AKG retrieval enabled but write deps missing (AKGBridge nil)")
 		}
 	}
 	registerSystemComponent(reg, sysCompKnowledge, comp.KnowledgeRuntime != nil, nil, knowledgeMode, nil, nil, knowledgeReady)
 
-	registerSystemComponent(reg, sysCompNewEvolution, comp.NewEvolution != nil, []string{sysCompEvidenceStore}, system_runtime.ModeRequired, nil, nil, nil)
-	registerSystemComponent(reg, sysCompDiscovery, comp.Discovery != nil, nil, system_runtime.ModeRequired, nil, nil, nil)
+	registerSystemComponent(reg, sysCompNewEvolution, comp.NewEvolution != nil, []string{sysCompEvidenceStore}, kernel.ModeRequired, nil, nil, nil)
+	registerSystemComponent(reg, sysCompDiscovery, comp.Discovery != nil, nil, kernel.ModeRequired, nil, nil, nil)
 
-	orch := system_runtime.NewOrchestrator(reg, ctx)
+	orch := kernel.NewOrchestrator(reg, ctx)
+	// Background component failures are recorded on the shared event
+	// store so the flight recorder timeline (which subscribes to the whole
+	// stream) shows them. Best-effort: a nil store only disables the record.
+	orch.SetEventSink(comp.EventStore)
 	if err := orch.Start(ctx); err != nil {
-		return orch, reg, fmt.Errorf("system_runtime: observe startup: %w", err)
+		return orch, reg, fmt.Errorf("kernel: observe startup: %w", err)
 	}
 	return orch, reg, nil
 }

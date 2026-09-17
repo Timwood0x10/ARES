@@ -78,8 +78,12 @@ func (a *OpenAIAdapter) Generate(ctx context.Context, prompt string) (string, er
 	reqBody := map[string]interface{}{
 		keyModel:       a.config.Model,
 		keyMessages:    messages,
-		keyMaxTokens:   a.config.MaxTokens,
 		keyTemperature: a.config.Temperature,
+	}
+	// max_tokens=0 is rejected by the OpenAI API with HTTP 400; omit the field
+	// and let the server apply its own default instead.
+	if a.config.MaxTokens > 0 {
+		reqBody[keyMaxTokens] = a.config.MaxTokens
 	}
 
 	body, err := json.Marshal(reqBody)
@@ -144,11 +148,13 @@ func (a *OpenAIAdapter) GenerateStructured(ctx context.Context, prompt string, s
 	reqBody := map[string]interface{}{
 		keyModel:       a.config.Model,
 		keyMessages:    messages,
-		keyMaxTokens:   a.config.MaxTokens,
 		keyTemperature: a.config.Temperature,
 		"response_format": map[string]string{
 			"type": "json_object",
 		},
+	}
+	if a.config.MaxTokens > 0 {
+		reqBody[keyMaxTokens] = a.config.MaxTokens
 	}
 
 	body, err := json.Marshal(reqBody)
@@ -210,9 +216,11 @@ func (a *OpenAIAdapter) GenerateStream(ctx context.Context, prompt string) (<-ch
 	reqBody := map[string]interface{}{
 		keyModel:       a.config.Model,
 		keyMessages:    []map[string]string{{keyRole: "user", keyContent: prompt}},
-		keyMaxTokens:   a.config.MaxTokens,
 		keyTemperature: a.config.Temperature,
 		keyStream:      true,
+	}
+	if a.config.MaxTokens > 0 {
+		reqBody[keyMaxTokens] = a.config.MaxTokens
 	}
 
 	body, err := json.Marshal(reqBody)
@@ -230,7 +238,7 @@ func (a *OpenAIAdapter) GenerateStream(ctx context.Context, prompt string) (<-ch
 	req.Header.Set("Authorization", "Bearer "+a.config.APIKey)
 
 	// Timeout is controlled via the request context, not the client.
-	resp, err := a.streamClient.Do(req)
+	resp, err := a.streamClient.Do(req) //nolint:bodyclose // body is closed in the goroutine below and in the error-status branch
 	if err != nil {
 		return nil, errors.Wrap(err, "send stream request")
 	}
@@ -266,8 +274,14 @@ func (a *OpenAIAdapter) GenerateStream(ctx context.Context, prompt string) (<-ch
 				continue
 			}
 
-			// Check for stream termination.
+			// Check for stream termination: emit the terminal Done chunk so
+			// consumers watching for Done (instead of channel close) see a
+			// clean end; the error path below already emits Done:true.
 			if line == streamDataDone {
+				select {
+				case ch <- StreamChunk{Done: true}:
+				case <-ctx.Done():
+				}
 				return
 			}
 
@@ -302,6 +316,13 @@ func (a *OpenAIAdapter) GenerateStream(ctx context.Context, prompt string) (<-ch
 			case ch <- StreamChunk{Done: true, Err: errors.Wrap(err, "read stream")}:
 			case <-ctx.Done():
 			}
+			return
+		}
+		// Server closed the stream without a "data: [DONE]" sentinel:
+		// still a clean end, still emit the terminal Done chunk.
+		select {
+		case ch <- StreamChunk{Done: true}:
+		case <-ctx.Done():
 		}
 	}()
 

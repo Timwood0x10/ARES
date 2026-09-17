@@ -5,6 +5,7 @@ import (
 	"context"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/Timwood0x10/ares/internal/knowledge"
 )
@@ -33,7 +34,7 @@ func (n *DefaultNormalizer) Normalize(_ context.Context, obj *knowledge.Knowledg
 	switch {
 	case len(obj.Raw) > 0:
 		if n.MaxRawBytes > 0 && len(obj.Raw) > n.MaxRawBytes {
-			raw = string(obj.Raw[:n.MaxRawBytes])
+			raw = truncateUTF8Safe(obj.Raw, n.MaxRawBytes)
 		} else {
 			raw = string(obj.Raw)
 		}
@@ -108,12 +109,20 @@ func (s *DefaultSummarizer) Summarize(_ context.Context, obj *knowledge.Knowledg
 	if len(source) <= maxLen {
 		obj.Summary = source
 	} else {
-		// Take first maxLen chars, breaking at word boundary.
-		trimmed := source[:maxLen]
-		if idx := strings.LastIndex(trimmed, " "); idx > maxLen/2 {
-			trimmed = trimmed[:idx]
+		// Truncate by RUNES, not bytes: source[:maxLen] on byte bounds
+		// splits multi-byte UTF-8 sequences (CJK is 3 bytes/char) producing
+		// invalid summaries. The word-boundary trim only applies when a space
+		// exists well inside the truncated head (CJK has none).
+		runes := []rune(source)
+		if len(runes) <= maxLen {
+			obj.Summary = source
+			return obj, nil
 		}
-		obj.Summary = trimmed + "..."
+		head := string(runes[:maxLen])
+		if idx := strings.LastIndex(head, " "); idx > maxLen/2 {
+			head = head[:idx]
+		}
+		obj.Summary = head + "..."
 	}
 
 	return obj, nil
@@ -138,13 +147,23 @@ func (m *DefaultEntityMatcher) Match(_ context.Context, obj *knowledge.Knowledge
 	if obj == nil || len(candidates) == 0 {
 		return &knowledge.ResolveResult{IsNew: true}, nil
 	}
+	return m.MatchTokens(context.Background(), obj,
+		tokenize(obj.Normalized+" "+obj.Summary), candidates, nil)
+}
+
+// MatchTokens is the tokenize-once fast path (TokenAwareMatcher): candidates'
+// token bags come from the pipeline's per-Process cache, so the O(n²) pair
+// loop allocates nothing. A nil candTokens (direct Match calls) falls back to
+// tokenizing each candidate here, preserving the legacy interface contract.
+func (m *DefaultEntityMatcher) MatchTokens(_ context.Context, obj *knowledge.KnowledgeObject, objTokens map[string]int, candidates []*knowledge.KnowledgeObject, candTokens map[string]map[string]int) (*knowledge.ResolveResult, error) {
+	if obj == nil || len(candidates) == 0 {
+		return &knowledge.ResolveResult{IsNew: true}, nil
+	}
 
 	threshold := m.MatchThreshold
 	if threshold <= 0 {
 		threshold = 0.7
 	}
-
-	objWords := tokenize(obj.Normalized + " " + obj.Summary)
 
 	var bestMatch string
 	var bestScore float64
@@ -153,8 +172,15 @@ func (m *DefaultEntityMatcher) Match(_ context.Context, obj *knowledge.Knowledge
 		if candidate.ID == obj.ID {
 			continue
 		}
-		candWords := tokenize(candidate.Normalized + " " + candidate.Summary)
-		score := jaccardOverlap(objWords, candWords)
+		candWords, cached := candTokens[candidate.ID]
+		if !cached {
+			if candTokens == nil {
+				candWords = tokenize(candidate.Normalized + " " + candidate.Summary)
+			} else {
+				continue // defensive: a cache miss means no tokens to compare
+			}
+		}
+		score := jaccardOverlap(objTokens, candWords)
 		if score > bestScore {
 			bestScore = score
 			bestMatch = candidate.ID
@@ -239,9 +265,13 @@ func tokenize(text string) map[string]int {
 
 // jaccardOverlap computes the Jaccard similarity coefficient between two
 // token sets. Returns a value in [0, 1].
+//
+// Two empty token sets have no shared evidence, so they overlap 0 — returning
+// 1.0 here used to make two content-free objects look like a perfect match and
+// get merged with confidence 1.0 by DefaultEntityMatcher.
 func jaccardOverlap(a, b map[string]int) float64 {
 	if len(a) == 0 && len(b) == 0 {
-		return 1.0
+		return 0.0
 	}
 	intersection := 0
 	for token := range a {
@@ -254,4 +284,18 @@ func jaccardOverlap(a, b map[string]int) float64 {
 		return 0
 	}
 	return float64(intersection) / float64(union)
+}
+
+// truncateUTF8Safe cuts b to at most max bytes without splitting a UTF-8
+// sequence: it walks back from the cut point to the last rune start so
+// the result is always valid UTF-8.
+func truncateUTF8Safe(b []byte, max int) string {
+	if len(b) <= max {
+		return string(b)
+	}
+	cut := max
+	for cut > 0 && !utf8.RuneStart(b[cut]) {
+		cut--
+	}
+	return string(b[:cut])
 }

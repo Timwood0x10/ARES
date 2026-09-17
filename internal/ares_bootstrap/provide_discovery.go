@@ -8,7 +8,7 @@ package ares_bootstrap
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/ares_config"
@@ -25,13 +25,13 @@ type DiscoveryComponents struct {
 
 // ErrDiscoveryDisabled is returned by ProvideDiscovery when the discovery
 // engine is disabled in configuration. Callers should check for this sentinel
-// with errors.Is and treat it as a non-error no-op.
-var ErrDiscoveryDisabled = fmt.Errorf("discovery disabled in config")
+// ErrDiscoveryDisabled with errors.Is and treat it as a non-error no-op.
+var ErrDiscoveryDisabled = errors.New("discovery disabled in config")
 
 // ProvideDiscovery constructs the discovery engine with the default provider
 // set (ARES, Claude, Cursor, VSCode configs + PATH binary probe), starts
 // auto-discovery, and bridges every discovery event onto the shared
-// EventStore (REVIEW #10: previously the engine ran with zero consumers, so
+// EventStore (previously the engine ran with zero consumers, so
 // detected services were written to an in-memory store nobody read). Returns
 // ErrDiscoveryDisabled when cfg is nil or discovery is disabled, so callers
 // can ignore the component entirely in the default configuration.
@@ -53,15 +53,10 @@ func ProvideDiscovery(ctx context.Context, cfg *ares_config.DiscoveryConfig, eve
 		return nil, ErrDiscoveryDisabled
 	}
 
-	eng := discovery.NewEngine(discovery.NewMemoryStore(), nil)
-	// Provider constructors vary in signature: ARES, Cursor, and the binary
-	// probe take no args (they derive paths from $HOME or $PATH), while Claude
-	// and VSCode take a project directory to scan for project-local config.
-	eng.AddProvider(providers.NewARESProvider())
-	eng.AddProvider(providers.NewClaudeProvider(cfg.ProjectDir))
-	eng.AddProvider(providers.NewCursorProvider())
-	eng.AddProvider(providers.NewVSCodeProvider(cfg.ProjectDir))
-	eng.AddProvider(providers.NewBinaryProbeProvider())
+	// NewDefaultEngine assembles the standard provider set (ARES, Claude,
+	// Cursor, VSCode config scans + PATH binary probe) over an in-memory
+	// store — the same assembly the discovery fixtures use.
+	eng := providers.NewDefaultEngine(cfg.ProjectDir, nil, nil)
 
 	if eventStore != nil {
 		eng.AddHandler(discovery.EventHandlerFunc(func(evt discovery.Event) {

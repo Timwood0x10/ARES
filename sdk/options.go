@@ -1,14 +1,15 @@
 package sdk
 
 import (
+	"errors"
 	"fmt"
-	"os"
 	"time"
 
-	"github.com/Timwood0x10/ares/api/core"
-	"github.com/Timwood0x10/ares/api/tools"
+	tools "github.com/Timwood0x10/ares/internal/apitools"
+	agentfabric "github.com/Timwood0x10/ares/internal/fabric/agent"
 	"github.com/Timwood0x10/ares/internal/knowledge"
 	"github.com/Timwood0x10/ares/internal/knowledge/provider"
+	llmcore "github.com/Timwood0x10/ares/internal/llmcore"
 	"github.com/Timwood0x10/ares/internal/tools/toolsource"
 )
 
@@ -16,8 +17,8 @@ import (
 
 // ConfigOption configures the Runtime during construction using a YAML file.
 // Loads ares.yaml from the given path and converts it to internal options.
-// It is an alias of Option so WithConfig/WithConfigFromEnv can be passed
-// directly to New/NewRuntime.
+// It is an alias of Option so WithConfig can be passed directly to
+// New/NewRuntime.
 type ConfigOption = Option
 
 // WithConfig loads configuration from a YAML file, parses and validates it,
@@ -36,21 +37,8 @@ func WithConfig(path string) ConfigOption {
 	}
 }
 
-// WithConfigFromEnv loads configuration from a YAML file, allowing override
-// via the ARES_YAML environment variable. If ARES_YAML is set, it will be
-// used as the config path. Otherwise, it falls back to ./ares.yaml.
-func WithConfigFromEnv() ConfigOption {
-	return func(c *config) error {
-		path := "./ares.yaml"
-		if p := os.Getenv("ARES_YAML"); p != "" {
-			path = p
-		}
-		return applyConfigFile(c, path)
-	}
-}
-
-// applyConfigFile is the shared implementation behind WithConfig and
-// WithConfigFromEnv: it loads the YAML file at path, converts it to internal
+// applyConfigFile is the shared implementation behind WithConfig: it loads
+// the YAML file at path, converts it to internal
 // options, and applies them in order. Keeping the load→convert→apply loop in
 // one place guarantees every config entry point behaves identically.
 func applyConfigFile(c *config, path string) error {
@@ -77,8 +65,8 @@ type Option func(*config) error
 
 // config holds the internal configuration state while options are applied.
 type config struct {
-	llmCfg      *core.LLMConfig
-	baseCfg     *core.BaseConfig
+	llmCfg      *llmcore.LLMConfig
+	baseCfg     *llmcore.BaseConfig
 	memCfg      memoryCfg
 	evoCfg      evolutionCfg
 	knlCfg      knowledgeCfg
@@ -93,8 +81,12 @@ type config struct {
 	// instead of the default in-memory store.
 	sqliteStorePath string
 	mcpConns        []MCPConn
-	fallbacks       []*core.LLMConfig
+	fallbacks       []*llmcore.LLMConfig
 	trace           bool
+	// gov is the cognitive-execution budget applied to every fabric agent
+	// the runtime spawns (the L2 execution peer and syscall-spawned peers);
+	// zero value = unlimited per dimension (WithAgentGovernance).
+	gov agentfabric.Governance
 }
 
 // memoryCfg holds memory subsystem configuration.
@@ -164,14 +156,14 @@ type knowledgeRTCfg struct {
 
 func defaultConfig() *config {
 	return &config{
-		llmCfg: &core.LLMConfig{
-			Provider:    core.LLMProviderOllama,
+		llmCfg: &llmcore.LLMConfig{
+			Provider:    llmcore.LLMProviderOllama,
 			Model:       defaultModel,
 			Temperature: 0.7,
 			MaxTokens:   2048,
 			Timeout:     60,
 		},
-		baseCfg: &core.BaseConfig{
+		baseCfg: &llmcore.BaseConfig{
 			RequestTimeout: 60,
 			MaxRetries:     3,
 		},
@@ -194,7 +186,7 @@ func defaultConfig() *config {
 // Default base URL is https://api.openai.com/v1.
 func WithOpenAI(model string) Option {
 	return func(c *config) error {
-		c.llmCfg.Provider = core.LLMProviderOpenAI
+		c.llmCfg.Provider = llmcore.LLMProviderOpenAI
 		c.llmCfg.Model = model
 		if c.llmCfg.BaseURL == "" {
 			c.llmCfg.BaseURL = "https://api.openai.com/v1"
@@ -208,7 +200,7 @@ func WithOpenAI(model string) Option {
 // require an API key.
 func WithOllama(model string) Option {
 	return func(c *config) error {
-		c.llmCfg.Provider = core.LLMProviderOllama
+		c.llmCfg.Provider = llmcore.LLMProviderOllama
 		c.llmCfg.Model = model
 		return nil
 	}
@@ -220,7 +212,7 @@ func WithOllama(model string) Option {
 // Default base URL is https://api.anthropic.com/v1.
 func WithAnthropic(model string) Option {
 	return func(c *config) error {
-		c.llmCfg.Provider = core.LLMProviderAnthropic
+		c.llmCfg.Provider = llmcore.LLMProviderAnthropic
 		c.llmCfg.Model = model
 		if c.llmCfg.BaseURL == "" {
 			c.llmCfg.BaseURL = "https://api.anthropic.com/v1"
@@ -235,7 +227,7 @@ func WithAnthropic(model string) Option {
 // Default base URL is https://openrouter.ai/api/v1.
 func WithOpenRouter(model string) Option {
 	return func(c *config) error {
-		c.llmCfg.Provider = core.LLMProviderOpenRouter
+		c.llmCfg.Provider = llmcore.LLMProviderOpenRouter
 		c.llmCfg.Model = model
 		if c.llmCfg.BaseURL == "" {
 			c.llmCfg.BaseURL = "https://openrouter.ai/api/v1"
@@ -261,12 +253,12 @@ func WithAPIKey(key string) Option {
 	}
 }
 
-// WithLLMConfig applies a full core.LLMConfig. Useful when you already have a
+// WithLLMConfig applies a full llmcore.LLMConfig. Useful when you already have a
 // configuration object from a YAML file or shared config store.
-func WithLLMConfig(cfg *core.LLMConfig) Option {
+func WithLLMConfig(cfg *llmcore.LLMConfig) Option {
 	return func(c *config) error {
 		if cfg == nil {
-			return fmt.Errorf("with llm config: config is nil")
+			return errors.New("with llm config: config is nil")
 		}
 		c.llmCfg = cfg
 		return nil
@@ -277,7 +269,7 @@ func WithLLMConfig(cfg *core.LLMConfig) Option {
 // When the primary provider fails (timeout, rate limit, network error),
 // the Runtime automatically tries fallbacks in order. Call multiple times
 // to add multiple fallbacks.
-func WithFallbackLLM(cfg *core.LLMConfig) Option {
+func WithFallbackLLM(cfg *llmcore.LLMConfig) Option {
 	return func(c *config) error {
 		c.fallbacks = append(c.fallbacks, cfg)
 		return nil
@@ -502,6 +494,15 @@ func WithAKGEmbedding(model, baseURL string) Option {
 		}
 		c.knlCfg.EmbeddingModel = model
 		c.knlCfg.EmbeddingBaseURL = baseURL
+		// Wire baseURL into embedCfg so buildEmbeddingClient actually
+		// uses it. Previously it was only stored in knlCfg.EmbeddingBaseURL
+		// which no reader consumed (dead parameter).
+		if baseURL != "" && c.embedCfg.ServiceURL == "" {
+			c.embedCfg.ServiceURL = baseURL
+		}
+		if c.embedCfg.Model == "" {
+			c.embedCfg.Model = model
+		}
 		return nil
 	}
 }
@@ -570,7 +571,7 @@ func WithMCP(conn MCPConn) Option {
 			conn.Name = "mcp"
 		}
 		if conn.Command == "" {
-			return fmt.Errorf("mcp: command is required")
+			return errors.New("mcp: command is required")
 		}
 		c.mcpConns = append(c.mcpConns, conn)
 		return nil
@@ -596,10 +597,11 @@ type agentConfig struct {
 	humanInput  HumanInputFunc
 	maxIter     int
 	// maxTokens caps the cumulative prompt+completion tokens across all LLM
-	// calls in one run (<=0 = unbounded). Passed through to agentloop.Request.
+	// calls in one run (<=0 = unbounded). Retained for API compatibility —
+	// the shared L2 execution path does not enforce a per-run token budget.
 	maxTokens int
 	// timeout caps the total wall-clock duration of one run (<=0 = no limit).
-	// Passed through to agentloop.Request.
+	// Applied to the L2 submission (Task.Timeout) every entry point uses.
 	timeout time.Duration
 	// discovery enables runtime tool discovery: when true the agent exposes a
 	// discover_tools meta-tool so the LLM can search the tool pool at runtime
@@ -639,18 +641,35 @@ func WithTools(tt ...tools.Tool) AgentOption {
 	}
 }
 
-// WithHumanInput attaches a human-in-the-loop approval function. Before each
-// tool call, the function is invoked so a human can approve or reject it.
-// Return true to approve, false to skip the tool call.
+// WithHumanInput attaches a human-in-the-loop approval function.
+//
+// It is NOT enforced: the shared L2 execution path has no per-tool-call
+// interception point, so the callback is never invoked. Setting this option
+// therefore makes Agent.Run and Agent.Stream refuse with
+// ErrHumanInputUnsupported instead of silently dropping the gate the caller
+// asked for.
+//
+// Use WithAgentGovernance to bound a run (tool count, tokens, deadline); a
+// real approval hook needs a pre-dispatch callback in the L2 tool-cognition
+// path.
+//
+// TODO(tech-debt): wire an approval hook into fabric/agent tool cognition and
+// re-enable this option once it can actually gate a tool call.
+//
+// Deprecated: not supported on the L2 execution path; passing it makes Run
+// fail with ErrHumanInputUnsupported.
 func WithHumanInput(fn HumanInputFunc) AgentOption {
 	return func(c *agentConfig) {
 		c.humanInput = fn
 	}
 }
 
-// WithMaxIterations caps the number of ReAct (tool-calling) iterations the
-// agent will run before returning a "max iterations reached" result. Values
-// <= 0 fall back to the default (defaultMaxIterations).
+// WithMaxIterations sets the iteration budget consumed by Evolve's
+// search_depth parameter mapping (deeper search = more iterations) and
+// readable via Agent.MaxIterations. It is NOT an execution bound on the
+// shared L2 path: runs are bounded by the planner's convergence loop,
+// WithTimeout, and WithAgentGovernance's tool/deadline budgets there.
+// Values <= 0 mean "unset".
 func WithMaxIterations(n int) AgentOption {
 	return func(c *agentConfig) {
 		if n > 0 {
@@ -659,10 +678,21 @@ func WithMaxIterations(n int) AgentOption {
 	}
 }
 
-// WithMaxTokens caps the cumulative prompt+completion tokens across all LLM
-// calls in one agent run. When the budget is exceeded the run stops early and
-// returns "max tokens reached" instead of burning more iterations (primitive
-// 4: bounded autonomous execution). Values <= 0 mean unbounded (default).
+// WithMaxTokens caps LLM token consumption. On the shared L2 execution path
+// it is bridged into the runtime's governance budget (WithAgentGovernance's
+// TokenBudget — enforced by the scheduler at quantum boundaries), so a run
+// that exceeds the budget cooperatively yields instead of burning tokens.
+//
+// Bridging semantics: the budget is the L2 PEER'S LIFETIME TOTAL (every run
+// through the shared peer), not a per-run allowance — the runtime enforces
+// one budget for the process, and the first positive WithMaxTokens (or
+// WithAgentGovernance, whichever is applied first) wins; later agents'
+// values do not tighten it. For an explicit, per-runtime budget use
+// WithAgentGovernance directly. Values <= 0 mean unbounded (default).
+//
+// CHANGE (0.3.1): this option used to be stored and silently ignored on the
+// L2 path; callers who relied on it being a no-op will now observe budget
+// enforcement.
 func WithMaxTokens(n int) AgentOption {
 	return func(c *agentConfig) {
 		if n > 0 {
@@ -682,11 +712,28 @@ func WithTimeout(d time.Duration) AgentOption {
 	}
 }
 
+// WithAgentGovernance sets the cognitive-execution budget applied to every
+// fabric agent the runtime spawns (the L2 execution peer and any peer
+// spawned via spawn_agent). Zero values mean unlimited per dimension; a
+// deadline bounds wall-clock lifetime from spawn. Mirrors cmd/ares's
+// kernel.agent_budget — the SDK's long-task safety gate, enforced by the
+// scheduler at quantum boundaries.
+func WithAgentGovernance(tokens, tools int, deadline time.Duration) Option {
+	return func(c *config) error {
+		c.gov = agentfabric.Governance{
+			TokenBudget: tokens,
+			ToolBudget:  tools,
+			Deadline:    deadline,
+		}
+		return nil
+	}
+}
+
 // WithToolDiscovery enables runtime tool discovery. When enabled, the agent
 // exposes a discover_tools meta-tool so the LLM can search the available tool
 // pool at runtime by name/description/tag and expand its active tool set on
-// demand. Tools discovered at runtime are expanded via the agentloop engine's
-// ToolExpander path (no second execution loop).
+// demand. Tools discovered at runtime are expanded via the ToolExpander
+// path (no second execution loop).
 //
 // Default is off: behaviour is byte-for-byte identical to the legacy
 // WithTools-only path (no meta-tool, no expander, Engine.Tools = registry).

@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/agentfabric"
+	"github.com/Timwood0x10/ares/internal/fabric/agent"
 )
 
 // stubPopulationPolicySource is a test PopulationPolicySource that returns
@@ -41,7 +41,7 @@ func (s *stubPopulationPolicySource) callCount() int {
 	return s.calls
 }
 
-// TestPopulationAdapterApply verifies the P6 population adapter applies the
+// TestPopulationAdapterApply verifies that the population adapter applies the
 // evolution population policy: spawns requested agents and retires requested
 // ones.
 func TestPopulationAdapterApply(t *testing.T) {

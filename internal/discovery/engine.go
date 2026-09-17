@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -100,7 +101,33 @@ func (e *Engine) DiscoverNow(ctx context.Context) error {
 		existing[svc.Identity.ID] = svc
 	}
 
+	// Phase 3.5 (#51): manually registered services are passive — no
+	// provider reports them, so the diff below would classify them as
+	// removed on every cycle and delete them. Union their register records
+	// (and tags) into any provider-discovered twin so manual provenance
+	// survives updates, and protect them from the removal pass.
+	for id, reg := range existing {
+		if !hasRegisterRecord(reg) {
+			continue
+		}
+		if ns, ok := newServices[id]; ok {
+			ns.Records = append(ns.Records, registerRecords(reg)...)
+			ns.Identity.Tags = unionStringSlices(ns.Identity.Tags, reg.Identity.Tags)
+		}
+	}
+
 	added, updated, removed := diffServices(existing, newServices)
+
+	// Registered services never leave via discovery — only Unregister (or a
+	// re-register over the same ID) removes them.
+	kept := removed[:0]
+	for _, id := range removed {
+		if reg, ok := existing[id]; ok && hasRegisterRecord(reg) {
+			continue
+		}
+		kept = append(kept, id)
+	}
+	removed = kept
 
 	// Phase 4: Persist changes and emit events.
 	for _, id := range added {
@@ -155,6 +182,56 @@ func (e *Engine) DiscoverNow(ctx context.Context) error {
 	return nil
 }
 
+// hasRegisterRecord reports whether the service carries a manual
+// registration record (Engine.Register). Such services are passive: they are
+// not re-reported by any provider, so DiscoverNow must not treat the absence
+// of provider records as their disappearance (#51).
+func hasRegisterRecord(svc *DiscoveredService) bool {
+	if svc == nil {
+		return false
+	}
+	if svc.BestSource == OperationRegister {
+		return true
+	}
+	for _, rec := range svc.Records {
+		if rec.Source == OperationRegister {
+			return true
+		}
+	}
+	return false
+}
+
+// registerRecords returns only the manual-registration records of a service.
+func registerRecords(svc *DiscoveredService) []DiscoveryRecord {
+	var out []DiscoveryRecord
+	for _, rec := range svc.Records {
+		if rec.Source == OperationRegister {
+			out = append(out, rec)
+		}
+	}
+	return out
+}
+
+// unionStringSlices merges two string slices order-preserving without
+// duplicates.
+func unionStringSlices(a, b []string) []string {
+	seen := make(map[string]bool, len(a)+len(b))
+	out := make([]string, 0, len(a)+len(b))
+	for _, s := range a {
+		if !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	for _, s := range b {
+		if !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 // CheckHealth runs health checks on all known services.
 func (e *Engine) CheckHealth(ctx context.Context) error {
 	if e.health == nil {
@@ -201,34 +278,82 @@ func (e *Engine) CheckHealth(ctx context.Context) error {
 	return nil
 }
 
+// autoDiscoveryMaxBackoff caps the restart delay so a deterministic panic
+// retries at a steady pace instead of going quiet.
+const autoDiscoveryMaxBackoff = 30 * time.Second
+
+// autoDiscoveryRestartBackoff returns the delay before restart attempt n
+// (0-based): 1s, 2s, 4s, ... capped at autoDiscoveryMaxBackoff. The shift is
+// guarded so a large attempt count saturates the cap rather than overflowing
+// to a negative (and therefore immediate) delay.
+func autoDiscoveryRestartBackoff(attempt int) time.Duration {
+	if attempt >= 5 {
+		return autoDiscoveryMaxBackoff
+	}
+	return time.Second << attempt
+}
+
 // StartAutoDiscovery starts periodic discovery and health checks.
+//
+// The loop is SELF-HEALING: a panic inside a cycle is recovered and the loop
+// restarts after a backoff rather than dying (code_rules_v2 §4.2). It runs for
+// the life of the engine with no caller to observe a failure, so a goroutine
+// that simply exited on panic would silently kill auto-discovery for the rest
+// of the process — the subsystem would look healthy while doing nothing.
+// Restart stops only when ctx is cancelled.
 func (e *Engine) StartAutoDiscovery(ctx context.Context, interval time.Duration) {
 	if interval <= 0 {
 		interval = 5 * time.Minute
 	}
 
 	go func() {
-		if err := e.DiscoverNow(ctx); err != nil {
-			log.Warn("discovery: initial cycle failed", "error", err)
-		}
-
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-
-		for {
+		for attempt := 0; ; attempt++ {
+			e.runAutoDiscovery(ctx, interval, attempt)
+			if ctx.Err() != nil {
+				return // clean shutdown — never restart
+			}
+			backoff := autoDiscoveryRestartBackoff(attempt)
+			log.Warn("discovery: restarting background loop after panic",
+				"attempt", attempt+1, "backoff", backoff)
 			select {
 			case <-ctx.Done():
 				return
-			case <-ticker.C:
-				if err := e.DiscoverNow(ctx); err != nil {
-					log.Warn("discovery: cycle failed", "error", err)
-				}
-				if err := e.CheckHealth(ctx); err != nil {
-					log.Warn("discovery: health check failed", "error", err)
-				}
+			case <-time.After(backoff):
 			}
 		}
 	}()
+}
+
+// runAutoDiscovery runs one lifetime of the periodic discovery/health loop. It
+// recovers its own panics so the caller can decide to restart; returning after
+// a panic is what signals the caller, and ctx cancellation ends it cleanly.
+func (e *Engine) runAutoDiscovery(ctx context.Context, interval time.Duration, attempt int) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Error("discovery: background loop panicked",
+				"attempt", attempt+1, "panic", r, "stack", string(debug.Stack()))
+		}
+	}()
+	if err := e.DiscoverNow(ctx); err != nil {
+		log.Warn("discovery: initial cycle failed", "error", err)
+	}
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := e.DiscoverNow(ctx); err != nil {
+				log.Warn("discovery: cycle failed", "error", err)
+			}
+			if err := e.CheckHealth(ctx); err != nil {
+				log.Warn("discovery: health check failed", "error", err)
+			}
+		}
+	}
 }
 
 // List returns all known services.
@@ -254,10 +379,10 @@ type RegisterRequest struct {
 // Register passively registers a service. Emits EventServiceAdded.
 func (e *Engine) Register(ctx context.Context, req RegisterRequest) error {
 	if req.Name == "" {
-		return fmt.Errorf("name is required")
+		return errors.New("name is required")
 	}
 	if req.Endpoint == "" {
-		return fmt.Errorf("endpoint is required")
+		return errors.New("endpoint is required")
 	}
 	if req.Confidence == 0 {
 		req.Confidence = ConfidenceMax

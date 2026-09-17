@@ -1,0 +1,70 @@
+# Chaos Arena Scenario — Peer Failure and Leaderless Recovery
+#
+# Purpose:
+#   This YAML defines a focused chaos scenario for the ARES Arena: kill one
+#   peer agent, then keep degrading the survivors, to verify the leaderless
+#   scheduler keeps draining the fabric without any of them.
+#
+#   The pre-0.3.1 version of this file was "leader assassination": its core
+#   action was kill_leader, and the narrative was that the system would elect
+#   a replacement leader. That architecture no longer exists. The kernel
+#   scheduler is leaderless — there is no leader agent to elect — and
+#   Injector.KillLeader looks for ListAgents() entries with Type == "leader",
+#   a type no models.AgentType declares, so the action always returned
+#   ErrLeaderNotFound and the whole scenario was a silent no-op.
+#
+# Learning objectives:
+#   - How a recovery-focused scenario sequences faults: one peer kill first,
+#     then survivor degradation, with small inter-action delays.
+#   - How parallel_actions: false forces the actions to run strictly in
+#     order, isolating each failure's effect.
+#   - That a leaderless runtime has no single point of failure to attack:
+#     work resumes on whichever peer is still IDLE and capable.
+#
+# Run (via the arena tooling that consumes scenario YAML):
+#   Scenario Mode replays this action list against the agent system.
+#
+# Expected behavior:
+#   The Arena verifies the surviving peers keep executing after one is
+#   killed — the fabric re-queues the dead peer's leased tasks at lease
+#   expiry (or via the recovery loop), and an idle capable peer acquires
+#   them. No election happens because there is nothing to elect.
+
+name: peer-failure-and-leaderless-recovery
+description: "Kill one peer and verify the leaderless scheduler keeps working"
+config:
+  # stop_on_error: continue even if an action reports failure.
+  stop_on_error: false
+  # parallel_actions: false → run actions strictly in sequence.
+  parallel_actions: false
+  warmup: 1s
+  cooldown: 1s
+actions:
+  # ── Action 1: kill one peer after 2s ──
+  # This is the core attack; the rest of the script probes survivor behaviour.
+  - delay: 2s
+    action:
+      type: kill_agent
+      target_id: agent-1
+    label: kill-agent-1
+  # ── Action 2: kill a second peer after 1s more ──
+  # Two peers down: the remaining population must still make progress.
+  - delay: 1s
+    action:
+      type: kill_agent
+      target_id: agent-2
+    label: kill-agent-2
+  # ── Action 3: partition a survivor after 3s more ──
+  - delay: 3s
+    action:
+      type: network_partition
+      target_id: agent-3
+    label: partition-agent-3
+  # ── Action 4: slow a survivor (add 10s latency) after 1s more ──
+  - delay: 1s
+    action:
+      type: slow_agent
+      target_id: agent-3
+      metadata:
+        delay: 10s
+    label: slow-agent-3

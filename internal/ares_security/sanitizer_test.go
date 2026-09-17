@@ -21,25 +21,6 @@ func TestSanitize(t *testing.T) {
 	}
 }
 
-func TestSanitizeLog(t *testing.T) {
-	result := SanitizeLog("password: secret123")
-	if strings.Contains(result, "secret123") {
-		t.Error("Expected password to be masked")
-	}
-}
-
-func TestSafeLogger(t *testing.T) {
-	var loggedMessages []string
-	logger := NewSafeLogger(func(msg string) {
-		loggedMessages = append(loggedMessages, msg)
-	})
-
-	logger.Log("User logged in with password secret123")
-	if strings.Contains(loggedMessages[0], "secret123") {
-		t.Error("Expected password to be masked")
-	}
-}
-
 func TestSanitizeMultipleSensitiveFields(t *testing.T) {
 	sanitizer := NewSanitizer()
 
@@ -102,11 +83,13 @@ func TestSanitizeCreditCard(t *testing.T) {
 }
 
 func TestSanitizeWithKeepLength(t *testing.T) {
-	options := SanitizeOptions{
-		KeepLength: true,
-		MaskChar:   '*',
+	sanitizer := &Sanitizer{
+		patterns: defaultSensitivePatterns(),
+		options: SanitizeOptions{
+			KeepLength: true,
+			MaskChar:   '*',
+		},
 	}
-	sanitizer := NewSanitizerWithOptions(options)
 
 	input := "api_key=sk-1234567890abcdef"
 	result := sanitizer.Sanitize(input)
@@ -144,14 +127,16 @@ func TestSanitizeNoSensitiveData(t *testing.T) {
 }
 
 func TestSanitizeWithOptions(t *testing.T) {
-	options := SanitizeOptions{
-		KeepLength: true,
-		MaskChar:   '#',
-		PreserveLengthFor: map[SensitiveFieldType]int{
-			SensitiveFieldTypeAPIKey: 4,
+	sanitizer := &Sanitizer{
+		patterns: defaultSensitivePatterns(),
+		options: SanitizeOptions{
+			KeepLength: true,
+			MaskChar:   '#',
+			PreserveLengthFor: map[SensitiveFieldType]int{
+				SensitiveFieldTypeAPIKey: 4,
+			},
 		},
 	}
-	sanitizer := NewSanitizerWithOptions(options)
 
 	input := "api_key=sk-1234567890abcdef"
 	result := sanitizer.Sanitize(input)
@@ -296,5 +281,78 @@ func TestMaskToken(t *testing.T) {
 		if !tt.check(got) {
 			t.Errorf("maskToken(%q) = %q, check failed", tt.input, got)
 		}
+	}
+}
+
+// TestSanitizeOptionsAreEffective locks the REVIEW #37 contract: MaskChar,
+// PreserveLengthFor and KeepLength must all alter the masked output instead
+// of being silently ignored.
+func TestSanitizeOptionsAreEffective(t *testing.T) {
+	t.Run("mask_char_replaces_star", func(t *testing.T) {
+		s := &Sanitizer{
+			patterns: defaultSensitivePatterns(),
+			options:  SanitizeOptions{MaskChar: '#'},
+		}
+		got := s.Sanitize("password=hunter2secret")
+		if strings.Contains(got, "*") {
+			t.Errorf("expected no '*' with MaskChar='#', got %q", got)
+		}
+		if !strings.Contains(got, "#") {
+			t.Errorf("expected '#' in masked output, got %q", got)
+		}
+	})
+
+	t.Run("preserve_length_for_overrides_prefix", func(t *testing.T) {
+		s := &Sanitizer{
+			patterns: defaultSensitivePatterns(),
+			options: SanitizeOptions{
+				PreserveLengthFor: map[SensitiveFieldType]int{
+					SensitiveFieldTypeEmail: 1,
+				},
+			},
+		}
+		got := s.Sanitize("contact alice@example.com now")
+		if !strings.Contains(got, "a") {
+			t.Errorf("expected first char preserved, got %q", got)
+		}
+		if strings.Contains(got, "alice@example.com") {
+			t.Errorf("expected email masked, got %q", got)
+		}
+	})
+
+	t.Run("keep_length_pads_masked_output", func(t *testing.T) {
+		s := &Sanitizer{
+			patterns: defaultSensitivePatterns(),
+			options:  SanitizeOptions{KeepLength: true},
+		}
+		in := "token=abcdefghij"
+		got := s.Sanitize(in)
+		inLen := len([]rune(in))
+		// The matched region is "token=abcdefghij"; the whole string is the
+		// match, so total length must be preserved.
+		if len([]rune(got)) != inLen {
+			t.Errorf("KeepLength: expected length %d, got %d (%q)", inLen, len([]rune(got)), got)
+		}
+	})
+}
+
+// TestSanitizeJSONNumericSecrets locks the REVIEW #38 contract: JSON numbers
+// whose digit form matches a sensitive pattern are degraded to their masked
+// string form, while benign numbers keep their numeric type (they are NOT
+// quoted stringified copies).
+func TestSanitizeJSONNumericSecrets(t *testing.T) {
+	s := NewSanitizer()
+
+	in := `{"card": 4111111111111111, "count": 42, "phone": "13800138000"}`
+	out := s.SanitizeJSON(in)
+
+	if strings.Contains(out, "4111111111111111") {
+		t.Errorf("numeric card number not masked: %s", out)
+	}
+	if strings.Contains(out, `"42"`) {
+		t.Errorf("benign number must keep its numeric type, got quoted copy: %s", out)
+	}
+	if !strings.Contains(out, `"count":42`) {
+		t.Errorf("benign number must pass through as a JSON number: %s", out)
 	}
 }

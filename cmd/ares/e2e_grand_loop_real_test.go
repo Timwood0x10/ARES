@@ -6,18 +6,18 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/agentfabric"
 	"github.com/Timwood0x10/ares/internal/agents/sub"
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/aresrecovery"
 	"github.com/Timwood0x10/ares/internal/core/models"
-	"github.com/Timwood0x10/ares/internal/taskfabric"
+	"github.com/Timwood0x10/ares/internal/fabric/agent"
+	"github.com/Timwood0x10/ares/internal/fabric/task"
 )
 
-// e2ePhaseCognition is the H2/E1 execution body (A1 Cognition) injected into
+// e2ePhaseCognition is the execution body injected into
 // the fabric agent. Every quantum does real work but yields (Done=false) with
 // a checkpoint — the task stays SUSPENDED with the checkpoint preserved
-// (P1.1 Execution Quantum). Only the W1 replacement executor (created after
+// (execution-quantum semantics). Only the replacement executor (created after
 // the chaos kill) completes the task, so the SUSPENDED window is stable and
 // the test cannot race past it.
 type e2ePhaseCognition struct {
@@ -41,9 +41,9 @@ func (c *e2ePhaseCognition) ExecuteStep(_ context.Context, task *models.Task) (*
 	}, nil
 }
 
-// e2eRecoveryExecutor is the W1 replacement executor the recovery loop
+// e2eRecoveryExecutor is the replacement executor the recovery loop
 // factories when the dead agent leaves no capable executor: it resumes the
-// recovered task from the preserved checkpoint (the E1 proof — the new
+// recovered task from the preserved checkpoint (the new
 // execution body continues where the old one stopped, it does not restart).
 type e2eRecoveryExecutor struct {
 	id          string
@@ -70,7 +70,7 @@ func (e *e2eRecoveryExecutor) resumed() any {
 }
 
 // e2eAgentSink collects agentfabric lifecycle events (agent.spawned/killed/...)
-// so the H2 event-stream assertion can verify the chaos kill is observable.
+// so the event-stream assertion can verify the chaos kill is observable.
 type e2eAgentSink struct {
 	mu    sync.Mutex
 	types []agentfabric.AgentEventType
@@ -94,6 +94,15 @@ func (s *e2eAgentSink) contains(t agentfabric.AgentEventType) bool {
 		}
 	}
 	return false
+}
+
+// snapshot returns a copy of the collected types under the lock, for the same
+// reason as e2eTaskEventLog.snapshot: reading s.types directly from the test
+// goroutine races with Emit.
+func (s *e2eAgentSink) snapshot() []agentfabric.AgentEventType {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]agentfabric.AgentEventType(nil), s.types...)
 }
 
 // e2eTaskEventLog collects ares_events task lifecycle events (task.created /
@@ -120,6 +129,40 @@ func (l *e2eTaskEventLog) contains(t ares_events.EventType) bool {
 	return false
 }
 
+// snapshot returns a copy of the collected types under the lock. Reading
+// l.types directly (e.g. inside a t.Fatalf format arg) races with the
+// subscriber goroutine's append — measured as a `-race` failure once per ~40
+// runs of the grand-loop test.
+func (l *e2eTaskEventLog) snapshot() []ares_events.EventType {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]ares_events.EventType(nil), l.types...)
+}
+
+// waitForEvents polls until every wanted event type has been observed, or the
+// timeout elapses. It returns the missing types (empty when all arrived).
+//
+// A bounded wait is required rather than an instantaneous check: the fabric
+// publishes lifecycle events through the EventStore, and the subscriber
+// goroutine appends them asynchronously. A task can therefore be COMPLETED in
+// the fabric a few microseconds before task.completed lands in this log — which
+// is precisely what made the assertion flaky under `-race -coverprofile`.
+func (l *e2eTaskEventLog) waitForEvents(timeout time.Duration, want ...ares_events.EventType) []ares_events.EventType {
+	deadline := time.Now().Add(timeout)
+	for {
+		missing := make([]ares_events.EventType, 0, len(want))
+		for _, w := range want {
+			if !l.contains(w) {
+				missing = append(missing, w)
+			}
+		}
+		if len(missing) == 0 || time.Now().After(deadline) {
+			return missing
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 // waitFabricState polls until the task reaches the given state or the timeout
 // elapses, returning the final state.
 func waitFabricState(t *testing.T, f *taskfabric.Fabric, taskID string, want taskfabric.TaskState, timeout time.Duration) taskfabric.TaskState {
@@ -139,13 +182,13 @@ func waitFabricState(t *testing.T, f *taskfabric.Fabric, taskID string, want tas
 	return tk.State
 }
 
-// TestE2E_GrandLoop_RealSchedulerChaosRecovery is the H2 total acceptance
-// (aresos-agentos-plan H2) + E1 acceptance together, run through the REAL
+// TestE2E_GrandLoop_RealSchedulerChaosRecovery is the total acceptance test
+// for chaos recovery, run through the REAL
 // scheduling chain — no leader, no planner, no simulation:
 //
 //	Submit(Create) → Schedule → Acquire → RunQuantum(agent-A quantum 1, yield)
 //	→ SUSPENDED + checkpoint preserved → Chaos kill agent-A → lease expiry →
-//	recovery requeues → W1 factory spawns replacement execution body →
+//	recovery requeues → the factory spawns a replacement execution body →
 //	bound executor resumes from the checkpoint → RunQuantum(quantum 2, done)
 //	→ COMPLETED.
 //
@@ -201,7 +244,7 @@ func TestE2E_GrandLoop_RealSchedulerChaosRecovery(t *testing.T) {
 	agentSink := &e2eAgentSink{}
 	agents := agentfabric.NewFabric().WithEventSink(agentSink)
 
-	// ── 1. Spawn agent-A WITH a real execution body (A1) ────────────────
+	// ── 1. Spawn agent-A WITH a real execution body ────────────────
 	cogA := &e2ePhaseCognition{}
 	if _, err := agents.Spawn(ctx, agentfabric.SpawnSpec{
 		Identity:     "agent-A",
@@ -213,17 +256,27 @@ func TestE2E_GrandLoop_RealSchedulerChaosRecovery(t *testing.T) {
 		t.Fatalf("spawn agent-A: %v", err)
 	}
 
-	// ── 2. Scheduler: the fabric is the single candidate source (B1) ────
+	// ── 2. Scheduler: the fabric is the single candidate source ────
 	sched := NewKernelScheduler(fabric, map[string]CapabilityExecutor{}, newLoadTracker())
 	sched.PollInterval = 20 * time.Millisecond
 	sched.WithAgentFabric(agents).WithEventStore(store)
 	go sched.Run(ctx)
 
-	// ── 3. Recovery loop (W1/E1: a REAL replacement execution body) ─────
+	// ── 3. Recovery loop (a REAL replacement execution body) ─────
 	var replacementMu sync.Mutex
 	var replacement *e2eRecoveryExecutor
 	rec := aresrecovery.New(fabric, agents, aresrecovery.DefaultRestartPolicy())
-	go runKernelRecoveryLoop(ctx, store, rec, kernelLoopConfig{},
+	// Wire the scheduler's stale-winner nomination exactly as peer mode
+	// does. Without it this test does not exercise the production chain: a
+	// drain that acquires t1 AFTER the clock advance mints a lease expiring at
+	// (now + TTL), which this controlled clock never reaches — the task then
+	// sits LEASED forever and recovery is never triggered. That was the 1-in-20
+	// flake under `-race -coverprofile` (coverage instrumentation widens the
+	// kill/lookup window). In production the same defect costs a full lease TTL
+	// of dead time per agent death.
+	recoveryKick, recoveryHint := newRecoveryKick()
+	sched.WithRecoveryHint(recoveryHint)
+	go runKernelRecoveryLoop(ctx, store, rec, kernelLoopConfig{RecoveryKick: recoveryKick},
 		func(taskID, agentID string, executor CapabilityExecutor) {
 			sched.RegisterExecutorForTask(taskID, agentID, executor)
 		},
@@ -274,9 +327,33 @@ func TestE2E_GrandLoop_RealSchedulerChaosRecovery(t *testing.T) {
 	}
 
 	// ── 7. Lease expiry → recovery → replacement resumes → COMPLETED ────
-	advance(7 * time.Minute) // past the scheduler's 5-minute lease TTL
-	if state := waitFabricState(t, fabric, "t1", taskfabric.StateCompleted, 10*time.Second); state != taskfabric.StateCompleted {
-		t.Fatalf("task must complete after recovery, got %s", state)
+	//
+	// The controlled clock must keep advancing while we wait, not advance
+	// once. The scheduler is live and also drains SUSPENDED tasks, so a drain
+	// that re-acquires t1 around the chaos kill mints a lease at whatever the
+	// clock reads THEN. With a ONE-SHOT advance that lease can land at
+	// (advancedNow + TTL), which a frozen clock never reaches: the lease never
+	// expires, CheckExpiredLeases never requeues the task, recovery never
+	// fires, and the wait times out — but only when CPU load is heavy enough
+	// to lose the kill/acquire race (isolated runs pass in ~1s). Re-advancing
+	// on every wait round guarantees every lease minted at any point still
+	// expires, so recovery always has a trigger.
+	//
+	// 30s wall budget is ~30x the nominal recovery path (the old 10s deadline
+	// failed the whole suite under full-repo parallel load); each round also
+	// waits longer than the 1s recovery sweep so one expiry → requeue →
+	// replacement → COMPLETED chain can finish before the next advance.
+	var finalState taskfabric.TaskState
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		advance(7 * time.Minute) // past the scheduler's 5-minute lease TTL
+		finalState = waitFabricState(t, fabric, "t1", taskfabric.StateCompleted, 1500*time.Millisecond)
+		if finalState == taskfabric.StateCompleted || !time.Now().Before(deadline) {
+			break
+		}
+	}
+	if finalState != taskfabric.StateCompleted {
+		t.Fatalf("task must complete after recovery, got %s", finalState)
 	}
 
 	// ── 8. Assertions ───────────────────────────────────────────────────
@@ -291,14 +368,17 @@ func TestE2E_GrandLoop_RealSchedulerChaosRecovery(t *testing.T) {
 	} else if phase, ok := resumed.(map[string]any); !ok || phase["phase"] != "investigation-done" {
 		t.Fatalf("replacement resumed from the wrong checkpoint: %v", resumed)
 	}
-	if !taskEvents.contains(ares_events.EventTaskCreated) ||
-		!taskEvents.contains(ares_events.EventTaskAcquired) ||
-		!taskEvents.contains(ares_events.EventTaskYielded) ||
-		!taskEvents.contains(ares_events.EventTaskCompleted) {
-		t.Fatalf("event stream must carry task.created/acquired/yielded/completed, got %v", taskEvents.types)
+	if missing := taskEvents.waitForEvents(2*time.Second,
+		ares_events.EventTaskCreated,
+		ares_events.EventTaskAcquired,
+		ares_events.EventTaskYielded,
+		ares_events.EventTaskCompleted,
+	); len(missing) > 0 {
+		t.Fatalf("event stream must carry task.created/acquired/yielded/completed, missing %v, got %v",
+			missing, taskEvents.snapshot())
 	}
 	if !agentSink.contains(agentfabric.EventAgentKilled) {
-		t.Fatalf("agent event stream must carry agent.killed, got %v", agentSink.types)
+		t.Fatalf("agent event stream must carry agent.killed, got %v", agentSink.snapshot())
 	}
 	// Leader OFF: the whole run used only taskfabric + agentfabric + the
 	// scheduler — no leader dispatcher, no planner participated.

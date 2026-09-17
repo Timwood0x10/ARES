@@ -12,7 +12,7 @@ import (
 )
 
 // JWT implementation (HS256) built on the standard library only. A third-party
-// JWT library is deliberately avoided (code_rules_v2 §10.1: prefer stdlib).
+// JWT library is deliberately avoided (prefer stdlib).
 // HS256 is HMAC-SHA256 over base64url(header).base64url(payload); only the
 // signed form is accepted on verify — the payload is never trusted as-is.
 //
@@ -36,6 +36,10 @@ var (
 	ErrInvalidToken  = errors.New("invalid token")
 	ErrTokenExpired  = errors.New("token expired")
 	ErrTokenTooEarly = errors.New("token not yet valid")
+	// ErrUnconfiguredSecret means the verifier was handed an empty HMAC key.
+	// It is a server misconfiguration, not a client error: callers must fail
+	// closed with 5xx and a loud log, never accept the token.
+	ErrUnconfiguredSecret = errors.New("jwt: unconfigured secret")
 )
 
 // jwtClaims is the wire format of a signed token. NumericDate claims are Unix
@@ -53,7 +57,7 @@ type jwtClaims struct {
 // or subject is rejected up front so no unsigned-looking token ever exists.
 func SignJWT(secret []byte, subject, role string, ttl time.Duration, now time.Time) (string, error) {
 	if len(secret) == 0 {
-		return "", errors.New("jwt: empty secret")
+		return "", ErrUnconfiguredSecret
 	}
 	if subject == "" || role == "" {
 		return "", errors.New("jwt: subject and role are required")
@@ -82,7 +86,7 @@ func VerifyJWT(secret []byte, token string, now time.Time) (subject, role string
 	if claims.Expires == 0 {
 		return "", "", fmt.Errorf("%w: missing exp", ErrInvalidToken)
 	}
-	if now.Unix() > claims.Expires {
+	if now.Unix() >= claims.Expires {
 		return "", "", fmt.Errorf("%w: expired at %d", ErrTokenExpired, claims.Expires)
 	}
 	if claims.Issued > 0 && now.Unix() < claims.Issued {
@@ -113,12 +117,36 @@ func encodeSigned(secret []byte, claims jwtClaims) (string, error) {
 
 // decodeSigned verifies the signature and parses the claims. The signature is
 // checked before any payload field is trusted (constant-time compare).
+//
+// An empty secret is refused here rather than only in SignJWT: HMAC with a
+// zero-length key is still a well-defined signature, so without this guard any
+// attacker could mint a token signed with the empty key and pass verification.
+// Verification is the security boundary, so the guard belongs on this choke
+// point and not on the caller.
 func decodeSigned(secret []byte, token string) (jwtClaims, error) {
+	if len(secret) == 0 {
+		return jwtClaims{}, ErrUnconfiguredSecret
+	}
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
 		return jwtClaims{}, fmt.Errorf("%w: wrong part count", ErrInvalidToken)
 	}
 	enc := base64.RawURLEncoding
+	// JOSE header alg check (defense-in-depth): verification below always
+	// computes HS256 regardless of the header, so a token claiming alg=none
+	// or RS256 cannot actually bypass the HMAC check. Rejecting a
+	// mismatched header anyway makes the pinned algorithm explicit and
+	// fails closed if the verification code is ever made header-driven.
+	header, err := enc.DecodeString(parts[0])
+	if err != nil {
+		return jwtClaims{}, fmt.Errorf("%w: bad header encoding", ErrInvalidToken)
+	}
+	var jose struct {
+		Alg string `json:"alg"`
+	}
+	if err := json.Unmarshal(header, &jose); err != nil || jose.Alg != "HS256" {
+		return jwtClaims{}, fmt.Errorf("%w: unsupported alg", ErrInvalidToken)
+	}
 	sig, err := enc.DecodeString(parts[2])
 	if err != nil {
 		return jwtClaims{}, fmt.Errorf("%w: bad signature encoding", ErrInvalidToken)

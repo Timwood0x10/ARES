@@ -2,6 +2,7 @@ package discovery
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -9,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	api_mcp "github.com/Timwood0x10/ares/api/mcp"
+	api_mcp "github.com/Timwood0x10/ares/internal/mcpclient"
 )
 
 // allowedMCPBinaryDirs lists directories whose binaries are trusted to be
@@ -36,7 +37,7 @@ func NewMCPHealthChecker(timeout time.Duration) *MCPHealthChecker {
 
 func (c *MCPHealthChecker) CheckHealth(ctx context.Context, svc *DiscoveredService) (*HealthStatus, error) {
 	if svc == nil {
-		return nil, fmt.Errorf("service is nil")
+		return nil, errors.New("service is nil")
 	}
 
 	// Pick best endpoint.

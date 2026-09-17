@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/tools/resources/base"
+	aresnet "github.com/Timwood0x10/ares/internal/tools/resources/builtin/network"
 	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
 
@@ -83,9 +84,37 @@ func NewEmbeddingTool(baseURL string) *EmbeddingTool {
 				"Supports single text embedding and batch embedding of multiple texts. "+
 				"Uses e5-large model (1024 dimensions) with Redis caching for performance.",
 			core.CategoryExternal, []core.Capability{core.CapabilityExternal}, params),
-		client:  &http.Client{Timeout: 30 * time.Second},
+		client:  newEmbeddingHTTPClient(30 * time.Second),
 		baseURL: baseURL,
 	}
+}
+
+// newEmbeddingHTTPClient builds the tool's HTTP client. Redirects are
+// capped (an embedding service should never redirect; a redirecting one is
+// a misconfiguration or compromise) but NOT IP-filtered: the base URL is
+// operator-configured and a localhost embedding service is a legitimate,
+// common deployment.
+func newEmbeddingHTTPClient(timeout time.Duration) *http.Client {
+	return &http.Client{
+		Timeout: timeout,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= aresnet.MaxHTTPRedirects {
+				return fmt.Errorf("embedding service redirected more than %d times", aresnet.MaxHTTPRedirects)
+			}
+			return nil
+		},
+	}
+}
+
+// readEmbeddingBody enforces the two response hygiene rules every call site
+// previously skipped: the HTTP status is checked (a 4xx/5xx HTML error page
+// used to surface as a confusing JSON-parse error), and the body is capped
+// (a misbehaving service could OOM the process with an unbounded response).
+func readEmbeddingBody(resp *http.Response) ([]byte, error) {
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("embedding service returned %s", resp.Status)
+	}
+	return io.ReadAll(io.LimitReader(resp.Body, aresnet.MaxHTTPResponseBytes))
 }
 
 // Execute performs the embedding operation.
@@ -118,7 +147,7 @@ func (t *EmbeddingTool) checkHealth(ctx context.Context) (core.Result, error) {
 		}
 	}()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := readEmbeddingBody(resp)
 	if err != nil {
 		return core.NewErrorResult(fmt.Sprintf("read response: %v", err)), nil
 	}
@@ -160,7 +189,7 @@ func (t *EmbeddingTool) embedText(ctx context.Context, params map[string]interfa
 		}
 	}()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := readEmbeddingBody(resp)
 	if err != nil {
 		return core.NewErrorResult(fmt.Sprintf("read response: %v", err)), nil
 	}
@@ -185,7 +214,15 @@ func (t *EmbeddingTool) embedBatch(ctx context.Context, params map[string]interf
 	}
 	texts := make([]string, len(textsRaw))
 	for i, v := range textsRaw {
-		texts[i], _ = v.(string)
+		s, ok := v.(string)
+		if !ok {
+			// A non-string element would be silently zero-folded into "",
+			// sending empty texts to the embedding service (wasted calls,
+			// meaningless vectors). Reject the whole batch naming the index
+			// so the caller can fix its arguments.
+			return core.NewErrorResult(fmt.Sprintf("'texts'[%d] must be a string, got %T", i, v)), nil
+		}
+		texts[i] = s
 	}
 	prefix, _ := params["prefix"].(string)
 	if prefix == "" {
@@ -212,7 +249,7 @@ func (t *EmbeddingTool) embedBatch(ctx context.Context, params map[string]interf
 		}
 	}()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := readEmbeddingBody(resp)
 	if err != nil {
 		return core.NewErrorResult(fmt.Sprintf("read response: %v", err)), nil
 	}

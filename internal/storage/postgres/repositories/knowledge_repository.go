@@ -47,15 +47,9 @@ func (r *KnowledgeRepository) Create(ctx context.Context, chunk *storage_models.
 		return errors.Wrap(err, "marshal metadata")
 	}
 
-	// Handle nil or empty embedding
-	var embeddingStr interface{}
-	if len(chunk.Embedding) == 0 {
-		// Empty embedding: set to NULL in database
-		embeddingStr = nil
-	} else {
-		// Convert embedding vector to pgvector format
-		embeddingStr = postgres.FormatVector(chunk.Embedding)
-	}
+	// Handle nil or empty embedding: an empty vector binds SQL NULL (pgvector
+	// rejects the zero-dimension literal for a VECTOR(n) column).
+	embeddingStr := postgres.VectorArg(chunk.Embedding)
 
 	// Handle optional document_id
 	var documentID interface{}
@@ -82,7 +76,7 @@ func (r *KnowledgeRepository) Create(ctx context.Context, chunk *storage_models.
 				 embedding_status, source_type, source, metadata, document_id,
 				 chunk_index, content_hash, access_count, created_at, updated_at)
 				VALUES ($1, $2, NULL, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW(), NOW())
-				ON CONFLICT (content_hash) DO UPDATE SET
+				ON CONFLICT (tenant_id, content_hash) DO UPDATE SET
 					access_count = knowledge_chunks_1024.access_count + 1,
 					updated_at = NOW()
 				RETURNING id
@@ -100,7 +94,7 @@ func (r *KnowledgeRepository) Create(ctx context.Context, chunk *storage_models.
 				 embedding_status, source_type, source, metadata, document_id,
 				 chunk_index, content_hash, access_count, created_at, updated_at)
 				VALUES ($1, $2, NULL, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
-				ON CONFLICT (content_hash) DO UPDATE SET
+				ON CONFLICT (tenant_id, content_hash) DO UPDATE SET
 					access_count = knowledge_chunks_1024.access_count + 1,
 					updated_at = NOW()
 				RETURNING id
@@ -121,7 +115,7 @@ func (r *KnowledgeRepository) Create(ctx context.Context, chunk *storage_models.
 				 embedding_status, source_type, source, metadata, document_id,
 				 chunk_index, content_hash, access_count, created_at, updated_at)
 				VALUES ($1, $2, $3::vector, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW(), NOW())
-				ON CONFLICT (content_hash) DO UPDATE SET
+				ON CONFLICT (tenant_id, content_hash) DO UPDATE SET
 					access_count = knowledge_chunks_1024.access_count + 1,
 					updated_at = NOW()
 				RETURNING id
@@ -139,7 +133,7 @@ func (r *KnowledgeRepository) Create(ctx context.Context, chunk *storage_models.
 				 embedding_status, source_type, source, metadata, document_id,
 				 chunk_index, content_hash, access_count, created_at, updated_at)
 				VALUES ($1, $2, $3::vector, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
-				ON CONFLICT (content_hash) DO UPDATE SET
+				ON CONFLICT (tenant_id, content_hash) DO UPDATE SET
 					access_count = knowledge_chunks_1024.access_count + 1,
 					updated_at = NOW()
 				RETURNING id
@@ -266,34 +260,41 @@ func (r *KnowledgeRepository) CreateBatch(ctx context.Context, chunks []*storage
 			INSERT INTO knowledge_chunks_1024
 			(%s)
 			VALUES %s
-			ON CONFLICT (content_hash) DO UPDATE SET
+			ON CONFLICT (tenant_id, content_hash) DO UPDATE SET
 				access_count = knowledge_chunks_1024.access_count + 1,
 				updated_at = NOW()
-			RETURNING id, content_hash`, columns, valuesClause.String())
+			RETURNING id, tenant_id, content_hash`, columns, valuesClause.String())
 
 		rows, qerr := tx.QueryContext(ctx, query, params...)
 		if qerr != nil {
 			return errors.Wrapf(qerr, "batch insert starting at %d", batchStart)
 		}
 
-		// Map returned IDs back to input chunks by content_hash.
-		idByHash := make(map[string]string, len(batch))
+		// Map returned IDs back to input chunks by (tenant_id, content_hash):
+		// with the per-tenant unique constraint two tenants in one batch can
+		// legitimately share a content_hash, and a hash-only map would assign
+		// one tenant's row id to the other's chunk.
+		type tenantHashKey struct {
+			tenantID string
+			hash     string
+		}
+		idByTenantHash := make(map[tenantHashKey]string, len(batch))
 		for rows.Next() {
-			var id, contentHash string
-			if err := rows.Scan(&id, &contentHash); err != nil {
+			var id, tenantID, contentHash string
+			if err := rows.Scan(&id, &tenantID, &contentHash); err != nil {
 				if err := rows.Close(); err != nil {
 					return errors.Wrap(err, "close rows")
 				}
 				return errors.Wrap(err, "scan returned id")
 			}
-			idByHash[contentHash] = id
+			idByTenantHash[tenantHashKey{tenantID: tenantID, hash: contentHash}] = id
 		}
 		if err := rows.Close(); err != nil {
 			return errors.Wrap(err, "close rows")
 		}
 
 		for j := batchStart; j < batchEnd; j++ {
-			if id, ok := idByHash[chunks[j].ContentHash]; ok {
+			if id, ok := idByTenantHash[tenantHashKey{tenantID: chunks[j].TenantID, hash: chunks[j].ContentHash}]; ok {
 				chunks[j].ID = id
 			}
 		}
@@ -312,24 +313,32 @@ func (r *KnowledgeRepository) CreateBatch(ctx context.Context, chunks []*storage
 // ctx - database operation context.
 // id - knowledge chunk ID, must be non-empty.
 // Returns knowledge chunk or error if not found or invalid argument.
-func (r *KnowledgeRepository) GetByID(ctx context.Context, id string) (*storage_models.KnowledgeChunk, error) {
+func (r *KnowledgeRepository) GetByID(ctx context.Context, tenantID, id string) (*storage_models.KnowledgeChunk, error) {
 	if id == "" {
 		return nil, errors.ErrInvalidArgument
 	}
+	if tenantID == "" {
+		return nil, postgres.ErrMissingTenantID
+	}
 
 	query := `
-		SELECT id, tenant_id, content, embedding_model, embedding_version,
+		SELECT id, tenant_id, content, embedding::text, embedding_model, embedding_version,
 			   embedding_status, source_type, source, metadata::text, document_id,
 			   chunk_index, content_hash, access_count, created_at, updated_at
 		FROM knowledge_chunks_1024
-		WHERE id = $1
+		WHERE id = $1 AND tenant_id = $2
 	`
 
 	chunk := &storage_models.KnowledgeChunk{}
-	var metadataStr string
+	// embedding is nullable: the async embedding worker inserts the row first
+	// and backfills the vector later, so a row awaiting backfill has
+	// embedding = NULL. Scanning that into a plain string fails with
+	// "converting NULL to string is unsupported" and made every un-embedded
+	// chunk unreadable by id.
+	var embeddingStr, metadataStr sql.NullString
 	var documentID sql.NullString
-	err := r.db.QueryRowContext(ctx, query, id).Scan(
-		&chunk.ID, &chunk.TenantID, &chunk.Content,
+	err := r.db.QueryRowContext(ctx, query, id, tenantID).Scan(
+		&chunk.ID, &chunk.TenantID, &chunk.Content, &embeddingStr,
 		&chunk.EmbeddingModel, &chunk.EmbeddingVersion, &chunk.EmbeddingStatus,
 		&chunk.SourceType, &chunk.Source, &metadataStr, &documentID,
 		&chunk.ChunkIndex, &chunk.ContentHash, &chunk.AccessCount,
@@ -343,9 +352,21 @@ func (r *KnowledgeRepository) GetByID(ctx context.Context, id string) (*storage_
 		return nil, errors.Wrap(err, "get knowledge chunk by id")
 	}
 
+	// Parse embedding vector. Callers (e.g. CorrectKnowledge) read the chunk,
+	// mutate it, and write it back via Update; a NULL stays an empty slice so
+	// the write-back binds NULL again (see postgres.VectorArg) instead of
+	// corrupting the vector with a zero-dimension literal.
+	if embeddingStr.Valid && embeddingStr.String != "" {
+		embedding, err := postgres.ParseVectorString(embeddingStr.String)
+		if err != nil {
+			return nil, errors.Wrap(err, "parse embedding")
+		}
+		chunk.Embedding = embedding
+	}
+
 	// Parse metadata JSON string to map
-	if metadataStr != "" {
-		if err := json.Unmarshal([]byte(metadataStr), &chunk.Metadata); err != nil {
+	if metadataStr.Valid && metadataStr.String != "" {
+		if err := json.Unmarshal([]byte(metadataStr.String), &chunk.Metadata); err != nil {
 			return nil, errors.Wrap(err, "parse metadata")
 		}
 	}
@@ -364,14 +385,20 @@ func (r *KnowledgeRepository) GetByID(ctx context.Context, id string) (*storage_
 // chunk - knowledge chunk with updated values.
 // Returns error if update operation fails.
 func (r *KnowledgeRepository) Update(ctx context.Context, chunk *storage_models.KnowledgeChunk) error {
+	if chunk.TenantID == "" {
+		return postgres.ErrMissingTenantID
+	}
 	// Convert metadata to JSON for database storage
 	metadataJSON, err := json.Marshal(chunk.Metadata)
 	if err != nil {
 		return errors.Wrap(err, "marshal metadata")
 	}
 
-	// Convert embedding vector to pgvector format
-	embeddingStr := postgres.FormatVector(chunk.Embedding)
+	// Convert embedding vector to pgvector format. An empty vector must bind
+	// NULL: this is a read-modify-write path (callers fetch a chunk via
+	// GetByID, mutate a field, write it back), and rows awaiting async
+	// embedding backfill legitimately have no vector yet.
+	embeddingStr := postgres.VectorArg(chunk.Embedding)
 
 	// Handle optional document_id
 	var documentID interface{}
@@ -386,13 +413,13 @@ func (r *KnowledgeRepository) Update(ctx context.Context, chunk *storage_models.
 		SET content = $2, embedding = $3::vector, embedding_status = $4,
 			source_type = $5, source = $6, metadata = $7,
 			document_id = $8, chunk_index = $9, access_count = $10, updated_at = NOW()
-		WHERE id = $1
+		WHERE id = $1 AND tenant_id = $11
 	`
 
 	result, err := r.db.ExecContext(ctx, query,
 		chunk.ID, chunk.Content, embeddingStr, chunk.EmbeddingStatus,
 		chunk.SourceType, chunk.Source, metadataJSON,
-		documentID, chunk.ChunkIndex, chunk.AccessCount,
+		documentID, chunk.ChunkIndex, chunk.AccessCount, chunk.TenantID,
 	)
 	if err != nil {
 		return errors.Wrap(err, "update knowledge chunk")
@@ -420,6 +447,17 @@ func (r *KnowledgeRepository) Delete(ctx context.Context, id, tenantID string) e
 }
 
 // SearchByVector performs vector similarity search.
+//
+// `embedding_status = 'completed'` is not a substitute for `embedding IS NOT
+// NULL`: UpdateEmbeddingStatus can flip the status without writing a vector, so
+// the two predicates can disagree. Filtering NULL vectors does NOT increase the
+// number of rows returned — `ORDER BY <dist>` is ascending and PostgreSQL sorts
+// NULLs last, so a vector-less row could never outrank a real one. It matters
+// because such a row would otherwise reach the scan loop, fail to parse, and be
+// dropped by a bare `continue`, which is indistinguishable from "the tenant has
+// little knowledge"; it also spares the executor rows it cannot rank and gives
+// the planner a usable filter.
+//
 // Args:
 // ctx - database operation context.
 // embedding - query vector embedding.
@@ -427,6 +465,12 @@ func (r *KnowledgeRepository) Delete(ctx context.Context, id, tenantID string) e
 // limit - maximum number of results to return.
 // Returns list of similar knowledge chunks ordered by similarity.
 func (r *KnowledgeRepository) SearchByVector(ctx context.Context, embedding []float64, tenantID string, limit int) ([]*storage_models.KnowledgeChunk, error) {
+	// Fail closed on an empty embedding (invalid vector-search input) with a
+	// clear error instead of letting pgvector reject a zero-dimension literal.
+	// Matches every other repository's SearchByVector contract.
+	if len(embedding) == 0 {
+		return nil, errors.New("search by vector: embedding must not be empty")
+	}
 	log.Info("SearchByVector called",
 		"embedding_length", len(embedding),
 		"tenant_id", tenantID,
@@ -440,6 +484,7 @@ func (r *KnowledgeRepository) SearchByVector(ctx context.Context, embedding []fl
 		FROM knowledge_chunks_1024
 		WHERE tenant_id = $2
 		  AND embedding_status = 'completed'
+		  AND embedding IS NOT NULL
 		ORDER BY embedding <=> $1::vector
 		LIMIT $3
 	`
@@ -519,6 +564,14 @@ func (r *KnowledgeRepository) SearchByVector(ctx context.Context, embedding []fl
 
 	log.Info("Vector search completed", "rows_scanned", rowCount, "chunks_returned", len(chunks))
 
+	// A gap between scanned and returned means rows were dropped by one of the
+	// `continue` branches above. Info-level parity would hide that, and a
+	// shrinking result set is exactly what an operator needs to notice.
+	if rowCount != len(chunks) {
+		log.Warn("Vector search dropped knowledge rows",
+			"tenant_id", tenantID, "skipped", rowCount-len(chunks), "returned", len(chunks))
+	}
+
 	return chunks, nil
 }
 
@@ -529,6 +582,11 @@ func (r *KnowledgeRepository) SearchByVector(ctx context.Context, embedding []fl
 // tenantID - tenant identifier for isolation.
 // limit - maximum number of results to return.
 // Returns list of matching knowledge chunks ordered by relevance.
+//
+// No embedding_status filter here (unlike the vector path): keyword search
+// runs on the tsvector column and needs no vector, so filtering on
+// 'completed' hid never-embedded or failed-embedding chunks from lexical
+// recall for no reason.
 func (r *KnowledgeRepository) SearchByKeyword(ctx context.Context, query, tenantID string, limit int) ([]*storage_models.KnowledgeChunk, error) {
 	sqlQuery := `
         SELECT id, tenant_id, content, embedding_model, embedding_version,
@@ -538,7 +596,6 @@ func (r *KnowledgeRepository) SearchByKeyword(ctx context.Context, query, tenant
         FROM knowledge_chunks_1024
         WHERE tsv @@ plainto_tsquery('simple', $1)
           AND tenant_id = $2
-          AND embedding_status = 'completed'
         ORDER BY ts_rank(tsv, plainto_tsquery('simple', $1)) DESC
         LIMIT $3
     `
@@ -733,7 +790,16 @@ func (r *KnowledgeRepository) SearchBySubstring(ctx context.Context, query, tena
 // model - embedding model name.
 // version - embedding model version.
 // Returns error if update operation fails.
-func (r *KnowledgeRepository) UpdateEmbedding(ctx context.Context, id string, embedding []float64, model string, version int) error {
+func (r *KnowledgeRepository) UpdateEmbedding(ctx context.Context, tenantID, id string, embedding []float64, model string, version int) error {
+	if tenantID == "" {
+		return postgres.ErrMissingTenantID
+	}
+	// An explicit "set the vector" call must carry a vector: FormatVector
+	// would otherwise bind the zero-dimension literal "[]", which pgvector
+	// rejects with an opaque dimension error.
+	if len(embedding) == 0 {
+		return errors.ErrInvalidArgument
+	}
 	embeddingStr := postgres.FormatVector(embedding)
 
 	query := `
@@ -741,10 +807,10 @@ func (r *KnowledgeRepository) UpdateEmbedding(ctx context.Context, id string, em
         SET embedding = $2::vector, embedding_model = $3, embedding_version = $4,
             embedding_status = 'completed', embedding_processed_at = NOW(),
             updated_at = NOW()
-        WHERE id = $1
+        WHERE id = $1 AND tenant_id = $5
     `
 
-	result, err := r.db.ExecContext(ctx, query, id, embeddingStr, model, version)
+	result, err := r.db.ExecContext(ctx, query, id, embeddingStr, model, version, tenantID)
 	if err != nil {
 		return errors.Wrap(err, "update embedding")
 	}
@@ -768,14 +834,17 @@ func (r *KnowledgeRepository) UpdateEmbedding(ctx context.Context, id string, em
 // status - new embedding status.
 // error - error message if status is failed.
 // Returns error if update operation fails.
-func (r *KnowledgeRepository) UpdateEmbeddingStatus(ctx context.Context, id, status, errorMsg string) error {
+func (r *KnowledgeRepository) UpdateEmbeddingStatus(ctx context.Context, tenantID, id, status, errorMsg string) error {
+	if tenantID == "" {
+		return postgres.ErrMissingTenantID
+	}
 	query := `
 		UPDATE knowledge_chunks_1024
 		SET embedding_status = $2, embedding_error = $3, updated_at = NOW()
-		WHERE id = $1
+		WHERE id = $1 AND tenant_id = $4
 	`
 
-	result, err := r.db.ExecContext(ctx, query, id, status, errorMsg)
+	result, err := r.db.ExecContext(ctx, query, id, status, errorMsg, tenantID)
 	if err != nil {
 		return errors.Wrap(err, "update embedding status")
 	}
@@ -795,16 +864,23 @@ func (r *KnowledgeRepository) UpdateEmbeddingStatus(ctx context.Context, id, sta
 // CleanupExpired removes knowledge chunks that are no longer needed.
 // Args:
 // ctx - database operation context.
+// tenantID - tenant identifier for isolation; empty is rejected.
 // olderThan - cutoff time for deletion.
 // Returns number of deleted chunks or error if operation fails.
-func (r *KnowledgeRepository) CleanupExpired(ctx context.Context, olderThan time.Time) (int64, error) {
+func (r *KnowledgeRepository) CleanupExpired(ctx context.Context, tenantID string, olderThan time.Time) (int64, error) {
+	// Fail closed on an empty tenant: a tenant-less DELETE purges every
+	// tenant's chunks, and the maintenance worker runs it on a schedule (S-10).
+	if tenantID == "" {
+		return 0, postgres.ErrMissingTenantID
+	}
 	query := `
 		DELETE FROM knowledge_chunks_1024
 		WHERE updated_at < $1
 		  AND access_count < 10
+		  AND tenant_id = $2
 	`
 
-	result, err := r.db.ExecContext(ctx, query, olderThan)
+	result, err := r.db.ExecContext(ctx, query, olderThan, tenantID)
 	if err != nil {
 		return 0, errors.Wrap(err, "cleanup expired chunks")
 	}

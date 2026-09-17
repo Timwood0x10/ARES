@@ -48,4 +48,20 @@ const (
 type WorkingGraph struct {
 	Nodes map[string]*KnowledgeObject `json:"nodes"`
 	Edges []Relation                  `json:"edges"`
+	// PartialErrors names the data sources that failed while this graph was
+	// being assembled, in provider: error form. A non-empty slice means the
+	// graph is INCOMPLETE: a provider stream error used to be logged and
+	// dropped, so Execute returned a graph missing an entire source and no
+	// caller could distinguish "this is everything" from "one source died".
+	// Callers that need completeness must check this before trusting the
+	// graph as a full answer.
+	PartialErrors []string `json:"partial_errors,omitempty"`
+}
+
+// RelationKey identifies a graph edge by its endpoints and relationship name.
+// Used for duplicate detection when aggregating edges from multiple linkers.
+type RelationKey struct {
+	From string
+	To   string
+	Name string
 }

@@ -4,7 +4,20 @@ import "time"
 
 // Task represents a recommendation task.
 type Task struct {
-	TaskID           string         `json:"task_id"`
+	TaskID string `json:"task_id"`
+	// SessionID scopes the task to a conversational session when the source
+	// has one (REVIEW #61). Populated by callers that know the session
+	// (e.g. DistillTask reading agent_checkpoints); empty for session-less
+	// sources (experience search, collaboration tasks).
+	SessionID string `json:"session_id,omitempty"`
+	// TaskType and AgentType are MIRRORS: both carry the capability of the
+	// agent that executes the task, kept as two fields only because
+	// different consumers read different JSON keys ("task_type" is the
+	// persistence/event key, "agent_type" the scheduler-facing one).
+	// NewTask stamps both; writers that set one after construction must set
+	// the other too, or the mirrors diverge (the known drift risk).
+	// TODO(tech-debt): collapse to one field with both JSON keys served at
+	// the serialization boundary.
 	TaskType         AgentType      `json:"task_type"`
 	AgentType        AgentType      `json:"agent_type"`
 	UserProfile      *UserProfile   `json:"user_profile"`
@@ -13,7 +26,20 @@ type Task struct {
 	Priority         int            `json:"priority"`
 	Deadline         time.Time      `json:"deadline"`
 	UsedExperienceID string         `json:"used_experience_id,omitempty"` // Experience ID used for this task (bandit feedback).
-	CreatedAt        time.Time      `json:"created_at"`
+	// StrategyID is the evolution strategy active when the task was submitted
+	// (evolution loop closure). It is stamped once at submission and never
+	// re-read, so the executor's task.completed/failed events attribute the
+	// outcome to the strategy that actually chose the prompt/params.
+	StrategyID string `json:"strategy_id,omitempty"`
+	// TenantID scopes the task to one tenant. It rides the fabric checkpoint
+	// envelope so it survives the scheduler's asynchronous execution, and the
+	// execution path stamps it into the quantum's context (tenantctx) so
+	// tool calls and knowledge recall resolve the same tenant the write side
+	// (distillation) attributes facts to. Empty means "no tenant known" —
+	// consumers fall back to their documented defaults, never to another
+	// tenant's scope.
+	TenantID  string    `json:"tenant_id,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 // TaskContext contains task dependencies and coordination data.

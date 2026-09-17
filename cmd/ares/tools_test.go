@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/Timwood0x10/ares/internal/ares_config"
 	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
 
@@ -23,7 +24,7 @@ func (m *mockTool) Execute(_ context.Context, _ map[string]interface{}) (core.Re
 
 // TestNewToolRegistry verifies the public tool registry is created correctly.
 func TestNewToolRegistry(t *testing.T) {
-	reg, err := newToolRegistry()
+	reg, err := newToolRegistry(&ares_config.Config{})
 	if err != nil {
 		t.Fatalf("newToolRegistry() failed: %v", err)
 	}

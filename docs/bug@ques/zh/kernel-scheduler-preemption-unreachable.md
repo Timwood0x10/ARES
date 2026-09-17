@@ -4,7 +4,7 @@
 - **严重度**: P2 / Medium（功能假接线：API 存在、测试存在，但生产路径永不触发）
 - **状态**: 已修复
 - **日期**: 2026-08-22
-- **涉及包**: `internal/kernelscheduler`
+- **涉及包**: `internal/kernel`
 
 ## 现象
 
@@ -44,7 +44,7 @@ s.PreemptLowerPriority(tasks) // 只在这里调用
 ## 修复
 
 `Run` 增加一个受管 watcher goroutine（ctx 退出即止、单次扫描带 recover 边界，
-符合 code_rules_v2 §4.1/§4.2）：每个 poll tick 独立执行一次
+符合 code_rules_v2 第4.1节/第4.2节）：每个 poll tick 独立执行一次
 `PreemptLowerPriority(ResumableTasks())`，不再依赖会阻塞的 drain 主循环。
 
 语义保持"quantum 永不在步内被打断"：抢占只改 durable 状态（RUNNING→READY、
@@ -56,7 +56,7 @@ epoch 不匹配，benign）。下一个可用 drain 重新 Acquire 被抢占的�
 
 ## 复现与回归测试
 
-`internal/kernelscheduler/scheduler_contract_test.go`:
+`internal/kernel/scheduler_contract_test.go`:
 
 ```
 TestPreemptLowerPriorityHandsBackRunningTask

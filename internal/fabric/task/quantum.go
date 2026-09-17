@@ -1,0 +1,136 @@
+package taskfabric
+
+import (
+	"context"
+	"errors"
+	"fmt"
+)
+
+// QuantumStep is one Agent Step executed inside a quantum
+// (ares-runtime.md): reasoning → tool call → observation. It returns the
+// durable checkpoint (progress so far) and whether the task is complete.
+type QuantumStep func() (checkpoint any, done bool, err error)
+
+// RunQuantum executes a single execution quantum: start the leased task, run
+// one agent step, then decide at the quantum boundary (yield is the execution
+// boundary, not a state decision):
+//
+//	done  → COMPLETED (preserving the checkpoint's worker result)
+//	err   → FAILED (or requeued to READY per retry policy); a cancellation
+//	        (context.Canceled) is RELEASED instead — READY, unowned, retry
+//	        budget untouched, previous checkpoint preserved
+//	!done → SUSPENDED with the checkpoint preserved
+//
+// SUSPENDED semantics:
+// the agent's execution quantum ended, but the task's durable intent is NOT
+// yet complete — this is not "the agent was suspended". Task suspended ≠
+// Agent suspended ≠ Execution yielded. Continue is the Scheduler's decision
+// via re-acquire; the state machine never does RUNNING→RUNNING directly. The
+// fencing token (epoch) is verified on every step so a stale holder cannot
+// drive a task it no longer owns.
+//
+// Panic boundary: a panic inside the step is recovered HERE and converted
+// into a step error so the fabric's own state machine stays consistent —
+// the task is failed/requeued through the normal retry policy instead of
+// being left RUNNING with a live lease until TTL expiry. Pre-fix the panic
+// propagated straight through RunQuantum, skipping the Fail transition
+// entirely; every caller had to install its own recover or crash.
+//
+// The done→COMPLETED path preserves the checkpoint (worker result) so the
+// kernel dispatch can read it back: kernelTaskDispatcher.Dispatch subscribes
+// to EventTaskCompleted, infers the task is done, then reads the completed
+// task's Checkpoint for the worker's real items/reason (serve result-reflux).
+//
+// Args:
+//   - taskID: the task id.
+//   - agentID: the executing agent (must hold the lease).
+//   - epoch: the fencing token returned by Acquire.
+//   - step: the agent step to run inside this quantum.
+//
+// Returns:
+//   - error: ErrNotOwner / ErrEpochMismatch / ErrIllegalState, the step's own
+//     error (after the FAIL or Release transition was applied), or the
+//     outcome of the quantum transition.
+//
+// Error propagation contract: when step returns an error, RunQuantum applies
+// a fabric transition and then RETURNS the step error instead of swallowing
+// it. Callers (kernelscheduler outcome attribution, dispatch logging) must
+// observe failures as failures — a swallowed error made the scheduler record
+// failed quanta as successes, inflating agent confidence and hiding every
+// task failure from logs.
+//
+// Cancellation is not a failure: a step error that wraps context.Canceled is
+// released (READY, unowned, retry budget untouched) rather than failed. The
+// kernel cancels the drain context on scheduler shutdown, so every in-flight
+// step returns context.Canceled — routing that through Fail burned
+// RetryPolicy.Attempts and, for a zero-retry task (the Create default),
+// finalized it FAILED and cascaded the whole downstream subgraph. The
+// must-persist task.failed event then made the loss permanent across
+// restart, even though nothing had actually failed. The kernel's own outcome
+// attribution already exempted context.Canceled from confidence scoring
+// (scheduler_quantum.go); this is the matching fabric-side half.
+func (f *Fabric) RunQuantum(taskID, agentID string, epoch uint64, step QuantumStep) error {
+	if err := f.Start(taskID, agentID, epoch); err != nil {
+		return err
+	}
+	// Count this quantum BEFORE the step runs: every attempt at the task's
+	// semantic progress — whether it yields, fails or completes — is one
+	// quantum. The count accumulates across lease holders (yield→resume,
+	// preemption, chaos replacement), so the panel's "Quantum #N" is the
+	// task's true execution depth, not the current holder's.
+	f.mu.Lock()
+	if t, ok := f.tasks[taskID]; ok {
+		t.Quantum++
+		t.UpdatedAt = f.now()
+	}
+	f.mu.Unlock()
+
+	checkpoint, done, stepErr := runStepRecovered(step)
+	if stepErr != nil {
+		if isCancellation(stepErr) {
+			// Release hands the task back to READY unowned and leaves the
+			// previous checkpoint in place, so the next drain re-acquires
+			// and resumes from the same PCB.
+			if releaseErr := f.Release(taskID, agentID, epoch); releaseErr != nil {
+				return errors.Join(stepErr, releaseErr)
+			}
+			return stepErr
+		}
+		if failErr := f.Fail(taskID, agentID, epoch); failErr != nil {
+			return errors.Join(stepErr, failErr)
+		}
+		return stepErr
+	}
+	if done {
+		// Preserve the step's output in the task so the kernel dispatch
+		// can read it back. A nil checkpoint means the quantum produced no
+		// output (pure state machine progress) — plain Complete still works.
+		if checkpoint != nil {
+			return f.CompleteWithCheckpoint(taskID, agentID, epoch, checkpoint)
+		}
+		return f.Complete(taskID, agentID, epoch)
+	}
+	return f.Yield(taskID, agentID, epoch, checkpoint)
+}
+
+// isCancellation reports whether err is a deliberate stop rather than a task
+// failure: context.Canceled anywhere in the chain (scheduler shutdown,
+// operator cancel). context.DeadlineExceeded is deliberately NOT treated as
+// cancellation — a step that ran out its own budget is a real failure the
+// retry policy must see.
+func isCancellation(err error) bool {
+	return errors.Is(err, context.Canceled)
+}
+
+// runStepRecovered executes one step closure with a panic boundary. A panic
+// is reported as an error naming the panicked value — the fabric converts it
+// through the normal Fail path (retry budget or terminal FAILED) instead of
+// unwinding past the state machine.
+func runStepRecovered(step QuantumStep) (checkpoint any, done bool, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			checkpoint, done, err = nil, false, fmt.Errorf("taskfabric: quantum step panicked: %v", r)
+		}
+	}()
+	return step()
+}

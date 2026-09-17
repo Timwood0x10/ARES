@@ -3,11 +3,11 @@ package ares_bootstrap
 
 import (
 	"context"
-	"fmt"
+	"errors"
 
 	"github.com/Timwood0x10/ares/internal/ares_events"
-	evolution "github.com/Timwood0x10/ares/internal/ares_evolution"
-	flight "github.com/Timwood0x10/ares/internal/ares_flight"
+	evolution "github.com/Timwood0x10/ares/internal/runtime/ares_evolution"
+	flight "github.com/Timwood0x10/ares/internal/runtime/observability/flight"
 	storage_models "github.com/Timwood0x10/ares/internal/storage/postgres/models"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/repositories"
 )
@@ -17,13 +17,24 @@ type flightRecorderWrapper struct {
 	recorder *flight.FlightRecorder
 }
 
-// Diagnostics returns access to diagnostic reports.
+// Diagnostics returns access to diagnostic reports. A nil wrapper or a nil
+// recorder yields nil — callers (FlightToExperienceAdapter.processEvent)
+// already treat a nil accessor as "no diagnostics", so a partially wired
+// bootstrap degrades instead of panicking.
 func (w *flightRecorderWrapper) Diagnostics() evolution.DiagnosticsAccessor {
+	if w == nil || w.recorder == nil {
+		return nil
+	}
 	return &diagnosticsAccessorWrapper{engine: w.recorder.Diagnostics()}
 }
 
-// EventStore returns the event store subscriber.
+// EventStore returns the event store subscriber. Nil-safe like Diagnostics:
+// the adapter's Run surfaces a nil subscriber as a wiring error instead of
+// a nil-pointer panic.
 func (w *flightRecorderWrapper) EventStore() evolution.EventStoreSubscriber {
+	if w == nil || w.recorder == nil {
+		return nil
+	}
 	return &eventStoreSubscriberWrapper{store: w.recorder.EventStoreRef()}
 }
 
@@ -93,7 +104,7 @@ type eventStoreSubscriberWrapper struct {
 // Subscribe subscribes to ares_events from the underlying event store.
 func (w *eventStoreSubscriberWrapper) Subscribe(ctx context.Context, filter ares_events.EventFilter) (<-chan *ares_events.Event, error) {
 	if w.store == nil {
-		return nil, fmt.Errorf("event store is nil")
+		return nil, errors.New("event store is nil")
 	}
 	return w.store.Subscribe(ctx, filter)
 }

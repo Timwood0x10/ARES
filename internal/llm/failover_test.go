@@ -5,9 +5,12 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	llmcore "github.com/Timwood0x10/ares/internal/llmcore"
 )
 
 // mockLLMServer creates an httptest.Server that returns the given status code
@@ -135,8 +138,10 @@ func TestFailoverClient_FallbackCooldownExpiry(t *testing.T) {
 		t.Fatal("expected error when all fail")
 	}
 
-	// Wait for fallback cooldown to expire.
-	time.Sleep(300 * time.Millisecond)
+	// Wait for the fallback cooldown to actually expire. A fixed 300ms slept
+	// past the 200ms cooldown by luck; polling the client's own cooldown map
+	// waits for the real condition and fails loudly if it never clears.
+	waitForCooldownsClear(t, fc)
 
 	// Second call: primary fails again, fallback cooldown expired → retried → succeeds.
 	resp, err := fc.Generate(context.Background(), "hello2")
@@ -196,8 +201,8 @@ func TestFailoverClient_AllErrorsCooldown(t *testing.T) {
 		t.Fatalf("expected fallback called once (cooled), got %d", atomic.LoadInt32(fallbackCount))
 	}
 
-	// Wait for cooldowns to expire.
-	time.Sleep(300 * time.Millisecond)
+	// Wait for both cooldowns to actually expire (see waitForCooldownsClear).
+	waitForCooldownsClear(t, fc)
 
 	// Third call: both cooldowns expired, primary fails, fallback succeeds.
 	resp, err := fc.Generate(context.Background(), "hello3")
@@ -310,5 +315,225 @@ func TestIsRateLimitError(t *testing.T) {
 				t.Fatalf("isRateLimitError(%v) = %v, want %v", tt.err, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestFailoverClient_StreamFirstChunkErrorFailsOver locks REVIEW 3.8: the
+// first-chunk handshake check must treat a chunk carrying Err as a FAILED
+// attempt. The old code only checked channel closure, so a provider whose
+// HTTP handshake succeeded but whose stream immediately errored was marked
+// successful — cooldown cleared, no failover, caller stuck with a dead
+// stream.
+func TestFailoverClient_StreamFirstChunkErrorFailsOver(t *testing.T) {
+	// Primary: HTTP 200 (handshake OK) but a body that is not valid
+	// NDJSON, so the client's very FIRST stream chunk carries Err.
+	primary, primaryCount := mockLLMServer(200, "definitely-not-json")
+	defer primary.Close()
+
+	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, `{"response":"fallback-stream","done":false}`+"\n"+`{"done":true}`+"\n")
+	}))
+	defer fallback.Close()
+
+	fc, err := NewFailoverClient([]*Config{
+		{Provider: "ollama", BaseURL: primary.URL, Model: "primary"},
+		{Provider: "ollama", BaseURL: fallback.URL, Model: "fallback"},
+	}, 5*time.Second, 0, 0)
+	if err != nil {
+		t.Fatalf("NewFailoverClient: %v", err)
+	}
+	defer fc.Close()
+
+	ch, err := fc.GenerateStream(context.Background(), "hello")
+	if err != nil {
+		t.Fatalf("GenerateStream must fail over instead of returning the primary's stream error: %v", err)
+	}
+
+	var got string
+	for chunk := range ch {
+		if chunk.Err != nil {
+			t.Fatalf("stream chunk carried error after failover: %v", chunk.Err)
+		}
+		got += chunk.Content
+	}
+	if got != "fallback-stream" {
+		t.Fatalf("expected fallback-stream, got %q", got)
+	}
+	if atomic.LoadInt32(primaryCount) != 1 {
+		t.Fatalf("expected primary called once, got %d", atomic.LoadInt32(primaryCount))
+	}
+}
+
+// cooledKeys reports the provider keys currently in cooldown, read under the
+// client's own lock. Tests use it to assert cooldown side effects directly.
+func cooledKeys(fc *FailoverClient) []string {
+	fc.mu.RLock()
+	defer fc.mu.RUnlock()
+	out := make([]string, 0, len(fc.cooldowns))
+	for k := range fc.cooldowns {
+		out = append(out, k)
+	}
+	return out
+}
+
+// waitForCooldownsClear blocks until every recorded cooldown has EXPIRED.
+//
+// It deliberately tests expiry rather than map emptiness: expired entries are
+// removed lazily inside isCoolingDown, so a caller that only inspects the map
+// sees stale keys forever and would hang. Reading the stored expiry
+// timestamps is the condition the callers actually depend on.
+//
+// It replaces fixed time.Sleep calls that guessed at cooldown expiry: those
+// slept a constant past the configured cooldown and passed by luck, and were
+// load-sensitive.
+func waitForCooldownsClear(t *testing.T, fc *FailoverClient) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		now := time.Now()
+		// The snapshot (including its capacity hint) is built entirely under
+		// the lock: reading len(fc.cooldowns) before RLock would race with
+		// isCoolingDown pruning entries.
+		var stillCooling []string
+		fc.mu.RLock()
+		stillCooling = make([]string, 0, len(fc.cooldowns))
+		for k, expiry := range fc.cooldowns {
+			if now.Before(expiry) {
+				stillCooling = append(stillCooling, k)
+			}
+		}
+		fc.mu.RUnlock()
+		if len(stillCooling) == 0 {
+			return
+		}
+		if now.After(deadline) {
+			t.Fatalf("cooldowns never expired, still cooling: %v", stillCooling)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// cancelledFailoverClient builds a two-provider failover client over servers
+// that always succeed, plus its key list in registration order.
+func cancelledFailoverClient(t *testing.T) (*FailoverClient, *httptest.Server, *httptest.Server) {
+	t.Helper()
+	primary, _ := mockLLMServer(200, successBody("primary-ok"))
+	t.Cleanup(primary.Close)
+	fallback, _ := mockLLMServer(200, successBody("fallback-ok"))
+	t.Cleanup(fallback.Close)
+	fc, err := NewFailoverClient([]*Config{
+		{Provider: "openrouter", APIKey: "key1", BaseURL: primary.URL, Model: "primary"},
+		{Provider: "openrouter", APIKey: "key2", BaseURL: fallback.URL, Model: "fallback"},
+	}, 10*time.Second, 0, 0)
+	if err != nil {
+		t.Fatalf("NewFailoverClient: %v", err)
+	}
+	t.Cleanup(fc.Close)
+	return fc, primary, fallback
+}
+
+// TestFailoverClient_CancelledContextDoesNotPoisonCooldowns locks the
+// caller-cancellation contract for Generate: aborting a request is not a
+// provider fault, so no provider may be put into cooldown. Pre-fix, every
+// provider in the chain was marked on the way through, so one user abort
+// during a busy window made the next ~cooldownDuration of unrelated requests
+// fail with "no provider available (all N cooled down)".
+func TestFailoverClient_CancelledContextDoesNotPoisonCooldowns(t *testing.T) {
+	fc, _, _ := cancelledFailoverClient(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if _, err := fc.Generate(ctx, "hello"); err == nil {
+		t.Fatal("Generate on a cancelled context must fail")
+	}
+	if keys := cooledKeys(fc); len(keys) != 0 {
+		t.Fatalf("caller cancellation must not cool down any provider, got %v", keys)
+	}
+}
+
+// TestFailoverClient_MidCallCancelDoesNotPoisonCooldowns locks the same
+// contract when the cancel lands while the request is in flight (the server
+// sees the disconnect and the client surfaces context.Canceled), which is
+// the shape a real user abort produces.
+func TestFailoverClient_MidCallCancelDoesNotPoisonCooldowns(t *testing.T) {
+	release := make(chan struct{})
+	arrived := make(chan struct{})
+	var arriveOnce sync.Once
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		arriveOnce.Do(func() { close(arrived) })
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	}))
+	t.Cleanup(func() {
+		close(release)
+		server.Close()
+	})
+	fc, err := NewFailoverClient([]*Config{
+		{Provider: "ollama", BaseURL: server.URL, Model: "slow"},
+	}, 10*time.Second, 0, 0)
+	if err != nil {
+		t.Fatalf("NewFailoverClient: %v", err)
+	}
+	t.Cleanup(fc.Close)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = fc.Generate(ctx, "hello")
+	}()
+	// Wait until the server has actually received the request, then abort it
+	// mid-flight. A fixed sleep here raced the dial under load: cancel could
+	// land before the request left the client, and the test would then assert
+	// the wrong path (pre-connect abort, not in-flight abort).
+	select {
+	case <-arrived:
+	case <-time.After(10 * time.Second):
+		t.Fatal("request never reached the server")
+	}
+	cancel()
+	<-done
+
+	if keys := cooledKeys(fc); len(keys) != 0 {
+		t.Fatalf("mid-call caller cancel must not cool down any provider, got %v", keys)
+	}
+}
+
+// TestFailoverClient_CancelledContextDoesNotPoisonCooldownsChat locks the
+// Chat path, which has its own copy of the failover loop.
+func TestFailoverClient_CancelledContextDoesNotPoisonCooldownsChat(t *testing.T) {
+	fc, _, _ := cancelledFailoverClient(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	msgs := []*llmcore.LLMMessage{{Role: "user", Content: "hello"}}
+	if _, err := fc.Chat(ctx, msgs, nil, nil); err == nil {
+		t.Fatal("Chat on a cancelled context must fail")
+	}
+	if keys := cooledKeys(fc); len(keys) != 0 {
+		t.Fatalf("caller cancellation must not cool down any provider on Chat, got %v", keys)
+	}
+}
+
+// TestFailoverClient_CancelledContextDoesNotPoisonCooldownsStream locks the
+// GenerateStream path, whose handshake loop marks cooldown on the initial
+// GenerateStream error.
+func TestFailoverClient_CancelledContextDoesNotPoisonCooldownsStream(t *testing.T) {
+	fc, _, _ := cancelledFailoverClient(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if _, err := fc.GenerateStream(ctx, "hello"); err == nil {
+		t.Fatal("GenerateStream on a cancelled context must fail")
+	}
+	if keys := cooledKeys(fc); len(keys) != 0 {
+		t.Fatalf("caller cancellation must not cool down any provider on stream, got %v", keys)
 	}
 }

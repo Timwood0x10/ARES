@@ -4,12 +4,12 @@ import (
 	"context"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/Timwood0x10/ares/internal/agents/base"
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/core/models"
-
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 // panickingExecutor is a TaskExecutor that panics during Execute.
@@ -24,13 +24,10 @@ func (e *panickingExecutor) RegisterFallback(_ models.AgentType, _ FallbackHandl
 // TestSubAgent_ProcessStream_PanicDoesNotCrash verifies that a panic inside
 // the ProcessStream goroutine is recovered, emits EventSubAgentFailed, and
 // delivers an error AgentEvent on the channel without crashing the process
-// (code_rules_v2 §4.2).
 func TestSubAgent_ProcessStream_PanicDoesNotCrash(t *testing.T) {
 	store := ares_events.NewMemoryEventStore()
 	exec := &panickingExecutor{}
-	handler := NewMessageHandler("sub-panic")
-
-	agent := New("sub-panic", models.AgentTypeTop, exec, handler, nil, nil, nil,
+	agent := New("sub-panic", models.AgentTypeTop, exec, nil,
 		WithEventStore(store))
 
 	require.NoError(t, agent.Start(context.Background()))
@@ -71,9 +68,7 @@ func TestSubAgent_ProcessStream_PanicDoesNotCrash(t *testing.T) {
 // works even when no event store is configured (emit is a no-op).
 func TestSubAgent_ProcessStream_Panic_NilEventStore_NoCrash(t *testing.T) {
 	exec := &panickingExecutor{}
-	handler := NewMessageHandler("sub-panic2")
-
-	agent := New("sub-panic2", models.AgentTypeTop, exec, handler, nil, nil, nil)
+	agent := New("sub-panic2", models.AgentTypeTop, exec, nil)
 
 	require.NoError(t, agent.Start(context.Background()))
 

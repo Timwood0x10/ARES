@@ -153,8 +153,8 @@ func TestDiscoverTools_ResultJSONShape(t *testing.T) {
 	res, err := tool.Execute(context.Background(), map[string]interface{}{"query": "calc"})
 	require.NoError(t, err)
 
-	// Data is a JSON string of {name,description} objects (the wire format the
-	// agentloop engine parses). Verify both the raw string and decoded form.
+	// Data is a JSON string of {name,description} objects (the wire format
+	// consumers parse). Verify both the raw string and decoded form.
 	raw, ok := res.Data.(string)
 	require.True(t, ok)
 	assert.Contains(t, raw, `"name":"calc"`)

@@ -4,20 +4,23 @@ package llmservice
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
-	"github.com/Timwood0x10/ares/api/core"
 	"github.com/Timwood0x10/ares/internal/ares_callbacks"
-	"github.com/Timwood0x10/ares/internal/ares_observability"
+	"github.com/Timwood0x10/ares/internal/ares_security"
 	"github.com/Timwood0x10/ares/internal/errors"
 	"github.com/Timwood0x10/ares/internal/llm"
+	llmcore "github.com/Timwood0x10/ares/internal/llmcore"
+	"github.com/Timwood0x10/ares/internal/runtime/observability"
 )
 
 // LLMClient is the interface satisfied by both *llm.Client and *llm.FailoverClient.
 type LLMClient interface {
 	Generate(ctx context.Context, prompt string) (string, error)
+	GenerateWithParams(ctx context.Context, prompt string, params map[string]any) (string, error)
 	GenerateStream(ctx context.Context, prompt string) (<-chan llm.StreamChunk, error)
-	Chat(ctx context.Context, messages []*core.LLMMessage, tools []core.Tool, params map[string]any) (*core.GenerateResponse, error)
+	Chat(ctx context.Context, messages []*llmcore.LLMMessage, tools []llmcore.Tool, params map[string]any) (*llmcore.GenerateResponse, error)
 	IsEnabled() bool
 	GetProvider() string
 	GetModel() string
@@ -27,27 +30,27 @@ type LLMClient interface {
 // Service provides LLM operations.
 type Service struct {
 	client          LLMClient
-	repo            core.LLMRepository
-	config          *core.BaseConfig
-	llmConfig       *core.LLMConfig
+	repo            llmcore.LLMRepository
+	config          *llmcore.BaseConfig
+	llmConfig       *llmcore.LLMConfig
 	embeddingClient any // Can be *embedding.EmbeddingClient or nil
 }
 
 // Config represents service configuration.
 type Config struct {
 	// BaseConfig is the base configuration.
-	BaseConfig *core.BaseConfig
+	BaseConfig *llmcore.BaseConfig
 	// LLMConfig is the LLM configuration.
-	LLMConfig *core.LLMConfig
+	LLMConfig *llmcore.LLMConfig
 	// Fallbacks is a list of fallback LLM configs for failover.
 	// When non-empty, a FailoverClient is created instead of a single Client.
 	Fallbacks []*llm.Config
 	// Repo is the LLM repository (optional, for logging/audit).
-	Repo core.LLMRepository
+	Repo llmcore.LLMRepository
 	// EmbeddingClient is the embedding service client (optional).
 	EmbeddingClient any
-	// Tracer is an optional ares_observability tracer for LLM call tracing.
-	Tracer ares_observability.Tracer
+	// Tracer is an optional observability tracer for LLM call tracing.
+	Tracer observability.Tracer
 	// CallbackRegistry is an optional callback registry for lifecycle event emission.
 	// When set, Generate and GenerateStream calls will emit events to this registry.
 	CallbackRegistry *ares_callbacks.Registry
@@ -67,7 +70,7 @@ func NewService(config *Config) (*Service, error) {
 	}
 
 	if config.BaseConfig == nil {
-		config.BaseConfig = &core.BaseConfig{
+		config.BaseConfig = &llmcore.BaseConfig{
 			RequestTimeout: 30 * time.Second,
 			MaxRetries:     3,
 			RetryDelay:     1 * time.Second,
@@ -81,6 +84,7 @@ func NewService(config *Config) (*Service, error) {
 		BaseURL:         config.LLMConfig.BaseURL,
 		Model:           config.LLMConfig.Model,
 		Timeout:         config.LLMConfig.Timeout,
+		MaxTokens:       config.LLMConfig.MaxTokens,
 		MaxPromptLength: config.LLMConfig.MaxPromptLength,
 	}
 
@@ -99,6 +103,11 @@ func NewService(config *Config) (*Service, error) {
 				llm.WithCallbacks(config.CallbackRegistry)(c)
 			}
 		}
+		// Mask secrets in every fallback client's recorded prompts/responses,
+		// matching the bootstrap path (provide_llm.go).
+		for _, c := range fc.Clients() {
+			llm.WithSanitizer(ares_security.NewSanitizer())(c)
+		}
 		client = fc
 	} else {
 		c, err := llm.NewClient(internalConfig)
@@ -111,6 +120,7 @@ func NewService(config *Config) (*Service, error) {
 		if config.CallbackRegistry != nil {
 			llm.WithCallbacks(config.CallbackRegistry)(c)
 		}
+		llm.WithSanitizer(ares_security.NewSanitizer())(c)
 		client = c
 	}
 
@@ -133,7 +143,7 @@ func NewService(config *Config) (*Service, error) {
 //	request - the generation request.
 //
 // Returns the generation response or error.
-func (s *Service) Generate(ctx context.Context, request *core.GenerateRequest) (*core.GenerateResponse, error) {
+func (s *Service) Generate(ctx context.Context, request *llmcore.GenerateRequest) (*llmcore.GenerateResponse, error) {
 	if request == nil {
 		return nil, ErrInvalidConfig
 	}
@@ -150,15 +160,18 @@ func (s *Service) Generate(ctx context.Context, request *core.GenerateRequest) (
 	// Build prompt from messages for plain text generation.
 	prompt := s.buildPrompt(request.Messages)
 
-	content, err := s.client.Generate(ctx, prompt)
+	// Forward request-level Temperature/MaxTokens instead of dropping them:
+	// the plain-text path used to call Generate with no overrides, so the
+	// provider defaults always won (REVIEW 3.8).
+	content, err := s.client.GenerateWithParams(ctx, prompt, plainTextParams(request))
 	if err != nil {
 		return nil, errors.Wrap(err, "generate text")
 	}
 
-	response := &core.GenerateResponse{
+	response := &llmcore.GenerateResponse{
 		Content:      content,
 		FinishReason: "stop",
-		Usage: core.TokenUsage{
+		Usage: llmcore.TokenUsage{
 			PromptTokens:     s.calculateTokens(prompt),
 			CompletionTokens: s.calculateTokens(content),
 			TotalTokens:      0,
@@ -179,7 +192,7 @@ func (s *Service) Generate(ctx context.Context, request *core.GenerateRequest) (
 
 // hasToolMessages returns true if any message contains tool call data,
 // indicating the conversation requires Chat API routing.
-func (s *Service) hasToolMessages(messages []*core.LLMMessage) bool {
+func (s *Service) hasToolMessages(messages []*llmcore.LLMMessage) bool {
 	for _, msg := range messages {
 		if len(msg.ToolCalls) > 0 || msg.ToolCallID != "" {
 			return true
@@ -188,8 +201,25 @@ func (s *Service) hasToolMessages(messages []*core.LLMMessage) bool {
 	return false
 }
 
+// plainTextParams extracts the per-call overrides that the plain-text
+// Generate path forwards to the underlying client. A nil map means "use
+// configured defaults".
+func plainTextParams(request *llmcore.GenerateRequest) map[string]any {
+	params := map[string]any{}
+	if request.Temperature != nil {
+		params["temperature"] = *request.Temperature
+	}
+	if request.MaxTokens != nil {
+		params["max_tokens"] = *request.MaxTokens
+	}
+	if len(params) == 0 {
+		return nil
+	}
+	return params
+}
+
 // generateWithChat routes the request through the Chat API with tool support.
-func (s *Service) generateWithChat(ctx context.Context, request *core.GenerateRequest) (*core.GenerateResponse, error) {
+func (s *Service) generateWithChat(ctx context.Context, request *llmcore.GenerateRequest) (*llmcore.GenerateResponse, error) {
 	params := map[string]any{}
 	if request.Temperature != nil {
 		params["temperature"] = *request.Temperature
@@ -244,7 +274,7 @@ func (s *Service) GenerateSimple(ctx context.Context, prompt string) (string, er
 // ctx - operation context.
 // request - the embedding request.
 // Returns the embedding response or error.
-func (s *Service) GenerateEmbedding(ctx context.Context, request *core.EmbeddingRequest) (*core.EmbeddingResponse, error) {
+func (s *Service) GenerateEmbedding(ctx context.Context, request *llmcore.EmbeddingRequest) (*llmcore.EmbeddingResponse, error) {
 	if request == nil {
 		return nil, ErrInvalidConfig
 	}
@@ -265,7 +295,7 @@ func (s *Service) GenerateEmbedding(ctx context.Context, request *core.Embedding
 			// Generate embedding using the embedding service
 			embeddingFloat64, err := embedder.Embed(ctx, request.Input)
 			if err != nil {
-				return nil, errors.Wrap(err, "generate embedding")
+				return nil, fmt.Errorf("%w: %v", ErrEmbeddingFailed, err)
 			}
 
 			// Convert float64 to float32
@@ -282,17 +312,17 @@ func (s *Service) GenerateEmbedding(ctx context.Context, request *core.Embedding
 			}
 		} else {
 			// Embedding client type not recognized, return error
-			return nil, fmt.Errorf("embedding client type not supported")
+			return nil, fmt.Errorf("%w: unsupported type %T", ErrEmbeddingFailed, s.embeddingClient)
 		}
 	} else {
 		// No embedding client available, return error
-		return nil, fmt.Errorf("embedding service not configured")
+		return nil, ErrLLMNotAvailable
 	}
 
-	response := &core.EmbeddingResponse{
+	response := &llmcore.EmbeddingResponse{
 		Embedding: embedding,
 		Model:     embeddingModel,
-		Usage: core.TokenUsage{
+		Usage: llmcore.TokenUsage{
 			PromptTokens: s.calculateTokens(request.Input),
 			TotalTokens:  s.calculateTokens(request.Input),
 		},
@@ -303,7 +333,7 @@ func (s *Service) GenerateEmbedding(ctx context.Context, request *core.Embedding
 
 // GetConfig returns the current LLM configuration.
 // Returns the LLM configuration.
-func (s *Service) GetConfig() *core.LLMConfig {
+func (s *Service) GetConfig() *llmcore.LLMConfig {
 	return s.llmConfig
 }
 
@@ -315,7 +345,7 @@ func (s *Service) IsEnabled() bool {
 
 // GetProvider returns the current LLM provider.
 // Returns the provider type.
-func (s *Service) GetProvider() core.LLMProvider {
+func (s *Service) GetProvider() llmcore.LLMProvider {
 	if s.llmConfig != nil {
 		return s.llmConfig.Provider
 	}
@@ -332,12 +362,35 @@ func (s *Service) GetModel() string {
 }
 
 // buildPrompt builds a prompt from messages.
-func (s *Service) buildPrompt(messages []*core.LLMMessage) string {
-	prompt := ""
+func (s *Service) buildPrompt(messages []*llmcore.LLMMessage) string {
+	var sb strings.Builder
 	for _, msg := range messages {
-		prompt += fmt.Sprintf("[%s]: %s\n", msg.Role, msg.Content)
+		sb.WriteByte('[')
+		sb.WriteString(sanitizeRole(msg.Role))
+		sb.WriteString("]: ")
+		sb.WriteString(msg.Content)
+		sb.WriteByte('\n')
 	}
-	return prompt
+	return sb.String()
+}
+
+// sanitizeRole strips characters that could break the [role]: prefix format
+// or inject fake message boundaries. Only alphanumeric, dash, underscore,
+// and dot are kept (role separator whitelist).
+func sanitizeRole(role string) string {
+	if role == "" {
+		return "unknown"
+	}
+	var sb strings.Builder
+	for _, r := range role {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.' {
+			sb.WriteRune(r)
+		}
+	}
+	if sb.Len() == 0 {
+		return "unknown"
+	}
+	return sb.String()
 }
 
 // Close releases resources held by the LLM service.

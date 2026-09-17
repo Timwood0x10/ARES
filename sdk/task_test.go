@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Timwood0x10/ares/api/core"
+	llmcore "github.com/Timwood0x10/ares/internal/llmcore"
 )
 
 // contains reports whether s contains substr.
@@ -15,15 +15,15 @@ func contains(s, substr string) bool {
 	return strings.Contains(s, substr)
 }
 
-// TestSubmit_RegisteredAgent verifies the H1 closed loop
-// (aresos-agentos-plan H1: NewRuntime → RegisterAgent → Submit → 结果): a task
+// TestSubmit_RegisteredAgent verifies the closed loop
+// (NewRuntime → RegisterAgent → Submit → result): a task
 // submitted with a registered capability is executed by the agent registered
 // for it, and the result flows back unchanged.
 func TestSubmit_RegisteredAgent(t *testing.T) {
 	rt := NewRuntime(WithOllama("llama3.2"), WithTrace(false))
 	defer rt.Close()
-	rt.llmSvc = &mockLLMSvc{responses: []*core.GenerateResponse{
-		{Content: "handled by coder", Usage: core.TokenUsage{PromptTokens: 2, CompletionTokens: 4}},
+	rt.llmSvc = &mockLLMSvc{responses: []*llmcore.GenerateResponse{
+		{Content: "handled by coder", Usage: llmcore.TokenUsage{PromptTokens: 2, CompletionTokens: 4}},
 	}}
 
 	rt.RegisterAgent("coder", WithInstruction("you handle code tasks"))
@@ -36,33 +36,45 @@ func TestSubmit_RegisteredAgent(t *testing.T) {
 	}
 }
 
-// TestSubmit_UnregisteredCapabilityAutoCreates verifies that a runtime never
-// refuses a well-formed task just because its capability was not pre-
-// registered: Submit auto-creates a capability-named agent and runs it.
-func TestSubmit_UnregisteredCapabilityAutoCreates(t *testing.T) {
+// TestSubmit_UnregisteredRoutesThroughL2 locks the B3 stage-2 routing: a
+// runtime never refuses a well-formed task just because its capability was
+// not pre-registered — an unregistered capability is auto-admitted as an L2
+// session and executed by the shared router cognition (the same path serve
+// uses), NOT by an auto-created ReAct agent. The routing leaves no static
+// executor behind.
+func TestSubmit_UnregisteredRoutesThroughL2(t *testing.T) {
 	rt := NewRuntime(WithOllama("llama3.2"), WithTrace(false))
 	defer rt.Close()
-	rt.llmSvc = &mockLLMSvc{responses: []*core.GenerateResponse{
-		{Content: "auto-created agent ran it"},
+	rt.llmSvc = &mockLLMSvc{responses: []*llmcore.GenerateResponse{
+		{Content: "routed through the L2 router"},
 	}}
 
 	res, err := rt.Submit(context.Background(), Task{Capability: "auditor", Input: "audit config"})
 	if err != nil {
 		t.Fatalf("Submit error: %v", err)
 	}
-	if res.Output != "auto-created agent ran it" {
-		t.Fatalf("Output = %q, want %q", res.Output, "auto-created agent ran it")
+	if res.Output != "routed through the L2 router" {
+		t.Fatalf("Output = %q, want the answer the L2 router completed with", res.Output)
+	}
+	// The L2 core must be wired as a consequence of the first L2 submission.
+	if rt.ensureL2() == nil {
+		t.Fatal("unregistered Submit must wire the shared L2 execution core")
+	}
+	// The L2 path routes by session admission — it must NOT leave an
+	// auto-created ReAct executor registered under the capability.
+	if _, ok := rt.sched.LookupExecutor("auditor"); ok {
+		t.Fatal("unregistered capability must not get a static ReAct executor")
 	}
 }
 
-// TestSubmit_EmptyCapabilityUsesAnyRegistered verifies that a task without a
-// capability is dispatched to any registered agent (the flat peer pool has no
-// required capability).
-func TestSubmit_EmptyCapabilityUsesAnyRegistered(t *testing.T) {
+// TestSubmit_EmptyCapabilityRoutesThroughL2 verifies that a task without a
+// capability is normalized onto the L2 session path (PlanCapability), the
+// same admission semantics serve-mode submissions get.
+func TestSubmit_EmptyCapabilityRoutesThroughL2(t *testing.T) {
 	rt := NewRuntime(WithOllama("llama3.2"), WithTrace(false))
 	defer rt.Close()
-	rt.llmSvc = &mockLLMSvc{responses: []*core.GenerateResponse{
-		{Content: "any registered agent"},
+	rt.llmSvc = &mockLLMSvc{responses: []*llmcore.GenerateResponse{
+		{Content: "answered without a capability"},
 	}}
 
 	rt.RegisterAgent("coder")
@@ -70,28 +82,28 @@ func TestSubmit_EmptyCapabilityUsesAnyRegistered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Submit error: %v", err)
 	}
-	if res.Output != "any registered agent" {
-		t.Fatalf("Output = %q, want %q", res.Output, "any registered agent")
+	if res.Output != "answered without a capability" {
+		t.Fatalf("Output = %q, want the answer the L2 router completed with", res.Output)
 	}
 }
 
 // blockingLLM blocks until the context is done, then returns the context
-// error — it makes Timeout propagation observable through Submit → Run →
-// agentloop.Engine.
+// error — it makes Timeout propagation observable through Submit → the
+// L2 execution core.
 type blockingLLM struct{}
 
-func (b *blockingLLM) Generate(ctx context.Context, _ *core.GenerateRequest) (*core.GenerateResponse, error) {
+func (b *blockingLLM) Generate(ctx context.Context, _ *llmcore.GenerateRequest) (*llmcore.GenerateResponse, error) {
 	<-ctx.Done()
 	return nil, ctx.Err()
 }
 
-func (b *blockingLLM) GetProvider() core.LLMProvider { return core.LLMProviderOllama }
-func (b *blockingLLM) GetModel() string              { return "mock-blocking" }
-func (b *blockingLLM) Close()                        {}
+func (b *blockingLLM) GetProvider() llmcore.LLMProvider { return llmcore.LLMProviderOllama }
+func (b *blockingLLM) GetModel() string                 { return "mock-blocking" }
+func (b *blockingLLM) Close()                           {}
 
 // TestSubmit_TimeoutPropagates verifies that Task.Timeout bounds the
 // execution: a blocked LLM surfaces a deadline-exceeded cause from Submit
-// (code_rules_v2 §3.1: context cancellation propagates, never swallowed).
+// (context cancellation propagates, never swallowed).
 func TestSubmit_TimeoutPropagates(t *testing.T) {
 	rt := NewRuntime(WithOllama("llama3.2"), WithTrace(false))
 	defer rt.Close()
@@ -105,7 +117,7 @@ func TestSubmit_TimeoutPropagates(t *testing.T) {
 	if err == nil {
 		t.Fatal("Submit must surface the timeout error")
 	}
-	// The agentloop engine wraps the LLM error with FriendlyErr (a string
+	// The L2 path wraps the LLM error with FriendlyErr (a string
 	// label, not an unwrappable %w chain), so assert on the surfaced message
 	// containing the deadline cause rather than errors.Is.
 	if !errors.Is(err, context.DeadlineExceeded) &&

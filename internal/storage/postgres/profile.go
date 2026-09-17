@@ -11,18 +11,34 @@ import (
 )
 
 // ProfileRepository handles user profile persistence.
+//
+// Tenant scoping: user_profiles carries a tenant_id column; every query below
+// filters on the tenant bound at construction (empty → default tenant). This
+// repository has no production callers today, but is kept tenant-safe so a
+// revival cannot read another tenant's profiles.
 type ProfileRepository struct {
-	db DBTX
+	db       DBTX
+	tenantID string
 }
 
-// NewProfileRepository creates a new ProfileRepository.
+// NewProfileRepository creates a new ProfileRepository bound to the default tenant.
 func NewProfileRepository(pool *Pool) *ProfileRepository {
-	return &ProfileRepository{db: pool.db}
+	return NewProfileRepositoryWithTenant(pool.db, "")
 }
 
-// NewProfileRepositoryWithDB creates a new ProfileRepository with a transaction or connection.
+// NewProfileRepositoryWithDB creates a new ProfileRepository with a transaction or connection,
+// bound to the default tenant.
 func NewProfileRepositoryWithDB(db DBTX) *ProfileRepository {
-	return &ProfileRepository{db: db}
+	return NewProfileRepositoryWithTenant(db, "")
+}
+
+// NewProfileRepositoryWithTenant creates a ProfileRepository scoped to one tenant.
+// An empty tenantID resolves to the default tenant.
+func NewProfileRepositoryWithTenant(db DBTX, tenantID string) *ProfileRepository {
+	if tenantID == "" {
+		tenantID = DefaultTenantID
+	}
+	return &ProfileRepository{db: db, tenantID: tenantID}
 }
 
 // Create creates a new user profile.
@@ -53,12 +69,13 @@ func (r *ProfileRepository) Create(ctx context.Context, profile *models.UserProf
 	}
 
 	query := `
-		INSERT INTO user_profiles (user_id, name, gender, age, occupation, style, budget, colors, occasions, body_type, preferences, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+		INSERT INTO user_profiles (user_id, tenant_id, name, gender, age, occupation, style, budget, colors, occasions, body_type, preferences, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
 	`
 
 	_, err = r.db.ExecContext(ctx, query,
 		profile.UserID,
+		r.tenantID,
 		profile.Name,
 		profile.Gender,
 		profile.Age,
@@ -83,13 +100,13 @@ func (r *ProfileRepository) Create(ctx context.Context, profile *models.UserProf
 func (r *ProfileRepository) GetByID(ctx context.Context, userID string) (*models.UserProfile, error) {
 	query := `
 		SELECT user_id, name, gender, age, occupation, style, budget, colors, occasions, body_type, preferences, created_at, updated_at
-		FROM user_profiles WHERE user_id = $1
+		FROM user_profiles WHERE user_id = $1 AND tenant_id = $2
 	`
 
 	var profile models.UserProfile
 	var styleJSON, budgetJSON, colorsJSON, occasionsJSON, preferencesJSON []byte
 
-	err := r.db.QueryRowContext(ctx, query, userID).Scan(
+	err := r.db.QueryRowContext(ctx, query, userID, r.tenantID).Scan(
 		&profile.UserID,
 		&profile.Name,
 		&profile.Gender,
@@ -130,6 +147,82 @@ func (r *ProfileRepository) GetByID(ctx context.Context, userID string) (*models
 	return &profile, nil
 }
 
+// Upsert atomically inserts the profile or updates the existing row when
+// user_id already exists. SaveProfile used to do exists-then-Create, which
+// lost the race under concurrent writers and surfaced as a duplicate-key
+// error; ON CONFLICT makes the whole decision atomic in the database.
+func (r *ProfileRepository) Upsert(ctx context.Context, profile *models.UserProfile) error {
+	profile.UpdatedAt = time.Now()
+
+	styleJSON, err := json.Marshal(profile.Style)
+	if err != nil {
+		return errors.Wrap(err, "marshal style")
+	}
+
+	budgetJSON, err := json.Marshal(profile.Budget)
+	if err != nil {
+		return errors.Wrap(err, "marshal budget")
+	}
+
+	colorsJSON, err := json.Marshal(profile.Colors)
+	if err != nil {
+		return errors.Wrap(err, "marshal colors")
+	}
+
+	occasionsJSON, err := json.Marshal(profile.Occasions)
+	if err != nil {
+		return errors.Wrap(err, "marshal occasions")
+	}
+
+	preferencesJSON, err := json.Marshal(profile.Preferences)
+	if err != nil {
+		return errors.Wrap(err, "marshal preferences")
+	}
+
+	query := `
+		INSERT INTO user_profiles (user_id, tenant_id, name, gender, age, occupation, style, budget, colors, occasions, body_type, preferences, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+		ON CONFLICT (user_id) DO UPDATE SET
+			name = EXCLUDED.name,
+			gender = EXCLUDED.gender,
+			age = EXCLUDED.age,
+			occupation = EXCLUDED.occupation,
+			style = EXCLUDED.style,
+			budget = EXCLUDED.budget,
+			colors = EXCLUDED.colors,
+			occasions = EXCLUDED.occasions,
+			body_type = EXCLUDED.body_type,
+			preferences = EXCLUDED.preferences,
+			updated_at = EXCLUDED.updated_at
+		-- user_id is globally unique: only update a row this tenant already
+		-- owns. A foreign tenant's conflicting user_id must not be taken over
+		-- (the SET used to re-bind tenant_id unconditionally).
+		WHERE user_profiles.tenant_id = EXCLUDED.tenant_id
+	`
+
+	_, err = r.db.ExecContext(ctx, query,
+		profile.UserID,
+		r.tenantID,
+		profile.Name,
+		profile.Gender,
+		profile.Age,
+		profile.Occupation,
+		styleJSON,
+		budgetJSON,
+		colorsJSON,
+		occasionsJSON,
+		profile.BodyType,
+		preferencesJSON,
+		profile.CreatedAt,
+		profile.UpdatedAt,
+	)
+	if err != nil {
+		return errors.Wrap(err, "upsert profile")
+	}
+
+	return nil
+}
+
 // Update updates a user profile.
 func (r *ProfileRepository) Update(ctx context.Context, profile *models.UserProfile) error {
 	profile.UpdatedAt = time.Now()
@@ -163,7 +256,7 @@ func (r *ProfileRepository) Update(ctx context.Context, profile *models.UserProf
 		UPDATE user_profiles
 		SET name = $1, gender = $2, age = $3, occupation = $4, style = $5, budget = $6,
 		    colors = $7, occasions = $8, body_type = $9, preferences = $10, updated_at = $11
-		WHERE user_id = $12
+		WHERE user_id = $12 AND tenant_id = $13
 	`
 
 	result, err := r.db.ExecContext(ctx, query,
@@ -179,6 +272,7 @@ func (r *ProfileRepository) Update(ctx context.Context, profile *models.UserProf
 		preferencesJSON,
 		profile.UpdatedAt,
 		profile.UserID,
+		r.tenantID,
 	)
 	if err != nil {
 		return errors.Wrap(err, "update profile")
@@ -197,9 +291,9 @@ func (r *ProfileRepository) Update(ctx context.Context, profile *models.UserProf
 
 // Delete deletes a user profile.
 func (r *ProfileRepository) Delete(ctx context.Context, userID string) error {
-	query := `DELETE FROM user_profiles WHERE user_id = $1`
+	query := `DELETE FROM user_profiles WHERE user_id = $1 AND tenant_id = $2`
 
-	result, err := r.db.ExecContext(ctx, query, userID)
+	result, err := r.db.ExecContext(ctx, query, userID, r.tenantID)
 	if err != nil {
 		return errors.Wrap(err, "delete profile")
 	}
@@ -217,10 +311,10 @@ func (r *ProfileRepository) Delete(ctx context.Context, userID string) error {
 
 // Exists checks if a profile exists.
 func (r *ProfileRepository) Exists(ctx context.Context, userID string) (bool, error) {
-	query := `SELECT EXISTS(SELECT 1 FROM user_profiles WHERE user_id = $1)`
+	query := `SELECT EXISTS(SELECT 1 FROM user_profiles WHERE user_id = $1 AND tenant_id = $2)`
 
 	var exists bool
-	err := r.db.QueryRowContext(ctx, query, userID).Scan(&exists)
+	err := r.db.QueryRowContext(ctx, query, userID, r.tenantID).Scan(&exists)
 	if err != nil {
 		return false, errors.Wrap(err, "check exists")
 	}

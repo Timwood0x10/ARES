@@ -41,7 +41,7 @@ import (
 )
 
 func main() {
-    rt := sdk.MustNew() // 零参数：自动检测 Ollama / OPENAI_API_KEY / ANTHROPIC_API_KEY；需要精细配置时使用 sdk.New(opts...)
+    rt := sdk.MustNew() // 读取 ./ares.yaml（唯一配置入口）；需要精细配置时使用 sdk.New(opts...)
     defer rt.Close()
 
     agent := rt.NewAgent("assistant", sdk.WithInstruction("你是一个有用的助手。"))
@@ -55,8 +55,6 @@ func main() {
 ```go
 rt := sdk.NewRuntime(sdk.WithConfig("ares.yaml")) // 详见 config.yaml 配置指南
 defer rt.Close()
-// 或读取 ARES_YAML 环境变量（未设置时回退到 ./ares.yaml）：
-// rt := sdk.NewRuntime(sdk.WithConfigFromEnv())
 ```
 
 > 📖 **配置指南**：[config.yaml 配置指南（中文）](docs/articles/zh/25-config-yaml-guide.zh.md) / [config.yaml Guide (EN)](docs/articles/en/25-config-yaml-guide.en.md) —— LLM、蒸馏、GA 进化、知识、工具与混沌相关开关的完整参考。
@@ -98,6 +96,49 @@ make examples          # 构建全部示例
 | **多 Agent** | 基于能力的 Agent 注册（`RegisterAgent`）+ 任务分发（`Submit`），支持 Peer IPC 与恢复 |
 | **可观测性** | OpenTelemetry 追踪、结构化日志、Prometheus 指标 |
 
+## 租户模型
+
+默认单租户；按请求选择租户隔离。**没有配置开关 —— `tenant_id` 字段本身就是开关**，粒度精确到单个请求。
+
+| 模式 | 触发方式 | 行为 |
+|---|---|---|
+| **默认（单租户）** | 提交不带 `tenant_id` | 一切运行在 `default` 租户下 —— 任务、planner 生长的节点、`ask_agent` 会话、蒸馏事实与知识召回。行为与没有租户概念的完全一致。 |
+| **按请求隔离** | 提交带 `tenant_id`（`POST /api/tasks`、`POST /api/graphs`，或 SDK 提交的 `payload["tenant_id"]`） | 该请求及其派生工作在该租户下执行；经验/蒸馏仓储按租户列隔离，知识侧按 namespace 隔离（见下方边界）。 |
+
+运作机制：
+
+- 租户随任务的 **checkpoint 信封**（schema v5）穿越调度器的异步执行，恢复进量子的执行上下文（`tenantctx`），并盖章到下游 —— 生长的工具/答案节点、协作会话、蒸馏。空值即"无租户"，所有消费方回退 `default`。
+- **防伪造由 Kernel 强制**：LLM 在工具参数、`create_task` payload、`ask_agent` payload 里塞的 `tenant_id` 会被执行上下文的租户无条件覆盖（与 `Origin` 同一契约）。系统自身永远不会生成非 default 租户。
+
+**隔离的实际边界**（诚实声明，勿按"全链路租户列隔离"理解）：
+
+- **经验/蒸馏仓储**：`internal/storage/postgres/repositories/experience_repository.go` 的查询全部带 `tenant_id = $N` 谓词，是列级隔离。蒸馏写入经由 context 接缝（`distillation.WithTenant`）取租户，运行期覆盖可达写侧。
+- **知识侧按 namespace 隔离，不是租户列**：`KnowledgeStore` 的对象表只有 `namespace` 列，没有 `tenant_id` 列。`StoreProvider` 用 `namespaceFor` 把租户映射为 namespace（显式 `Scope.Namespaces` → `tenantctx` → provider 默认值），隔离因此依赖调用方始终带上 namespace；底层 `Get`/`Delete`/`Search` 本身不带任何租户或 namespace 谓词。
+- **AKG 蒸馏事实当前不随租户切分**：`internal/ares_bootstrap/knowledge_akg.go` 的 `akgNamespace` 是常量 `"default"`，所有 AKG 事实都写进同一 namespace。
+
+- **多租户部署**：当前租户由 HTTP 边界的**调用方声明**。真正的多租户部署必须在鉴权层绑定租户（如从 JWT principal 服务端推导），而非信任请求体；并且需要先把上面两条知识侧的边界补上，才谈得上端到端隔离。见 `SECURITY.md` → Tenancy。
+
+## 稳定性与性能
+
+0.3.1 加固周期关闭了全部已知的崩溃与泄漏类缺陷，并入库了性能基线——后续改动必须与之对照。
+
+**记录位置：**
+
+- [plan/stability_performance_plan.md](plan/stability_performance_plan.md) —— 分阶段稳定性专项：每个已修缺陷的锁定测试、泄漏清剿（kernel 与 workflow-engine 两包挂 `goleak` 门禁）、HTTP panic 守卫 + requestID 可观测性、flaky 归因、soak 测试（`SOAK_SECONDS=N go test ./tests/soak/`）
+- [plan/benchmarks/](plan/benchmarks/) —— 入库的基准基线（7 包 38 基准）与 benchstat 对比流程；任何优化 PR 必须附前后对照
+
+**AKG 为什么曾在一问短句就崩溃（0.3.1 已修复）。** 检索服务的构造器把知识库
+仓储当可选参数（允许为空），但所有 ≤10 字符的短查询会无条件进入精确检索管线，
+而该管线直接解引用它。于是在任何未接知识库的部署上，第一个短查询就会让
+handler panic。修复后：入口 fail-loud 返回明确的配置错误而非 panic
+（`retrieval_nil_kbrepo_test.go` 锁定回归）；并且所有 HTTP handler 现在都跑在
+panic 守卫之下——返回带 requestID 的结构化 500，而不是掐断连接。
+
+**基线要点数字**（Apple M3 Max）：调度排空 ~8µs/任务（空转 tick ~8.5ns）、
+64 节点 L2 生长链端到端 ~132ms、500 对象混合检回 ~340ms。完整数字见基线文件。
+
+质量门：`make check`（vet + staticcheck + golangci-lint + 测试）每次改动必须全绿。
+
 ## AKG —— 无需 LLM 的知识图谱（实验性）
 
 **⚠️ AKG（自适应知识图谱）处于 BETA 实验阶段。API 可能变化，非生产就绪。仅用于实验与反馈。**
@@ -124,7 +165,7 @@ LLM 从不参与抽取或构建 —— 它只在推理时消费检索到的事�
 - **基于规则的关系抽取**，谓词词表封闭：`calls`、`fixes`、`depends_on`、`belongs_to`、`similar_to`、`supersedes`、`causes`、`related_to`。
 - **多维 QualityGate**（抽取/一致性/新鲜度/使用度），驱动 `candidate → active → superseded/rejected` 生命周期与晋升。
 - **HybridSearch**：向量余弦 + 词法 Jaccard，按 namespace 与 status 过滤。
-- **多后端持久化**：Memory、SQLite、PostgreSQL、**MySQL**（无驱动依赖）。
+- **多后端持久化**：Memory、SQLite、PostgreSQL。
 
 ### 诚实的局限
 
@@ -138,9 +179,9 @@ LLM 从不参与抽取或构建 —— 它只在推理时消费检索到的事�
 
 | 扩展点 | 做法 | 涉及接口 |
 |---|---|---|
-| **新数据库后端** | 新增 `internal/knowledge/store/<name>/store.go` 实现 `KnowledgeStore`。已交付：Memory、SQLite、PostgreSQL、**MySQL**（无驱动依赖 —— 消费方自行 blank-import MySQL 驱动）。CockroachDB / TiDB / Spanner 各只需一个文件。 | `KnowledgeStore`（新增后端时不变） |
-| **专业向量库** | 实现 `VectorIndex` 接口（`Upsert` / `Search` / `Delete`）接入 pgvector、Milvus、Weaviate、Qdrant。`InMemoryVectorIndex` 为默认实现。Store 在内部将召回委托给 `VectorIndex`。 | `VectorIndex`（新接缝）—— **`KnowledgeStore` 保持不变** |
-| **多租户** | 每个 `KnowledgeObject` 携带 `Namespace`；`Query`、`HybridSearch`、`ListByStatus` 均按其过滤，共享同一 store 的租户互不可见。 | 无新接口 |
+| **新数据库后端** | 新增 `internal/knowledge/store/<name>/store.go` 实现 `KnowledgeStore`。已交付：Memory、SQLite、PostgreSQL。MySQL / CockroachDB / TiDB / Spanner 各只需一个文件，但目前都还没写。 | `KnowledgeStore`（新增后端时不变） |
+| **专业向量库** | 在你的 `KnowledgeStore` 实现内部添加向量召回（PostgreSQL store 已在 `HybridSearch` 中使用 pgvector 的 `ORDER BY embedding <=> $1`）。 | `KnowledgeStore`（新增后端时不变） |
+| **多租户** | 按请求可选启用（见[租户模型](#租户模型)）：提交的 `tenant_id` 随 checkpoint 信封进入执行上下文。**隔离强度分层**：经验/蒸馏仓储是列级隔离（查询带 `tenant_id` 谓词）；知识侧按 `namespace` 隔离而非租户列，且 AKG 事实目前固定写入 `default` namespace。默认部署为单租户（`default`）。 | 无新接口 |
 
 > 设计不变量：`KnowledgeStore` 是唯一的持久化契约。新增数据库或向量索引永远不改变它 —— 只会出现新的实现。这正是存储层演进时上层 runtime 逻辑不受影响的根本原因。
 
@@ -149,7 +190,7 @@ LLM 从不参与抽取或构建 —— 它只在推理时消费检索到的事�
 ```bash
 ares init        # 创建新项目脚手架（main.go + ares.yaml）
 ares run         # 从配置文件运行 agent
-ares serve       # 启动完整运行时（LLM + MCP + Console :8080 + Dashboard :8090）
+ares serve       # 启动完整运行时（LLM + MCP + Console :8080）
 ares bench       # 快速性能基准测试
 ares doctor      # 诊断环境（LLM key、Ollama、Git）
 ares status      # 查看运行时状态（配置 / agents / kernel policy）
@@ -180,13 +221,16 @@ if err != nil {
 }
 defer rt.Close()
 
-// 带工具和人工审批的 Agent
+// 带工具的 Agent
 agent := rt.NewAgent("assistant",
     sdk.WithInstruction("你是一个助手。"),
     sdk.WithTools(calculatorTool, weatherTool),
-    sdk.WithHumanInput(approveFn),
 )
 result, _ := agent.Run(ctx, "计算 15*23")
+
+// 注意：sdk.WithHumanInput 已废弃且不生效——L2 执行路径没有逐工具调用的审批钩子，
+// 因此 Agent.Run 会返回 sdk.ErrHumanInputUnsupported 而不再静默忽略该闸门。
+// 如需约束一次运行，请使用 sdk.WithAgentGovernance(tokens, tools, deadline)。
 
 // 流式响应
 ch, _ := agent.Stream(ctx, "讲个故事")
@@ -209,12 +253,12 @@ ARES 借用操作系统的调度模型作为**设计视角**——这是一个�
 
 | 操作系统概念 | ARES | 位置 |
 |---|---|---|
-| 进程 / PCB | **Task** —— 可持久化，独立于执行者存活，有显式状态机（READY→RUNNING→SUSPENDED→…） | `internal/taskfabric` |
-| 所有权 / fencing token | **Lease + epoch** —— 被恢复的任务会拒绝旧属主的迟到写入 | `taskfabric.Fabric.Acquire/Preempt` |
-| 被调度的执行单元 | **Agent** —— 获取任务、执行、让出 | `internal/agentfabric` + `internal/kernelscheduler` |
-| 时间片 | **Quantum（量子）** —— **一轮** ReAct（reason → tool → observe → checkpoint），然后让出 | `agentfabric/chat_cognition.go`、`taskfabric.Yield` |
+| 进程 / PCB | **Task** —— 可持久化，独立于执行者存活，有显式状态机（READY→RUNNING→SUSPENDED→…） | `internal/fabric/task` |
+| 所有权 / fencing token | **Lease + epoch** —— 被恢复的任务会拒绝旧属主的迟到写入 | `fabric/task.Fabric.Acquire/Preempt` |
+| 被调度的执行单元 | **Agent** —— 获取任务、执行、让出 | `internal/fabric/agent` + `internal/kernel` |
+| 时间片 | **Quantum（量子）** —— **一轮** ReAct（reason → tool → observe → checkpoint），然后让出 | `fabric/agent/planner_cognition.go`、`fabric/task.Fabric.Yield` |
 | 上下文保存/恢复 | **Checkpoint + 事件溯源重放** —— 崩溃 Agent 的任务被重新入队、在别处恢复 | `internal/aresrecovery` |
-| 调度策略 | 能力匹配 × 负载 × 置信度、优先级、工作窃取 | `kernelscheduler.Scheduler` |
+| 调度策略 | 能力匹配 × 负载 × 置信度、优先级、工作窃取 | `kernel.Scheduler` |
 
 **必须实事求是地说清楚它是什么、不是什么：**
 
@@ -251,8 +295,7 @@ flowchart TB
     BOOT --> HTTPG
 
     subgraph HTTPG["HTTP surfaces"]
-        API["Console :8080<br/>/api/tasks, graphs, chaos, tools<br/>JWT/API-key, deny-by-default, audit"]
-        DASH["Dashboard :8090<br/>trajectory, feedback, spans"]
+        API["Console :8080<br/>/api/tasks, graphs, chaos, tools<br/>/api/evolution, /api/observability, /api/flight<br/>JWT/API-key, deny-by-default, audit"]
     end
 
     HTTPG ~~~ KERNELG
@@ -327,7 +370,7 @@ flowchart LR
         DIS["Distillation<br/>ExpRepo"]
         KR["KnowledgeRuntime<br/>AKG store"]
         REC["Recovery"]
-        DASH["Dashboard<br/>:8090"]
+        OBS["Observability<br/>introspect routes"]
     end
 
     API -- "L1 submit / result reflux" --> FABRIC
@@ -345,13 +388,13 @@ flowchart LR
     AFABK["agent kill"] -. "L5 expiry → requeue → W1 rebind" .-> SCHED
     SCHED -. "L5 renew heartbeat" .-> FABRIC
 
-    SCHED -. "L6 traces · feedback · spans" .-> DASH
+    SCHED -. "L6 traces · feedback · spans" .-> OBS
 
     style STRAT fill:#2d1b69,stroke:#8b5cf6,color:#fff
     style DIS fill:#1a2332,stroke:#64748b,color:#fff
     style KR fill:#1a2332,stroke:#64748b,color:#fff
     style REC fill:#3b2f2f,stroke:#f59e0b,color:#fff
-    style DASH fill:#1a3a2a,stroke:#22c55e,color:#fff
+    style OBS fill:#1a3a2a,stroke:#22c55e,color:#fff
 ```
 
 六条环路的闭合点与回归锁定：
@@ -363,7 +406,7 @@ flowchart LR
 | **L3** 蒸馏 | 任务终结事件 → 蒸馏 → 经验仓库 → spawn prior (G1) + RAG 检索注入 | bootstrap closure 套件 |
 | **L4** 知识 | DistillBridge → AKG store → 共享 KnowledgeRuntime ↔ AKF 工具；知识补丁作用于同一实例（`recovery.strategy` target 已注册） | `TestUpdateLiveDAG_*`、patch-registry 测试 |
 | **L5** 恢复 | kill → 租约过期（心跳感知）→ 重排队 → W1 替换绑定 → checkpoint 续跑；僵尸注册每 drain 清扫 | `TestReconcileFabricDeaths_*`、`TestSchedulerAttributesFailureAsFailure` |
-| **L6** 可观测 | 运行时钩子写入 tracer/feedback/spans → Dashboard APIv2（**现已真正监听 :8090**）实时读取 | bootstrap dashboard 测试 |
+| **L6** 可观测 | 运行时钩子写入 tracer/feedback/spans → introspect ControlServer（`/api/observability/*`、`/api/flight/*`、`/api/evolution/*`）实时读取 | bootstrap dashboard 测试 |
 
 
 
@@ -457,31 +500,36 @@ Execution → Evidence → Genome → Candidate → Diff Engine → RuntimePatch
 
 **关键设计**：LLM 是**参与者**，而非主导者。Coordinator 对所有 7 个 `PatchSource` 值一视同仁，没有来源拥有特权。
 
-### 基准测试（Apple M3 Max，darwin/arm64，2026-08-25）
+### 基准测试（Apple M3 Max，darwin/arm64，2026-09-12）
 
 ```
-=== 运行时进化（internal/evolution） ===
-BenchmarkWorkflowGenome_Mutate     152k   7.92µs  11.9KB  157 allocs
-BenchmarkKnowledgeGenome_Mutate    2.67M  440ns    960B    11 allocs
-BenchmarkRecoveryGenome_Mutate     2.35M  521ns    1.28KB  21 allocs
-BenchmarkDiffEngine_Workflow       2.68M  448ns    304B     3 allocs
-BenchmarkCoordinator_Evaluate      188M   6.33ns     0B      0 allocs
-BenchmarkFullEvolutionCycle        277k   4.26µs   7.3KB    90 allocs
+=== 运行时进化（internal/runtime/evolution） ===
+BenchmarkWorkflowGenome_Mutate       19.2k   31.5µs  46.5KB    534 allocs
+BenchmarkKnowledgeGenome_Mutate      1.42M   427ns   960B       11 allocs
+BenchmarkRecoveryGenome_Mutate       1.00M   505ns   1.25KB     21 allocs
+BenchmarkDiffEngine_Workflow         1.00M   546ns   352B        3 allocs
+BenchmarkCoordinator_Evaluate        94.7M   6.26ns  0B          0 allocs
+BenchmarkFullEvolutionCycle          59.3k   9.81µs  13.5KB    157 allocs
 
 === 事件系统（internal/ares_events） ===
-BenchmarkMemoryStore_Append           2.24M  519ns    618B    7 allocs
-BenchmarkMemoryStore_AppendBatch      300k   3.74µs   8.9KB    1 alloc
-BenchmarkMemoryStore_Read             231k   5.40µs  17.5KB   11 allocs
-BenchmarkMemoryStore_ConcurrentAppend 1.67M  704ns    625B    6 allocs
+BenchmarkMemoryStore_Append             944k   571ns    727B       8 allocs
+BenchmarkMemoryStore_AppendBatch       91.5k   6.50µs   21.1KB   102 allocs
+BenchmarkMemoryStore_Read              127k   4.73µs   17.1KB    11 allocs
+BenchmarkMemoryStore_ConcurrentAppend   873k   753ns    729B       7 allocs
 
-=== 内核（internal/taskfabric · agentfabric · agentipc） ===
-Fabric_Create             2.59M   389ns   931B     3 allocs
-Fabric_Schedule           1.54M   800ns   1.85KB   18 allocs
-Fabric_RunQuantum         796k   1.60µs   3.7KB    23 allocs
-Fabric_Spawn              3.11M   385ns   936B    10 allocs
-Bus_Send                  8.28M   143ns   280B     4 allocs
-Bus_RequestReply          1.00M   1.10µs   912B    14 allocs
-DualTrackDispatch         121M    9.9ns     0B      0 allocs
+=== 内核（internal/fabric/task · fabric/agent · agentipc） ===
+Fabric_Create              1.41M    395ns    352B      4 allocs
+Fabric_Schedule            1.10M    568ns    428B     10 allocs
+Fabric_RunQuantum          466k     1.30µs   1.13KB   16 allocs
+Fabric_ReadyTasks          1.54M    386ns    960B      4 allocs
+Fabric_IsReady             39.1M    15.4ns   0B        0 allocs
+Fabric_Spawn               1.49M    411ns    936B     10 allocs
+Fabric_SpawnWithResources  705k     828ns    1.45KB   14 allocs
+Fabric_SuspendResume       24.9M    24.0ns   0B        0 allocs
+Fabric_Children            22.7M    26.4ns   80B        1 alloc
+Bus_Send                   1.95M    313ns    400B      8 allocs
+Bus_RequestReply           351k     1.73µs   1.29KB   22 allocs
+Bus_Broadcast              2.25M    263ns    400B      8 allocs
 ```
 
 ### CLI
@@ -494,16 +542,16 @@ ares evolution run      # 运行一个进化周期
 ### 示例
 
 ```bash
-go run examples/11-knowledge-import/ --dir ./notes          # 导入 markdown 到 pgvector
-go run examples/11-knowledge-import/ --ask "question"       # RAG 查询知识库
-go run examples/11-knowledge-import/ --evolve "task"        # GA 进化导入策略
-go run examples/11-knowledge-import/ --chat                 # 交互式对话 + 工具
-go run examples/11-knowledge-import/ --team --dir ./notes   # 多 Agent 团队导入
-go run examples/11-knowledge-import/ --chaos-fail 0.3       # 故障注入测试
-go run examples/11-knowledge-import/akg/                    # 从知识库构建 AKG 图
-go run examples/runtime_evolution/basic/      # 完整端到端进化演示
-go run examples/runtime_evolution/knowledge/  # Knowledge 参数进化
-go run examples/runtime_evolution/full/       # 全部 4 个 Genome + 真实 Executor
+go run examples/_internal/11-knowledge-import/ --dir ./notes          # 导入 markdown 到 pgvector
+go run examples/_internal/11-knowledge-import/ --ask "question"       # RAG 查询知识库
+go run examples/_internal/11-knowledge-import/ --evolve "task"        # GA 进化导入策略
+go run examples/_internal/11-knowledge-import/ --chat                 # 交互式对话 + 工具
+go run examples/_internal/11-knowledge-import/ --team --dir ./notes   # 多 Agent 团队导入
+go run examples/_internal/11-knowledge-import/ --chaos-fail 0.3       # 故障注入测试
+go run examples/_internal/11-knowledge-import/akg/                    # 从知识库构建 AKG 图
+go run examples/_internal/runtime_evolution/basic/      # 完整端到端进化演示
+go run examples/_internal/runtime_evolution/knowledge/  # Knowledge 参数进化
+go run examples/_internal/runtime_evolution/full/       # 全部 4 个 Genome + 真实 Executor
 ```
 
 ## 策略进化（GA）
@@ -525,26 +573,26 @@ go run examples/runtime_evolution/full/       # 全部 4 个 Genome + 真实 Exe
 | **世代历史** | 每代快照及元数据 |
 | **经验系统** | 三层管道：ToolCallRecord → RawExperience → NormalizedExperience → EvolutionHint → GuidanceProvider |
 
-### 基准测试（Apple M3 Max，darwin/arm64，2026-08-25）
+### 基准测试（Apple M3 Max，darwin/arm64，2026-09-12）
 
 ```
-=== GA Genome（internal/ares_evolution/genome） ===
-CrossoverUniform (10 params)        500k   2.46µs   3.1KB   31 allocs
-CrossoverUniform (100 params)       61.5k  17.8µs   21.2KB  38 allocs
-TruncationSelection (pop=100)       209k   5.82µs   952B     3 allocs
-TournamentSelection (pop=50,k=2)    287k   4.45µs  14.4KB  101 allocs
-RouletteWheelSelection (pop=100)    422k   2.84µs   3.4KB    7 allocs
-Evolve_OneGeneration (pop=100)      4.60M   263ns   344B     6 allocs
-Evolve_MultipleGenerations (100)    45.3k  25.9µs  29.6KB  600 allocs
-ApplyFitnessSharing (pop=100)         896   1.34ms   540KB 106 allocs
-RealWorldEvolution (100 gen)          100  10.05ms   4.4MB 61871 allocs
+=== GA Genome（internal/runtime/ares_evolution/genome） ===
+CrossoverUniform (10 params)         262k   2.29µs   2.97KB    31 allocs
+CrossoverUniform (100 params)       34.1k   17.2µs   20.6KB    38 allocs
+TruncationSelection (pop=100)       103k    5.82µs   952B       3 allocs
+TournamentSelection (pop=50,k=2)    158k    3.84µs   13.3KB   101 allocs
+RouletteWheelSelection (pop=100)    208k    3.02µs   3.34KB     7 allocs
+Evolve_OneGeneration (pop=100)      2.22M   271ns    344B       6 allocs
+Evolve_MultipleGenerations (100)    23.2k   26.3µs   33.6KB   600 allocs
+ApplyFitnessSharing (pop=100)       429     1.36ms   527KB    106 allocs
+RealWorldEvolution (100 gen)        58      10.5ms   4.31MB  61922 allocs
 ```
 
 ### 示例
 
 ```bash
-go run examples/10-ga-full-evolution/main.go   # 完整 GA 进化演示
-go run examples/05-evolution-demo/main.go       # NSGA-II 之前的进化演示
+go run examples/_internal/10-ga-full-evolution/main.go   # 完整 GA 进化演示
+go run examples/_fixtures/05-evolution-demo/main.go       # NSGA-II 之前的进化演示
 ```
 
 ## 许可证

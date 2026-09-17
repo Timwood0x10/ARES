@@ -26,6 +26,26 @@ func TestNewMemoryStore(t *testing.T) {
 	assert.Len(t, s.data, 0)
 }
 
+// TestNewEvidence_UnmarshalablePayloadKeepsZeroRawMessage locks the
+// constructor's degrade contract: a payload json.Marshal rejects (e.g. a
+// channel) yields a zero RawMessage instead of a panic or a silently bogus
+// value — stores and queries already treat zero RawMessage as "no payload".
+func TestNewEvidence_UnmarshalablePayloadKeepsZeroRawMessage(t *testing.T) {
+	e := NewEvidence("test", KindKnowledge, make(chan int))
+	require.NotEmpty(t, e.ID)
+	require.NotNil(t, e.Metadata)
+	assert.Nil(t, e.Payload, "unmarshalable payload must keep the zero RawMessage")
+}
+
+// TestNewEvidence_MarshalablePayloadRidesRawMessage is the happy path: the
+// payload is JSON-encoded onto Payload.
+func TestNewEvidence_MarshalablePayloadRidesRawMessage(t *testing.T) {
+	e := NewEvidence("test", KindKnowledge, map[string]any{"v": 1.0})
+	var decoded map[string]any
+	require.NoError(t, json.Unmarshal(e.Payload, &decoded))
+	assert.InDelta(t, 1.0, decoded["v"], 1e-9)
+}
+
 func TestMemoryStore_Append(t *testing.T) {
 	ctx := context.Background()
 	s := NewMemoryStore()
@@ -203,4 +223,51 @@ func seedEvidence(ctx context.Context, t *testing.T, s *MemoryStore, n int) {
 			Timestamp: time.Now(),
 		}))
 	}
+}
+
+// TestMemoryStore_TTLExpiry locks the TTL contract: the TTL field is honored —
+// a record whose (timestamp + TTL) has elapsed is excluded from Query (zero
+// TTL means no expiry).
+func TestMemoryStore_TTLExpiry(t *testing.T) {
+	ctx := context.Background()
+	s := NewMemoryStore()
+	base := time.Now().Add(-2 * time.Minute) // 2 minutes ago
+
+	fresh := Evidence{ID: "fresh", Source: "ttl", Kind: KindFitness,
+		Payload: json.RawMessage(`0.5`), Timestamp: base, TTL: time.Hour} // not expired
+	expired := Evidence{ID: "expired", Source: "ttl", Kind: KindFitness,
+		Payload: json.RawMessage(`0.7`), Timestamp: base, TTL: time.Minute} // expired (age 2m > ttl 1m)
+	noTTL := Evidence{ID: "no-ttl", Source: "ttl", Kind: KindFitness,
+		Payload: json.RawMessage(`0.9`), Timestamp: base} // zero TTL = never expires
+	for _, e := range []Evidence{fresh, expired, noTTL} {
+		require.NoError(t, s.Append(ctx, e))
+	}
+
+	got, err := s.Query(ctx, Filter{Source: "ttl"})
+	require.NoError(t, err)
+	var ids []string
+	for _, e := range got {
+		ids = append(ids, e.ID)
+	}
+	assert.ElementsMatch(t, []string{"fresh", "no-ttl"}, ids,
+		"expired record must be filtered out; zero-TTL record must survive")
+}
+
+// TestPostgresGeneratedID_CollisionResistant locks the N9 contract: the
+// client-side generated ID for a zero-ID append includes a content digest, so
+// two distinct records with the same source and the same nanosecond timestamp
+// do not collide (the old "%d-source" form did).
+func TestPostgresGeneratedID_CollisionResistant(t *testing.T) {
+	ts := time.Date(2026, 8, 26, 12, 0, 0, 123456789, time.UTC)
+	sameSource := "collision-src"
+	a := Evidence{Source: sameSource, Kind: KindFitness,
+		Payload: json.RawMessage(`{"value":1}`), Timestamp: ts}
+	b := Evidence{Source: sameSource, Kind: KindFitness,
+		Payload: json.RawMessage(`{"value":2}`), Timestamp: ts} // same nano, different payload
+
+	idA, idB := generatedEvidenceID(a), generatedEvidenceID(b)
+	assert.NotEqual(t, idA, idB, "distinct payloads at the same nanosecond must not collide")
+
+	// Determinism: retries of the SAME record produce the SAME id.
+	assert.Equal(t, idA, generatedEvidenceID(a))
 }

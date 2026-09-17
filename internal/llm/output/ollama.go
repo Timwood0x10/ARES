@@ -63,10 +63,14 @@ func NewOllamaAdapter(config *Config) *OllamaAdapter {
 // Generate generates text from prompt.
 func (a *OllamaAdapter) Generate(ctx context.Context, prompt string) (string, error) {
 	reqBody := map[string]interface{}{
-		keyOllamaModel:       a.config.Model,
-		"prompt":             prompt,
-		keyOllamaStream:      false,
-		keyOllamaTemperature: a.config.Temperature,
+		keyOllamaModel:  a.config.Model,
+		"prompt":        prompt,
+		keyOllamaStream: false,
+		// Ollama expects sampling parameters inside an "options" object;
+		// top-level "temperature" is silently ignored.
+		"options": map[string]interface{}{
+			keyOllamaTemperature: a.config.Temperature,
+		},
 	}
 
 	body, err := json.Marshal(reqBody)
@@ -144,10 +148,14 @@ func (a *OllamaAdapter) GenerateStream(ctx context.Context, prompt string) (<-ch
 	}
 
 	reqBody := map[string]interface{}{
-		"model":       a.config.Model,
-		"prompt":      prompt,
-		"stream":      true,
-		"temperature": a.config.Temperature,
+		"model":  a.config.Model,
+		"prompt": prompt,
+		"stream": true,
+		// Ollama expects sampling parameters inside an "options" object;
+		// top-level "temperature" is silently ignored (same as Generate).
+		"options": map[string]interface{}{
+			keyOllamaTemperature: a.config.Temperature,
+		},
 	}
 
 	body, err := json.Marshal(reqBody)
@@ -164,7 +172,7 @@ func (a *OllamaAdapter) GenerateStream(ctx context.Context, prompt string) (<-ch
 	req.Header.Set("Content-Type", "application/json")
 
 	// Timeout is controlled via the request context, not the client.
-	resp, err := a.streamClient.Do(req)
+	resp, err := a.streamClient.Do(req) //nolint:bodyclose // body is closed in the goroutine below and in the error-status branch
 	if err != nil {
 		return nil, gerr.Wrap(err, "send stream request")
 	}
@@ -196,11 +204,25 @@ func (a *OllamaAdapter) GenerateStream(ctx context.Context, prompt string) (<-ch
 					case ch <- StreamChunk{Done: true, Err: gerr.Wrap(err, "decode stream chunk")}:
 					case <-ctx.Done():
 					}
+					return
+				}
+				// EOF without a final done:true object — still a clean end,
+				// still emit the terminal Done chunk.
+				select {
+				case ch <- StreamChunk{Done: true}:
+				case <-ctx.Done():
 				}
 				return
 			}
 
 			if chunk.Done {
+				// Emit the terminal Done chunk so consumers watching for
+				// Done (instead of channel close) see a clean end; the
+				// decode-error path above already emits Done:true.
+				select {
+				case ch <- StreamChunk{Done: true}:
+				case <-ctx.Done():
+				}
 				return
 			}
 

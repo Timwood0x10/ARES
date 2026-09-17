@@ -4,11 +4,12 @@ import (
 	"context"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/Timwood0x10/ares/internal/knowledge/skills"
 	"github.com/Timwood0x10/ares/internal/tools/discovery"
 	"github.com/Timwood0x10/ares/internal/tools/resources/core"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 // staticTool is a minimal core.Tool for tests.

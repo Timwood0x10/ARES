@@ -1,78 +1,105 @@
 # Examples
 
-ARES examples, organized as a LEARNING PATH across four layers. Every example
-runs on the single kernel execution path (taskfabric + kernelscheduler) —
-there is no second engine.
+ARES examples live in two areas with different audiences:
 
-| Layer | What you learn |
-|---|---|
-| **Basics** | SDK four verbs: NewRuntime → NewAgent/RegisterAgent → Run/Submit |
-| **Orchestration** | `sdk.Graph`: conditions, router loops, fan-out+join, subgraphs; HTTP graph submission |
-| **Kernel internals** | Watch the scheduler work; LLM-decided spawn via kernel syscalls; deterministic AgentOS baseline |
-| **Evolution** | GA strategy evolution and genome patching |
+| Area | Audience | Rule |
+|---|---|---|
+| [`_fixtures/`](_fixtures/) | **External users** — copy-paste and build your own agent | **Pure `api/` only.** No `internal/` imports anywhere (Go's internal visibility rule means you could not compile them anyway). |
+| [`_internal/`](_internal/) | **ARES contributors** — how the machinery works | Deep dives into kernel scheduling, the AKF/AKG knowledge pipeline, GA evolution blocks and service discovery. These drive `internal/` APIs directly and are **not** integration templates. |
+
+Every external example runs on the single kernel execution path
+(taskfabric + kernelscheduler) — there is no second engine.
+
+> **2026-09-16 update:** the public API surface is now the `api/` package
+> (`github.com/Timwood0x10/ares/api`), which re-exports all types and
+> functions from `sdk/` for external consumers. Examples use `api/` only.
 
 Quick start (no API key needed):
 
 ```bash
-make quickstart        # = go run examples/01-quickstart/main.go with Ollama
+make quickstart        # = go run examples/_fixtures/01-quickstart/main.go with Ollama
 ```
 
 Legend: ★ flagship · LLM = needs a configured provider · dry = runs without an LLM
 
-## Basics
+## External examples (`_fixtures/`, pure `api/`)
+
+### Basics
 
 | Example | Concept | Needs LLM |
 |---|---|---|
-| [01-quickstart](01-quickstart/) | Runtime → Agent → Run, minimal surface | yes |
-| [02-tool-calling](02-tool-calling/) | Tool registry + ReAct loop | yes |
-| [04-multi-agent](04-multi-agent/) | RegisterAgent by capability + Submit dispatch | yes |
-| [07-human-in-loop](07-human-in-loop/) | Human approval gates inside agent loops | yes |
-| [12-yaml-driven-flags](12-yaml-driven-flags/) | Config-driven setup (`ares.yaml`) | no |
+| [01-quickstart](_fixtures/01-quickstart/) | Runtime → Agent → Run, minimal surface | yes |
+| [02-tool-calling](_fixtures/02-tool-calling/) | Custom tools (`api.ToolFunc`) + L2 session planner | yes |
+| [04-multi-agent](_fixtures/04-multi-agent/) | RegisterAgent by capability + Submit dispatch | yes |
+| [07-human-in-loop](_fixtures/07-human-in-loop/) | Human approval gates inside agent loops | yes |
+| [12-yaml-driven-flags](_fixtures/12-yaml-driven-flags/) | Config-driven setup (`ares.yaml`) | no |
 
-## Orchestration
-
-| Example | Concept | Needs LLM |
-|---|---|---|
-| [03-dag-workflow](03-dag-workflow/) | sdk.Graph core shapes + the three collaboration modes (delegate / pipeline / orchestrate) | dry |
-| [28-collab-graphs](28-collab-graphs/) | Submit explicit DAGs over HTTP (`POST /api/graphs`); ops surface of C4 | yes (serve) |
-| [29-akf-graph-node](29-akf-graph-node/) | AKF knowledge-fabric step as a `sdk.Graph` node (BETA adapter) | no |
-| [09-full-app](09-full-app/) | Composing tools + memory + agents into a small app | yes |
-| [21-ai-assistant-integration](21-ai-assistant-integration/) | Embedding ARES into an existing assistant stack | yes |
-
-## Kernel internals
+### Orchestration
 
 | Example | Concept | Needs LLM |
 |---|---|---|
-| [26-runtime-scheduling-demo](26-runtime-scheduling-demo/) ★ | Watch the kernelscheduler drive a capability agent | yes |
-| [27-peer-spawn-demo](27-peer-spawn-demo/) ★★ | REAL LLM autonomously decomposes: spawn_agent ×N + create_task ×N through kernel syscalls; captured evidence in `evidence/` | yes |
-| [aresos-demo](aresos-demo/) | Deterministic 7-step AgentOS baseline (spawn → parallel → death → IPC → revival → synthesis), zero deps | **no** |
-| [06-chaos-resilience](06-chaos-resilience/) | Failure injection & recovery semantics | partial |
+| [03-dag-workflow](_fixtures/03-dag-workflow/) | api.Graph core shapes + the three collaboration modes (delegate / pipeline / orchestrate) | dry |
+| [28-collab-graphs](_fixtures/28-collab-graphs/) | Submit explicit DAGs over HTTP (`POST /api/graphs`); ops surface of C4 | yes (serve) |
+| [09-full-app](_fixtures/09-full-app/) | Composing tools + memory + agents into a small app | yes |
 
-## Evolution
+### Evolution
 
 | Example | Concept | Needs LLM |
 |---|---|---|
-| [05-evolution-demo](05-evolution-demo/) | Strategy evolution intro (`rt.Evolve`) | yes |
-| [10-ga-full-evolution](10-ga-full-evolution/) | Full GA pipeline on public api/evolution blocks | no |
-| [19-ga-candidate-e2e](19-ga-candidate-e2e/) | Multi-generation GA → champion → CandidateVerifier gates | no |
-| [22-evolution-blocks](22-evolution-blocks/) | Zero-internal composition path for external embedders | no |
-| [runtime_evolution/](runtime_evolution/) | Genome patching over engine DAGs (workflow/knowledge/recovery) | no |
+| [05-evolution-demo](_fixtures/05-evolution-demo/) | Strategy evolution intro (`rt.Evolve`) | yes |
 
-> The scheduler genome dimension was RETIRED (fusion plan §B1): sdk.Graph runs
-> fully-parallel ready batches. A future concurrency dimension may evolve
-> `sdk.Graph.MaxRoundConcurrency`.
+### Kernel & resilience
 
-## Advanced / integrations
+| Example | Concept | Needs LLM |
+|---|---|---|
+| [27-peer-spawn-demo](_fixtures/27-peer-spawn-demo/) ★★ | REAL LLM autonomously decomposes: spawn_agent ×N + create_task ×N through api syscalls; captured evidence in `evidence/` | yes |
+| [06-chaos-resilience](_fixtures/06-chaos-resilience/) | Failure injection & recovery semantics | partial |
+| [30-agentos-capabilities](_fixtures/30-agentos-capabilities/) ★ | Full AgentOS showcase: GA evolution config, knowledge store ops, context cleaner, runtime health snapshot | yes |
 
-Unnumbered utility examples, each demonstrating one integration surface:
+### Integrations & evaluation
 
-| Directory | Surface |
+| Example | Surface |
 |---|---|
-| [08-mcp-integration](08-mcp-integration/) · [mcp-registry](mcp-registry/) | MCP tool discovery & servers |
-| [11-knowledge-import](11-knowledge-import/) · [knowledge-fabric](knowledge-fabric/) | AKF/AKG knowledge pipeline & tools |
-| [13-archive-akg-chain](13-archive-akg-chain/) | Archive → AKG distillation chain |
-| [14-tool-discovery](14-tool-discovery/) · [external-tools](external-tools/) | Tool discovery sources |
-| [15-llm-evolution-suite](15-llm-evolution-suite/) · [25-dual-endpoint-fallback](25-dual-endpoint-fallback/) | LLM-driven evolution suite · endpoint failover |
-| [arena](arena/) · [eval](eval/) | Chaos arena CLI · evaluation harness |
-| [custom-store](custom-store/) | Pluggable knowledge store backend |
-| [discovery](discovery/) | Legacy service discovery (deprecated) |
+| [08-mcp-integration](_fixtures/08-mcp-integration/) | MCP tool discovery & servers |
+| [25-dual-endpoint-fallback](_fixtures/25-dual-endpoint-fallback/) | Dual-endpoint LLM fallback config template (`ares.yaml`, no Go code) |
+| [eval](_fixtures/eval/) · [evaluation](_fixtures/evaluation/) | Evaluation harness + shared assertion library |
+
+### Memory & knowledge
+
+| Example | Concept | Needs LLM |
+|---|---|---|
+| [31-memory-distillation](_fixtures/31-memory-distillation/) | Automatic knowledge extraction from conversations | yes |
+| [32-llm-service-direct](_fixtures/32-llm-service-direct/) | Direct LLM access without agent loop (Generate, Embeddings) | yes |
+
+> The scheduler genome dimension was RETIRED (fusion plan Section B1): api.Graph runs
+> fully-parallel ready batches. A future concurrency dimension may evolve
+> `api.Graph.MaxRoundConcurrency`.
+
+## Internal reference (`_internal/`, drives `internal/` directly)
+
+Not for external integration — these exist to show the machinery and to serve
+as regression evidence. They will not compile from another module.
+
+| Example | What it demonstrates | internal packages |
+|---|---|---|
+| [26-runtime-scheduling-demo](_internal/26-runtime-scheduling-demo/) ★ | Watch the kernelscheduler drive a capability agent | kernel scheduler, fabric |
+| [aresos-demo](_internal/aresos-demo/) | Deterministic 7-step AgentOS baseline (spawn → parallel → death → IPC → revival → synthesis), zero api | agents, fabric, runtime |
+| [knowledge-fabric](_internal/knowledge-fabric/) | AKF/AKG pipeline wiring in full | knowledge/* (23 pkgs) |
+| [11-knowledge-import](_internal/11-knowledge-import/) | Archive → AKG import chain | knowledge/* |
+| [13-archive-akg-chain](_internal/13-archive-akg-chain/) | Archive → AKG distillation chain | knowledge/* |
+| [21-ai-assistant-integration](_internal/21-ai-assistant-integration/) | Embedding the AKG runtime into an assistant stack | knowledge/runtime, knowledge/service |
+| [29-akf-graph-node](_internal/29-akf-graph-node/) | AKF knowledge-fabric step as a `api.Graph` node (BETA adapter) | knowledge/compiler, planner, provider, runtime, workflow |
+| [10-ga-full-evolution](_internal/10-ga-full-evolution/) | Full GA pipeline on evolution blocks | evoapi, evoapi/mutation |
+| [19-ga-candidate-e2e](_internal/19-ga-candidate-e2e/) | Multi-generation GA → champion → CandidateVerifier gates | ares_evolution, evidence, agents |
+| [22-evolution-blocks](_internal/22-evolution-blocks/) | Raw evolution-block composition | evoapi |
+| [runtime_evolution/](_internal/runtime_evolution/) | Genome patching over engine DAGs (workflow/knowledge/recovery) | runtime/evolution/* |
+| [15-llm-evolution-suite](_internal/15-llm-evolution-suite/) | LLM-driven evolution suite | evolution, llm |
+| [14-tool-discovery](_internal/14-tool-discovery/) | Tool discovery sources | tools/toolsource |
+| [external-tools](_internal/external-tools/) | Discovered MCP tools wired into a registry | discoveryapi, mcpclient |
+| [mcp-registry](_internal/mcp-registry/) | Service registry lifecycle (`make demo-mcp`) | discoveryapi |
+| [custom-store](_internal/custom-store/) | Pluggable discovery store backend | discoveryapi |
+| [discovery](_internal/discovery/) | Legacy service discovery (**deprecated**) | discoveryapi |
+
+## arena/
+
+YAML chaos/regression scenarios (not Go examples): [`arena/`](arena/).

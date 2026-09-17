@@ -180,15 +180,10 @@ func (r *Repository) GetSessionWithResult(ctx context.Context, sessionID string)
 }
 
 // SaveProfile saves a user profile.
+// It uses a single atomic upsert (ON CONFLICT) instead of the historical
+// exists-then-Create/Update pair: two concurrent writers could both observe
+// "not exists" and both INSERT, turning the second one into a duplicate-key
+// error (REVIEW 3.5b TOCTOU).
 func (r *Repository) SaveProfile(ctx context.Context, profile *models.UserProfile) error {
-	exists, err := r.Profile.Exists(ctx, profile.UserID)
-	if err != nil {
-		return err
-	}
-
-	if exists {
-		return r.Profile.Update(ctx, profile)
-	}
-
-	return r.Profile.Create(ctx, profile)
+	return r.Profile.Upsert(ctx, profile)
 }

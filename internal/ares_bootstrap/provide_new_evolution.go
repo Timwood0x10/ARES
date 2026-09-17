@@ -4,17 +4,13 @@ package ares_bootstrap
 //nolint: errcheck // best-effort operations: ResponseWriter writes, cleanup Close/Wait, deferred shutdown
 import (
 	"context"
+	"errors"
 	"fmt"
 
-	apiembedding "github.com/Timwood0x10/ares/api/embedding"
-	evolution "github.com/Timwood0x10/ares/internal/ares_evolution"
-	aresmemory "github.com/Timwood0x10/ares/internal/ares_memory"
+	apiembedding "github.com/Timwood0x10/ares/internal/embedding"
 	"github.com/Timwood0x10/ares/internal/evidence"
-	evoparent "github.com/Timwood0x10/ares/internal/evolution"
-	"github.com/Timwood0x10/ares/internal/evolution/coordinator"
-	"github.com/Timwood0x10/ares/internal/evolution/diff"
-	"github.com/Timwood0x10/ares/internal/evolution/genome"
-	"github.com/Timwood0x10/ares/internal/evolution/patch"
+	"github.com/Timwood0x10/ares/internal/fabric/task/workflow/engine"
+	wfgraph "github.com/Timwood0x10/ares/internal/fabric/task/workflow/graph"
 	"github.com/Timwood0x10/ares/internal/knowledge"
 	"github.com/Timwood0x10/ares/internal/knowledge/pipeline"
 	"github.com/Timwood0x10/ares/internal/knowledge/planner"
@@ -24,9 +20,14 @@ import (
 	storeprovider "github.com/Timwood0x10/ares/internal/knowledge/provider/store"
 	"github.com/Timwood0x10/ares/internal/knowledge/provider/vector"
 	knowledgeruntime "github.com/Timwood0x10/ares/internal/knowledge/runtime"
+	evolution "github.com/Timwood0x10/ares/internal/runtime/ares_evolution"
+	evoparent "github.com/Timwood0x10/ares/internal/runtime/evolution"
+	"github.com/Timwood0x10/ares/internal/runtime/evolution/coordinator"
+	"github.com/Timwood0x10/ares/internal/runtime/evolution/diff"
+	"github.com/Timwood0x10/ares/internal/runtime/evolution/genome"
+	"github.com/Timwood0x10/ares/internal/runtime/evolution/patch"
+	aresmemory "github.com/Timwood0x10/ares/internal/runtime/memory"
 	"github.com/Timwood0x10/ares/internal/storage"
-	"github.com/Timwood0x10/ares/internal/workflow/engine"
-	wfgraph "github.com/Timwood0x10/ares/internal/workflow/graph"
 )
 
 // NewEvolutionComponents holds the new evolution system components.
@@ -46,11 +47,50 @@ type NewEvolutionComponents struct {
 	// bootstrap bridge after the store is created.
 	StrategyStore evolution.StrategyStore
 
+	// GAGenerationActive reports whether a GA generation is currently in
+	// flight (the live-chaos GA quiet-window probe). Nil when
+	// no wired evolution system exists.
+	GAGenerationActive func() bool
+
+	// Lifecycle is the strategy lifecycle orchestrator. When set,
+	// serve wires it into the introspect control plane so
+	// /api/evolution/lifecycle returns a state snapshot.
+	Lifecycle *evolution.StrategyLifecycle
+
+	// ActiveStrategyManager is the ASM the Lifecycle wraps (sole Deploy/
+	// Rollback/RecordScore caller). Exposed for the closure assertions:
+	// Previous() / RollbackPolicy() are the acceptance surfaces for the
+	// promote→rollback loop. Nil when no strategy store was wired.
+	ActiveStrategyManager *evolution.ActiveStrategyManager
+
+	// ShadowEvaluator is the G2 gate's data source. Exposed so the closure
+	// tests (and a future task-level sampler) can feed shadow comparisons —
+	// DreamCycle was the only feeder, and it is disabled in production.
+	// Nil when shadow evaluation is disabled.
+	ShadowEvaluator *evolution.ShadowEvaluator
+
+	// ChannelFeedback records the two perception channels that were previously
+	// invisible to evolution: cross-agent
+	// collaboration receipts and tool-call outcomes. The wiring layer attaches
+	// it to the IPC bus (agentipc.CollaborationObserver) and wraps the tool
+	// binder with it (sub.ToolCallObserver). Nil when
+	// evolution.channel_feedback arms neither channel — the default.
+	ChannelFeedback *evolution.ChannelFeedbackRecorder
+
 	// liveDAG holds the agent's live workflow DAG injected after bootstrap
 	// so the evolution system's executors operate on real runtime state
 	// instead of synthetic placeholders. Set via UpdateLiveDAG after agents
 	// are created and their DAGs are registered with the runtime manager.
 	liveDAG *engine.MutableDAG
+
+	// toolClassDAG is the L1 capability graph: one node per ToolClass
+	// (toolName#argShape) with enabled/budget/prior metadata. Evolution
+	// structure patches (SetNodeMetadata on L1) constrain L2 growth: the
+	// plannerCognition reads enabled/budget before growing tool nodes.
+	// Unlike liveDAG, this is NOT compiled into taskfabric — it is a
+	// capability catalog, not an execution plan. Nil when no tools are
+	// registered (L1 constraints default to permissive).
+	toolClassDAG *engine.MutableDAG
 
 	// graphExec is the GraphPatchExecutor created at bootstrap time.
 	// UpdateLiveDAG calls SetGraph on it to swap in the live workflow graph,
@@ -62,6 +102,15 @@ type NewEvolutionComponents struct {
 	// UpdateLiveDAG calls SetDAG on it to replace the fake DAG with the
 	// live one, since Register cannot overwrite an already-registered key.
 	recoveryExec *engine.RecoveryPatchExecutor
+
+	// dagExec is the engine.DAGPatchExecutor that applies workflow structure
+	// patches (insert/remove/replace node, add/remove edge) directly to the
+	// live *MutableDAG. UpdateLiveDAG binds it to the live DAG and installs it
+	// as the patch registry's fallback, so a structure patch whose target is a
+	// dynamic node ID no longer dies on "no executor registered" — it reaches
+	// the real runtime topology. The pointer stays put; SetDAG swaps the DAG it
+	// operates on.
+	dagExec *engine.DAGPatchExecutor
 
 	// knowledgeExec is the KnowledgePatchExecutor created at bootstrap time.
 	// UpdateLiveKnowledgeRuntime calls SetRuntime on it to swap in the agent's
@@ -84,7 +133,7 @@ type NewEvolutionComponents struct {
 // When dag, rt, or memoryStore is nil, their corresponding executors are skipped.
 func ProvideNewEvolution(dag *engine.MutableDAG, rt *knowledgeruntime.KnowledgeRuntime, memoryStore aresmemory.MemoryConfigStore, evStore evidence.Store) (*NewEvolutionComponents, error) {
 	// 1. Evidence Store — central logging for all runtime evidence.
-	// T1 (evidence persistence): an explicit non-nil store (e.g. Postgres)
+	// An explicit non-nil store (e.g. Postgres)
 	// survives restarts; nil falls back to the in-memory store.
 	if evStore == nil {
 		evStore = evidence.NewMemoryStore()
@@ -104,12 +153,12 @@ func ProvideNewEvolution(dag *engine.MutableDAG, rt *knowledgeruntime.KnowledgeR
 		}
 
 		// TODO(tech-debt): the scheduler genome dimension was retired
-		// (fusion plan §B1, 2026-08-22): sdk.Graph runs fully-parallel ready
+		// (2026-08-22): sdk.Graph runs fully-parallel ready
 		// batches, so ordering schedulers have no execution decision left.
 		// Legacy PatchChangeScheduler appliers remain for persisted patches.
 		// TODO(evolution-dim): candidate successor dimension — a concurrency
 		// genome evolving sdk.Graph.MaxRoundConcurrency (the one scheduling
-		// semantic that survived the retirement). Not scheduled for 0.3.x.
+		// semantic that survived the retirement).
 
 		recoveryGenome := genome.NewRecoveryGenome(
 			&engine.RecoveryPolicy{Strategy: engine.RecoveryRetry, MaxAttempts: 3},
@@ -315,14 +364,34 @@ func (c *NewEvolutionComponents) UpdateLiveKnowledgeRuntime(rt *knowledgeruntime
 // registered with the runtime manager.
 //
 // The DAG is used to rebuild the graph executor and recovery executor in the
-// patch registry. The genome registry's WorkflowGenome is NOT updated here
-// because it needs a full re-registration; the live DAG is used downstream
-// when the coordinator evaluates and applies patches.
+// patch registry, and to repoint the WorkflowGenome at the live topology so
+// evolution reasons over the real agent DAG instead of the bootstrap
+// placeholder (previously the genome kept evolving the synthetic DAG while
+// patches were applied to the live one — a cross-graph mismatch that silently
+// no-op'd or errored). All three are updated in place: Register cannot
+// overwrite already-registered keys, so SetDAG/SetGraph/SetDAG mirror that.
 func (c *NewEvolutionComponents) UpdateLiveDAG(dag *engine.MutableDAG) error {
 	if dag == nil {
-		return fmt.Errorf("live DAG must not be nil")
+		return errors.New("live DAG must not be nil")
 	}
 	c.liveDAG = dag
+
+	// Repoint the WorkflowGenome at the live DAG so mutations and diffs are
+	// computed against the topology patches will actually touch. A registry
+	// Register cannot overwrite an already-registered genome, so we update the
+	// existing instance in place via SetDAG. GenomeReg is nil when UpdateLiveDAG
+	// runs outside a full bootstrap (e.g. tests that only register executors),
+	// and no WorkflowGenome is registered when bootstrap ran with a nil DAG —
+	// both are a no-op, since there is no cross-graph mismatch to fix.
+	if c.GenomeReg != nil {
+		if wfG, gErr := c.GenomeReg.Get(genome.WorkflowGenomeName); gErr == nil {
+			if wf, ok := wfG.(*genome.WorkflowGenome); ok {
+				wf.SetDAG(dag)
+				log.Info("new evolution: WorkflowGenome repointed at live DAG",
+					"steps", len(dag.Steps()))
+			}
+		}
+	}
 
 	// Rebuild graph executor with the live DAG's steps.
 	g, gErr := wfgraph.NewGraph("evolution-workflow")
@@ -380,9 +449,50 @@ func (c *NewEvolutionComponents) UpdateLiveDAG(dag *engine.MutableDAG) error {
 		_ = c.PatchReg.Register("recovery.strategy", recoveryExec)
 	}
 
+	// Install the structure executor as the patch registry's fallback. The
+	// WorkflowDiffer emits patches whose Target is a node ID (e.g. "wf-mut-1")
+	// rather than a registered component key, so without a fallback they hit
+	// "no executor registered for target". Binding the fallback to the live DAG
+	// makes structure patches mutate the real runtime topology. SetDAG keeps
+	// the same executor pointer (and thus the registered fallback slot) while
+	// rebinding it to a refreshed DAG on later calls.
+	if c.dagExec != nil {
+		c.dagExec.SetDAG(dag)
+	} else {
+		c.dagExec = engine.NewDAGPatchExecutor(dag)
+		c.PatchReg.SetFallback(c.dagExec)
+	}
+
 	log.Info("new evolution: live DAG injected into executors",
 		"steps", len(dag.Steps()))
 	return nil
+}
+
+// SetToolClassDAG injects the L1 capability graph. The L1 graph is the
+// evolution system's ToolClass action surface: its nodes are
+// toolName#argShape, and its Metadata (enabled/budget/prior) constrains L2
+// growth. Unlike the live DAG (UpdateLiveDAG), the L1 graph is NOT compiled
+// into taskfabric and does NOT replace the recovery executor — it is a
+// capability catalog, not an execution plan.
+//
+// The L1 graph is stored for the plannerCognition to read at growth time
+// (the "should this node be grown at all" constraint point). Evolution structure patches
+// (SetNodeMetadata) mutate L1 metadata; the planner reads the mutated values
+// before growing each tool node. A nil dag clears the L1 graph (constraints
+// default to permissive).
+func (c *NewEvolutionComponents) SetToolClassDAG(dag *engine.MutableDAG) {
+	c.toolClassDAG = dag
+	if dag != nil {
+		log.Info("new evolution: L1 ToolClass DAG injected",
+			"nodes", len(dag.Steps()))
+	}
+}
+
+// ToolClassDAG returns the L1 capability graph, or nil when no L1 graph was
+// injected. The plannerCognition reads this to check enabled/budget/prior
+// before growing tool nodes (the "should this node be grown at all" constraint point).
+func (c *NewEvolutionComponents) ToolClassDAG() *engine.MutableDAG {
+	return c.toolClassDAG
 }
 
 // used when no KnowledgeRuntime is available. It accepts all knowledge patches
@@ -392,7 +502,7 @@ type noopKnowledgeExecutor struct{}
 func (e *noopKnowledgeExecutor) Name() string { return "knowledge.planner" }
 
 func (e *noopKnowledgeExecutor) Snapshot(_ context.Context) (any, error) {
-	return nil, fmt.Errorf("noop: no snapshot")
+	return nil, errors.New("noop: no snapshot")
 }
 
 func (e *noopKnowledgeExecutor) Apply(_ context.Context, p patch.RuntimePatch) (*patch.RuntimePatch, error) {
@@ -461,7 +571,8 @@ func BuildKnowledgeRuntime(
 		vp, err := vector.NewVectorProvider(vecStore, vector.Config{
 			Name:            "knowledge-vectors",
 			Namespace:       fitnessSourceKnowledge,
-			Collection:      "knowledge_chunks_1024",
+			Collection:      tableKnowledgeChunks,
+			TenantID:        defaultDistillTenant,
 			IntentTags:      []string{fitnessSourceKnowledge, "doc", "guide"},
 			VectorDimension: 1024,
 			Embedder:        emb,
@@ -483,6 +594,11 @@ func BuildKnowledgeRuntime(
 	// corpus to search and no query embedding to produce. The provider is
 	// skipped with a warning when AKG is not enabled (store nil).
 	if store != nil && emb != nil {
+		// The read namespace resolves per Stream: a tenant-carrying request
+		// (tenantctx, stamped by the scheduler from the task's checkpoint
+		// envelope) scopes recall to that tenant; tenant-less requests fall
+		// back to this constructor namespace — the same fallback the write
+		// side's DistillBridge uses, so the two halves stay in lockstep.
 		sp := storeprovider.New("akg_store", store, emb, akgModelName(emb), akgNamespace)
 		if err := reg.Register(sp); err != nil {
 			log.Warn("bootstrap: register AKG store provider for knowledge runtime", "error", err)
@@ -506,10 +622,10 @@ func BuildKnowledgeRuntime(
 	)
 }
 
-// buildMemoryManager creates a lightweight ProductionMemoryManager for the
-// evolution system that works without a database pool. The MemoryPatchExecutor
-// only needs the config field — it reads/writes memory configuration values
-// (max_history, max_tasks, session_ttl, etc.) without touching the database.
+// buildMemoryManager creates the config-only ProductionMemoryManager fallback
+// for the evolution system. The MemoryPatchExecutor only needs the config
+// field — it reads/writes memory configuration values (max_history, max_tasks,
+// session_ttl, etc.) without touching any database.
 func buildMemoryManager() *aresmemory.ProductionMemoryManager {
 	return aresmemory.NewMinimalMemoryManager()
 }

@@ -1,8 +1,8 @@
-// Package aresrecovery implements the ARES Kernel Recovery subsystem (P5 of
-// docs/zh/architecture/ares-runtime.md): the independent responsibility of keeping durable
+// Package aresrecovery implements the ARES Kernel Recovery subsystem
+// (see docs/zh/architecture/ares-runtime.md): the independent responsibility of keeping durable
 // tasks alive across agent deaths.
 //
-// Design invariants (ares-runtime.md §13):
+// Design invariants :
 //   - Agent is disposable, Task is durable — Agent death ≠ Task death.
 //   - Recovery is a distinct responsibility from Chaos (failure injection):
 //     Chaos breaks things on purpose; Recovery proves the Runtime survives.

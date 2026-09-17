@@ -9,20 +9,18 @@ import (
 	"strings"
 	"sync"
 	"time"
-
 	"unicode/utf8"
-
-	"github.com/Timwood0x10/ares/internal/truncate"
 
 	"golang.org/x/sync/errgroup"
 
-	experience "github.com/Timwood0x10/ares/internal/ares_experience"
-	memembed "github.com/Timwood0x10/ares/internal/ares_memory/embedding"
 	"github.com/Timwood0x10/ares/internal/errors"
 	"github.com/Timwood0x10/ares/internal/llm"
+	memembed "github.com/Timwood0x10/ares/internal/runtime/memory/embedding"
+	experience "github.com/Timwood0x10/ares/internal/runtime/memory/experience"
 	"github.com/Timwood0x10/ares/internal/storage/postgres"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/embedding"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/repositories"
+	"github.com/Timwood0x10/ares/internal/truncate"
 )
 
 // allowedSynonymDirMu protects allowedSynonymDir from concurrent access.
@@ -148,7 +146,6 @@ type RetrievalService struct {
 	db                       *postgres.Pool
 	embeddingClient          *embedding.EmbeddingClient
 	llmClient                *llm.Client
-	tenantGuard              *postgres.TenantGuard
 	retrievalGuard           *postgres.RetrievalGuard
 	kbRepo                   *repositories.KnowledgeRepository
 	expRepo                  *repositories.ExperienceRepository
@@ -173,7 +170,8 @@ type RetrievalService struct {
 	conflictResolver    *experience.ConflictResolver
 
 	// Embedding pipeline for unified query embedding.
-	pipeline memembed.EmbeddingPipeline
+	pipelineMu sync.RWMutex // guards pipeline
+	pipeline   memembed.EmbeddingPipeline
 }
 
 // NewRetrievalService creates a new RetrievalService instance.
@@ -181,7 +179,6 @@ type RetrievalService struct {
 // pool - database connection pool.
 // embeddingClient - embedding service client for vector search.
 // llmClient - LLM client for query rewriting (optional, can be nil).
-// tenantGuard - tenant isolation guard.
 // retrievalGuard - rate limiting and circuit breaker for retrieval.
 // kbRepo - knowledge repository for data access.
 // expRepo - experience repository for experience search.
@@ -191,7 +188,6 @@ func NewRetrievalService(
 	pool *postgres.Pool,
 	embeddingClient *embedding.EmbeddingClient,
 	llmClient *llm.Client,
-	tenantGuard *postgres.TenantGuard,
 	retrievalGuard *postgres.RetrievalGuard,
 	kbRepo *repositories.KnowledgeRepository,
 	expRepo *repositories.ExperienceRepository,
@@ -201,7 +197,6 @@ func NewRetrievalService(
 		db:                       pool,
 		embeddingClient:          embeddingClient,
 		llmClient:                llmClient,
-		tenantGuard:              tenantGuard,
 		retrievalGuard:           retrievalGuard,
 		kbRepo:                   kbRepo,
 		expRepo:                  expRepo,
@@ -222,6 +217,8 @@ func NewRetrievalService(
 // When set, getEmbedding uses the pipeline with canonical query specs instead of
 // calling the embedding client directly.
 func (s *RetrievalService) SetEmbeddingPipeline(pipeline memembed.EmbeddingPipeline) {
+	s.pipelineMu.Lock()
+	defer s.pipelineMu.Unlock()
 	s.pipeline = pipeline
 }
 
@@ -343,14 +340,16 @@ func (s *RetrievalService) Search(ctx context.Context, req *SearchRequest) ([]*S
 	}
 
 	// 5. Apply minimum score filter
-	s.logger.Info("Before score filter", "results_count", len(finalResults), "min_score", req.MinScore)
+	s.logger.Debug("Before score filter", "results_count", len(finalResults), "min_score", req.MinScore)
+	// Per-result logging is Debug, not Info: at Info level every search
+	// result's content (even truncated) floods production logs on hot paths.
 	for i, result := range finalResults {
-		s.logger.Info("Result before filter", "index", i, "score", result.Score, "content", truncate.WithEllipsis(result.Content, 50))
+		s.logger.Debug("Result before filter", "index", i, "score", result.Score, "content", truncate.WithEllipsis(result.Content, 50))
 	}
 
 	finalResults = s.filterByScore(finalResults, req.MinScore)
 
-	s.logger.Info("After score filter", "results_count", len(finalResults))
+	s.logger.Debug("After score filter", "results_count", len(finalResults))
 
 	// 6. Generate retrieval trace (if enabled)
 	if req.EnableTrace {
@@ -387,6 +386,10 @@ func (s *RetrievalService) validateRequest(req *SearchRequest) error {
 	if req.TopK <= 0 {
 		req.TopK = 10
 	}
+	// Cap TopK to prevent unbounded result sets from scanning millions of rows.
+	if req.TopK > 100 {
+		req.TopK = 100
+	}
 	return nil
 }
 
@@ -422,6 +425,16 @@ func (s *RetrievalService) isPrecisionMode(query string) bool {
 // It follows strict order: Exact Match -> Keyword -> Vector (fallback)
 func (s *RetrievalService) searchPrecision(ctx context.Context, req *SearchRequest) ([]*SearchResult, error) {
 	s.logger.Debug("Executing precision search pipeline", "query", req.Query)
+
+	// The constructor does not require kbRepo, but every stage below
+	// dereferences it. Short queries (<=10 runes, plus expressions) route
+	// here unconditionally via isPrecisionMode, so an unassembled kbRepo used
+	// to panic on the most common entry path. Fail loud instead: precision
+	// retrieval is impossible without the knowledge base, and silently
+	// returning no results would hide the misconfiguration.
+	if s.kbRepo == nil {
+		return nil, errors.New("retrieval: knowledge base repository is not configured; precision search is unavailable")
+	}
 
 	// 1. Exact Match (highest priority)
 	exact, err := s.searchExact(ctx, req)

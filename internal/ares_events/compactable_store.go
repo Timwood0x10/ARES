@@ -2,11 +2,12 @@ package ares_events
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
-
-	"golang.org/x/sync/errgroup"
 
 	apperrors "github.com/Timwood0x10/ares/internal/errors"
 )
@@ -31,19 +32,35 @@ type CompactableEventStore struct {
 
 	// Track which streams have been recently checked to avoid redundant checks.
 	// Key: streamID, value: last version at which compaction was checked.
+	// Bounded by the TTL sweep in maybeCompact — serve mints a new stream per
+	// conversation, so without it these maps grew one permanent entry each
+	// per conversation ever seen.
 	lastChecked map[string]int64
+	// lastTouched records when a stream's bookkeeping was last used, and
+	// lastBookkeepingSweep when the TTL sweep last ran. Both under mu.
+	lastTouched           map[string]time.Time
+	lastBookkeepingSweep  time.Time
+	bookkeepingTTL        time.Duration
+	bookkeepingSweepEvery time.Duration
 
 	// archiveSink archives round records at task-terminal boundaries and before
 	// compaction. nil = no archiving. Set via WithArchiveSink.
 	archiveSink ArchiveSink
-	// archiveMu protects roundCounter and lastArchivedVersion. It is separate
-	// from mu so I/O (stream Read, sink call) never holds mu.
+	// archiveMu protects roundCounter, lastArchivedVersion and
+	// archiveInflight. It is separate from mu so I/O (stream Read, sink
+	// call) never holds mu.
 	archiveMu sync.Mutex
 	// roundCounter maps streamID -> next round number to assign (1-based).
 	roundCounter map[string]int
 	// lastArchivedVersion maps streamID -> stream version through which rounds
 	// are archived. Reads for archiving start at this version (inclusive).
 	lastArchivedVersion map[string]int64
+	// archiveInflight marks streams whose round archive is currently being
+	// claimed (read → sink → commit). The pre-fix "CAS" only detected a
+	// claimant that arrived AFTER a commit — two goroutines could both pass
+	// the boundary check, both invoke the sink for the same round, and
+	// archive it twice. An in-flight claim is exclusive per stream.
+	archiveInflight map[string]bool
 
 	// lctx is the store-owned lifecycle context for background compaction work.
 	// It is intentionally decoupled from any single Append caller's context:
@@ -85,11 +102,16 @@ func NewCompactableEventStore(
 	}
 
 	c := &CompactableEventStore{
-		EventStore:          store,
-		trimStore:           trimStore,
-		lastChecked:         make(map[string]int64),
-		roundCounter:        make(map[string]int),
-		lastArchivedVersion: make(map[string]int64),
+		EventStore:            store,
+		trimStore:             trimStore,
+		lastChecked:           make(map[string]int64),
+		lastTouched:           make(map[string]time.Time),
+		lastBookkeepingSweep:  time.Now(),
+		bookkeepingTTL:        streamBookkeepingTTL,
+		bookkeepingSweepEvery: streamBookkeepingSweepInterval,
+		roundCounter:          make(map[string]int),
+		lastArchivedVersion:   make(map[string]int64),
+		archiveInflight:       make(map[string]bool),
 	}
 	// Background compaction outlives any single request, so derive its lifecycle
 	// context from Background (cancelled by Close) rather than a caller ctx.
@@ -107,6 +129,21 @@ func NewCompactableEventStore(
 
 // compactionTimeout is the maximum duration allowed for a single compaction check.
 const compactionTimeout = 30 * time.Second
+
+// streamBookkeepingTTL bounds how long a stream's bookkeeping entries
+// (debounce cursor, touch time, archive round counter and boundary) survive
+// without traffic. serve mints one event stream per conversation, so without
+// a bound these maps kept three permanent entries per conversation ever seen
+// in a long-lived process. A reset after the TTL is safe: lastChecked is a
+// pure debounce cache, and the archive round counter already restarts at 1
+// after every process restart (it is in-memory only), so an idle-stream reset
+// is no worse than the tolerated restart behavior.
+const streamBookkeepingTTL = 24 * time.Hour
+
+// streamBookkeepingSweepInterval is the minimum gap between TTL sweeps of the
+// per-stream bookkeeping maps (they are swept opportunistically from
+// maybeCompact, not by a dedicated goroutine).
+const streamBookkeepingSweepInterval = time.Minute
 
 // Close cancels the store's lifecycle context and waits for in-flight
 // background compaction workers to finish (bounded by compactionTimeout),
@@ -172,16 +209,6 @@ func (s *CompactableEventStore) Append(
 	// workers respect gCtx, so they return as soon as s.lctx is cancelled or the
 	// timeout fires, unblocking g.Wait and letting the waiter exit.
 	compactCtx, cancel := context.WithTimeout(s.lctx, compactionTimeout)
-	g, gCtx := errgroup.WithContext(compactCtx)
-	g.Go(func() error {
-		if hasTerminal {
-			if err := s.drainPendingRounds(gCtx, streamID); err != nil {
-				log.Warn("archive: drain pending rounds failed", "stream_id", streamID, "error", err)
-			}
-		}
-		s.maybeCompact(gCtx, streamID)
-		return nil
-	})
 
 	// Register the waiter with the store's WaitGroup so Close can join it.
 	// The closed check runs under mu against Close's closed=true assignment:
@@ -202,38 +229,124 @@ func (s *CompactableEventStore) Append(
 	go func() {
 		defer s.wg.Done()
 		defer cancel()
-		if err := g.Wait(); err != nil {
-			log.Warn("compactable store: compaction wait failed", "error", err)
+		if hasTerminal {
+			if err := s.drainPendingRounds(compactCtx, streamID); err != nil {
+				log.Warn("archive: drain pending rounds failed", "stream_id", streamID, "error", err)
+			}
 		}
+		s.maybeCompact(compactCtx, streamID)
 	}()
 
 	return nil
 }
 
-// Read returns events for a stream. When the underlying store returns empty
-// but summaries exist for the stream, it falls back to returning the summaries
-// as synthetic events. This prevents ReplaySession from breaking after compaction
-// has trimmed old raw events.
+// Read returns events for a stream. After compaction trimmed a stream's head,
+// the synthetic summary events covering the trimmed range are merged with the
+// live tail, so a replay (flight.NewReplaySession, dashboard) sees the whole
+// history instead of silently starting mid-stream. The summaries are only
+// consulted when the caller's window actually reaches into the trimmed head —
+// an uncompacted stream (live events start at v1) or a window that starts at
+// the live head costs no extra repository read beyond the one the empty-tail
+// fallback always did.
+//
+// The synthetic events honor the caller's ReadOptions (version window, time
+// filter, direction, limit): pre-fix the fallback ignored them entirely, so a
+// bounded or descending read on a fully-compacted stream returned every
+// summary in ascending order — callers paging with Limit got an unbounded
+// slice and DESC callers got the oldest-first order.
 func (s *CompactableEventStore) Read(ctx context.Context, streamID string, opts ReadOptions) ([]*Event, error) {
 	events, err := s.EventStore.Read(ctx, streamID, opts)
 	if err != nil {
 		return nil, err
 	}
-	if len(events) > 0 {
-		return events, nil
-	}
-
-	// Underlying store returned empty — check summaries as fallback.
 	if s.compactor == nil || s.compactor.repo == nil {
 		return events, nil
 	}
+	// Only look for summaries when the request could include trimmed history:
+	// an empty result, or a window that starts below the oldest live event.
+	if len(events) > 0 {
+		minLive := events[0].Version
+		for _, ev := range events {
+			if ev.Version < minLive {
+				minLive = ev.Version
+			}
+		}
+		if minLive <= 1 || (opts.FromVersion > 0 && opts.FromVersion >= minLive) {
+			return events, nil
+		}
+	}
 	summaries, summaryErr := s.compactor.repo.FindByStreamID(ctx, streamID)
 	if summaryErr != nil || len(summaries) == 0 {
-		// No summaries either, return the original empty result.
+		// No summaries either, return the original result unchanged.
 		return events, nil
 	}
+	synthetic := applyReadOptions(syntheticSummaryEvents(summaries), opts)
+	if len(events) == 0 {
+		return synthetic, nil
+	}
+	synthetic = dropOverlappingSummaries(synthetic, events)
+	if len(synthetic) == 0 {
+		return events, nil
+	}
+	return mergeSyntheticWithLive(synthetic, events, opts), nil
+}
 
-	// Convert summaries to synthetic events.
+// dropOverlappingSummaries removes synthetic summaries whose covered range
+// reaches into the live events' version span.
+//
+// Concurrent compaction rounds can leave a summary covering 1–15 while a
+// later trim only removed up to 11, leaving live events at 12–14 INSIDE the
+// summary's range. Splicing such a summary before the live tail breaks the
+// version-ordered merge contract (a 15 would sort after a 12). Dropping the
+// overlap is lossless for replay semantics: the live events inside the range
+// ARE the original events the summary would stand in for.
+//
+// The end version is read from each synthetic event's own payload (not from
+// positional alignment with the summaries slice — applyReadOptions sorts and
+// filters, which breaks index correspondence). The payload value is int64 in
+// this process, but a JSON round-trip (PG repository path) yields float64,
+// so both are accepted.
+func dropOverlappingSummaries(synthetic []*Event, live []*Event) []*Event {
+	if len(synthetic) == 0 || len(live) == 0 {
+		return synthetic
+	}
+	minLive := live[0].Version
+	for _, ev := range live {
+		if ev.Version < minLive {
+			minLive = ev.Version
+		}
+	}
+	kept := make([]*Event, 0, len(synthetic))
+	for _, ev := range synthetic {
+		if summaryEndVersion(ev) >= minLive {
+			continue // range reaches into the live tail: the live events win
+		}
+		kept = append(kept, ev)
+	}
+	return kept
+}
+
+// summaryEndVersion extracts the covering range end from a synthetic
+// event.summary payload. Returns MaxInt64 on any decode trouble so a
+// malformed entry is treated as overlapping (conservative: dropped rather
+// than spliced out of order).
+func summaryEndVersion(ev *Event) int64 {
+	switch v := ev.Payload["end_version"].(type) {
+	case int64:
+		return v
+	case int:
+		return int64(v)
+	case float64:
+		return int64(v)
+	default:
+		return 1 << 62 // conservative sentinel: treated as overlapping
+	}
+}
+
+// syntheticSummaryEvents converts stored summaries into replayable
+// event.summary events (one per summary, version = the summary's end version
+// so it orders before the live events it precedes).
+func syntheticSummaryEvents(summaries []*EventSummary) []*Event {
 	synthetic := make([]*Event, 0, len(summaries))
 	for _, sum := range summaries {
 		synthetic = append(synthetic, &Event{
@@ -251,12 +364,111 @@ func (s *CompactableEventStore) Read(ctx context.Context, streamID string, opts 
 			Timestamp: sum.CreatedAt,
 		})
 	}
-	return synthetic, nil
+	return synthetic
+}
+
+// mergeSyntheticWithLive splices option-filtered synthetic summaries into the
+// live tail: summaries always precede the live events they were compacted
+// from (their versions are ≤ the trim point, which is < every live version),
+// so ascending reads get summaries first and descending reads get them last.
+// Limit applies to the merged slice, matching the stores' Read semantics.
+func mergeSyntheticWithLive(synthetic, live []*Event, opts ReadOptions) []*Event {
+	merged := make([]*Event, 0, len(synthetic)+len(live))
+	if opts.Direction == ReadDescending {
+		merged = append(merged, live...)
+		merged = append(merged, synthetic...)
+	} else {
+		merged = append(merged, synthetic...)
+		merged = append(merged, live...)
+	}
+	if opts.Limit > 0 && len(merged) > opts.Limit {
+		merged = merged[:opts.Limit]
+	}
+	return merged
+}
+
+// applyReadOptions filters and orders a synthetic event slice per the
+// caller's ReadOptions (same semantics as the stores' Read: FromVersion and
+// ToVersion inclusive, Since inclusive, Direction, Limit). The input is
+// normalized to ascending version order first — the repo's ordering
+// contract is start_version ASC, but defensive sorting keeps the fallback
+// correct for any repository implementation.
+func applyReadOptions(events []*Event, opts ReadOptions) []*Event {
+	sort.Slice(events, func(i, j int) bool { return events[i].Version < events[j].Version })
+	filtered := make([]*Event, 0, len(events))
+	for _, ev := range events {
+		if opts.FromVersion > 0 && ev.Version < opts.FromVersion {
+			continue
+		}
+		if opts.ToVersion > 0 && ev.Version > opts.ToVersion {
+			continue
+		}
+		if !opts.Since.IsZero() && ev.Timestamp.Before(opts.Since) {
+			continue
+		}
+		filtered = append(filtered, ev)
+	}
+	if opts.Direction == ReadDescending {
+		for i, j := 0, len(filtered)-1; i < j; i, j = i+1, j-1 {
+			filtered[i], filtered[j] = filtered[j], filtered[i]
+		}
+	}
+	if opts.Limit > 0 && len(filtered) > opts.Limit {
+		filtered = filtered[:opts.Limit]
+	}
+	return filtered
 }
 
 // Debounce divisor: skip compaction check until version advances by at least
 // threshold/4 since the last check, reducing redundant I/O on busy streams.
 const compactionCheckDivisor = 4
+
+// maybeSweepBookkeepingLocked drops per-stream bookkeeping entries (debounce
+// cursor, touch time, archive round counter and boundary) that have been idle
+// longer than bookkeepingTTL. serve mints one event stream per conversation,
+// so without this bound the maps kept three permanent entries per
+// conversation ever seen in a long-lived process.
+//
+// Resetting an idle stream's bookkeeping is safe by existing design:
+// lastChecked is a pure debounce cache, and the archive round counter already
+// restarts at 1 after every process restart (in-memory only) — the archive
+// sink stamps the stream identity into its filenames precisely because
+// "every stream restarts at round 1".
+//
+// Caller must hold mu. This is the only place that holds mu while taking
+// archiveMu (lock order mu → archiveMu); the archive path never takes mu
+// while holding archiveMu, so the order cannot invert.
+func (s *CompactableEventStore) maybeSweepBookkeepingLocked() {
+	now := time.Now()
+	if s.bookkeepingSweepEvery > 0 && now.Sub(s.lastBookkeepingSweep) < s.bookkeepingSweepEvery {
+		return
+	}
+	s.lastBookkeepingSweep = now
+	if s.bookkeepingTTL <= 0 || len(s.lastTouched) == 0 {
+		return
+	}
+	stale := make([]string, 0, 8)
+	for id, at := range s.lastTouched {
+		if now.Sub(at) > s.bookkeepingTTL {
+			stale = append(stale, id)
+		}
+	}
+	if len(stale) == 0 {
+		return
+	}
+	for _, id := range stale {
+		delete(s.lastTouched, id)
+		delete(s.lastChecked, id)
+	}
+	s.archiveMu.Lock()
+	for _, id := range stale {
+		delete(s.roundCounter, id)
+		delete(s.lastArchivedVersion, id)
+	}
+	s.archiveMu.Unlock()
+	log.Debug("compaction: swept idle per-stream bookkeeping",
+		"count", len(stale), "ttl", s.bookkeepingTTL)
+}
 
 // maybeCompact checks if a stream needs compaction and runs it if so.
 // Uses debouncing to avoid redundant checks on every Append.
@@ -272,6 +484,8 @@ func (s *CompactableEventStore) maybeCompact(ctx context.Context, streamID strin
 	}
 
 	s.mu.Lock()
+	s.lastTouched[streamID] = time.Now()
+	s.maybeSweepBookkeepingLocked()
 	lastCheck := s.lastChecked[streamID]
 	threshold := s.compactor.config.Threshold
 
@@ -282,13 +496,33 @@ func (s *CompactableEventStore) maybeCompact(ctx context.Context, streamID strin
 	s.lastChecked[streamID] = version
 	s.mu.Unlock()
 
-	// Pre-compaction archive flush (P3 safety net). Drains ALL pending rounds
+	// Pre-compaction archive flush (safety net). Drains ALL pending rounds
 	// so the compaction core cannot trim raw events belonging to an
 	// un-archived round (which would permanently lose its RoundRecord). Must
-	// run BEFORE CheckAndCompact. Best-effort: never fails compaction.
+	// run BEFORE CheckAndCompact. This is a hard precondition, not
+	// best-effort: if the drain cannot complete (I/O error, or the round cap
+	// hit before a terminal), trimming would destroy raw events whose
+	// RoundRecord was never written — compaction is deferred to a later
+	// window instead.
 	if s.archiveSink != nil {
 		if archiveErr := s.drainPendingRounds(ctx, streamID); archiveErr != nil {
-			log.Warn("compaction: pre-compaction archive drain failed", "stream_id", streamID, "error", archiveErr)
+			log.Warn("compaction: pre-compaction archive drain failed; deferring compaction",
+				"stream_id", streamID, "error", archiveErr)
+			return
+		}
+		// Defuse the drain-vs-trim TOCTOU: a concurrent archive pass can
+		// acquire the claim after our drain returned (claim refused to us)
+		// and start paging while we trim. The claim is a flag, not a lock
+		// held across compaction, so re-check it immediately before the
+		// trim decision. (A full fix needs the claim held across the
+		// compaction critical section; this closes the documented window to
+		// the smallest observable one.)
+		s.archiveMu.Lock()
+		inflight := s.archiveInflight[streamID]
+		s.archiveMu.Unlock()
+		if inflight {
+			log.Debug("compaction: deferring — archive pass in flight", "stream_id", streamID)
+			return
 		}
 	}
 
@@ -332,7 +566,7 @@ func (s *CompactableEventStore) CleanupSummaries(ctx context.Context) (int64, er
 // GetSummariesForStream returns all summaries for a given stream.
 func (s *CompactableEventStore) GetSummariesForStream(ctx context.Context, streamID string) ([]*EventSummary, error) {
 	if s.compactor == nil || s.compactor.repo == nil {
-		return nil, fmt.Errorf("event store: compactor not configured")
+		return nil, errors.New("event store: compactor not configured")
 	}
 	return s.compactor.repo.FindByStreamID(ctx, streamID)
 }
@@ -340,7 +574,7 @@ func (s *CompactableEventStore) GetSummariesForStream(ctx context.Context, strea
 // GetSummariesForAgent returns all summaries for an agent across all tasks.
 func (s *CompactableEventStore) GetSummariesForAgent(ctx context.Context, agentID string) ([]*EventSummary, error) {
 	if s.compactor == nil || s.compactor.repo == nil {
-		return nil, fmt.Errorf("event store: compactor not configured")
+		return nil, errors.New("event store: compactor not configured")
 	}
 	return s.compactor.repo.FindByAgentID(ctx, agentID)
 }
@@ -367,10 +601,27 @@ func (s *CompactableEventStore) WithArchiveSink(sink ArchiveSink) *CompactableEv
 // the scan accumulates events across pages until it reaches the terminal.
 const archiveReadLimit = 500
 
+// maxArchiveRoundEvents caps the events one archive pass accumulates before
+// invoking the sink. archiveReadLimit bounds a single page and
+// maxArchiveDrainRounds bounds the passes per drain, but neither bounded the
+// TOTAL held per round — a terminal-less long stream materialized fully on
+// every first compaction. Exceeding the cap defers the round to the next
+// drain (boundary unchanged, nothing lost); it never truncates a round.
+const maxArchiveRoundEvents = 50000
+
 // maxArchiveDrainRounds caps the number of rounds a single drain may archive,
-// bounding work when a stream accumulates many terminals before compaction.
-// Any residual is picked up by the next drain.
-const maxArchiveDrainRounds = 1000
+// so a pathological stream cannot park the compaction check indefinitely. It
+// is mutable only so tests can lower it; production never writes it.
+// Exhausting the cap is a HARD ERROR, not a quiet success — see
+// drainPendingRounds.
+//
+// The value is atomic because Append spawns a background goroutine that calls
+// drainPendingRounds, so a test writing the knob races that reader: under
+// `go test -race` the package intermittently reported a data race here (and
+// the drain sometimes observed a half-written cap).
+var maxArchiveDrainRounds atomic.Int64
+
+func init() { maxArchiveDrainRounds.Store(1000) }
 
 // archivePendingRounds archives the next un-archived round for the stream and
 // returns its error. It is a thin wrapper around archivePendingRoundsOnce that
@@ -388,7 +639,10 @@ func (s *CompactableEventStore) archivePendingRounds(ctx context.Context, stream
 // CheckAndCompact so the compaction core cannot trim raw events belonging to
 // an un-archived round, which would permanently lose its RoundRecord.
 func (s *CompactableEventStore) drainPendingRounds(ctx context.Context, streamID string) error {
-	for range maxArchiveDrainRounds {
+	// Snapshot the cap once: it is read on every pass otherwise, and a test
+	// lowering it mid-drain would change the bound under the loop.
+	drainCap := int(maxArchiveDrainRounds.Load())
+	for range drainCap {
 		archived, err := s.archivePendingRoundsOnce(ctx, streamID)
 		if err != nil {
 			return err
@@ -397,7 +651,14 @@ func (s *CompactableEventStore) drainPendingRounds(ctx context.Context, streamID
 			return nil
 		}
 	}
-	return nil
+	// Cap exhausted with rounds still pending. Returning nil here told
+	// maybeCompact the archive was flushed, so it trimmed raw events whose
+	// RoundRecord was never written — permanent loss, and the exact hazard
+	// the sibling maxArchiveRoundEvents cap already guards by failing hard.
+	// Compaction is deferred to a later window instead.
+	return fmt.Errorf(
+		"archive: drain on stream %q hit the %d-round cap with rounds still pending; refusing to signal a complete flush",
+		streamID, drainCap)
 }
 
 // archivePendingRoundsOnce archives the next un-archived round (if any) for
@@ -425,21 +686,58 @@ func (s *CompactableEventStore) archivePendingRoundsOnce(ctx context.Context, st
 		return false, nil
 	}
 
-	// Step 1: snapshot the round boundary (last archived terminal version).
+	// Step 1: claim the stream exclusively. The pre-fix boundary check alone
+	// was not a claim: two goroutines could both observe the same
+	// lastArchivedVersion (neither had written anything yet), both pass, and
+	// both invoke the sink for the same round — the round was archived
+	// twice. An in-flight flag under archiveMu makes the claim exclusive;
+	// it is released when this attempt finishes (success, failure, or
+	// nothing-to-archive), so a failed sink attempt is retried by the next
+	// drain as before.
 	s.archiveMu.Lock()
+	if s.archiveInflight[streamID] {
+		s.archiveMu.Unlock()
+		return false, nil
+	}
+	s.archiveInflight[streamID] = true
 	roundStart := s.lastArchivedVersion[streamID]
 	s.archiveMu.Unlock()
+	releaseClaim := func() {
+		s.archiveMu.Lock()
+		delete(s.archiveInflight, streamID)
+		s.archiveMu.Unlock()
+	}
+	// The claim is released EXACTLY once, by this defer, on every return
+	// path. Explicit release calls on individual returns must not exist:
+	// releaseClaim has no ownership token, so a second release between an
+	// explicit call and the defer would strip a concurrent drainer's freshly
+	// acquired claim and re-open the double-archive window this flag closes.
+	defer releaseClaim()
 
 	// Step 2: page through the un-archived window, accumulating events until
 	// the next terminal event or the end of the stream. lastSeen is both the
 	// read cursor (ReadOptions.FromVersion is inclusive) and the dedup filter,
 	// so the inclusive overlap event from the previous page is skipped.
+	// accumulation is capped at maxArchiveRoundEvents so a terminal-less or
+	// extremely long round cannot materialize the whole stream in memory.
 	var roundEvents []*Event
 	var terminal *Event
 	lastSeen := roundStart
 	for {
 		if err := ctx.Err(); err != nil {
 			return false, fmt.Errorf("archive: context: %w", err)
+		}
+		if len(roundEvents) >= maxArchiveRoundEvents {
+			// A round larger than the cap cannot be archived this pass.
+			// Return an ERROR (not a quiet defer): the boundary never
+			// advances, so "retry next drain" makes no progress against the
+			// same oversized round — and a (false, nil) would let the
+			// pre-compaction drain report success and the compaction core
+			// trim the un-archived window. Callers must treat this as a
+			// hard "do not trim this stream" signal.
+			log.Warn("archive: round exceeds event cap before a terminal; blocking compaction",
+				"stream_id", streamID, "cap", maxArchiveRoundEvents)
+			return false, fmt.Errorf("archive: round on stream %q exceeds %d events without a terminal", streamID, maxArchiveRoundEvents)
 		}
 		page, err := s.EventStore.Read(ctx, streamID, ReadOptions{
 			FromVersion: lastSeen,

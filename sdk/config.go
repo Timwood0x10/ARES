@@ -4,9 +4,11 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
+
+	"gopkg.in/yaml.v3"
 
 	"github.com/Timwood0x10/ares/internal/knowledge"
-	"gopkg.in/yaml.v3"
 )
 
 // Sentinel errors for config validation. Wrap with %w to preserve chain.
@@ -63,11 +65,13 @@ type ConfigFile struct {
 // MemoryFileConfig carries all memory subsystem knobs. Fields left at their
 // zero value cause the sdk to fall back to the component default.
 type MemoryFileConfig struct {
-	Enabled               bool `yaml:"enabled"`
-	MaxHistory            int  `yaml:"max_history"`
-	MaxSessions           int  `yaml:"max_sessions"`
-	EnableDistillation    bool `yaml:"enable_distillation"`
-	DistillationThreshold int  `yaml:"distillation_threshold"`
+	Enabled     bool `yaml:"enabled"`
+	MaxHistory  int  `yaml:"max_history"`
+	MaxSessions int  `yaml:"max_sessions"`
+	// EnableDistillation tri-state: nil defaults to true,
+	// mirroring ares_config.MemoryConfig so SDK yaml and serve yaml agree.
+	EnableDistillation    *bool `yaml:"enable_distillation"`
+	DistillationThreshold int   `yaml:"distillation_threshold"`
 	// EnableRAG enables retrieval-augmented generation: past experiences and
 	// distilled memories are retrieved and injected into the LLM prompt.
 	// Default: false (opt-in).
@@ -78,6 +82,13 @@ type MemoryFileConfig struct {
 	// RAGMinScore is the minimum similarity score for a retrieved snippet to
 	// be included. Must be in [0, 1] when EnableRAG is true.
 	RAGMinScore float64 `yaml:"rag_min_score"`
+}
+
+// DistillationEnabled reports the tri-state: nil defaults to true,
+// mirroring ares_config.MemoryConfig so SDK yaml and serve yaml
+// agree.
+func (m *MemoryFileConfig) DistillationEnabled() bool {
+	return m.EnableDistillation == nil || *m.EnableDistillation
 }
 
 // DatabaseFileConfig declares PostgreSQL connection parameters. When the
@@ -101,6 +112,11 @@ type EmbeddingFileConfig struct {
 // KnowledgeFileConfig controls retrieval chunking and similarity bounds. When
 // omitted, the sdk uses default retrieval parameters.
 type KnowledgeFileConfig struct {
+	// Enabled turns on the AKF Knowledge Fabric pipeline. Without it there
+	// was no YAML way to enable knowledge — WithKnowledgeConfig only tunes
+	// retrieval knobs and never sets the master switch, so a knowledge block
+	// in ares.yaml was silently inert.
+	Enabled      bool    `yaml:"enabled"`
 	ChunkSize    int     `yaml:"chunk_size"`
 	ChunkOverlap int     `yaml:"chunk_overlap"`
 	TopK         int     `yaml:"top_k"`
@@ -288,14 +304,11 @@ func (c *ConfigFile) validateKnowledge() error {
 	return nil
 }
 
-// resolveAPIKey returns the config-provided key when non-empty, otherwise falls
-// back to the named environment variable. This avoids storing secrets in YAML.
-func resolveAPIKey(configKey, envVar string) string {
-	if configKey != "" {
-		return configKey
-	}
-	return os.Getenv(envVar)
-}
+// NOTE: this package intentionally reads NO environment variables. The YAML
+// file is the single source of truth for the API key (llm.api_key) — an
+// earlier env fallback (OPENAI_API_KEY / ANTHROPIC_API_KEY /
+// OPENROUTER_API_KEY) was removed so behavior can never differ between an
+// exported variable and the checked-in config.
 
 // ToOptions converts a ConfigFile into a slice of Option values that can be
 // passed to New or NewRuntime.
@@ -316,8 +329,8 @@ func (c *ConfigFile) ToOptions() ([]Option, error) {
 			model = defaultOpenAIModel
 		}
 		opts = append(opts, WithOpenAI(model))
-		if key := resolveAPIKey(c.LLM.APIKey, "OPENAI_API_KEY"); key != "" {
-			opts = append(opts, WithAPIKey(key))
+		if c.LLM.APIKey != "" {
+			opts = append(opts, WithAPIKey(c.LLM.APIKey))
 		}
 	case providerAnthropic:
 		model := c.LLM.Model
@@ -325,8 +338,8 @@ func (c *ConfigFile) ToOptions() ([]Option, error) {
 			model = "claude-3-haiku"
 		}
 		opts = append(opts, WithAnthropic(model))
-		if key := resolveAPIKey(c.LLM.APIKey, "ANTHROPIC_API_KEY"); key != "" {
-			opts = append(opts, WithAPIKey(key))
+		if c.LLM.APIKey != "" {
+			opts = append(opts, WithAPIKey(c.LLM.APIKey))
 		}
 	case providerOpenRouter:
 		model := c.LLM.Model
@@ -334,8 +347,8 @@ func (c *ConfigFile) ToOptions() ([]Option, error) {
 			model = "openai/gpt-4o-mini"
 		}
 		opts = append(opts, WithOpenRouter(model))
-		if key := resolveAPIKey(c.LLM.APIKey, "OPENROUTER_API_KEY"); key != "" {
-			opts = append(opts, WithAPIKey(key))
+		if c.LLM.APIKey != "" {
+			opts = append(opts, WithAPIKey(c.LLM.APIKey))
 		}
 	default:
 		return nil, fmt.Errorf("unknown LLM provider: %s", c.LLM.Provider)
@@ -345,10 +358,22 @@ func (c *ConfigFile) ToOptions() ([]Option, error) {
 		opts = append(opts, WithBaseURL(c.LLM.BaseURL))
 	}
 
-	// MaxPromptLength: bridge the YAML field into core.LLMConfig. Without
-	// this the value in ares.yaml was silently dropped (the field existed in
-	// core.LLMConfig but nothing wired it), so long agent runs died at the
-	// 8192 provider default during synthesis.
+	// Bridge YAML LLM tuning fields into core.LLMConfig. Without these the
+	// values in ares.yaml were silently dropped (the fields existed in
+	// core.LLMConfig but nothing wired them), so users got hardcoded
+	// defaults 0.7/2048 regardless of what they configured.
+	if c.LLM.Temperature > 0 {
+		opts = append(opts, func(cfg *config) error {
+			cfg.llmCfg.Temperature = c.LLM.Temperature
+			return nil
+		})
+	}
+	if c.LLM.MaxTokens > 0 {
+		opts = append(opts, func(cfg *config) error {
+			cfg.llmCfg.MaxTokens = c.LLM.MaxTokens
+			return nil
+		})
+	}
 	if c.LLM.MaxPromptLength > 0 {
 		opts = append(opts, func(cfg *config) error {
 			cfg.llmCfg.MaxPromptLength = c.LLM.MaxPromptLength
@@ -369,7 +394,7 @@ func (c *ConfigFile) ToOptions() ([]Option, error) {
 	// Memory. Each unset field falls back to the component default.
 	if c.Memory.Enabled {
 		opts = append(opts, WithMemoryConfig(c.Memory.MaxHistory, c.Memory.MaxSessions))
-		if c.Memory.EnableDistillation {
+		if c.Memory.DistillationEnabled() {
 			// DistillationThreshold 0 means "ungated": fire on every event,
 			// matching every downstream component's contract. We pass it
 			// straight through instead of substituting a default, so users
@@ -379,6 +404,15 @@ func (c *ConfigFile) ToOptions() ([]Option, error) {
 		if c.Memory.EnableRAG {
 			opts = append(opts, WithRAG(c.Memory.RAGTopK, c.Memory.RAGMinScore))
 		}
+	} else {
+		opts = append(opts, WithoutMemory())
+	}
+
+	// Knowledge master switch (optional). enabled: true is the YAML path to
+	// WithKnowledge — without it a knowledge block could only tune knobs
+	// while the pipeline stayed off.
+	if c.Knowledge.Enabled {
+		opts = append(opts, WithKnowledge())
 	}
 
 	// Knowledge (optional). Without chunk_size, sdk uses default retrieval.
@@ -412,6 +446,36 @@ func (c *ConfigFile) ToOptions() ([]Option, error) {
 	// Evolution.
 	if c.Evolution.Enabled {
 		opts = append(opts, WithEvolution())
+	}
+
+	// Tools.mcp: stdio MCP server command list. This is the one field in the
+	// tools block with a real SDK capability behind it (WithMCP); without this
+	// wiring an `ares init`-generated `tools.mcp` list was parsed, validated
+	// and silently dropped. Each entry is a command line — first token is the
+	// executable, the rest are arguments.
+	//
+	// tools.builtin is deliberately NOT wired: the sdk registers no built-in
+	// tools of its own (only MCP and AKF knowledge tools reach the registry),
+	// so honouring the flag would mean inventing a tool set that does not
+	// exist. It stays a documented no-op rather than a silent fake.
+	for _, cmdline := range c.Tools.MCP {
+		fields := strings.Fields(cmdline)
+		if len(fields) == 0 {
+			continue
+		}
+		opts = append(opts, WithMCP(MCPConn{
+			Command: fields[0],
+			Args:    fields[1:],
+		}))
+	}
+
+	// Reflection has no SDK implementation: there is no WithReflection and no
+	// consumer of the flag anywhere in the tree. Enabling it must fail loudly
+	// instead of drifting into a silent no-op that leaves the user believing
+	// self-reflection is active. The zero value (disabled) is the default and
+	// keeps working.
+	if c.Reflection.Enabled {
+		return nil, errors.New("sdk: reflection.enabled is set but the sdk has no reflection implementation; remove the key or set it to false")
 	}
 
 	return opts, nil

@@ -77,9 +77,16 @@ type Experience struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+// ExperiencesTable is the physical table distilled experiences live in. The
+// `_1024` suffix encodes the embedding dimension of its `embedding VECTOR(1024)`
+// column, so a dimension change means a new table plus a migration. Kept here,
+// next to the model, so the storage layer is the single source of truth and
+// domain packages do not have to re-declare the literal.
+const ExperiencesTable = "experiences_1024"
+
 // TableName returns the table name for this model.
 func (e *Experience) TableName() string {
-	return "experiences_1024"
+	return ExperiencesTable
 }
 
 // ExperienceType constants.
@@ -132,4 +139,21 @@ func (e *Experience) GetUsageCount() int {
 	}
 	// Fall back to UsageCount field
 	return e.UsageCount
+}
+
+// MetadataForStorage returns the metadata map that should be persisted for
+// this experience. The experiences table has no constraints column, so the
+// Go-side Constraints field is folded in under the "constraints" key here —
+// otherwise a value set only on the struct field would be dropped on write
+// and GetConstraints (which reads metadata first) would find nothing on read.
+// The receiver's map is never mutated; a copy is returned.
+func (e *Experience) MetadataForStorage() map[string]interface{} {
+	out := make(map[string]interface{}, len(e.Metadata)+1)
+	for k, v := range e.Metadata {
+		out[k] = v
+	}
+	if e.Constraints != "" {
+		out["constraints"] = e.Constraints
+	}
+	return out
 }

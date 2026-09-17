@@ -548,7 +548,7 @@ go tool cover -func=coverage.out | grep total
 | `internal/llm/` | 80% | 待测试 |
 | `internal/storage/postgres/` | 85% | 待测试 |
 | `internal/agents/` | 75% | 待测试 |
-| `internal/memory/` | 80% | 待测试 |
+| `internal/runtime/memory` | 80% | 待测试 |
 | `api/` | 85% | 待测试 |
 
 ### 提高覆盖率

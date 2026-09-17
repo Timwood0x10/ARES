@@ -1,19 +1,3 @@
-// ares status — one command to see the whole runtime at a glance.
-//
-// It reports three layers:
-//
-//  1. Runtime: whether `ares serve` is up, its system health and the live
-//     agent fleet (probed via the dashboard HTTP API).
-//  2. Config: where the effective configuration comes from and what it
-//     resolves to (LLM endpoint, kernel policy, memory, agent team, storage).
-//     A missing config file is valid — it means the minimal-assembly path
-//     (NewMinimalConfig) with runtime defaults.
-//  3. Capabilities: the Capability Fabric assets — indexed skills (project /
-//     user / registered sources) and the accumulated experience store.
-//
-// Exit code: 0 when everything is healthy, 1 when a warning was reported
-// (e.g. memory disabled, which `ares serve` would reject, or a runtime
-// probe failure). Use --json for machine-readable output.
 package main
 
 import (
@@ -31,7 +15,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/Timwood0x10/ares/internal/ares_config"
-	"github.com/Timwood0x10/ares/internal/ares_skills"
+	ares_skills "github.com/Timwood0x10/ares/internal/runtime/protocol/skills"
 )
 
 // statusProbeTimeout bounds each live-runtime HTTP probe so `ares status`
@@ -121,6 +105,9 @@ type statusConfig struct {
 	Memory  statusMemory      `json:"memory"`
 	Agents  statusAgentConfig `json:"agents"`
 	Storage statusStorage     `json:"storage"`
+	// apiKey carries the raw LLM API key for authenticated probing of the
+	// local serve process. Unexported so it never appears in JSON output.
+	apiKey string
 }
 
 type statusServer struct {
@@ -193,7 +180,7 @@ func runStatus(_ *cobra.Command, _ []string) error {
 	if addr == "" {
 		addr = statusConfigServerAddr(report.Config)
 	}
-	report.Runtime = probeStatusRuntime(ctx, addr)
+	report.Runtime = probeStatusRuntime(ctx, addr, report.Config.apiKey)
 	if !report.Runtime.Running {
 		report.Warnings = append(report.Warnings, fmt.Sprintf(
 			"runtime not reachable at %s — start with 'ares serve' to see live state", addr))
@@ -246,6 +233,7 @@ func buildVersion() string {
 // falls back to minimal defaults so `ares status` still answers).
 func inspectStatusConfig(explicit string) (statusConfig, []string) {
 	if explicit != "" {
+		allowConfigDirFor(explicit)
 		cfg, err := ares_config.Load(explicit)
 		if err != nil {
 			return statusConfig{Source: explicit, Minimal: true},
@@ -257,6 +245,7 @@ func inspectStatusConfig(explicit string) (statusConfig, []string) {
 		if _, err := os.Stat(candidate); err != nil {
 			continue
 		}
+		allowConfigDirFor(candidate)
 		cfg, err := ares_config.Load(candidate)
 		if err != nil {
 			return statusConfig{Source: candidate, Minimal: true},
@@ -299,12 +288,13 @@ func configToStatus(source string, cfg *ares_config.Config, minimal bool) status
 	out := statusConfig{
 		Source:  source,
 		Minimal: minimal,
+		apiKey:  cfg.LLM.APIKey,
 		Server:  statusServer{Host: cfg.Server.Host, Port: cfg.Server.Port},
 		LLM: statusLLM{
 			Provider:  cfg.LLM.Provider,
 			Model:     cfg.LLM.Model,
 			BaseURL:   cfg.LLM.BaseURL,
-			APIKeySet: cfg.LLM.APIKey != "" || os.Getenv("LLM_API_KEY") != "",
+			APIKeySet: cfg.LLM.APIKey != "",
 		},
 		Kernel: statusKernel{Policy: policy},
 		Memory: statusMemory{Enabled: cfg.Memory.IsEnabled()},
@@ -341,13 +331,24 @@ func statusConfigServerAddr(cfg statusConfig) string {
 }
 
 // probeStatusRuntime queries the dashboard API for health + agent fleet.
-func probeStatusRuntime(ctx context.Context, addr string) statusRuntime {
+// When apiKey is non-empty it is sent as a Bearer token: the serve process
+// reuses cfg.LLM.APIKey as the read-side credential, so any deployment with
+// a hosted LLM key would otherwise get 401 on every probe.
+func probeStatusRuntime(ctx context.Context, addr, apiKey string) statusRuntime {
 	addr = strings.TrimRight(addr, "/")
 	out := statusRuntime{Addr: addr}
 	client := &http.Client{Timeout: statusProbeTimeout}
 
 	healthURL := addr + statusHealthPath
-	resp, err := client.Get(healthURL)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
+	if err != nil {
+		out.Error = fmt.Sprintf("health probe request: %v", err)
+		return out
+	}
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		out.Error = fmt.Sprintf("health probe failed: %v", err)
 		return out
@@ -377,13 +378,19 @@ func probeStatusRuntime(ctx context.Context, addr string) statusRuntime {
 
 	// Agents are best-effort: a dashboard without the agent route must not
 	// downgrade the whole runtime section.
-	agentsResp, agentsErr := client.Get(addr + statusAgentsPath)
-	if agentsErr == nil {
-		defer func() { _ = agentsResp.Body.Close() }()
-		if agentsResp.StatusCode == http.StatusOK {
-			var agents []statusAgent
-			if decErr := json.NewDecoder(agentsResp.Body).Decode(&agents); decErr == nil {
-				out.Agents = agents
+	agentsReq, agentsReqErr := http.NewRequestWithContext(ctx, http.MethodGet, addr+statusAgentsPath, nil)
+	if agentsReqErr == nil {
+		if apiKey != "" {
+			agentsReq.Header.Set("Authorization", "Bearer "+apiKey)
+		}
+		agentsResp, agentsErr := client.Do(agentsReq)
+		if agentsErr == nil {
+			defer func() { _ = agentsResp.Body.Close() }()
+			if agentsResp.StatusCode == http.StatusOK {
+				var agents []statusAgent
+				if decErr := json.NewDecoder(agentsResp.Body).Decode(&agents); decErr == nil {
+					out.Agents = agents
+				}
 			}
 		}
 	}

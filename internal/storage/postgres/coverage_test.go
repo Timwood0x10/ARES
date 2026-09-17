@@ -246,9 +246,30 @@ func TestVectorSearcher_Coverage(t *testing.T) {
 			embedding[i] = 0.1
 		}
 
-		_, err = searcher.Search(context.Background(), "users; DROP TABLE", embedding, 10)
+		_, err = searcher.Search(context.Background(), "users; DROP TABLE", "default", embedding, 10)
 		if err != nil {
 			t.Logf("Expected error with SQL injection: %v", err)
+		}
+	})
+
+	t.Run("test Search rejects empty tenant", func(t *testing.T) {
+		// Tenant scope is mandatory (fail closed) — verify without a DB:
+		// the tenant check runs before any db access, so a nil DBTX is safe.
+		searcher := NewVectorSearcherWithDB(nil, embeddingConfig)
+		_, err := searcher.Search(context.Background(), "embeddings", "", []float64{0.1}, 10)
+		if err == nil {
+			t.Fatal("Search with empty tenantID must be rejected (tenant-scoped table)")
+		}
+	})
+
+	t.Run("test AddEmbedding rejects empty tenant", func(t *testing.T) {
+		// Write side mirrors Search's fail-closed posture — verify without a
+		// DB: the tenant check runs before any db access, so a nil DBTX is
+		// safe.
+		searcher := NewVectorSearcherWithDB(nil, embeddingConfig)
+		err := searcher.AddEmbedding(context.Background(), "embeddings", "", "doc-1", []float64{0.1}, map[string]any{})
+		if err == nil {
+			t.Fatal("AddEmbedding with empty tenantID must be rejected (tenant-scoped table)")
 		}
 	})
 
@@ -269,7 +290,7 @@ func TestVectorSearcher_Coverage(t *testing.T) {
 			embedding[i] = 0.1
 		}
 
-		err = searcher.AddEmbedding(context.Background(), "users", "test; DROP", embedding, map[string]any{})
+		err = searcher.AddEmbedding(context.Background(), "users", "default", "test; DROP", embedding, map[string]any{})
 		if err != nil {
 			t.Logf("Expected error with SQL injection: %v", err)
 		}
@@ -287,7 +308,7 @@ func TestVectorSearcher_Coverage(t *testing.T) {
 
 		searcher := NewVectorSearcher(pool, embeddingConfig)
 
-		err = searcher.DeleteEmbedding(context.Background(), "users", "test; DROP")
+		err = searcher.DeleteEmbedding(context.Background(), "users", "default", "test; DROP")
 		if err != nil {
 			t.Logf("Expected error with SQL injection: %v", err)
 		}
@@ -331,7 +352,7 @@ func TestVectorSearcher_Coverage(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 
-		_, err = searcher.Search(ctx, "embeddings", embedding, 10)
+		_, err = searcher.Search(ctx, "embeddings", "default", embedding, 10)
 		if err != nil {
 			t.Logf("Expected error with cancelled context: %v", err)
 		}
@@ -357,7 +378,7 @@ func TestVectorSearcher_Coverage(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 
-		err = searcher.AddEmbedding(ctx, "embeddings", "test-1", embedding, map[string]any{})
+		err = searcher.AddEmbedding(ctx, "embeddings", "default", "test-1", embedding, map[string]any{})
 		if err != nil {
 			t.Logf("Expected error with cancelled context: %v", err)
 		}
@@ -378,7 +399,7 @@ func TestVectorSearcher_Coverage(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 
-		err = searcher.DeleteEmbedding(ctx, "embeddings", "test-1")
+		err = searcher.DeleteEmbedding(ctx, "embeddings", "default", "test-1")
 		if err != nil {
 			t.Logf("Expected error with cancelled context: %v", err)
 		}

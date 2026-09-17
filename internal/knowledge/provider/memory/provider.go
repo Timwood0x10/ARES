@@ -5,11 +5,17 @@ import (
 	"fmt"
 	"time"
 
+	"golang.org/x/sync/errgroup"
+
 	"github.com/Timwood0x10/ares/internal/knowledge"
 	"github.com/Timwood0x10/ares/internal/knowledge/provider"
 	"github.com/Timwood0x10/ares/internal/scoreutil"
-	"golang.org/x/sync/errgroup"
+	"github.com/Timwood0x10/ares/internal/truncate"
 )
+
+// maxSummaryRunes bounds a generated object summary. Rune count, not byte
+// count — see the call site.
+const maxSummaryRunes = 200
 
 // TaskSearcher is the minimal interface needed to query historical tasks.
 type TaskSearcher interface {
@@ -98,7 +104,7 @@ func (p *MemoryProvider) Stream(ctx context.Context, intent knowledge.Intent) (<
 		// A nil searcher means the provider was wired without a backing search
 		// engine (e.g. memory distillation enabled before the vector index is
 		// ready). Degrade to an empty stream instead of nil-pointer panicking the
-		// process (code_rules_v2 §4.2: a single component must not kill the
+		// process (a single component must not kill the
 		// kernel). Log-free by design: callers treat an empty stream as "no
 		// memories".
 		if p.searcher == nil {
@@ -112,10 +118,9 @@ func (p *MemoryProvider) Stream(ctx context.Context, intent knowledge.Intent) (<
 		}
 
 		for i, r := range results {
-			summary := r.Summary
-			if len(summary) > 200 {
-				summary = summary[:200] + "..."
-			}
+			// Rune-safe: a byte-index cut lands inside a multi-byte rune and
+			// emits invalid UTF-8 into a stored Summary.
+			summary := truncate.WithEllipsis(r.Summary, maxSummaryRunes)
 
 			obj := &knowledge.KnowledgeObject{
 				ID:         fmt.Sprintf("%s_%s", p.name, r.ID),

@@ -3,11 +3,16 @@ package builtin
 import (
 	"context"
 	"fmt"
+	"math"
 	"strings"
 
 	"github.com/Timwood0x10/ares/internal/tools/resources/base"
 	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
+
+// maxInt is the maximum value representable by int, used for overflow
+// detection in parseInt.
+const maxInt = math.MaxInt
 
 // StringUtils provides string manipulation operations.
 type StringUtils struct {
@@ -173,14 +178,20 @@ func getInt(params map[string]interface{}, key string, defaultVal int) int {
 	return defaultVal
 }
 
-// parseInt converts a string to int.
+// parseInt converts a string to int with overflow protection.
+// Returns an error if the number overflows int or contains non-digit characters.
 func parseInt(s string) (int, error) {
 	var n int
 	for _, r := range s {
 		if r < '0' || r > '9' {
 			return 0, fmt.Errorf("not a number: %s", s)
 		}
-		n = n*10 + int(r-'0')
+		digit := int(r - '0')
+		// Overflow check: n*10 + digit must not exceed MaxInt.
+		if n > (maxInt-digit)/10 {
+			return 0, fmt.Errorf("integer overflow: %s", s)
+		}
+		n = n*10 + digit
 	}
 	return n, nil
 }

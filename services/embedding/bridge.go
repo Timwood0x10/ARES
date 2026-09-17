@@ -12,49 +12,17 @@ import (
 	"time"
 )
 
+// ollamaEmbedURL is the default upstream (local Ollama).
+const ollamaEmbedURL = "http://localhost:11434/api/embed"
+
+// maxBridgeBodyBytes caps both the inbound request body and the upstream
+// response body (#55): an unbounded io.ReadAll lets a hostile or buggy peer
+// exhaust process memory before any validation runs.
+const maxBridgeBodyBytes = 10 << 20 // 10 MB
+
 func main() {
 	client := &http.Client{Timeout: 30 * time.Second}
-
-	http.HandleFunc("/embed", func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		var req struct {
-			Text   string `json:"text"`
-			Prefix string `json:"prefix"`
-		}
-		_ = json.Unmarshal(body, &req)
-
-		payload := map[string]any{
-			"model": "qwen3-embedding:0.6b",
-			"input": req.Prefix + req.Text,
-		}
-		data, _ := json.Marshal(payload)
-		reqCtx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
-		defer cancel()
-		httpReq, _ := http.NewRequestWithContext(reqCtx, "POST",
-			"http://localhost:11434/api/embed", bytes.NewReader(data))
-		httpReq.Header.Set("Content-Type", "application/json")
-		resp, err := client.Do(httpReq)
-		if err != nil {
-			http.Error(w, err.Error(), 500)
-			return
-		}
-		defer func() { _ = resp.Body.Close() }()
-		respBody, _ := io.ReadAll(resp.Body)
-
-		var ollamaResp struct {
-			Embeddings [][]float64 `json:"embeddings"`
-		}
-		_ = json.Unmarshal(respBody, &ollamaResp)
-		if len(ollamaResp.Embeddings) == 0 {
-			http.Error(w, "no embeddings", 500)
-			return
-		}
-
-		result := map[string]any{"embedding": ollamaResp.Embeddings[0]}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(result)
-	})
-
+	http.HandleFunc("/embed", embedHandler(client, ollamaEmbedURL))
 	http.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = fmt.Fprint(w, `{"status":"healthy","model":"qwen3-embedding:0.6b"}`)
 	})
@@ -68,4 +36,69 @@ func main() {
 	}
 	fmt.Println("Embedding bridge on :8000 → Ollama :11434")
 	_ = srv.ListenAndServe()
+}
+
+// embedHandler builds the /embed HTTP handler. The upstream URL is a
+// parameter so tests can point it at a stub server.
+func embedHandler(client *http.Client, upstreamURL string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(io.LimitReader(r.Body, maxBridgeBodyBytes)) // #55: bounded read
+		if err != nil {
+			http.Error(w, "read request body", http.StatusBadRequest)
+			return
+		}
+		var req struct {
+			Text   string `json:"text"`
+			Prefix string `json:"prefix"`
+		}
+		if err := json.Unmarshal(body, &req); err != nil {
+			http.Error(w, "invalid JSON", http.StatusBadRequest)
+			return
+		}
+
+		payload := map[string]any{
+			"model": "qwen3-embedding:0.6b",
+			"input": req.Prefix + req.Text,
+		}
+		data, err := json.Marshal(payload)
+		if err != nil {
+			http.Error(w, "marshal upstream payload", http.StatusInternalServerError)
+			return
+		}
+		reqCtx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+		defer cancel()
+		httpReq, err := http.NewRequestWithContext(reqCtx, http.MethodPost, upstreamURL, bytes.NewReader(data))
+		if err != nil {
+			http.Error(w, "build upstream request", http.StatusInternalServerError)
+			return
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		resp, err := client.Do(httpReq)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		defer func() { _ = resp.Body.Close() }()
+		respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxBridgeBodyBytes)) // #55: bounded read
+		if err != nil {
+			http.Error(w, "read upstream response", http.StatusBadGateway)
+			return
+		}
+
+		var ollamaResp struct {
+			Embeddings [][]float64 `json:"embeddings"`
+		}
+		if err := json.Unmarshal(respBody, &ollamaResp); err != nil {
+			http.Error(w, "decode upstream response", http.StatusBadGateway)
+			return
+		}
+		if len(ollamaResp.Embeddings) == 0 {
+			http.Error(w, "no embeddings", http.StatusInternalServerError)
+			return
+		}
+
+		result := map[string]any{"embedding": ollamaResp.Embeddings[0]}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(result)
+	}
 }

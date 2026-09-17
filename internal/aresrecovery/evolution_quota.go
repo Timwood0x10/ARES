@@ -2,15 +2,16 @@ package aresrecovery
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
-	"github.com/Timwood0x10/ares/internal/agentfabric"
+	"github.com/Timwood0x10/ares/internal/fabric/agent"
 )
 
-// Evolution-driven resource allocation (v0.3.0 M2-2): the Evolution system
+// Evolution-driven resource allocation: the Evolution system
 // adjusts CPU / memory quota weights at runtime. The quota manager applies the
 // evolution-produced budget to the Agent Fabric's resource admission control
-// (P5 budget) without recreating the fabric. As with spawn decisions,
+// without recreating the fabric. As with spawn decisions,
 // "Evolution decides; Kernel enforces" — the manager only pushes the new
 // budget through the existing enforcement primitive.
 //
@@ -31,7 +32,7 @@ type QuotaPolicySource interface {
 }
 
 // EvolutionAwareQuotaManager adjusts the Agent Fabric's resource budget from
-// the evolution policy (v0.3.0 M2-2). Apply() is idempotent and safe to call
+// the evolution policy. Apply() is idempotent and safe to call
 // repeatedly (e.g. after each evolution generation): it replaces the budget
 // in place via agentfabric.UpdateResourceBudget.
 type EvolutionAwareQuotaManager struct {
@@ -62,7 +63,7 @@ func NewEvolutionAwareQuotaManager(agents *agentfabric.Fabric, source QuotaPolic
 //   - error: the policy-source error, or an error when no fabric is wired.
 func (m *EvolutionAwareQuotaManager) Apply(ctx context.Context) error {
 	if m.agents == nil {
-		return fmt.Errorf("aresrecovery: evolution quota manager has no agent fabric")
+		return errors.New("aresrecovery: evolution quota manager has no agent fabric")
 	}
 	if m.source == nil {
 		return nil // no evolution source wired — leave the budget untouched

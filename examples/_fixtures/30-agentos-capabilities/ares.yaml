@@ -1,0 +1,19 @@
+# 30-agentos-capabilities configuration
+llm:
+  provider: ollama
+  model: llama3.2
+
+memory:
+  enabled: true
+  max_history: 10
+  enable_distillation: true
+  distillation_threshold: 5
+
+knowledge:
+  enabled: true
+
+evolution:
+  enabled: true
+
+tools:
+  builtin: true

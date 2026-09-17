@@ -39,7 +39,7 @@ func TestValidate_NegativeDistillationThresholdRejects(t *testing.T) {
 	cfg := &ConfigFile{
 		Memory: MemoryFileConfig{
 			Enabled:               true,
-			EnableDistillation:    true,
+			EnableDistillation:    boolPtr(true),
 			DistillationThreshold: -1,
 		},
 	}
@@ -52,7 +52,7 @@ func TestValidate_ThresholdZeroFallsBackOK(t *testing.T) {
 	cfg := &ConfigFile{
 		Memory: MemoryFileConfig{
 			Enabled:               true,
-			EnableDistillation:    true,
+			EnableDistillation:    boolPtr(true),
 			DistillationThreshold: 0,
 		},
 	}
@@ -65,7 +65,7 @@ func TestValidate_DistillationDisabledSkipsThreshold(t *testing.T) {
 	cfg := &ConfigFile{
 		Memory: MemoryFileConfig{
 			Enabled:               true,
-			EnableDistillation:    false,
+			EnableDistillation:    boolPtr(false),
 			DistillationThreshold: 0,
 		},
 	}
@@ -164,7 +164,7 @@ func TestToOptions_MemoryDistillation(t *testing.T) {
 		LLM: LLMFileConfig{Provider: "ollama"},
 		Memory: MemoryFileConfig{
 			Enabled:               true,
-			EnableDistillation:    true,
+			EnableDistillation:    boolPtr(true),
 			DistillationThreshold: 5,
 		},
 	}
@@ -182,7 +182,7 @@ func TestToOptions_DistillationThresholdZeroFallsBack(t *testing.T) {
 		LLM: LLMFileConfig{Provider: "ollama"},
 		Memory: MemoryFileConfig{
 			Enabled:               true,
-			EnableDistillation:    true,
+			EnableDistillation:    boolPtr(true),
 			DistillationThreshold: 0,
 		},
 	}
@@ -483,3 +483,6 @@ func TestWithRAG(t *testing.T) {
 		})
 	}
 }
+
+// boolPtr is a test helper for tri-state *bool config fields.
+func boolPtr(b bool) *bool { return &b }

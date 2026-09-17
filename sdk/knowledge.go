@@ -5,14 +5,13 @@ import (
 	"database/sql"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"sync"
 
 	_ "github.com/lib/pq"
 
-	apiembed "github.com/Timwood0x10/ares/api/embedding"
 	ares_bootstrap "github.com/Timwood0x10/ares/internal/ares_bootstrap"
-	ares_evolution "github.com/Timwood0x10/ares/internal/ares_evolution"
-	memory "github.com/Timwood0x10/ares/internal/ares_memory"
+	apiembed "github.com/Timwood0x10/ares/internal/embedding"
 	"github.com/Timwood0x10/ares/internal/evidence"
 	"github.com/Timwood0x10/ares/internal/knowledge"
 	"github.com/Timwood0x10/ares/internal/knowledge/adapter"
@@ -26,6 +25,8 @@ import (
 	memstore "github.com/Timwood0x10/ares/internal/knowledge/store/memory"
 	postgresstore "github.com/Timwood0x10/ares/internal/knowledge/store/postgres"
 	sqlitestore "github.com/Timwood0x10/ares/internal/knowledge/store/sqlite"
+	ares_evolution "github.com/Timwood0x10/ares/internal/runtime/ares_evolution"
+	memory "github.com/Timwood0x10/ares/internal/runtime/memory"
 	"github.com/Timwood0x10/ares/internal/storage/postgres"
 )
 
@@ -142,9 +143,19 @@ func wireKnowledge(
 		return &knowledgeWiring{}, nil
 	}
 
-	reg := provider.NewProviderRegistry()
+	// ONE strategy store for the whole SDK path: it is both registered as
+	// the AKF "evolution" provider (read side) and returned in the wiring
+	// (Runtime.evolutionStore, write side). Previously two independent
+	// stores were created — the provider's store never saw anything the
+	// runtime side wrote, so evolution decisions could never surface as
+	// KnowledgeObjects.
+	var evoStore *memStrategyStore
+	if cfg.evoCfg.Enabled {
+		evoStore = newMemStrategyStore()
+	}
 
-	if err := registerKnowledgeProviders(reg, cfg, memMgr); err != nil {
+	reg := provider.NewProviderRegistry()
+	if err := registerKnowledgeProviders(reg, cfg, memMgr, evoStore); err != nil {
 		return nil, err
 	}
 
@@ -159,13 +170,13 @@ func wireKnowledge(
 	if store != nil {
 		sp := storeprovider.New("akg_store", store, embClient, embModel, akgNamespace)
 		if err := reg.Register(sp); err != nil {
+			// Release the just-built store before bailing: it holds an open
+			// sqlite handle or postgres *sql.DB that nothing else owns yet.
+			if closer, ok := store.(interface{ Close() error }); ok {
+				_ = closer.Close()
+			}
 			return nil, fmt.Errorf("knowledge: register store provider: %w", err)
 		}
-	}
-
-	var evoStore *memStrategyStore
-	if cfg.evoCfg.Enabled {
-		evoStore = newMemStrategyStore()
 	}
 
 	rt := khruntime.New(
@@ -188,8 +199,11 @@ func wireKnowledge(
 
 // registerKnowledgeProviders registers the memory, evolution, and
 // user-configured extra providers into the registry. Extracted to keep
-// wireKnowledge under 100 lines.
-func registerKnowledgeProviders(reg *provider.ProviderRegistry, cfg *config, memMgr memory.MemoryManager) error {
+// wireKnowledge under 100 lines. evoStore is the SHARED strategy store from
+// wireKnowledge (nil when evolution is disabled) — registering the caller's
+// instance, not a fresh one, is what keeps the AKG provider's view coherent
+// with runtime-side writes.
+func registerKnowledgeProviders(reg *provider.ProviderRegistry, cfg *config, memMgr memory.MemoryManager, evoStore *memStrategyStore) error {
 	if memMgr != nil {
 		searcher := &memSearcher{svc: memMgr}
 		if err := reg.Register(memprovider.New("memory", searcher)); err != nil {
@@ -197,8 +211,7 @@ func registerKnowledgeProviders(reg *provider.ProviderRegistry, cfg *config, mem
 		}
 	}
 
-	if cfg.evoCfg.Enabled {
-		evoStore := newMemStrategyStore()
+	if evoStore != nil {
 		if err := reg.Register(evoprovider.New("evolution", evoStore)); err != nil {
 			return fmt.Errorf("knowledge: register evolution provider: %w", err)
 		}
@@ -228,9 +241,13 @@ func buildKnowledgeStore(cfg *config) (knowledge.KnowledgeStore, error) {
 		if sslMode == "" {
 			sslMode = sslModeDisable
 		}
+		// Credentials are escaped: a password containing the DSN's own
+		// delimiters (@ : / ? #) silently produced a malformed DSN — the driver
+		// either failed to parse it or connected to the wrong host/database.
+		// Matches the escaping cmd/ares/db.go already applied.
 		dsn := fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=%s",
-			cfg.dbCfg.User, cfg.dbCfg.Password, cfg.dbCfg.Host,
-			cfg.dbCfg.Port, cfg.dbCfg.Database, sslMode)
+			url.QueryEscape(cfg.dbCfg.User), url.QueryEscape(cfg.dbCfg.Password),
+			cfg.dbCfg.Host, cfg.dbCfg.Port, cfg.dbCfg.Database, sslMode)
 		db, err := sql.Open("postgres", dsn)
 		if err != nil {
 			return nil, fmt.Errorf("knowledge: open postgres store: %w", err)
@@ -343,7 +360,7 @@ func buildSDKEvidenceStore(cfg *config, knowRt *khruntime.KnowledgeRuntime, boot
 // (non-fatal: a warning is logged). Extracted from New() to keep the
 // constructor under the 100-line limit.
 //
-// Branch B (T2.0): SDK has no live DAG, so workflow/scheduler/recovery
+// Branch B: SDK has no live DAG, so workflow/scheduler/recovery
 // evolution is serve-only; the nil-DAG path is explicitly logged.
 func wireEvolutionHotUpdate(cfg *config, knowRt *khruntime.KnowledgeRuntime, memMgr memory.MemoryConfigStore, evStore evidence.Store) *ares_bootstrap.NewEvolutionComponents {
 	if !cfg.evoCfg.Enabled || knowRt == nil {
@@ -367,7 +384,7 @@ func wireEvolutionHotUpdate(cfg *config, knowRt *khruntime.KnowledgeRuntime, mem
 // store. Stage 8: when the Bootstrap core supplies a NewEvolution it is reused
 // (the Bootstrap-assembled component wins and any SDK-owned evStore is
 // discarded); otherwise the SDK dual-track wiring is kept as a compatibility
-// fallback. T1.3 (evidence persistence): the persistent evidence store is
+// fallback. Evidence persistence: the persistent evidence store is
 // created only when it will actually be consumed — evolution enabled, an
 // SDK-owned knowledge runtime exists, and the Bootstrap core does not supply
 // its own NewEvolution. This avoids hard-failing startup for a

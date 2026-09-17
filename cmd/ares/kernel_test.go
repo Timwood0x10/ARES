@@ -7,14 +7,17 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/agentfabric"
+	"github.com/stretchr/testify/require"
+
 	"github.com/Timwood0x10/ares/internal/agentipc"
 	"github.com/Timwood0x10/ares/internal/agents/base"
 	"github.com/Timwood0x10/ares/internal/agents/sub"
+	"github.com/Timwood0x10/ares/internal/ares_bootstrap"
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/aresrecovery"
 	"github.com/Timwood0x10/ares/internal/core/models"
-	"github.com/Timwood0x10/ares/internal/taskfabric"
+	"github.com/Timwood0x10/ares/internal/fabric/agent"
+	"github.com/Timwood0x10/ares/internal/fabric/task"
 )
 
 // TestTaskFromPayload verifies payload decoding: agent_type is honored, absent
@@ -67,14 +70,14 @@ func TestTaskFromPayloadRestoresDependencies(t *testing.T) {
 }
 
 // TestKernelDAGGateDefersDependentTask verifies the DAG-as-scheduling-source
-// wiring in the kernel path (ares-runtime.md §9): the leader dispatch SUBMITS
+// wiring in the kernel path : the leader dispatch SUBMITS
 // tasks to the fabric (submitFabricTask) and the kernelScheduler drains only
 // READY tasks — a task whose dependencies are not all COMPLETED stays queued
 // until its dependency completes (it never executes out of order).
 func TestKernelDAGGateDefersDependentTask(t *testing.T) {
 	f := taskfabric.NewFabric()
-	research := &stubAgent{id: "research_01", typ: models.AgentType("research")}
-	writer := &stubAgent{id: "writer_01", typ: models.AgentType("write")}
+	research := &stubAgent{id: "research_01", typ: models.AgentType("tool/research")}
+	writer := &stubAgent{id: "writer_01", typ: models.AgentType("tool/write")}
 	executors := map[string]CapabilityExecutor{"research_01": research, "writer_01": writer}
 	tracker := newLoadTracker()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -86,7 +89,7 @@ func TestKernelDAGGateDefersDependentTask(t *testing.T) {
 	go sched.Run(ctx)
 
 	// Submit B (depends on A) first: it must NOT run before A completes.
-	b := models.NewTask("task_b", models.AgentType("write"), nil)
+	b := models.NewTask("task_b", models.AgentType("tool/write"), nil)
 	b.Context.Dependencies = []string{"task_a"}
 	if err := submitFabricTask(ctx, f, b); err != nil {
 		t.Fatalf("submitFabricTask(B): %v", err)
@@ -97,7 +100,7 @@ func TestKernelDAGGateDefersDependentTask(t *testing.T) {
 	}
 
 	// Submit A: the scheduler runs it, completing A and unlocking B.
-	a := models.NewTask("task_a", models.AgentType("research"), nil)
+	a := models.NewTask("task_a", models.AgentType("tool/research"), nil)
 	if err := submitFabricTask(ctx, f, a); err != nil {
 		t.Fatalf("submitFabricTask(A): %v", err)
 	}
@@ -137,23 +140,25 @@ func slicesEqual(a, b []string) bool {
 // that shadow mode is turned off (so the legacy path is not re-run).
 func TestEnableKernelExecutionRunsFabricPath(t *testing.T) {
 	kernel, flag := wireKernelDispatcher([]subAgentCapability{
-		{ID: "code_01", Type: "code"},
+		{ID: "code_01", Type: "tool/code"},
 	})
 
 	f := taskfabric.NewFabric()
-	executor := &stubAgent{id: "code_01", typ: models.AgentType("code")}
+	executor := &stubAgent{id: "code_01", typ: models.AgentType("tool/code")}
 	executors := map[string]CapabilityExecutor{"code_01": executor}
 	tracker := newLoadTracker()
 
 	// Attach the submit-only new path and disable shadow. The dispatch now
-	// SUBMITS the task; the kernelScheduler is the single executor (GAP #2:
-	// no double-path acquire race).
+	// SUBMITS the task; the kernelScheduler is the single executor (no
+	// double-path acquire race).
 	enableKernelExecution(kernel, f)
 	flag.Set(agentipc.PolicyTaskFabric)
 
-	// Dispatch through the kernel (active path = fabric submit).
-	payload := map[string]any{"agent_type": "code"}
-	if err := kernel.Dispatch(context.Background(), "", "t1", payload); err != nil {
+	// Dispatch through the kernel's live path: the facade's current new-path
+	// dispatcher (the DualTrack dispatch entry was removed — zero production
+	// callers; enableKernelExecution swaps the path via SetNewPath).
+	payload := map[string]any{"agent_type": "tool/code"}
+	if err := kernel.NewPath().D(context.Background(), "", "t1", payload); err != nil {
 		t.Fatalf("dispatch: %v", err)
 	}
 
@@ -197,11 +202,11 @@ func TestEnableKernelExecutionRunsFabricPath(t *testing.T) {
 	}
 }
 
-// TestRunKernelRecoveryLoopEventDriven verifies the event-driven recovery loop
-// (code-review-2025-01-16 #2): task lifecycle events on the shared EventStore
+// TestRunKernelRecoveryLoopEventDriven verifies the event-driven recovery loop:
+// task lifecycle events on the shared EventStore
 // drive the recovery chain instead of a command loop. Publishing an
-// EventTaskExpired event triggers the kernel's requeue-only recovery (v0.3.0
-// review Bug 1 fix): the expired task returns to READY, UNOWNED — NOT re-leased
+// EventTaskExpired event triggers the kernel's requeue-only recovery
+// (a review Bug 1 fix): the expired task returns to READY, UNOWNED — NOT re-leased
 // to a phantom replacement agent that no registered executor can drive. The
 // kernelScheduler (which owns execution) picks up the READY task and resumes
 // from its preserved checkpoint.
@@ -280,7 +285,7 @@ func (s *flakyQuotaSource) callCount() int {
 	return s.calls
 }
 
-// TestRunKernelQuotaLoopSurvivesBlockedApply (C1): a quota Apply that hangs on
+// TestRunKernelQuotaLoopSurvivesBlockedApply: a quota Apply that hangs on
 // the policy store must be bounded by the loop's per-apply timeout — the loop
 // must keep ticking instead of spinning forever on a single blocked Apply.
 func TestRunKernelQuotaLoopSurvivesBlockedApply(t *testing.T) {
@@ -312,7 +317,7 @@ func TestRunKernelQuotaLoopSurvivesBlockedApply(t *testing.T) {
 	<-done
 }
 
-// TestKernelDispatchReleasesResultSubscription (C2): after Dispatch returns,
+// TestKernelDispatchReleasesResultSubscription: after Dispatch returns,
 // the waitCtx-bounded result subscription must be released. Subscribing with
 // the raw parent ctx would leave every completed Dispatch's subscription — and
 // its cleanup goroutine — alive until the parent context is cancelled,
@@ -358,13 +363,13 @@ func TestToModelTaskPreservesMetaAcrossYieldCheckpoint(t *testing.T) {
 	}
 }
 
-// TestRetryPolicyAllowsOneRetry verifies the v0.3.0 review Bug 2 fix:
+// TestRetryPolicyAllowsOneRetry verifies the retry-budget semantics:
 // submitFabricTask now grants ONE real retry (MaxRetries counts total
 // attempts, so 2 = first attempt + one retry). A transient failure requeues
 // the task to READY; only the second failure finalizes FAILED.
 func TestRetryPolicyAllowsOneRetry(t *testing.T) {
 	f := taskfabric.NewFabric()
-	task := models.NewTask("t-retry", models.AgentType("code"), nil)
+	task := models.NewTask("t-retry", models.AgentType("tool/code"), nil)
 	if err := submitFabricTask(context.Background(), f, task); err != nil {
 		t.Fatalf("submitFabricTask: %v", err)
 	}
@@ -407,7 +412,7 @@ func TestRetryPolicyAllowsOneRetry(t *testing.T) {
 	}
 }
 
-// TestSchedulerPriorityPreemption verifies the v0.3.0 review wiring fix:
+// TestSchedulerPriorityPreemption verifies the priority wiring:
 // fabric.Preempt is exercised from the scheduler — a RUNNING low-priority task
 // is cooperatively handed back to READY (checkpoint preserved) when a READY
 // high-priority task arrives, freeing the executor for the next drain.
@@ -475,8 +480,8 @@ func TestSchedulerPriorityPreemption(t *testing.T) {
 	}
 }
 
-// TestTaskFromPayloadRestoresJSONUserProfile verifies the v0.3.0 review Bug 3
-// (kernel side) fix: a user_profile that survived a JSON round-trip arrives as
+// TestTaskFromPayloadRestoresJSONUserProfile verifies (kernel side) that
+// a user_profile that survived a JSON round-trip arrives as
 // a plain map, not a *models.UserProfile. taskFromPayload must still restore it
 // so the executor never degrades to executeByType.
 func TestTaskFromPayloadRestoresJSONUserProfile(t *testing.T) {
@@ -502,7 +507,7 @@ func TestTaskFromPayloadRestoresJSONUserProfile(t *testing.T) {
 }
 
 // checkpointStubAgent is a sub.Agent stub that records the checkpoint it
-// observes on resume, so the W1 recovery E2E test can assert that a
+// observes on resume, so the recovery E2E test can assert that a
 // replacement executor sees the dead agent's preserved checkpoint.
 type checkpointStubAgent struct {
 	id         string
@@ -560,7 +565,7 @@ func (a *checkpointStubAgent) getCheckpoint() any {
 	return a.checkpoint
 }
 
-// TestW1RecoveryClosureE2E verifies the W1 production-grade recovery闭环:
+// TestRecoveryClosureE2E verifies the production-grade recovery closed loop:
 //
 //	Task → executor A executes quantum#1 (writes checkpoint) → A crashes
 //	(lease expiry) → recovery loop → replacement executor A' registered →
@@ -572,7 +577,7 @@ func (a *checkpointStubAgent) getCheckpoint() any {
 //  3. The task completes via the new executor.
 //  4. RequeueExpiredLeases → bound replacement registration have a caller
 //     through the real recovery loop.
-func TestW1RecoveryClosureE2E(t *testing.T) {
+func TestRecoveryClosureE2E(t *testing.T) {
 	// Build a fabric with one task.
 	f := taskfabric.NewFabric()
 	if err := f.Create(&taskfabric.Task{
@@ -642,7 +647,7 @@ func TestW1RecoveryClosureE2E(t *testing.T) {
 	// so the recovery loop must spawn a replacement.
 	hasCapable := func(taskID string) bool { return sched.HasCapableExecutor(taskID) }
 
-	// Start the recovery loop with the W1 full recovery chain.
+	// Start the recovery loop with the full recovery chain.
 	go runKernelRecoveryLoop(ctx, nil, recovery, kernelLoopConfig{
 		RecoverySweepInterval: 50 * time.Millisecond,
 		RecoverySweepTimeout:  5 * time.Second,
@@ -689,10 +694,10 @@ func TestW1RecoveryClosureE2E(t *testing.T) {
 	}
 }
 
-// TestW1RegisterExecutorDynamic verifies the scheduler's dynamic executor
+// TestRegisterExecutorDynamic verifies the scheduler's dynamic executor
 // registration: a task that was unschedulable (no capable candidate) becomes
 // schedulable after RegisterExecutor injects a matching executor.
-func TestW1RegisterExecutorDynamic(t *testing.T) {
+func TestRegisterExecutorDynamic(t *testing.T) {
 	f := taskfabric.NewFabric()
 	if err := f.Create(&taskfabric.Task{
 		ID:          "reg-task",
@@ -736,9 +741,9 @@ func TestW1RegisterExecutorDynamic(t *testing.T) {
 	}
 }
 
-// TestW1UnregisterExecutor verifies that unregistering an executor removes it
+// TestUnregisterExecutor verifies that unregistering an executor removes it
 // from the scheduling candidate pool.
-func TestW1UnregisterExecutor(t *testing.T) {
+func TestUnregisterExecutor(t *testing.T) {
 	f := taskfabric.NewFabric()
 	executor := &stubAgent{id: "removable", typ: models.AgentType("code")}
 	sched := NewKernelScheduler(f, map[string]CapabilityExecutor{"removable": executor}, nil)
@@ -757,5 +762,24 @@ func TestW1UnregisterExecutor(t *testing.T) {
 	// Lookup must return false.
 	if _, ok := sched.LookupExecutor("removable"); ok {
 		t.Fatal("lookup must return false after unregister")
+	}
+}
+
+// TestSetupPeerRegistryRetainsOnKernel locks the retention contract: the peer
+// registry built by setupPeerRegistry must be retained on the kernel handle
+// instead of being discarded after construction.
+func TestSetupPeerRegistryRetainsOnKernel(t *testing.T) {
+	var comp ares_bootstrap.Components
+	kernel := &kernelHandle{}
+
+	// No evolution wired: the plain direct peer registry path is used.
+	reg, err := setupPeerRegistry(context.Background(), nil, nil, &comp, kernel)
+	require.NoError(t, err)
+	require.NotNil(t, reg, "setupPeerRegistry must return a usable registry")
+	// The construction site must retain the registry on the kernel handle
+	// so it stays reachable for direct peer messaging / capability
+	// discovery.
+	if kernel.peerRegistry != reg {
+		t.Fatal("peer registry must be retained on the kernel handle (N4)")
 	}
 }

@@ -12,9 +12,9 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/Timwood0x10/ares/internal/errors"
-
 	"golang.org/x/crypto/blake2b"
+
+	"github.com/Timwood0x10/ares/internal/errors"
 )
 
 // HTTPError represents an HTTP request error.
@@ -110,7 +110,7 @@ func (c *EmbeddingClient) Embed(ctx context.Context, text string) ([]float64, er
 // Returns embedding vector or error.
 func (c *EmbeddingClient) EmbedWithPrefix(ctx context.Context, text, prefix string) ([]float64, error) {
 	if !c.enabled.Load() {
-		return nil, fmt.Errorf("embedding client is disabled")
+		return nil, errors.New("embedding client is disabled")
 	}
 
 	// Normalize text to avoid cache miss explosion
@@ -151,7 +151,7 @@ func (c *EmbeddingClient) EmbedWithPrefix(ctx context.Context, text, prefix stri
 // EmbedBatch generates vector embeddings for multiple texts.
 func (c *EmbeddingClient) EmbedBatch(ctx context.Context, texts []string) ([][]float64, error) {
 	if !c.enabled.Load() {
-		return nil, fmt.Errorf("embedding client is disabled")
+		return nil, errors.New("embedding client is disabled")
 	}
 
 	// Normalize all texts
@@ -185,6 +185,15 @@ func (c *EmbeddingClient) EmbedBatch(ctx context.Context, texts []string) ([][]f
 		batchEmbeddings, err := c.callEmbeddingBatchService(ctx, uncachedTexts, "query:")
 		if err != nil {
 			return nil, err
+		}
+
+		// The batch service may legally return fewer embeddings than inputs
+		// (per-item failures are dropped upstream). Indexing by position would
+		// panic mid-assignment, leaving the caller with a crash instead of an
+		// actionable error, so the count is verified up front.
+		if len(batchEmbeddings) != len(uncachedIndices) {
+			return nil, fmt.Errorf("embedding client: batch service returned %d embeddings for %d uncached inputs",
+				len(batchEmbeddings), len(uncachedIndices))
 		}
 
 		// Assign batch results and cache them
@@ -358,7 +367,7 @@ func (c *EmbeddingClient) callEmbeddingBatchService(ctx context.Context, texts [
 // HealthCheck checks if the embedding service is healthy.
 func (c *EmbeddingClient) HealthCheck(ctx context.Context) error {
 	if !c.enabled.Load() {
-		return fmt.Errorf("embedding client is disabled")
+		return errors.New("embedding client is disabled")
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "GET", c.baseURL+"/health", nil)

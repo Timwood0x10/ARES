@@ -8,9 +8,10 @@ package builtin
 import (
 	"testing"
 
-	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
 
 // TestRegisterGeneralTools_NoDeps_SkipsDependencyTools verifies that with no

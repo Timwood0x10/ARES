@@ -1,0 +1,705 @@
+package agentfabric
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/require"
+
+	"github.com/Timwood0x10/ares/internal/agents"
+	"github.com/Timwood0x10/ares/internal/core/models"
+	"github.com/Timwood0x10/ares/internal/fabric/planprojection"
+	"github.com/Timwood0x10/ares/internal/fabric/task"
+	"github.com/Timwood0x10/ares/internal/fabric/task/workflow/engine"
+	llmcore "github.com/Timwood0x10/ares/internal/llmcore"
+	resources "github.com/Timwood0x10/ares/internal/tools/resources/core"
+)
+
+// fakePlannerChat is a scripted ChatClient that drives the planner through
+// two tool rounds then a final answer. It returns exactly one tool call per
+// round for the first two calls, then a text answer — exercising the
+// full plan→tool→plan→tool→answer growth.
+type fakePlannerChat struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (c *fakePlannerChat) Chat(_ context.Context, _ []*llmcore.LLMMessage, _ []llmcore.Tool, _ map[string]any) (*llmcore.GenerateResponse, error) {
+	c.mu.Lock()
+	c.calls++
+	round := c.calls
+	c.mu.Unlock()
+
+	switch round {
+	case 1:
+		return &llmcore.GenerateResponse{
+			ToolCalls: []llmcore.ToolCall{{
+				ID:       "tc-1",
+				Type:     "function",
+				Function: llmcore.FunctionCall{Name: "grep", Arguments: `{"query":"first"}`},
+			}},
+		}, nil
+	case 2:
+		return &llmcore.GenerateResponse{
+			ToolCalls: []llmcore.ToolCall{{
+				ID:       "tc-2",
+				Type:     "function",
+				Function: llmcore.FunctionCall{Name: "read", Arguments: `{"query":"second"}`},
+			}},
+		}, nil
+	default:
+		return &llmcore.GenerateResponse{Content: "the answer is 42"}, nil
+	}
+}
+
+// plannerTestBinder is a ToolBinder whose tools echo their args back so
+// toolCognition produces a real result in the fabric envelope.
+type plannerTestBinder struct{}
+
+func (b *plannerTestBinder) CallTool(_ context.Context, name string, args map[string]any) (any, error) {
+	if q, ok := args["query"]; ok {
+		return fmt.Sprintf("echo(%s,%v)", name, q), nil
+	}
+	return fmt.Sprintf("echo(%s)", name), nil
+}
+
+func (b *plannerTestBinder) ListTools() []string { return []string{"grep", "read"} }
+
+func (b *plannerTestBinder) IsToolIdempotent(string) bool { return true }
+
+// GetToolSchemas declares "grep" with a REQUIRED "query" and an OPTIONAL
+// "limit". The optional parameter is the point: the scripted LLM calls grep
+// with "query" only, so an args-derived ToolClass shape would be "query"
+// while the schema-derived shape is "limit,query". The L1 lookup must use the
+// schema shape on both the write and the read side, or every constraint
+// silently falls through to permissive.
+func (b *plannerTestBinder) GetToolSchemas() []resources.ToolSchema {
+	return []resources.ToolSchema{{
+		Name: "grep",
+		Parameters: &resources.ParameterSchema{
+			Properties: map[string]*resources.Parameter{
+				"query": {Type: "string"},
+				"limit": {Type: "integer"},
+			},
+			Required: []string{"query"},
+		},
+	}}
+}
+
+// TestPlannerCognition_GrowsTwoPlanRoundsWithToolNodes is the acceptance
+// test: a task that needs 2 rounds of tool calling grows a session graph
+// with 2 plan nodes, 2 tool nodes, and 1 answer node. The graph topology
+// is acyclic (GetExecutionOrder succeeds), every node gets a fabric task,
+// and the session is released when the answer completes.
+func TestPlannerCognition_GrowsTwoPlanRoundsWithToolNodes(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	const sessionID = "m2-test"
+	fabric := taskfabric.NewFabric()
+
+	// Wire the incremental compile coordinator so AddToolNode → fabric task.
+	coord := planprojection.NewCompileCoordinator(fabric, nil)
+
+	// Session registry with compile-coordinator wiring.
+	reg := NewSessionRegistry()
+	compileCoord := func(_ context.Context, dag *engine.MutableDAG) (stop func()) {
+		return coord.SubscribeGraphEvents(ctx, dag)
+	}
+	g, err := reg.InitSession(sessionID, "find the answer", nil, compileCoord)
+	require.NoError(t, err)
+
+	// Admit the session root: compile it as a fabric task so the root
+	// completes and its prompt rides the envelope.
+	rootStep := g.DAG().StepIndex()[g.Root()]
+	_, err = fabric.CompileNode(ctx, planprojection.ProjectStep(rootStep))
+	require.NoError(t, err)
+
+	// Drive the root to COMPLETED so its output is available.
+	driveTaskToCompleted(t, ctx, fabric, g.Root(), "find the answer")
+
+	// Build the planner cognition.
+	chatClient := &fakePlannerChat{}
+	binder := &plannerTestBinder{}
+	planner, err := NewPlannerCognition(PlannerDeps{
+		ChatClient: chatClient,
+		ToolBinder: binder,
+		Sessions:   reg,
+		Fabric:     fabric,
+		Logger:     slog.Default(),
+	})
+	require.NoError(t, err)
+
+	// The initial plan task: its predecessor is the root.
+	initialPlanID := SessionNodeID(sessionID, 0, "plan", 0)
+	planTask := models.NewTask(initialPlanID, models.AgentType("ares/plan"), nil)
+	planTask.SessionID = sessionID
+	planTask.Payload = map[string]any{
+		"input":         "find the answer",
+		planMetadataKey: sessionID,
+	}
+
+	// Round 1: planner calls LLM → gets grep tool call → grows grep node
+	// + next plan node.
+	out1, err := planner.ExecuteStep(ctx, planTask)
+	require.NoError(t, err)
+	require.True(t, out1.Done, "planner quantum must complete in one step")
+
+	// The grep node must have a fabric task (via incremental compile).
+	grepID := SessionNodeID(sessionID, 1, "grep", 0)
+	waitForTaskExists(t, fabric, grepID, 2*time.Second)
+
+	// Drive the grep task to completion so the planner can read its output.
+	driveTaskToCompleted(t, ctx, fabric, grepID, "echo(grep,first)")
+
+	// Round 2: the next plan node's task was created by incremental compile.
+	plan2ID := SessionNodeID(sessionID, 1, "plan", 0)
+	plan2Task := models.NewTask(plan2ID, models.AgentType("ares/plan"), nil)
+	plan2Task.SessionID = sessionID
+	plan2Task.Payload = map[string]any{
+		"input":         "find the answer",
+		planMetadataKey: sessionID,
+	}
+
+	out2, err := planner.ExecuteStep(ctx, plan2Task)
+	require.NoError(t, err)
+	require.True(t, out2.Done)
+
+	// The read node must exist.
+	readID := SessionNodeID(sessionID, 2, "read", 0)
+	waitForTaskExists(t, fabric, readID, 2*time.Second)
+	driveTaskToCompleted(t, ctx, fabric, readID, "echo(read,second)")
+
+	// Round 3: the LLM returns a text answer (no tool calls).
+	plan3ID := SessionNodeID(sessionID, 2, "plan", 0)
+	plan3Task := models.NewTask(plan3ID, models.AgentType("ares/plan"), nil)
+	plan3Task.SessionID = sessionID
+	plan3Task.Payload = map[string]any{
+		"input":         "find the answer",
+		planMetadataKey: sessionID,
+	}
+
+	out3, err := planner.ExecuteStep(ctx, plan3Task)
+	require.NoError(t, err)
+	require.True(t, out3.Done)
+
+	// An answer node must exist.
+	answerID := SessionNodeID(sessionID, 3, "answer", 0)
+	waitForTaskExists(t, fabric, answerID, 2*time.Second)
+
+	// The graph topology is acyclic.
+	order, err := g.DAG().GetExecutionOrder()
+	require.NoError(t, err, "graph must be acyclic")
+	require.Greater(t, len(order), 5, "graph must have root + plans + tools + answer")
+
+	// The graph has exactly 2 plan nodes (depth 2) + 2 tool nodes + root
+	// + answer.
+	depth := g.PlanDepth()
+	require.Equal(t, 2, depth, "two plan rounds must have grown")
+
+	// Session release.
+	require.NoError(t, reg.ReleaseSession(sessionID))
+
+	// After release, GetSession returns ErrSessionNotFound.
+	_, err = reg.GetSession(sessionID)
+	require.ErrorIs(t, err, ErrSessionNotFound)
+
+	// Chat client was called exactly 3 times (2 tool rounds + 1 answer).
+	chatClient.mu.Lock()
+	require.Equal(t, 3, chatClient.calls, "LLM called once per plan quantum")
+	chatClient.mu.Unlock()
+}
+
+// TestPlannerCognition_MaxDepthForcesAnswer verifies the growth-depth guard:
+// when the plan depth reaches the max, the planner grows an answer
+// node instead of another tool round.
+func TestPlannerCognition_MaxDepthForcesAnswer(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	const sessionID = "m2-depth"
+	fabric := taskfabric.NewFabric()
+	coord := planprojection.NewCompileCoordinator(fabric, nil)
+	reg := NewSessionRegistry()
+	compileCoord := func(_ context.Context, dag *engine.MutableDAG) (stop func()) {
+		return coord.SubscribeGraphEvents(ctx, dag)
+	}
+	g, err := reg.InitSession(sessionID, "prompt", nil, compileCoord)
+	require.NoError(t, err)
+
+	// Admit root.
+	rootStep := g.DAG().StepIndex()[g.Root()]
+	_, err = fabric.CompileNode(ctx, planprojection.ProjectStep(rootStep))
+	require.NoError(t, err)
+	driveTaskToCompleted(t, ctx, fabric, g.Root(), "prompt")
+
+	// Planner with MaxDepth=1: the first plan quantum can grow, but the
+	// second must force an answer.
+	chatClient := &fakePlannerChat{}
+	planner, err := NewPlannerCognition(PlannerDeps{
+		ChatClient: chatClient,
+		ToolBinder: &plannerTestBinder{},
+		Sessions:   reg,
+		Fabric:     fabric,
+		MaxDepth:   1,
+		Logger:     slog.Default(),
+	})
+	require.NoError(t, err)
+
+	// Round 1 (depth 0 < 1): grows a tool node.
+	planID := SessionNodeID(sessionID, 0, "plan", 0)
+	planTask := models.NewTask(planID, models.AgentType("ares/plan"), nil)
+	planTask.SessionID = sessionID
+	planTask.Payload = map[string]any{"input": "prompt", planMetadataKey: sessionID}
+
+	out, err := planner.ExecuteStep(ctx, planTask)
+	require.NoError(t, err)
+	require.True(t, out.Done)
+	require.Equal(t, 1, g.PlanDepth(), "one plan node grown")
+	require.Equal(t, uint64(0), planner.(*plannerCognition).ForcedAnswers(),
+		"a growing quantum must not move the depth-exhaustion counter")
+
+	// Round 2 (depth 1 >= 1): forced answer, no more tool nodes.
+	plan2ID := SessionNodeID(sessionID, 1, "plan", 0)
+	plan2Task := models.NewTask(plan2ID, models.AgentType("ares/plan"), nil)
+	plan2Task.SessionID = sessionID
+	plan2Task.Payload = map[string]any{"input": "prompt", planMetadataKey: sessionID}
+
+	out2, err := planner.ExecuteStep(ctx, plan2Task)
+	require.NoError(t, err)
+	require.True(t, out2.Done)
+	require.Equal(t, 1, g.PlanDepth(), "no new plan node — forced answer instead")
+
+	// An answer node was grown.
+	answerID := SessionNodeID(sessionID, 2, "answer", 0)
+	waitForTaskExists(t, fabric, answerID, 2*time.Second)
+	require.Equal(t, uint64(1), planner.(*plannerCognition).ForcedAnswers(),
+		"exactly one quantum hit the depth guard (M4-B2 canary metric)")
+}
+
+// TestReaper_HarvestsTerminalTasks verifies the reaper: terminal tasks
+// matching the session prefix are deleted; in-flight tasks survive; the
+// grace period protects recently-completed tasks.
+func TestReaper_HarvestsTerminalTasks(t *testing.T) {
+	fabric := taskfabric.NewFabric()
+
+	// Seed: a COMPLETED session task, a FAILED session task, a READY session
+	// task, a non-session COMPLETED task.
+	createTask(t, fabric, "sess/s1/tool-a", "tool/grep", taskfabric.StateCompleted)
+	createTask(t, fabric, "sess/s1/tool-b", "tool/read", taskfabric.StateFailed)
+	createTask(t, fabric, "sess/s1/tool-c", "tool/grep", taskfabric.StateReady)
+	createTask(t, fabric, "peer-task-other-1", "code", taskfabric.StateCompleted)
+
+	// Reaper with 1ns grace — the tasks were just created, but 1ns is
+	// short enough that even a few nanoseconds' elapsed time exceeds
+	// it. The production default is 30s; here we need immediate
+	// harvesting, and 1ns avoids time.Sleep.
+	r := taskfabric.NewReaper(fabric, "sess/s1/", 1)
+	removed := r.Sweep()
+	require.Equal(t, 2, removed, "only COMPLETED + FAILED session tasks harvested")
+
+	// The READY session task survives (Delete refuses non-terminal).
+	_, err := fabric.Task("sess/s1/tool-c")
+	require.NoError(t, err)
+
+	// The non-session task survives (prefix filter).
+	_, err = fabric.Task("peer-task-other-1")
+	require.NoError(t, err)
+
+	// The harvested tasks are gone.
+	_, err = fabric.Task("sess/s1/tool-a")
+	require.ErrorIs(t, err, taskfabric.ErrTaskNotFound)
+	_, err = fabric.Task("sess/s1/tool-b")
+	require.ErrorIs(t, err, taskfabric.ErrTaskNotFound)
+}
+
+// driveTaskToCompleted acquires, starts, and completes a task with the
+// given output content so its envelope carries a real result.
+func driveTaskToCompleted(t *testing.T, ctx context.Context, f *taskfabric.Fabric, taskID, content string) {
+	t.Helper()
+	// Acquire the task.
+	epoch, err := f.Acquire(taskID, "test-agent", time.Minute)
+	require.NoError(t, err)
+	// Start it.
+	require.NoError(t, f.Start(taskID, "test-agent", epoch))
+	// Complete with a checkpoint carrying the output.
+	items := []*models.RecommendItem{{ItemID: taskID, Content: content}}
+	outMap := map[string]any{
+		"result": "ok",
+		"items":  items,
+		"reason": "test completion",
+	}
+	env := taskfabric.EncodeCheckpoint(taskfabric.DecodedCheckpoint{
+		StepCheckpoint: outMap,
+	})
+	require.NoError(t, f.CompleteWithCheckpoint(taskID, "test-agent", epoch, env))
+}
+
+// createTask creates a task and drives it to the given terminal state.
+func createTask(t *testing.T, f *taskfabric.Fabric, id, capability string, state taskfabric.TaskState) {
+	t.Helper()
+	// For FAILED tasks, set MaxRetries=1 so CanRetry returns false after
+	// the single attempt. (MaxRetries<=0 now also means no retries — the
+	// fabric used to treat it as unlimited, which is why this workaround
+	// exists; the explicit 1 keeps the intent pinned either way.)
+	maxRetries := 0
+	if state == taskfabric.StateFailed {
+		maxRetries = 1
+	}
+	require.NoError(t, f.Create(&taskfabric.Task{
+		ID:          id,
+		Capability:  capability,
+		RetryPolicy: taskfabric.RetryPolicy{MaxRetries: maxRetries},
+	}))
+	if state == taskfabric.StateCompleted || state == taskfabric.StateFailed {
+		epoch, err := f.Acquire(id, "reaper-test", time.Minute)
+		require.NoError(t, err)
+		require.NoError(t, f.Start(id, "reaper-test", epoch))
+		if state == taskfabric.StateCompleted {
+			require.NoError(t, f.Complete(id, "reaper-test", epoch))
+		} else {
+			require.NoError(t, f.Fail(id, "reaper-test", epoch))
+			got, _ := f.Task(id)
+			require.Equal(t, taskfabric.StateFailed, got.State,
+				"task must settle FAILED after exhausting retry budget")
+		}
+	}
+}
+
+// waitForTaskExists polls until a task with the given ID exists in the fabric.
+func waitForTaskExists(t *testing.T, f *taskfabric.Fabric, id string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if _, err := f.Task(id); err == nil {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("task %q not found within %s", id, timeout)
+}
+
+// stubStrategySource is a fixed StrategySource for planner steering tests.
+type stubStrategySource struct {
+	st  *agents.ActiveStrategy
+	err error
+}
+
+func (s *stubStrategySource) GetActiveStrategy(context.Context) (*agents.ActiveStrategy, error) {
+	return s.st, s.err
+}
+
+// recordingChat captures the messages and params of each LLM call and
+// answers immediately (no tool calls) so the session terminates in one
+// plan quantum.
+type recordingChat struct {
+	mu     sync.Mutex
+	msgs   [][]*llmcore.LLMMessage
+	params []map[string]any
+}
+
+func (c *recordingChat) Chat(_ context.Context, msgs []*llmcore.LLMMessage, _ []llmcore.Tool, params map[string]any) (*llmcore.GenerateResponse, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.msgs = append(c.msgs, msgs)
+	c.params = append(c.params, params)
+	return &llmcore.GenerateResponse{Content: "done"}, nil
+}
+
+// TestPlannerCognition_StrategySteersGrowth locks the actuator read:
+// a deployed strategy's prompt template rides a system message and its
+// params ride the LLM call. A nil source steers nothing.
+func TestPlannerCognition_StrategySteersGrowth(t *testing.T) {
+	newSteeredSession := func(t *testing.T, src agents.StrategySource, chat *recordingChat) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		const sessionID = "strategy-test"
+		fabric := taskfabric.NewFabric()
+		coord := planprojection.NewCompileCoordinator(fabric, nil)
+		reg := NewSessionRegistry()
+		g, err := reg.InitSession(sessionID, "find it", nil,
+			func(_ context.Context, dag *engine.MutableDAG) (stop func()) {
+				return coord.SubscribeGraphEvents(ctx, dag)
+			})
+		require.NoError(t, err)
+		rootStep := g.DAG().StepIndex()[g.Root()]
+		_, err = fabric.CompileNode(ctx, planprojection.ProjectStep(rootStep))
+		require.NoError(t, err)
+		driveTaskToCompleted(t, ctx, fabric, g.Root(), "find it")
+
+		planner, err := NewPlannerCognition(PlannerDeps{
+			ChatClient:     chat,
+			ToolBinder:     &plannerTestBinder{},
+			Sessions:       reg,
+			Fabric:         fabric,
+			StrategySource: src,
+			Logger:         slog.Default(),
+		})
+		require.NoError(t, err)
+
+		planTask := models.NewTask(SessionNodeID(sessionID, 0, "plan", 0), models.AgentType("ares/plan"), nil)
+		planTask.SessionID = sessionID
+		planTask.Payload = map[string]any{"input": "find it", planMetadataKey: sessionID}
+		out, err := planner.ExecuteStep(ctx, planTask)
+		require.NoError(t, err)
+		require.True(t, out.Done)
+		require.NoError(t, reg.ReleaseSession(sessionID))
+	}
+
+	t.Run("deployed strategy steers prompt and params", func(t *testing.T) {
+		chat := &recordingChat{}
+		newSteeredSession(t, &stubStrategySource{st: &agents.ActiveStrategy{
+			ID:     "s1",
+			Prompt: "PREFER GREP OVER READ",
+			Params: map[string]any{"temperature": 0.1},
+		}}, chat)
+
+		chat.mu.Lock()
+		defer chat.mu.Unlock()
+		require.Len(t, chat.msgs, 1)
+		var sawStrategy bool
+		for _, m := range chat.msgs[0] {
+			if m.Role == "system" && strings.Contains(m.Content, "PREFER GREP OVER READ") && strings.Contains(m.Content, "s1") {
+				sawStrategy = true
+			}
+		}
+		require.True(t, sawStrategy, "strategy prompt must ride a system message")
+		require.Equal(t, 0.1, chat.params[0]["temperature"], "strategy params must ride the LLM call")
+	})
+
+	t.Run("nil source steers nothing", func(t *testing.T) {
+		chat := &recordingChat{}
+		newSteeredSession(t, nil, chat)
+
+		chat.mu.Lock()
+		defer chat.mu.Unlock()
+		require.Len(t, chat.msgs, 1)
+		for _, m := range chat.msgs[0] {
+			require.NotContains(t, m.Content, "evolution strategy",
+				"no strategy system message without a source")
+		}
+	})
+}
+
+// TestPlannerCognition_MissingInputPayloadErrors verifies the strict
+// payload-input contract: when the root's output is unavailable AND the task
+// payload carries no string "input", the quantum errors (and the fabric can
+// retry it) instead of silently sending an empty prompt to the LLM. The
+// admission path (submitPeerTask) always stamps a string input, so a missing
+// one is a wiring bug that must be observable.
+func TestPlannerCognition_MissingInputPayloadErrors(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	const sessionID = "missing-input"
+	fabric := taskfabric.NewFabric()
+	coord := planprojection.NewCompileCoordinator(fabric, nil)
+	reg := NewSessionRegistry()
+	g, err := reg.InitSession(sessionID, "prompt", nil,
+		func(_ context.Context, dag *engine.MutableDAG) (stop func()) {
+			return coord.SubscribeGraphEvents(ctx, dag)
+		})
+	require.NoError(t, err)
+
+	// Compile the root task but leave it NOT completed: readNodeOutput
+	// reports "" so the planner must fall back to the payload input.
+	rootStep := g.DAG().StepIndex()[g.Root()]
+	_, err = fabric.CompileNode(ctx, planprojection.ProjectStep(rootStep))
+	require.NoError(t, err)
+
+	chat := &recordingChat{}
+	planner, err := NewPlannerCognition(PlannerDeps{
+		ChatClient: chat,
+		ToolBinder: &plannerTestBinder{},
+		Sessions:   reg,
+		Fabric:     fabric,
+		Logger:     slog.Default(),
+	})
+	require.NoError(t, err)
+
+	// Wiring bug shape: the payload carries NO "input" (and a non-string
+	// value must be treated the same way — the type assertion fails).
+	planTask := models.NewTask(SessionNodeID(sessionID, 0, "plan", 0), models.AgentType("ares/plan"), nil)
+	planTask.SessionID = sessionID
+	planTask.Payload = map[string]any{planMetadataKey: sessionID}
+
+	_, err = planner.ExecuteStep(ctx, planTask)
+	require.Error(t, err, "missing string input must surface as an error, not an empty prompt")
+	require.Contains(t, err.Error(), "input", "error must name the missing payload field")
+
+	chat.mu.Lock()
+	calls := len(chat.msgs)
+	chat.mu.Unlock()
+	require.Equal(t, 0, calls, "the LLM must not be called with an empty prompt")
+
+	require.NoError(t, reg.ReleaseSession(sessionID))
+}
+
+// TestStableRoundReplay pins F-10: a plan quantum's growth round is derived
+// from its OWN ancestor chain, so growing later rounds never moves it — a
+// re-executed quantum derives the same round (and therefore the same
+// tool/plan/answer node IDs) as its first execution. PlanDepth moves with
+// every later round and would fork the session into duplicate answer
+// branches on replay.
+func TestStableRoundReplay(t *testing.T) {
+	ctx := context.Background()
+
+	g, err := NewL2Graph(SessionRootID("s1"), "prompt", nil)
+	require.NoError(t, err)
+
+	// The admission-submitted plan task (not a graph node) is the round-0
+	// trigger and grows round 1.
+	require.Equal(t, 1, stableRound(g, "adm/s1"))
+
+	p1 := SessionNodeID("s1", 1, "plan", 0)
+	require.NoError(t, g.AddToolNode(ctx, p1, "plan", nil, g.Root()))
+	require.Equal(t, 2, stableRound(g, p1), "a round-1 plan node grows round 2")
+
+	// Round 2 grows; round 1's derivation must NOT move — this is the
+	// replay-stability property the answer node's ID now depends on.
+	p2 := SessionNodeID("s1", 2, "plan", 0)
+	require.NoError(t, g.AddToolNode(ctx, p2, "plan", nil, p1))
+	require.Equal(t, 2, stableRound(g, p1), "later rounds must not shift an earlier quantum's round")
+	require.Equal(t, 3, stableRound(g, p2))
+
+	// The answer node ID follows the same round, so a replay of p1's
+	// quantum derives the identical terminal.
+	require.Equal(t, SessionNodeID("s1", 2, "answer", 0),
+		SessionNodeID("s1", stableRound(g, p1), "answer", 0))
+}
+
+// TestPlannerGrownNodesInheritTenant pins the grown-node tenant inheritance:
+// a plan task carrying a tenant (restored from its envelope by the scheduler)
+// grows tool/plan/answer nodes whose metadata carries the same tenant, so the
+// projection stamps it onto the grown tasks' checkpoint envelopes — which is
+// how a session's grown work executes and recalls knowledge under the
+// session's tenant instead of the process default.
+func TestPlannerGrownNodesInheritTenant(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	fabric := taskfabric.NewFabric()
+	coord := planprojection.NewCompileCoordinator(fabric, nil)
+	sessionID := "tenant-grow"
+	reg := NewSessionRegistry()
+	compileCoord := func(_ context.Context, dag *engine.MutableDAG) (stop func()) {
+		return coord.SubscribeGraphEvents(ctx, dag)
+	}
+	g, err := reg.InitSession(sessionID, "find the answer", nil, compileCoord)
+	require.NoError(t, err)
+
+	rootStep := g.DAG().StepIndex()[g.Root()]
+	_, err = fabric.CompileNode(ctx, planprojection.ProjectStep(rootStep))
+	require.NoError(t, err)
+	driveTaskToCompleted(t, ctx, fabric, g.Root(), "find the answer")
+
+	planner, err := NewPlannerCognition(PlannerDeps{
+		ChatClient: &fakePlannerChat{},
+		ToolBinder: &plannerTestBinder{},
+		Sessions:   reg,
+		Fabric:     fabric,
+		Logger:     slog.Default(),
+	})
+	require.NoError(t, err)
+
+	initialPlanID := SessionNodeID(sessionID, 0, "plan", 0)
+	planTask := models.NewTask(initialPlanID, models.AgentType("ares/plan"), nil)
+	planTask.SessionID = sessionID
+	planTask.TenantID = "tenant-acme"
+	planTask.Payload = map[string]any{
+		"input":         "find the answer",
+		planMetadataKey: sessionID,
+	}
+
+	_, err = planner.ExecuteStep(ctx, planTask)
+	require.NoError(t, err)
+
+	// The grown tool node's fabric task must carry the session's tenant on
+	// its checkpoint envelope (via the metadata → PlanStep → envelope chain).
+	grepID := SessionNodeID(sessionID, 1, "grep", 0)
+	waitForTaskExists(t, fabric, grepID, 2*time.Second)
+	tk, err := fabric.Task(grepID)
+	require.NoError(t, err)
+	dc, err := taskfabric.DecodeCheckpoint(tk.Checkpoint)
+	require.NoError(t, err)
+	require.Equal(t, "tenant-acme", dc.TenantID,
+		"a grown tool node must inherit the executing plan task's tenant")
+}
+
+// TestPlannerGrownNodesCannotForgeTenant pins the anti-forgery contract of
+// the grown-node tenant stamp: the executing task's tenant is written
+// UNCONDITIONALLY over the LLM's tool arguments, so a model emitting
+// {"tenant_id": "..."} in its tool-call args can never self-select the
+// tenant its grown work executes and recalls knowledge under. The
+// tenant-less case must yield a tenant-less envelope, not the forged value.
+func TestPlannerGrownNodesCannotForgeTenant(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	fabric := taskfabric.NewFabric()
+	coord := planprojection.NewCompileCoordinator(fabric, nil)
+	sessionID := "forge-guard"
+	reg := NewSessionRegistry()
+	compileCoord := func(_ context.Context, dag *engine.MutableDAG) (stop func()) {
+		return coord.SubscribeGraphEvents(ctx, dag)
+	}
+	g, err := reg.InitSession(sessionID, "find the answer", nil, compileCoord)
+	require.NoError(t, err)
+
+	rootStep := g.DAG().StepIndex()[g.Root()]
+	_, err = fabric.CompileNode(ctx, planprojection.ProjectStep(rootStep))
+	require.NoError(t, err)
+	driveTaskToCompleted(t, ctx, fabric, g.Root(), "find the answer")
+
+	// The scripted LLM response for round 1 emits a forged tenant_id in the
+	// tool arguments; the executing plan task carries NO tenant.
+	chat := &forgingPlannerChat{}
+	planner, err := NewPlannerCognition(PlannerDeps{
+		ChatClient: chat,
+		ToolBinder: &plannerTestBinder{},
+		Sessions:   reg,
+		Fabric:     fabric,
+		Logger:     slog.Default(),
+	})
+	require.NoError(t, err)
+
+	initialPlanID := SessionNodeID(sessionID, 0, "plan", 0)
+	planTask := models.NewTask(initialPlanID, models.AgentType("ares/plan"), nil)
+	planTask.SessionID = sessionID
+	planTask.Payload = map[string]any{
+		"input":         "find the answer",
+		planMetadataKey: sessionID,
+	}
+
+	_, err = planner.ExecuteStep(ctx, planTask)
+	require.NoError(t, err)
+
+	grepID := SessionNodeID(sessionID, 1, "grep", 0)
+	waitForTaskExists(t, fabric, grepID, 2*time.Second)
+	tk, err := fabric.Task(grepID)
+	require.NoError(t, err)
+	dc, err := taskfabric.DecodeCheckpoint(tk.Checkpoint)
+	require.NoError(t, err)
+	require.Empty(t, dc.TenantID,
+		"a tenant-less plan task must not let LLM-supplied tenant_id reach the grown envelope")
+}
+
+// forgingPlannerChat emits a tool call whose arguments carry a forged
+// tenant_id — the exact shape a hostile or confused model would produce.
+type forgingPlannerChat struct{}
+
+func (c *forgingPlannerChat) Chat(_ context.Context, _ []*llmcore.LLMMessage, _ []llmcore.Tool, _ map[string]any) (*llmcore.GenerateResponse, error) {
+	return &llmcore.GenerateResponse{
+		ToolCalls: []llmcore.ToolCall{{
+			ID:       "tc-forge",
+			Type:     "function",
+			Function: llmcore.FunctionCall{Name: "grep", Arguments: `{"query":"first","tenant_id":"forged-tenant"}`},
+		}},
+	}, nil
+}

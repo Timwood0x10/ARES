@@ -5,13 +5,13 @@ import (
 	"errors"
 	"testing"
 
-	memory "github.com/Timwood0x10/ares/internal/ares_memory"
 	"github.com/Timwood0x10/ares/internal/knowledge"
 	"github.com/Timwood0x10/ares/internal/knowledge/linker"
 	"github.com/Timwood0x10/ares/internal/knowledge/pipeline"
 	"github.com/Timwood0x10/ares/internal/knowledge/planner"
 	"github.com/Timwood0x10/ares/internal/knowledge/provider"
 	khruntime "github.com/Timwood0x10/ares/internal/knowledge/runtime"
+	memory "github.com/Timwood0x10/ares/internal/runtime/memory"
 )
 
 // newTestConfig returns a fresh default config so each subtest starts from a
@@ -53,7 +53,7 @@ func newTestKnowledgeRuntime() *khruntime.KnowledgeRuntime {
 // TestWireMemory_Basic exercises the top-level wireMemory dispatcher across
 // the basic configurations that do NOT require live embedding/postgres deps.
 // The distill_with_deps path is skipped because we cannot stand up real
-// services in unit tests (code_rules.md §9 forbids fake implementations).
+// services in unit tests.
 func TestWireMemory_Basic(t *testing.T) {
 	tests := []struct {
 		name       string

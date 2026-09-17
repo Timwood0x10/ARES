@@ -1,0 +1,215 @@
+package mcpclient
+
+import (
+	"bufio"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"time"
+)
+
+// stdioMaxFrameBytes bounds one MCP frame on the stdio transport.
+//
+// MCP frames are single-line JSON, so bufio.Scanner's default
+// MaxScanTokenSize (64KB) silently truncated any larger response: Scan()
+// failed and roundTrip reported "connection closed" while the child process
+// was perfectly healthy, killing every subsequent call on that client. 64MB
+// matches what the SSE transport's documentation already claimed this guard
+// was — the claim was previously false.
+const stdioMaxFrameBytes = 64 << 20
+
+// newStdioScanner builds the frame scanner for a stdio connection with the
+// transport's real size bound applied. Every construction site must use it:
+// a bare bufio.NewScanner reintroduces the 64KB truncation.
+func newStdioScanner(r io.Reader) *bufio.Scanner {
+	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 0, 64*1024), stdioMaxFrameBytes)
+	return sc
+}
+
+// stdioTransport implements JSON-RPC over stdin/stdout.
+type stdioTransport struct {
+	cmd    *exec.Cmd
+	stdin  io.WriteCloser
+	stdout *bufio.Scanner
+}
+
+// ConnectStdio connects to an MCP server via stdio transport.
+//
+// ctx bounds the connection handshake ONLY (the initialize round-trip). The
+// subprocess's lifetime is owned by Client.Close, deliberately NOT by ctx:
+// exec.CommandContext ties the process to the context it was built with, so
+// binding it to the caller's connect-timeout context meant the cancel that
+// follows a successful connect (the SDK's wireMCPClients cancels its 30s
+// connect context immediately) KILLED the server — every later CallTool died
+// with "broken pipe" and WithMCP was unusable (F-02). A handshake failure
+// still kills the child here; after a successful connect, only Close does.
+func ConnectStdio(ctx context.Context, name, command string, args []string) (*Client, error) {
+	if !filepath.IsAbs(command) {
+		return nil, fmt.Errorf("command must be an absolute path, got: %s", command)
+	}
+
+	// Detached lifetime, bounded handshake: the process runs until Close,
+	// while initialize below still runs under the caller's ctx (deadline,
+	// cancellation) and kills the child on failure.
+	//nolint:noctx,gosec // F-02: deliberately NOT CommandContext — binding the
+	// process to the caller's connect-timeout ctx made the post-connect
+	// cancel KILL the server (broken pipe on every later call). The
+	// handshake stays bounded via initialize(ctx); the process is owned by
+	// Client.Close. IsAbs check above guards the binary path.
+	cmd := exec.Command(command, args...)
+	cmd.Stderr = os.Stderr
+
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, fmt.Errorf("stdin pipe: %w", err)
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, fmt.Errorf("stdout pipe: %w", err)
+	}
+
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("start: %w", err)
+	}
+
+	tr := &stdioTransport{
+		cmd:    cmd,
+		stdin:  stdin,
+		stdout: newStdioScanner(stdout),
+	}
+
+	c := &Client{
+		name:      name,
+		transport: tr,
+		idCounter: 1,
+	}
+
+	if err := c.initialize(ctx); err != nil {
+		_ = cmd.Process.Kill() //nolint: errcheck
+		return nil, fmt.Errorf("initialize: %w", err)
+	}
+
+	c.connected = true
+	return c, nil
+}
+
+// frameID extracts the JSON-RPC id of a raw frame. Notifications carry no id
+// (nil); requests/responses carry one. The id is compared as raw JSON so
+// string-typed server ids cannot be confused with our integer ids.
+func frameID(raw []byte) (json.RawMessage, bool) {
+	var env struct {
+		ID json.RawMessage `json:"id"`
+	}
+	if err := json.Unmarshal(raw, &env); err != nil {
+		return nil, false
+	}
+	return env.ID, len(env.ID) > 0
+}
+
+func (tr *stdioTransport) roundTrip(ctx context.Context, req jsonrpcRequest) (*jsonrpcResponse, error) {
+	data, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
+	}
+
+	if _, err := fmt.Fprintf(tr.stdin, "%s\n", data); err != nil {
+		return nil, fmt.Errorf("write request: %w", err)
+	}
+
+	type result struct {
+		resp *jsonrpcResponse
+		err  error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		// Keep scanning until a frame answers THIS request (#47): servers
+		// may push notifications (no id) or server-initiated requests
+		// (foreign ids) at any time, and the first frame on stdout is not
+		// necessarily the response. RoundTrips are serialized by the
+		// client mutex, so only one scan goroutine touches the scanner.
+		for tr.stdout.Scan() {
+			raw := tr.stdout.Bytes()
+			id, hasID := frameID(raw)
+			if !hasID {
+				continue // notification — not a response
+			}
+			var frameIDVal int
+			if err := json.Unmarshal(id, &frameIDVal); err != nil || frameIDVal != req.ID {
+				continue // response/request for another id — not ours
+			}
+			var resp jsonrpcResponse
+			if err := json.Unmarshal(raw, &resp); err != nil {
+				ch <- result{nil, err}
+				return
+			}
+			ch <- result{&resp, nil}
+			return
+		}
+		ch <- result{nil, fmt.Errorf("connection closed")}
+	}()
+
+	select {
+	case r := <-ch:
+		return r.resp, r.err
+	case <-ctx.Done():
+		// Context cancelled — close stdin to unblock the scan goroutine.
+		_ = tr.stdin.Close()
+		return nil, ctx.Err()
+	case <-time.After(30 * time.Second):
+		// Timeout — close stdin to unblock the scan goroutine, preventing leak.
+		_ = tr.stdin.Close()
+		return nil, fmt.Errorf("timeout waiting for response")
+	}
+}
+
+func (tr *stdioTransport) notify(ctx context.Context, notif jsonrpcNotification) error {
+	data, err := json.Marshal(notif)
+	if err != nil {
+		return fmt.Errorf("marshal notification: %w", err)
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+	// A wedged child process that stops draining stdin would block the pipe
+	// write forever while the client mutex is held. Bound the write: on ctx
+	// cancellation or timeout, close stdin to unblock the writer and return.
+	writeCh := make(chan error, 1)
+	go func() {
+		_, err := fmt.Fprintf(tr.stdin, "%s\n", data)
+		writeCh <- err
+	}()
+	select {
+	case err := <-writeCh:
+		if err != nil {
+			return fmt.Errorf("write notification: %w", err)
+		}
+		return nil
+	case <-ctx.Done():
+		_ = tr.stdin.Close()
+		return ctx.Err()
+	case <-time.After(30 * time.Second):
+		_ = tr.stdin.Close()
+		return fmt.Errorf("timeout writing notification")
+	}
+}
+
+func (tr *stdioTransport) close() error {
+	if tr.cmd == nil || tr.cmd.Process == nil {
+		return nil
+	}
+	// Close stdin to signal the child to exit, then kill to force-terminate.
+	_ = tr.stdin.Close()
+	if err := tr.cmd.Process.Kill(); err != nil {
+		return fmt.Errorf("kill process: %w", err)
+	}
+	// Wait reaps the child process, preventing zombies.
+	_ = tr.cmd.Wait()
+	return nil
+}

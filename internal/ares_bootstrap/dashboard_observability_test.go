@@ -5,12 +5,12 @@ import (
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/aresrecovery"
-	"github.com/Timwood0x10/ares/internal/dashboard"
+	"github.com/Timwood0x10/ares/internal/introspect"
 )
 
 // TestEvolutionTrajectoryProvider verifies the tracer adapter renders recorded
 // generations as JSON-friendly values enriched with change attribution
-// (M3-3) and human-feedback combined fitness (M3-2), and nil input yields nil
+// and human-feedback combined fitness, and nil input yields nil
 // (endpoint disabled).
 func TestEvolutionTrajectoryProvider(t *testing.T) {
 	if got := NewEvolutionTrajectoryProvider(nil, nil); got != nil {
@@ -82,7 +82,7 @@ func TestEvolutionFeedbackSink(t *testing.T) {
 	if sink == nil {
 		t.Fatal("non-nil store must yield a sink")
 	}
-	if err := sink.SubmitFeedback(dashboard.EvolutionFeedback{
+	if err := sink.SubmitFeedback(introspect.EvolutionFeedback{
 		CandidateID: "c1", Rating: 4, Approved: true, Reason: "good", Comments: "nice",
 	}); err != nil {
 		t.Fatalf("SubmitFeedback: %v", err)
@@ -131,12 +131,12 @@ func TestObservabilitySpansProvider(t *testing.T) {
 	}
 }
 
-// TestAdaptersSatisfyContracts verifies the adapters implement the dashboard
+// TestAdaptersSatisfyContracts verifies the adapters implement the introspect
 // provider/sink contracts at compile time.
 func TestAdaptersSatisfyContracts(t *testing.T) {
 	var (
-		_ dashboard.EvolutionTrajectoryProvider = (*evolutionTrajectoryAdapter)(nil)
-		_ dashboard.EvolutionFeedbackSink       = (*evolutionFeedbackAdapter)(nil)
-		_ dashboard.ObservabilitySpansProvider  = (*globalTracerAdapter)(nil)
+		_ introspect.EvolutionTrajectoryProvider = (*evolutionTrajectoryAdapter)(nil)
+		_ introspect.EvolutionFeedbackSink       = (*evolutionFeedbackAdapter)(nil)
+		_ introspect.ObservabilitySpansProvider  = (*globalTracerAdapter)(nil)
 	)
 }

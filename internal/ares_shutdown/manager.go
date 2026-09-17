@@ -2,8 +2,10 @@ package ares_shutdown
 
 import (
 	"context"
+	stderrors "errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/errors"
@@ -48,7 +50,11 @@ type Manager struct {
 	currentPhase Phase
 	mu           sync.RWMutex
 	timeout      time.Duration
-	wg           sync.WaitGroup
+	// shutdownStarted is a CAS guard ensuring StartShutdown runs exactly
+	// once (P1-3: the old currentPhase != 0 guard was bypassed during
+	// PhasePreShutdown because PhasePreShutdown == 0 is iota's first
+	// value, so a second call during phase 1 could re-enter).
+	shutdownStarted atomic.Bool
 }
 
 // PhaseHandler handles a specific shutdown phase.
@@ -114,12 +120,13 @@ func (m *Manager) AddCallback(phase Phase, callback Callback) error {
 // Returns:
 // error - error if shutdown fails or is already in progress.
 func (m *Manager) StartShutdown(ctx context.Context) error {
-	m.mu.Lock()
-	if m.currentPhase != 0 {
-		m.mu.Unlock()
-		return fmt.Errorf("shutdown already in progress")
+	// P1-3: use a CAS boolean guard instead of checking currentPhase != 0.
+	// The old guard was bypassed during PhasePreShutdown because
+	// PhasePreShutdown == 0 (iota first value), so currentPhase was 0
+	// during phase 1 and a second call could re-enter.
+	if !m.shutdownStarted.CompareAndSwap(false, true) {
+		return errors.New("shutdown already in progress")
 	}
-	m.mu.Unlock()
 
 	// Execute phases in order
 	phases := []Phase{PhasePreShutdown, PhaseGraceful, PhaseForce, PhaseDone}
@@ -163,10 +170,17 @@ func (m *Manager) executePhase(ctx context.Context, phase Phase) error {
 	errChan := make(chan error, len(callbacks))
 	panicChan := make(chan interface{}, len(callbacks))
 
+	// A per-phase WaitGroup: a hung callback in an earlier phase must not
+	// leak this phase's waiter (and permanently block Manager.Wait) — the
+	// shared m.wg design never reset after a timeout, so one stuck callback
+	// accumulated a leaked waiter goroutine per phase for the process's
+	// remaining lifetime.
+	var phaseWg sync.WaitGroup
+
 	for _, callback := range callbacks {
-		m.wg.Add(1)
+		phaseWg.Add(1)
 		go func(cb Callback) {
-			defer m.wg.Done()
+			defer phaseWg.Done()
 
 			defer func() {
 				if r := recover(); r != nil {
@@ -191,7 +205,7 @@ func (m *Manager) executePhase(ctx context.Context, phase Phase) error {
 
 	done := make(chan struct{})
 	go func() {
-		m.wg.Wait()
+		phaseWg.Wait()
 		close(done)
 	}()
 
@@ -221,7 +235,7 @@ func (m *Manager) executePhase(ctx context.Context, phase Phase) error {
 		}
 
 		if len(errs) > 0 {
-			return fmt.Errorf("%d callback(s) failed during shutdown phase %s: %v", len(errs), phase, errs)
+			return stderrors.Join(errs...)
 		}
 
 		return nil
@@ -269,7 +283,7 @@ func (m *Manager) executePhase(ctx context.Context, phase Phase) error {
 			return fmt.Errorf("%d callback(s) panicked during shutdown phase %s", panicCount, phase)
 		}
 		if len(errs) > 0 {
-			return fmt.Errorf("%d callback(s) failed during shutdown phase %s: %v", len(errs), phase, errs)
+			return stderrors.Join(errs...)
 		}
 		return phaseCtx.Err()
 	}
@@ -309,11 +323,6 @@ func (m *Manager) CurrentPhase() Phase {
 	defer m.mu.RUnlock()
 
 	return m.currentPhase
-}
-
-// Wait blocks until all in-progress shutdown operations complete.
-func (m *Manager) Wait() {
-	m.wg.Wait()
 }
 
 // IsShutdown returns true if shutdown has started (past PhasePreShutdown phase).

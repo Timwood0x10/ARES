@@ -7,16 +7,15 @@ import "context"
 //
 // It is defined here, in the ares_events package, rather than imported from
 // ares_archive, to avoid a cyclic import: ares_archive imports ares_events
-// (extraction takes []*Event), so ares_events must not import ares_archive.
-// The concrete bridge ares_archive.NewEventArchiveSink returns a value that
+// (extraction takes []*Event), so ares_events must not import archive.
+// The concrete bridge archive.NewEventArchiveSink returns a value that
 // satisfies this function type, and the wiring layer (internal/api_impl)
 // connects the two.
 //
 // The sink is invoked at round boundaries (task-terminal events) and before
 // compaction triggers, so a round's record is durable before the compaction
 // core can discard the raw events. Sink failures are best effort: the caller
-// logs them and never fails the Append or compaction path (see
-// plan/context_compression_strategy.md §4).
+// logs them and never fails the Append or compaction path.
 //
 // Args:
 //   - ctx: timeout/cancellation context.

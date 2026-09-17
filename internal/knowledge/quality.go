@@ -70,16 +70,25 @@ func (c QualityGateConfig) Evaluate(obj *KnowledgeObject) *Quality {
 	q.ConsistencyScore = 1.0
 
 	// FreshnessScore: newer objects score higher.
-	age := time.Since(obj.CreatedAt)
-	switch {
-	case age < 24*time.Hour:
-		q.FreshnessScore = 1.0
-	case age < 7*24*time.Hour:
-		q.FreshnessScore = 0.8
-	case age < 30*24*time.Hour:
+	//
+	// A zero CreatedAt means the store left the column NULL (unknown), not
+	// that the object is ancient. `time.Since(zero)` yields a huge age that
+	// used to land in the default branch, systematically scoring every
+	// unknown-timestamped object as the oldest tier. Treat unknown as neutral.
+	if obj.CreatedAt.IsZero() {
 		q.FreshnessScore = 0.5
-	default:
-		q.FreshnessScore = 0.3
+	} else {
+		age := time.Since(obj.CreatedAt)
+		switch {
+		case age < 24*time.Hour:
+			q.FreshnessScore = 1.0
+		case age < 7*24*time.Hour:
+			q.FreshnessScore = 0.8
+		case age < 30*24*time.Hour:
+			q.FreshnessScore = 0.5
+		default:
+			q.FreshnessScore = 0.3
+		}
 	}
 
 	// UsageScore: starts at 0, updated by feedback; normalized to [0, 1].

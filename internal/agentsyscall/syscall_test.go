@@ -2,14 +2,16 @@ package agentsyscall
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
 
-	"github.com/Timwood0x10/ares/internal/agentfabric"
 	"github.com/Timwood0x10/ares/internal/core/models"
-	"github.com/Timwood0x10/ares/internal/kernelctx"
-	"github.com/Timwood0x10/ares/internal/taskfabric"
+	"github.com/Timwood0x10/ares/internal/fabric/agent"
+	taskfabric "github.com/Timwood0x10/ares/internal/fabric/task"
+	kctx "github.com/Timwood0x10/ares/internal/kernel/ctx"
+	"github.com/Timwood0x10/ares/internal/tenantctx"
 )
 
 // stubExecutor is a minimal Executor for testing.
@@ -57,7 +59,7 @@ func TestSpawnAgentCreatesAgentInFabric(t *testing.T) {
 	kernel := NewKernel(agents, nil, nil, nil)
 
 	result, err := kernel.SpawnAgent(context.Background(), SpawnAgentArgs{
-		Capability: "coder",
+		Capability: "ares/plan",
 		ParentID:   "agent-A",
 	})
 	if err != nil {
@@ -66,7 +68,7 @@ func TestSpawnAgentCreatesAgentInFabric(t *testing.T) {
 	if result.AgentID == "" {
 		t.Fatal("agent ID must not be empty")
 	}
-	if result.Capability != "coder" {
+	if result.Capability != "ares/plan" {
 		t.Fatalf("capability = %q, want coder", result.Capability)
 	}
 	if result.Registered {
@@ -87,8 +89,8 @@ func TestSpawnAgentCreatesAgentInFabric(t *testing.T) {
 	}
 }
 
-// TestSpawnAgentInjectsExecutableCognition verifies the C1 upgrade
-// (aresos-agentos-plan C1: spawn 的 agent 带执行体): when an executor factory
+// TestSpawnAgentInjectsExecutableCognition verifies the upgrade
+// (a spawned agent carries its execution body): when an executor factory
 // is wired, the agent spawned by the syscall carries a real Cognition from
 // birth — Agent.Executable() reports true and a quantum can be executed
 // through the fabric — not just a provenance record. The same executor
@@ -106,7 +108,7 @@ func TestSpawnAgentInjectsExecutableCognition(t *testing.T) {
 	}
 	kernel := NewKernel(agents, nil, factory, register)
 
-	result, err := kernel.SpawnAgent(context.Background(), SpawnAgentArgs{Capability: "coder"})
+	result, err := kernel.SpawnAgent(context.Background(), SpawnAgentArgs{Capability: "ares/plan"})
 	if err != nil {
 		t.Fatalf("SpawnAgent: %v", err)
 	}
@@ -124,7 +126,7 @@ func TestSpawnAgentInjectsExecutableCognition(t *testing.T) {
 	if !agent.Executable() {
 		t.Fatal("C1: spawned agent must be executable (Cognition injected), not a phantom")
 	}
-	out, err := agent.ExecuteStep(context.Background(), models.NewTask("t-c1", models.AgentType("coder"), nil))
+	out, err := agent.ExecuteStep(context.Background(), models.NewTask("t-c1", models.AgentType("ares/plan"), nil))
 	if err != nil {
 		t.Fatalf("ExecuteStep: %v", err)
 	}
@@ -152,7 +154,7 @@ func TestSpawnAgentRegistersExecutor(t *testing.T) {
 	kernel := NewKernel(agents, nil, factory, register)
 
 	result, err := kernel.SpawnAgent(context.Background(), SpawnAgentArgs{
-		Capability: "reviewer",
+		Capability: "ares/plan",
 	})
 	if err != nil {
 		t.Fatalf("SpawnAgent: %v", err)
@@ -181,6 +183,27 @@ func TestSpawnAgentRejectsEmptyCapability(t *testing.T) {
 	}
 }
 
+// TestSpawnAgentRejectsNonRoutableCapability locks the single-path
+// gate: a spawned peer only receives L2-router quanta, so a legacy
+// capability must fail fast instead of yielding a permanently idle peer.
+func TestSpawnAgentRejectsNonRoutableCapability(t *testing.T) {
+	kernel := NewKernel(agentfabric.NewFabric(), nil, nil, nil)
+	_, err := kernel.SpawnAgent(context.Background(), SpawnAgentArgs{Capability: "coder"})
+	if !errors.Is(err, errUnroutableCapability) {
+		t.Fatalf("must fail with errUnroutableCapability, got: %v", err)
+	}
+}
+
+// TestCreateTaskRejectsNonRoutableCapability locks the single-path
+// gate on the create_task syscall: same fail-fast contract as SpawnAgent.
+func TestCreateTaskRejectsNonRoutableCapability(t *testing.T) {
+	kernel := NewKernel(nil, taskfabric.NewFabric(), nil, nil)
+	_, err := kernel.CreateTask(context.Background(), CreateTaskArgs{Capability: "coder"})
+	if !errors.Is(err, errUnroutableCapability) {
+		t.Fatalf("must fail with errUnroutableCapability, got: %v", err)
+	}
+}
+
 // TestCreateTaskCreatesTaskInFabric verifies the create_task syscall creates
 // a real Task Fabric task in READY state.
 func TestCreateTaskCreatesTaskInFabric(t *testing.T) {
@@ -188,7 +211,7 @@ func TestCreateTaskCreatesTaskInFabric(t *testing.T) {
 	kernel := NewKernel(nil, fabric, nil, nil)
 
 	result, err := kernel.CreateTask(context.Background(), CreateTaskArgs{
-		Capability: "coder",
+		Capability: "ares/plan",
 		Payload:    map[string]any{"task_desc": "write tests"},
 	})
 	if err != nil {
@@ -205,7 +228,7 @@ func TestCreateTaskCreatesTaskInFabric(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get task: %v", err)
 	}
-	if task.Capability != "coder" {
+	if task.Capability != "ares/plan" {
 		t.Fatalf("capability = %q, want coder", task.Capability)
 	}
 	if task.State != taskfabric.StateReady {
@@ -219,15 +242,15 @@ func TestCreateTaskCreatesTaskInFabric(t *testing.T) {
 }
 
 // TestCreateTaskStampsCallerOrigin verifies the create_task syscall records
-// the CALLER from the tool context (kernelctx.CallerID) as Task.Origin — the
+// the CALLER from the tool context (kctx.CallerID) as Task.Origin — the
 // Kernel-enforced provenance, not an LLM-supplied argument.
 func TestCreateTaskStampsCallerOrigin(t *testing.T) {
 	fabric := taskfabric.NewFabric()
 	kernel := NewKernel(nil, fabric, nil, nil)
 
-	ctx := kernelctx.WithCallerID(context.Background(), "agent-A")
+	ctx := kctx.WithCallerID(context.Background(), "agent-A")
 	result, err := kernel.CreateTask(ctx, CreateTaskArgs{
-		Capability: "coder",
+		Capability: "ares/plan",
 		Payload:    map[string]any{"task_desc": "write tests"},
 	})
 	if err != nil {
@@ -255,7 +278,7 @@ func TestCreateTaskRejectsEmptyCapability(t *testing.T) {
 
 // TestSpawnAgentEnforcesContextCaller verifies the Kernel overrides any
 // LLM-supplied ParentID with the tool-context caller — parentage can never be
-// forged by a spawned agent's arguments (plan D1-5: provenance is enforced by
+// forged by a spawned agent's arguments (provenance is enforced by
 // the Kernel, not trusted from LLM params).
 func TestSpawnAgentEnforcesContextCaller(t *testing.T) {
 	agents := agentfabric.NewFabric()
@@ -263,9 +286,9 @@ func TestSpawnAgentEnforcesContextCaller(t *testing.T) {
 
 	// LLM claims parent "spoofed-parent"; the context proves the real caller
 	// is agent-A. The Kernel must trust the context.
-	ctx := kernelctx.WithCallerID(context.Background(), "agent-A")
+	ctx := kctx.WithCallerID(context.Background(), "agent-A")
 	result, err := kernel.SpawnAgent(ctx, SpawnAgentArgs{
-		Capability: "coder",
+		Capability: "ares/plan",
 		ParentID:   "spoofed-parent",
 	})
 	if err != nil {
@@ -298,7 +321,7 @@ func TestBindToolsRegistersBothTools(t *testing.T) {
 
 	// spawn_agent
 	spawnResult, err := binder.call(ctx, SpawnAgentTool, map[string]any{
-		"capability": "coder",
+		"capability": "ares/plan",
 		"parent_id":  "root",
 	})
 	if err != nil {
@@ -308,15 +331,15 @@ func TestBindToolsRegistersBothTools(t *testing.T) {
 	if !ok {
 		t.Fatalf("spawn result type = %T, want *SpawnAgentResult", spawnResult)
 	}
-	if sr.Capability != "coder" {
+	if sr.Capability != "ares/plan" {
 		t.Fatalf("capability = %q, want coder", sr.Capability)
 	}
 
 	// create_task — carry the caller in the context exactly as the tool
-	// execution bodies do (sub executor / chat cognition / agentloop
-	// engine), and verify the Kernel stamps it as Task.Origin.
-	taskResult, err := binder.call(kernelctx.WithCallerID(ctx, "agent-A"), CreateTaskTool, map[string]any{
-		"capability": "coder",
+	// execution bodies do (sub executor / chat cognition / L2 tool
+	// cognition), and verify the Kernel stamps it as Task.Origin.
+	taskResult, err := binder.call(kctx.WithCallerID(ctx, "agent-A"), CreateTaskTool, map[string]any{
+		"capability": "ares/plan",
 		"payload":    map[string]any{"task_desc": "review code"},
 	})
 	if err != nil {
@@ -344,7 +367,7 @@ func TestSpawnedAgentIDsAreUnique(t *testing.T) {
 	seen := make(map[string]bool)
 	for i := 0; i < 20; i++ {
 		result, err := kernel.SpawnAgent(context.Background(), SpawnAgentArgs{
-			Capability: "coder",
+			Capability: "ares/plan",
 		})
 		if err != nil {
 			t.Fatalf("spawn %d: %v", i, err)
@@ -356,11 +379,12 @@ func TestSpawnedAgentIDsAreUnique(t *testing.T) {
 	}
 }
 
-// TestToolSchemasReturnsBoth verifies ToolSchemas returns both tool schemas.
+// TestToolSchemasReturnsBoth verifies ToolSchemas returns all the peer
+// syscall schemas (spawn_agent, create_task, ask_agent, create_plan).
 func TestToolSchemasReturnsBoth(t *testing.T) {
 	schemas := ToolSchemas()
-	if len(schemas) != 2 {
-		t.Fatalf("expected 2 schemas, got %d", len(schemas))
+	if len(schemas) != 4 { // spawn_agent, create_task, ask_agent, create_plan
+		t.Fatalf("expected 4 schemas, got %d", len(schemas))
 	}
 	names := make(map[string]bool)
 	for _, s := range schemas {
@@ -377,5 +401,283 @@ func TestToolSchemasReturnsBoth(t *testing.T) {
 	}
 	if !names[CreateTaskTool] {
 		t.Fatalf("missing %s schema", CreateTaskTool)
+	}
+	if !names[AskAgentTool] {
+		t.Fatalf("missing %s schema", AskAgentTool)
+	}
+}
+
+// TestAskAgent_NotWiredFailsLoud verifies that ask_agent without an injected
+// collaboration primitive (SetAskAgent/WithAskAgent) returns an error rather
+// than silently doing nothing — a nil primitive would make the tool a no-op
+// and leave the collaboration loop open.
+func TestAskAgent_NotWiredFailsLoud(t *testing.T) {
+	_, err := NewKernel(nil, nil, nil, nil).AskAgent(
+		kctx.WithCallerID(context.Background(), "agent-A"),
+		AskAgentArgs{To: "agent-B", Topic: "delegate-task"},
+	)
+	if err == nil {
+		t.Fatal("ask_agent must fail when no collaboration primitive is wired")
+	}
+}
+
+// TestAskAgent_EmptyTargetRejected verifies the Kernel enforces a non-empty
+// target even when the primitive is wired.
+func TestAskAgent_EmptyTargetRejected(t *testing.T) {
+	kernel := NewKernel(nil, nil, nil, nil, WithAskAgent(func(ctx context.Context, from, to, topic string, payload any) error {
+		return nil
+	}))
+	if _, err := kernel.AskAgent(kctx.WithCallerID(context.Background(), "agent-A"), AskAgentArgs{To: ""}); err == nil {
+		t.Fatal("ask_agent with empty target must be rejected")
+	}
+}
+
+// TestAskAgent_ForwardsToPrimitive verifies that ask_agent forwards the caller,
+// target, topic and payload to the injected primitive — the primitive call is
+// the observable event that a real collaboration receipt is written from.
+func TestAskAgent_ForwardsToPrimitive(t *testing.T) {
+	var gotFrom, gotTo, gotTopic string
+	var gotPayload map[string]any
+	kernel := NewKernel(nil, nil, nil, nil, WithAskAgent(func(ctx context.Context, from, to, topic string, payload any) error {
+		gotFrom, gotTo, gotTopic = from, to, topic
+		gotPayload = payload.(map[string]any)
+		return nil
+	}))
+
+	res, err := kernel.AskAgent(kctx.WithCallerID(context.Background(), "agent-A"), AskAgentArgs{
+		To:      "agent-B",
+		Topic:   "delegate-task",
+		Payload: map[string]any{"task_desc": "please review"},
+	})
+	if err != nil {
+		t.Fatalf("ask_agent: %v", err)
+	}
+	if !res.Accepted {
+		t.Fatal("ask_agent should report accepted after a successful send")
+	}
+	if gotFrom != "agent-A" {
+		t.Errorf("from = %q, want the context caller agent-A", gotFrom)
+	}
+	if gotTo != "agent-B" || gotTopic != "delegate-task" {
+		t.Errorf("forwarded to=%q topic=%q, want agent-B / delegate-task", gotTo, gotTopic)
+	}
+	if gotPayload["task_desc"] != "please review" {
+		t.Errorf("payload not forwarded verbatim: %v", gotPayload)
+	}
+}
+
+// TestAskAgent_BoundToBinder verifies the ask_agent tool is registered on the
+// binder and decodes its args (to/topic/payload) correctly.
+func TestAskAgent_BoundToBinder(t *testing.T) {
+	binder := &stubBinder{}
+	kernel := NewKernel(nil, nil, nil, nil, WithAskAgent(func(ctx context.Context, from, to, topic string, payload any) error {
+		return nil
+	}))
+	BindTools(binder, kernel)
+
+	res, err := binder.call(
+		kctx.WithCallerID(context.Background(), "agent-A"),
+		AskAgentTool,
+		map[string]any{"to": "agent-B", "topic": "pipeline-stage", "payload": map[string]any{"x": 1}},
+	)
+	if err != nil {
+		t.Fatalf("call ask_agent: %v", err)
+	}
+	if ar, ok := res.(*AskAgentResult); !ok || !ar.Accepted {
+		t.Fatalf("ask_agent result = %#v, want accepted *AskAgentResult", res)
+	}
+}
+
+// TestCreatePlanCompilesBatchIntoFabric verifies the create_plan syscall:
+// a valid multi-step plan compiles into an all-READY batch with dependencies
+// intact and Kernel-stamped origins.
+func TestCreatePlanCompilesBatchIntoFabric(t *testing.T) {
+	fabric := taskfabric.NewFabric()
+	kernel := NewKernel(nil, fabric, nil, nil)
+
+	result, err := kernel.CreatePlan(context.Background(), CreatePlanArgs{
+		Steps: []PlanStepArgs{
+			{ID: "plan-a", Capability: "ares/plan"},
+			{ID: "plan-b", Capability: "ares/plan", DependsOn: []string{"plan-a"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreatePlan: %v", err)
+	}
+	if result.Count != 2 || len(result.TaskIDs) != 2 {
+		t.Fatalf("batch = %v, want 2 tasks", result.TaskIDs)
+	}
+	b, terr := fabric.Task("plan-b")
+	if terr != nil {
+		t.Fatalf("task plan-b: %v", terr)
+	}
+	if len(b.Dependencies) != 1 || b.Dependencies[0] != "plan-a" {
+		t.Fatalf("plan-b deps = %v, want [plan-a]", b.Dependencies)
+	}
+	if b.State != taskfabric.StateReady {
+		t.Fatalf("state = %s, want READY", b.State)
+	}
+}
+
+// TestCreatePlanRejectsEmptySteps verifies the empty-batch gate.
+func TestCreatePlanRejectsEmptySteps(t *testing.T) {
+	kernel := NewKernel(nil, taskfabric.NewFabric(), nil, nil)
+	if _, err := kernel.CreatePlan(context.Background(), CreatePlanArgs{}); err == nil {
+		t.Fatal("empty plan must be rejected")
+	}
+}
+
+// TestCreatePlanRejectsNonRoutableCapability locks the single-path
+// gate on batch submission: a step no executor can serve fails the whole
+// batch atomically (nothing is created on error).
+func TestCreatePlanRejectsNonRoutableCapability(t *testing.T) {
+	fabric := taskfabric.NewFabric()
+	kernel := NewKernel(nil, fabric, nil, nil)
+	_, err := kernel.CreatePlan(context.Background(), CreatePlanArgs{
+		Steps: []PlanStepArgs{{ID: "gen", Capability: "coder"}},
+	})
+	if !errors.Is(err, errUnroutableCapability) {
+		t.Fatalf("must fail with errUnroutableCapability, got: %v", err)
+	}
+	if len(fabric.IDs()) != 0 {
+		t.Fatalf("rejected batch left %d tasks behind, want 0", len(fabric.IDs()))
+	}
+}
+
+// TestCreatePlanRejectsMissingCapability verifies per-step validation.
+func TestCreatePlanRejectsMissingCapability(t *testing.T) {
+	kernel := NewKernel(nil, taskfabric.NewFabric(), nil, nil)
+	_, err := kernel.CreatePlan(context.Background(), CreatePlanArgs{
+		Steps: []PlanStepArgs{{ID: "s1"}},
+	})
+	if err == nil {
+		t.Fatal("missing capability must be rejected")
+	}
+}
+
+// TestCreatePlanAtomicRejectsCycle verifies a cyclic plan creates nothing.
+func TestCreatePlanAtomicRejectsCycle(t *testing.T) {
+	fabric := taskfabric.NewFabric()
+	kernel := NewKernel(nil, fabric, nil, nil)
+	_, err := kernel.CreatePlan(context.Background(), CreatePlanArgs{
+		Steps: []PlanStepArgs{
+			{ID: "x", Capability: "ares/plan", DependsOn: []string{"y"}},
+			{ID: "y", Capability: "ares/plan", DependsOn: []string{"x"}},
+		},
+	})
+	if err == nil {
+		t.Fatal("cyclic plan must be rejected")
+	}
+	for _, id := range []string{"x", "y"} {
+		if _, terr := fabric.Task(id); terr == nil {
+			t.Fatalf("task %q must not exist after failed plan", id)
+		}
+	}
+}
+
+// TestCreateTaskInheritsContextTenant pins the tenant inheritance of
+// agent-created tasks: the envelope carries the CREATING quantum's tenant
+// (tenantctx), never an LLM-supplied payload value — the same Kernel-enforced
+// contract Origin follows.
+func TestCreateTaskInheritsContextTenant(t *testing.T) {
+	kernel := NewKernel(agentfabric.NewFabric(), taskfabric.NewFabric(), nil, nil)
+	ctx := tenantctx.With(context.Background(), "tenant-acme")
+
+	res, err := kernel.CreateTask(ctx, CreateTaskArgs{
+		Capability: "tool/grep",
+		Payload:    map[string]any{"tenant_id": "forged", "query": "q"},
+	})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	tk, err := kernel.fabric.Task(res.TaskID)
+	if err != nil {
+		t.Fatalf("Task: %v", err)
+	}
+	dc, err := taskfabric.DecodeCheckpoint(tk.Checkpoint)
+	if err != nil {
+		t.Fatalf("DecodeCheckpoint: %v", err)
+	}
+	if dc.TenantID != "tenant-acme" {
+		t.Fatalf("envelope tenant must come from the creating context, not the LLM payload; got %q", dc.TenantID)
+	}
+
+	// A tenant-less context yields a tenant-less envelope (default fallback).
+	res2, err := kernel.CreateTask(context.Background(), CreateTaskArgs{
+		Capability: "tool/grep",
+		Payload:    map[string]any{"query": "q"},
+	})
+	if err != nil {
+		t.Fatalf("CreateTask (tenant-less): %v", err)
+	}
+	tk2, err := kernel.fabric.Task(res2.TaskID)
+	if err != nil {
+		t.Fatalf("Task (tenant-less): %v", err)
+	}
+	dc2, err := taskfabric.DecodeCheckpoint(tk2.Checkpoint)
+	if err != nil {
+		t.Fatalf("DecodeCheckpoint (tenant-less): %v", err)
+	}
+	if dc2.TenantID != "" {
+		t.Fatalf("tenant-less context must yield an empty envelope tenant, got %q", dc2.TenantID)
+	}
+}
+
+// TestAskAgentStampsContextTenant pins the ask_agent tenant contract: the
+// asking quantum's tenant rides the dispatched payload (overwriting any
+// LLM-supplied value), so the collaboration session executes under the
+// asker's scope; a non-map payload passes through untouched.
+func TestAskAgentStampsContextTenant(t *testing.T) {
+	var got any
+	kernel := NewKernel(agentfabric.NewFabric(), nil, nil, nil)
+	kernel.SetAskAgent(func(_ context.Context, _, _, _ string, payload any) error {
+		got = payload
+		return nil
+	})
+
+	// Forged tenant in the args is overwritten by the context tenant.
+	if _, err := kernel.AskAgent(tenantctx.With(context.Background(), "tenant-acme"), AskAgentArgs{
+		To:      "peer",
+		Topic:   "t",
+		Payload: map[string]any{"tenant_id": "forged", "q": 1},
+	}); err != nil {
+		t.Fatalf("AskAgent: %v", err)
+	}
+	m, ok := got.(map[string]any)
+	if !ok {
+		t.Fatalf("payload must stay a map, got %T", got)
+	}
+	if m["tenant_id"] != "tenant-acme" {
+		t.Fatalf("context tenant must overwrite the forged value; got %v", m["tenant_id"])
+	}
+	if m["q"] != 1 {
+		t.Fatalf("caller payload keys must survive the stamp; got %v", m["q"])
+	}
+
+	// A tenant-less context stamps the empty tenant — never a stale or
+	// forged value.
+	if _, err := kernel.AskAgent(context.Background(), AskAgentArgs{
+		To:      "peer",
+		Topic:   "t",
+		Payload: map[string]any{"tenant_id": "forged"},
+	}); err != nil {
+		t.Fatalf("AskAgent (tenant-less): %v", err)
+	}
+	m2, ok := got.(map[string]any)
+	if !ok || m2["tenant_id"] != "" {
+		t.Fatalf("tenant-less context must overwrite with empty, got %v", got)
+	}
+}
+
+// TestAskAgentPayloadNonMapPassesThrough covers the helper's defensive
+// branch: AskAgentArgs.Payload is map-typed, so a non-map value can only
+// arrive through a future caller — it must pass through unstamped rather
+// than panic or be wrapped.
+func TestAskAgentPayloadNonMapPassesThrough(t *testing.T) {
+	if got := askAgentPayload(context.Background(), "opaque"); got != "opaque" {
+		t.Fatalf("non-map payload must pass through verbatim, got %v", got)
+	}
+	if got := askAgentPayload(tenantctx.With(context.Background(), "t"), "opaque"); got != "opaque" {
+		t.Fatalf("non-map payload must stay unstamped even with a context tenant, got %v", got)
 	}
 }

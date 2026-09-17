@@ -2,6 +2,7 @@ package builtin
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -20,17 +21,17 @@ const MaxHTTPResponseBytes = 10 * 1024 * 1024 // 10 MB
 const MaxHTTPRedirects = 3
 
 // ErrSSRFBlocked is returned when a URL targets a blocked address.
-var ErrSSRFBlocked = fmt.Errorf("url targets a blocked address (private/loopback/link-local)")
+var ErrSSRFBlocked = errors.New("url targets a blocked address (private/loopback/link-local)")
 
 // ErrUnsupportedScheme is returned when a URL uses a non-http(s) scheme.
-var ErrUnsupportedScheme = fmt.Errorf("only http and https schemes are allowed")
+var ErrUnsupportedScheme = errors.New("only http and https schemes are allowed")
 
 // ValidateURL checks that a URL string uses an allowed scheme and does not
 // resolve to a private, loopback, or link-local address. It defends against
 // SSRF attacks targeting cloud metadata endpoints and internal services.
 func ValidateURL(ctx context.Context, rawURL string) error {
 	if rawURL == "" {
-		return fmt.Errorf("url is required")
+		return errors.New("url is required")
 	}
 
 	parsed, err := url.Parse(rawURL)
@@ -45,7 +46,7 @@ func ValidateURL(ctx context.Context, rawURL string) error {
 
 	host := parsed.Hostname()
 	if host == "" {
-		return fmt.Errorf("url has no host")
+		return errors.New("url has no host")
 	}
 
 	return checkHost(ctx, host)
@@ -99,6 +100,13 @@ func isBlockedIP(ip net.IP) bool {
 	if ip.IsUnspecified() {
 		return true
 	}
+	// CGNAT / carrier-grade NAT (RFC 6598): 100.64.0.0/10. Used by Kubernetes
+	// pod CIDRs and ISP-grade NAT — reachable from inside a cluster but must
+	// not be an SSRF target. Not covered by IsPrivate (which only checks
+	// RFC 1918 ranges).
+	if v4 := ip.To4(); v4 != nil && v4[0] == 100 && v4[1] >= 64 && v4[1] <= 127 {
+		return true
+	}
 	return false
 }
 
@@ -130,8 +138,9 @@ func SSRFDialer() *net.Dialer {
 
 // SSRFTransport returns an *http.Transport whose DialContext is backed by
 // SSRFDialer, so every TCP connection — including each redirect hop — is
-// re-validated against the SSRF block list at connect time. It is cloned from
-// http.DefaultTransport to preserve proxy and keep-alive defaults.
+// re-validated against the SSRF block list at connect time. Proxy is
+// explicitly disabled: inheriting ProxyFromEnvironment from
+// http.DefaultTransport would let a proxy bypass the dial-time IP check.
 func SSRFTransport() *http.Transport {
 	base, ok := http.DefaultTransport.(*http.Transport)
 	if !ok {
@@ -139,6 +148,7 @@ func SSRFTransport() *http.Transport {
 	}
 	t := base.Clone()
 	t.DialContext = SSRFDialer().DialContext
+	t.Proxy = nil // do not inherit ProxyFromEnvironment
 	return t
 }
 

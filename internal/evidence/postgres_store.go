@@ -1,20 +1,36 @@
 // Package evidence — PostgreSQL-backed evidence store (persistence).
 //
 // PostgresStore implements the Store interface against the shared Postgres
-// pool so evidence survives process restarts (T1, evidence persistence). It
+// pool so evidence survives process restarts. It
 // mirrors MemoryStore semantics: Query filters by source/kind/time window,
 // orders by timestamp DESC, applies limit; Aggregate computes locally.
 package evidence
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/Timwood0x10/ares/internal/storage/postgres"
 )
+
+// ttlSeconds converts a TTL into whole seconds for storage, rounding UP.
+//
+// The column's 0 means "never expires", so truncating a positive sub-second
+// TTL to 0 silently inverted the intent: a short-lived record became permanent
+// (ttl_seconds = 0 is exactly what "keep forever" looks like to Query and
+// CleanupExpired). Zero or negative stays 0 — no expiry requested.
+func ttlSeconds(d time.Duration) int64 {
+	if d <= 0 {
+		return 0
+	}
+	return int64((d + time.Second - 1) / time.Second)
+}
 
 // PostgresStore persists evidence records in PostgreSQL.
 type PostgresStore struct {
@@ -43,7 +59,11 @@ func NewPostgresStore(pool *postgres.Pool) (*PostgresStore, error) {
 	return s, nil
 }
 
-// ensureTable creates the evidence_records table if it does not exist.
+// ensureTable creates the evidence_records table if it does not exist, then
+// migrates it in place. CREATE TABLE IF NOT EXISTS alone would leave a
+// pre-existing table (created before ttl_seconds was introduced) without the
+// column, and every later INSERT/Query referencing ttl_seconds would fail at
+// runtime — ADD COLUMN IF NOT EXISTS backfills it idempotently.
 func (s *PostgresStore) ensureTable(ctx context.Context) error {
 	const createTable = `
 		CREATE TABLE IF NOT EXISTS evidence_records (
@@ -52,18 +72,28 @@ func (s *PostgresStore) ensureTable(ctx context.Context) error {
 			kind       text NOT NULL,
 			payload    jsonb NOT NULL,
 			metadata   jsonb NOT NULL DEFAULT '{}',
-			ts         timestamptz NOT NULL
+			ts         timestamptz NOT NULL,
+			ttl_seconds bigint NOT NULL DEFAULT 0
 		)`
-	_, err := s.db.ExecContext(ctx, createTable)
+	if _, err := s.db.ExecContext(ctx, createTable); err != nil {
+		return err
+	}
+	const migrate = `
+		ALTER TABLE evidence_records
+		ADD COLUMN IF NOT EXISTS ttl_seconds bigint NOT NULL DEFAULT 0`
+	_, err := s.db.ExecContext(ctx, migrate)
 	return err
 }
 
 // Append inserts a single evidence record. A zero ID is generated client-side
-// from the timestamp so retries do not duplicate rows.
+// (generatedEvidenceID) so retries do not duplicate rows (the previous
+// UnixNano-only ID collided for same-source same-nano events; the payload
+// digest breaks the collision). ON CONFLICT DO NOTHING makes retries
+// idempotent.
 func (s *PostgresStore) Append(ctx context.Context, e Evidence) error {
 	id := e.ID
 	if id == "" {
-		id = fmt.Sprintf("%d-%s", e.Timestamp.UnixNano(), e.Source)
+		id = generatedEvidenceID(e)
 	}
 	payload, err := json.Marshal(e.Payload)
 	if err != nil {
@@ -74,14 +104,29 @@ func (s *PostgresStore) Append(ctx context.Context, e Evidence) error {
 		return fmt.Errorf("evidence: marshal metadata: %w", err)
 	}
 	const insert = `
-		INSERT INTO evidence_records (id, source, kind, payload, metadata, ts)
-		VALUES ($1, $2, $3, $4, $5, $6)`
+		INSERT INTO evidence_records (id, source, kind, payload, metadata, ts, ttl_seconds)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		ON CONFLICT (id) DO NOTHING`
 	_, err = s.db.ExecContext(ctx, insert,
-		id, e.Source, string(e.Kind), payload, metadata, e.Timestamp)
+		id, e.Source, string(e.Kind), payload, metadata, e.Timestamp, ttlSeconds(e.TTL))
 	if err != nil {
 		return fmt.Errorf("evidence: append: %w", err)
 	}
 	return nil
+}
+
+// generatedEvidenceID builds a collision-resistant, retry-stable ID for a
+// zero-ID append: the digest includes timestamp, source, and the raw
+// payload bytes, so two distinct records with the same source+nanosecond
+// produce different IDs while a retry of the SAME record reproduces the same
+// ID (idempotent INSERT via ON CONFLICT DO NOTHING).
+func generatedEvidenceID(e Evidence) string {
+	h := sha256.New()
+	_, _ = fmt.Fprintf(h, "%d", e.Timestamp.UnixNano())
+	_, _ = h.Write([]byte(e.Source))
+	_, _ = h.Write(e.Payload)                    // raw bytes — stable across retries
+	digest := hex.EncodeToString(h.Sum(nil)[:4]) // 8 hex chars
+	return fmt.Sprintf("%d-%s-%s", e.Timestamp.UnixNano(), e.Source, digest)
 }
 
 // Query returns evidence matching the filter, ordered by timestamp DESC.
@@ -94,7 +139,7 @@ func (s *PostgresStore) Query(ctx context.Context, filter Filter) ([]Evidence, e
 		SELECT id, source, kind, payload, metadata, ts
 		FROM evidence_records
 		WHERE 1=1`
-	args := make([]any, 0, 5)
+	args := make([]any, 0, 6)
 	argID := 1
 	if filter.Source != "" {
 		query += fmt.Sprintf(" AND source = $%d", argID)
@@ -116,8 +161,25 @@ func (s *PostgresStore) Query(ctx context.Context, filter Filter) ([]Evidence, e
 		args = append(args, filter.Until)
 		argID++
 	}
+	// Payload containment: pushed into SQL (like every other filter) so it
+	// composes with LIMIT — a client-side filter after LIMIT would silently
+	// shrink payload-scoped windows under multi-strategy traffic.
+	if len(filter.PayloadFilter) > 0 {
+		payloadJSON, err := json.Marshal(filter.PayloadFilter)
+		if err != nil {
+			return nil, fmt.Errorf("evidence: marshal payload filter: %w", err)
+		}
+		query += fmt.Sprintf(" AND payload @> $%d::jsonb", argID)
+		args = append(args, string(payloadJSON))
+		argID++
+	}
+	// Honor the TTL retention — a record whose (ts + ttl) has passed is
+	// expired and must not be queryable (zero TTL = no expiry). Filtering in
+	// SQL keeps the ORDER BY ts DESC / LIMIT semantics on the live set.
+	query += " AND (ttl_seconds = 0 OR ts + make_interval(secs => ttl_seconds::double precision) > now())"
 	query += " ORDER BY ts DESC"
 	if filter.Limit > 0 {
+		//nolint:gosec // G202: LIMIT value is passed as a parameterized arg; only the $N placeholder index is dynamic.
 		query += fmt.Sprintf(" LIMIT $%d", argID)
 		args = append(args, filter.Limit)
 		// argID not incremented — no further parameter uses it.
@@ -148,6 +210,30 @@ func (s *PostgresStore) Query(ctx context.Context, filter Filter) ([]Evidence, e
 		return nil, fmt.Errorf("evidence: rows: %w", err)
 	}
 	return result, nil
+}
+
+// CleanupExpired physically deletes evidence rows whose TTL retention window
+// has elapsed (ts + ttl_seconds < now), returning the number of rows removed.
+// Records with ttl_seconds = 0 never expire and are never deleted. Query
+// already filters expired rows out of read results; this closes the loop
+// so the table does not grow unboundedly with dead rows. It satisfies the
+// bootstrap ExpiryCleaner interface so the periodic maintenance worker purges
+// evidence on the same hourly schedule as the other retention-managed tables
+// (REVIEW #7).
+func (s *PostgresStore) CleanupExpired(ctx context.Context) (int64, error) {
+	const del = `
+		DELETE FROM evidence_records
+		WHERE ttl_seconds > 0
+		  AND ts + make_interval(secs => ttl_seconds::double precision) <= now()`
+	res, err := s.db.ExecContext(ctx, del)
+	if err != nil {
+		return 0, fmt.Errorf("evidence: cleanup expired: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("evidence: cleanup expired rows affected: %w", err)
+	}
+	return n, nil
 }
 
 // Aggregate computes a metric over matching evidence using the caller's

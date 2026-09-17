@@ -2,196 +2,78 @@ package sdk
 
 import (
 	"context"
-	"fmt"
-	"sync/atomic"
+	"errors"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/agents/sub"
-	"github.com/Timwood0x10/ares/internal/core/models"
-	"github.com/Timwood0x10/ares/internal/kernelscheduler"
-	"github.com/Timwood0x10/ares/internal/taskfabric"
+	taskfabric "github.com/Timwood0x10/ares/internal/fabric/task"
+	"github.com/Timwood0x10/ares/internal/kernel"
 )
 
-// This file implements the H1/H2 merge (aresos-agentos-plan H1/H2: 合并 SDK
-// 和 kernel 两条路径 — sdk.Runtime.Submit goes through the Task Fabric and the
-// shared kernelscheduler, not a divergent direct-run path). The SDK is a
-// peer-runtime facade over the SAME scheduling engine the kernel uses:
+// This file wires the SDK onto the shared kernel scheduler over its own Task
+// Fabric. Since the B3 convergence there is ONE execution path: every
+// submission is an L2 session through the shared agentruntime execution core
+// (submitThroughL2) — the same router cognition serve/start use. The
+// scheduler drains the fabric (plan / tool / answer nodes); no executor runs
+// a private, fully-blocking loop inside a quantum.
 //
-//	Submit → fabric.Create → kernelscheduler.Scheduler (Schedule → Acquire →
-//	RunQuantum via the registered sdk agent executor) → COMPLETED → result.
-//
-// A sdk agent is an executor like any other: it runs its ReAct loop inside one
-// quantum (agentloop.Engine) and the scheduler owns capability matching,
-// concurrency, retries and outcome bookkeeping — no second scheduling loop.
-
-// sdkAgentExecutor adapts a sdk.Agent to the shared scheduler's
-// CapabilityExecutor contract. One agent = one capability executor, matching
-// the kernel's flat peer pool. Execution runs the agent's full ReAct loop in a
-// single quantum (the agentloop engine iterates internally), so Done is always
-// true; the fabric's retry policy still bounds failures.
-type sdkAgentExecutor struct {
-	agent *Agent
-	// typ overrides the scheduler-facing capability. Normally empty (Type
-	// falls back to the agent name); spawn_agent sets it to the declared
-	// capability so a spawned peer can match create_task sub-tasks.
-	typ models.AgentType
-}
-
-var _ kernelscheduler.CapabilityExecutor = (*sdkAgentExecutor)(nil)
-
-func (e *sdkAgentExecutor) ID() string { return e.agent.name }
-
-func (e *sdkAgentExecutor) Type() models.AgentType {
-	if e.typ != "" {
-		return e.typ
-	}
-	return models.AgentType(e.agent.name)
-}
-
-func (e *sdkAgentExecutor) ExecuteStep(ctx context.Context, task *models.Task) (*sub.StepOutcome, error) {
-	input, _ := task.Payload["input"].(string)
-	res, err := e.agent.Run(ctx, input)
-	if err != nil {
-		return nil, err
-	}
-	out := &sub.StepOutcome{Done: true}
-	if res != nil {
-		tr := models.NewTaskResult(task.TaskID, task.AgentType)
-		tr.SetSuccess(nil, res.Output)
-		// Carry the full sdk.Result back through the quantum checkpoint so
-		// Submit can restore Output/ToolCalls/TokenUsage/Duration exactly.
-		tr.Metadata = map[string]any{sdkResultKey: res}
-		out.Result = tr
-	}
-	return out, nil
-}
-
-// sdkResultKey is the metadata key under which the sdk.Result rides through
-// the fabric checkpoint (same-process reference — no JSON round-trip).
-const sdkResultKey = "sdk_result"
-
-// sdkTaskSeq assigns monotonic fabric task ids for submitted tasks.
-var sdkTaskSeq atomic.Int64
+// The single-loop constraint is why no static-executor branch exists: the
+// drain executes quanta serially on one goroutine, so a quantum that waited
+// for another task on the same fabric (the pre-B3 ReAct executor nested
+// inside Submit) would deadlock the loop that must schedule its answer.
 
 // ensureScheduler lazily starts the shared scheduler over the runtime's own
 // Task Fabric. It runs exactly once; subsequent calls reuse the started
 // scheduler. The scheduler goroutine lives until Runtime.Close cancels
-// schedCtx.
+// schedCtx, and Close joins it through schedDone before tearing down the
+// components a drain in flight may still be touching.
 func (r *Runtime) ensureScheduler() {
 	r.schedOnce.Do(func() {
 		r.sdkFabric = taskfabric.NewFabric()
 		r.schedCtx, r.schedCancel = context.WithCancel(context.Background())
-		r.sched = kernelscheduler.New(r.sdkFabric, r.sdkExecutors, nil)
+		r.schedDone = make(chan struct{})
+		r.sched = kernel.New(r.sdkFabric, r.sdkExecutors, nil)
 		r.sched.PollInterval = 20 * time.Millisecond
-		go r.sched.Run(r.schedCtx)
-		// D1: the SDK is a peer-runtime facade — wire the same kernel
+		// the SDK is a peer-runtime facade — wire the same kernel
 		// syscalls (spawn_agent/create_task) into the tool registry so SDK
 		// users can autonomously decompose tasks. Registered after sched
 		// exists because the syscall Kernel needs the shared fabric + sched.
 		r.wireSyscalls()
+		// Attach the agent fabric (created by wireSyscalls) and hybrid
+		// candidate mode BEFORE the drain loop starts: the scheduler's
+		// With* setters are plain field writes, safe only against a not-yet
+		// started drain (cmd/ares wires them in the kernel lifecycle before
+		// Run). An empty fabric behaves exactly like no fabric — static
+		// executors keep running — and ensureL2's Spawn later joins the L2
+		// peer to the SAME pool through the thread-safe fabric API.
+		r.sched.WithAgentFabric(r.agentsFabric).WithStaticPoolHybrid()
+		// Governance enforcement (WithAgentGovernance): the scheduler checks
+		// the L2 peer's token/tool budgets and deadline at quantum
+		// boundaries (cmd/ares parity). Wired here, before the drain starts.
+		r.sched.WithGovernance(r.agentsFabric)
+		done := r.schedDone
+		go func() {
+			defer close(done)
+			r.sched.Run(r.schedCtx)
+		}()
 	})
 }
 
-// submitThroughScheduler creates the task in the fabric and waits for the
-// scheduler to drive it to a terminal state, then restores the result. It is
-// the H1/H2 merged dispatch path: the shared scheduler (not a direct agent
-// call) owns capability matching and execution.
+// submitThroughScheduler dispatches a submission through the shared L2
+// execution core and waits for the session's terminal answer. Since the B3
+// convergence there is no static-executor branch: every agent run IS an L2
+// session (Agent.Run routes here conceptually), and an executor that waited
+// for another task inside a scheduler quantum would deadlock the single-loop
+// drain. A runtime without an LLM can never build the core and refuses
+// loudly instead of silently falling back to a dead path.
 func (r *Runtime) submitThroughScheduler(ctx context.Context, t Task) (*Result, error) {
 	r.ensureScheduler()
-
-	// Resolve the executor first: a capability with no registered agent
-	// auto-creates one (the runtime never refuses a well-formed task).
-	executor := r.ensureExecutor(t.Capability)
-
-	taskID := fmt.Sprintf("sdk-task-%d", sdkTaskSeq.Add(1))
-	if t.ID != "" {
-		taskID = t.ID
+	execCore := r.ensureL2()
+	if execCore == nil {
+		return nil, errors.New("sdk: submit requires the L2 execution core (no LLM configured?)")
 	}
-	if err := r.sdkFabric.Create(&taskfabric.Task{
-		ID:         taskID,
-		Capability: string(executor.Type()),
-		// Origin stays "" — SDK submissions are root tasks (the caller is
-		// the SDK user, not an agent), so no agent creator is stamped.
-		RetryPolicy: taskfabric.RetryPolicy{MaxRetries: 1},
-		Checkpoint: &taskfabric.CheckpointEnvelope{
-			Payload: map[string]any{"input": t.Input},
-		},
-	}); err != nil {
-		return nil, fmt.Errorf("sdk submit: %w", err)
-	}
-
-	// Wait for a terminal state. A timeout, when set, bounds the whole wait
-	// (and the execution — the executor receives the same context). The wait
-	// context propagates DeadlineExceeded so a timed-out Submit surfaces a
-	// deadline-exceeded cause, never a generic error (code_rules_v2 §3.1).
-	deadline := t.Timeout
-	if deadline <= 0 {
-		deadline = 5 * time.Minute
-	}
-	waitCtx, waitCancel := context.WithTimeout(ctx, deadline)
-	defer waitCancel()
-	ticker := time.NewTicker(10 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-waitCtx.Done():
-			if waitCtx.Err() == context.DeadlineExceeded {
-				return nil, fmt.Errorf("sdk submit: task %s timed out after %s: %w", taskID, deadline, context.DeadlineExceeded)
-			}
-			return nil, waitCtx.Err()
-		case <-ticker.C:
-			tk, err := r.sdkFabric.Task(taskID)
-			if err != nil {
-				return nil, fmt.Errorf("sdk submit: %w", err)
-			}
-			switch tk.State {
-			case taskfabric.StateCompleted:
-				return r.resultFromFabric(tk)
-			case taskfabric.StateFailed:
-				return nil, fmt.Errorf("sdk submit: task %s failed", taskID)
-			}
-		}
-	}
-}
-
-// resultFromFabric restores the sdk.Result from a completed fabric task's
-// checkpoint. The full sdk.Result rides in the quantum metadata (same-process
-// reference); the checkpoint's reason is the fallback output.
-func (r *Runtime) resultFromFabric(tk *taskfabric.Task) (*Result, error) {
-	dc, err := taskfabric.DecodeCheckpoint(tk.Checkpoint)
-	if err != nil {
-		return nil, fmt.Errorf("sdk submit: decode result: %w", err)
-	}
-	step, ok := dc.StepCheckpoint.(map[string]any)
-	if ok {
-		if md, ok := step["metadata"].(map[string]any); ok {
-			if res, ok := md[sdkResultKey].(*Result); ok && res != nil {
-				return res, nil
-			}
-		}
-		if reason, ok := step["reason"].(string); ok && reason != "" {
-			return &Result{Output: reason}, nil
-		}
-	}
-	return &Result{}, nil
-}
-
-// ensureExecutor returns the executor for the capability, creating and
-// registering a capability-named agent on demand when none is registered.
-// The registration is protected by agentMu (same lock as RegisterAgent). It
-// returns the interface so a caller-provided adapter (e.g. a test probe) is
-// preserved.
-func (r *Runtime) ensureExecutor(capability string) kernelscheduler.CapabilityExecutor {
-	if capability == "" {
-		capability = "agent"
-	}
-	r.agentMu.Lock()
-	defer r.agentMu.Unlock()
-	if ex, ok := r.sdkExecutors[capability]; ok {
-		return ex
-	}
-	a := r.NewAgent(capability)
-	ex := &sdkAgentExecutor{agent: a}
-	r.sdkExecutors[capability] = ex
-	return ex
+	// Pick up tools registered after the peer was spawned, so a late tool
+	// is both visible to the planner and routable as a tool/* node. No-op
+	// once the sets have converged.
+	r.resyncL2Tools()
+	return r.submitThroughL2(ctx, execCore, t)
 }

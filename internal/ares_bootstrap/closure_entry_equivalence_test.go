@@ -1,4 +1,4 @@
-// Package ares_bootstrap — Entry Component Graph Equivalence Tests (Stage 6).
+// Package ares_bootstrap — Entry Component Graph Equivalence Tests.
 //
 // Verifies that building the same config through the serve-style entry path
 // (explicit EventStore via BootstrapDeps) and the start-style path (nil deps,
@@ -16,18 +16,19 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/Timwood0x10/ares/internal/ares_config"
-	"github.com/Timwood0x10/ares/internal/ares_events"
-	"github.com/Timwood0x10/ares/internal/system_runtime"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/Timwood0x10/ares/internal/ares_config"
+	"github.com/Timwood0x10/ares/internal/ares_events"
+	"github.com/Timwood0x10/ares/internal/kernel"
 )
 
 // componentEdge captures one graph edge: a component name, its mode, and its
 // sorted dependency list. Two graphs are equivalent iff their edge sets match.
 type componentEdge struct {
 	name string
-	mode system_runtime.Mode
+	mode kernel.Mode
 	deps []string
 }
 
@@ -53,7 +54,7 @@ func graphEdges(t *testing.T, comp *Components) []componentEdge {
 
 // TestClosure_EntryComponentGraphEquivalence_ServeVsStart verifies the serve
 // entry (explicit EventStore dep) and the start entry (nil deps) produce the
-// identical component graph for the same config (Stage 6: entry equivalence).
+// identical component graph for the same config (entry equivalence).
 func TestClosure_EntryComponentGraphEquivalence_ServeVsStart(t *testing.T) {
 	cfg := &ares_config.Config{
 		LLM: ares_config.LLMConfig{
@@ -62,7 +63,7 @@ func TestClosure_EntryComponentGraphEquivalence_ServeVsStart(t *testing.T) {
 			APIKey:   "test-key",
 			BaseURL:  "http://localhost:9999",
 		},
-		Memory:    ares_config.MemoryConfig{Enabled: true},
+		Memory:    ares_config.MemoryConfig{Enabled: boolPtr(true)},
 		Evolution: ares_config.EvolutionConfig{Enabled: true},
 	}
 
@@ -98,7 +99,7 @@ func TestClosure_EntryComponentGraphEquivalence_ServeVsStart(t *testing.T) {
 }
 
 // TestClosure_EntryGraph_DisabledComponentsAbsent verifies that config gates
-// (F01/F02) apply identically in both entry styles: a disabled component is
+// apply identically in both entry styles: a disabled component is
 // absent from the graph, never half-wired.
 func TestClosure_EntryGraph_DisabledComponentsAbsent(t *testing.T) {
 	cfg := &ares_config.Config{
@@ -108,7 +109,7 @@ func TestClosure_EntryGraph_DisabledComponentsAbsent(t *testing.T) {
 			APIKey:   "test-key",
 			BaseURL:  "http://localhost:9999",
 		},
-		Memory:    ares_config.MemoryConfig{Enabled: false},
+		Memory:    ares_config.MemoryConfig{Enabled: boolPtr(false)},
 		Evolution: ares_config.EvolutionConfig{Enabled: false},
 	}
 

@@ -1,0 +1,355 @@
+package agentfabric
+
+import (
+	"context"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/require"
+
+	"github.com/Timwood0x10/ares/internal/fabric/task/workflow/engine"
+)
+
+// TestSessionRegistry_InitAndGet verifies the basic lifecycle: a session is
+// initialized with a prompt, its graph is retrievable by ID, and the root
+// node carries the session-invariant prompt.
+func TestSessionRegistry_InitAndGet(t *testing.T) {
+	r := NewSessionRegistry()
+
+	g, err := r.InitSession("s1", "find the answer", nil, nil)
+	require.NoError(t, err)
+	require.NotNil(t, g)
+	require.Equal(t, SessionRootID("s1"), g.Root())
+
+	got, err := r.GetSession("s1")
+	require.NoError(t, err)
+	require.Same(t, g, got)
+}
+
+// TestSessionRegistry_InitDuplicateFails verifies idempotent rejection: a
+// session that is already registered cannot be re-initialized — the second
+// InitSession returns an error, not a silent overwrite.
+func TestSessionRegistry_InitDuplicateFails(t *testing.T) {
+	r := NewSessionRegistry()
+
+	_, err := r.InitSession("s1", "prompt", nil, nil)
+	require.NoError(t, err)
+
+	_, err = r.InitSession("s1", "other", nil, nil)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "already initialized")
+}
+
+// TestSessionRegistry_GetNotFound verifies that a session that was never
+// admitted returns ErrSessionNotFound, not a nil graph.
+func TestSessionRegistry_GetNotFound(t *testing.T) {
+	r := NewSessionRegistry()
+
+	_, err := r.GetSession("nope")
+	require.ErrorIs(t, err, ErrSessionNotFound)
+}
+
+// TestSessionRegistry_Release verifies that a released session is gone from
+// the registry — a subsequent Get returns ErrSessionNotFound.
+func TestSessionRegistry_Release(t *testing.T) {
+	r := NewSessionRegistry()
+
+	_, err := r.InitSession("s1", "prompt", nil, nil)
+	require.NoError(t, err)
+
+	require.NoError(t, r.ReleaseSession("s1"))
+
+	_, err = r.GetSession("s1")
+	require.ErrorIs(t, err, ErrSessionNotFound)
+}
+
+// TestSessionRegistry_ReleaseNotFound verifies that releasing a session
+// that was never registered returns an error.
+func TestSessionRegistry_ReleaseNotFound(t *testing.T) {
+	r := NewSessionRegistry()
+
+	err := r.ReleaseSession("nope")
+	require.ErrorIs(t, err, ErrSessionNotFound)
+}
+
+// TestSessionRegistry_CompileCoordWired verifies that the compile coordinator
+// function is called during InitSession and its stop function is called on
+// Release.
+func TestSessionRegistry_CompileCoordWired(t *testing.T) {
+	r := NewSessionRegistry()
+
+	stopped := false
+	coord := func(_ context.Context, _ *engine.MutableDAG) (stop func()) {
+		return func() { stopped = true }
+	}
+
+	_, err := r.InitSession("s1", "prompt", nil, coord)
+	require.NoError(t, err)
+
+	require.NoError(t, r.ReleaseSession("s1"))
+	require.True(t, stopped, "compile coordinator stop must be called on Release")
+}
+
+// TestSessionRegistry_CompileCoordError verifies that a compile coordinator
+// that returns an error prevents the session from being registered.
+func TestSessionRegistry_CompileCoordError(t *testing.T) {
+	r := NewSessionRegistry()
+
+	// With the simplified signature (no error return), a coordinator that
+	// needs to signal an error must do so via a nil stop function. The
+	// registry does not interpret a nil stop as an error — it simply does
+	// not call it on Release. This is acceptable because the only production
+	// coordinator (SubscribeGraphEvents) never fails.
+	var called bool
+	coord := func(_ context.Context, _ *engine.MutableDAG) (stop func()) {
+		called = true
+		return nil // no stop function — simulates a no-op coordinator
+	}
+
+	_, err := r.InitSession("s1", "prompt", nil, coord)
+	require.NoError(t, err)
+	require.True(t, called, "compile coordinator must be called")
+
+	require.NoError(t, r.ReleaseSession("s1"))
+}
+
+// TestSessionRegistry_ReleaseDoesNotHoldLockDuringStop pins the lock
+// discipline (P1): stopSub unsubscribes and waits for the compile
+// coordinator goroutine (bounded by its reconcile timeout, up to 30s in
+// production). Pre-fix ReleaseSession ran it WHILE HOLDING r.mu, so that
+// wait froze every GetSession/InitSession/SweepExpired in the process. The
+// entry is dropped under the lock; the stop runs outside it.
+func TestSessionRegistry_ReleaseDoesNotHoldLockDuringStop(t *testing.T) {
+	r := NewSessionRegistry()
+
+	stopEntered := make(chan struct{})
+	releaseStop := make(chan struct{})
+	coord := func(_ context.Context, _ *engine.MutableDAG) (stop func()) {
+		return func() {
+			close(stopEntered)
+			<-releaseStop
+		}
+	}
+	_, err := r.InitSession("s1", "prompt", nil, coord)
+	require.NoError(t, err)
+	_, err = r.InitSession("s2", "prompt", nil, nil)
+	require.NoError(t, err)
+
+	done := make(chan error, 1)
+	go func() { done <- r.ReleaseSession("s1") }()
+	<-stopEntered // ReleaseSession is now blocked inside stopSub
+
+	// The registry must stay fully usable while the stop is in flight.
+	unblocked := make(chan struct{})
+	go func() {
+		defer close(unblocked)
+		_, gerr := r.GetSession("s2")
+		require.NoError(t, gerr, "GetSession must not block on another session's release")
+		ids := r.SessionIDs()
+		require.Contains(t, ids, "s2")
+	}()
+	select {
+	case <-unblocked:
+	case <-time.After(2 * time.Second):
+		t.Fatal("registry reads blocked while ReleaseSession waited on the compile stop (lock held across stopSub)")
+	}
+
+	close(releaseStop)
+	require.NoError(t, <-done)
+	_, err = r.GetSession("s1")
+	require.ErrorIs(t, err, ErrSessionNotFound, "released session must be gone once the stop finishes")
+}
+
+// TestSessionRegistry_SessionIDs verifies the registry can list its session
+// IDs.
+func TestSessionRegistry_SessionIDs(t *testing.T) {
+	r := NewSessionRegistry()
+
+	_, _ = r.InitSession("a", "p", nil, nil)
+	_, _ = r.InitSession("b", "p", nil, nil)
+
+	ids := r.SessionIDs()
+	require.Len(t, ids, 2)
+	require.ElementsMatch(t, []string{"a", "b"}, ids)
+}
+
+// TestSessionRegistry_InitRejectsSlashID pins the contract: a session
+// ID containing "/" breaks SessionIDFromNode's reverse parse (the reaper
+// keep-set would resolve a live session's tasks to a different, non-live
+// ID and harvest its readable history), so the registry refuses it at the
+// single registration point.
+func TestSessionRegistry_InitRejectsSlashID(t *testing.T) {
+	_, err := NewSessionRegistry().InitSession("a/b", "p", nil, nil)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "must not contain a slash")
+}
+
+// TestSessionRegistry_SweepExpired pins the idle release: a touched
+// session survives the sweep, an idle one is released (with its compile
+// subscription stopped), and a non-positive window falls back to the
+// default instead of mass-releasing.
+func TestSessionRegistry_SweepExpired(t *testing.T) {
+	r := NewSessionRegistry()
+	stopped := 0
+	coord := func(_ context.Context, _ *engine.MutableDAG) (stop func()) {
+		return func() { stopped++ }
+	}
+
+	_, err := r.InitSession("s1", "p", nil, coord)
+	require.NoError(t, err)
+
+	// A GetSession touch refreshes the idle clock: half a window after
+	// init, the touch resets it and the sweep must keep the session.
+	time.Sleep(60 * time.Millisecond)
+	_, err = r.GetSession("s1")
+	require.NoError(t, err)
+	require.Empty(t, r.SweepExpired(100*time.Millisecond),
+		"touched session must survive the sweep")
+
+	// Idle past the window releases it and stops the compile subscription.
+	time.Sleep(110 * time.Millisecond)
+	require.Equal(t, []string{"s1"}, r.SweepExpired(100*time.Millisecond))
+	require.Equal(t, 1, stopped, "expired release must stop the compile subscription")
+	_, err = r.GetSession("s1")
+	require.ErrorIs(t, err, ErrSessionNotFound)
+
+	// Non-positive idle selects the default (30m), never releases everything.
+	_, err = r.InitSession("s2", "p", nil, nil)
+	require.NoError(t, err)
+	require.Empty(t, r.SweepExpired(0),
+		"zero idle must fall back to the default window, not release live sessions")
+}
+
+// TestSessionRegistry_SweepDoesNotHoldLockDuringStop pins the same lock
+// discipline as ReleaseSession for the idle sweeper (P1): the SDK calls
+// SweepExpired every minute, so a stopSub that blocks on the compile
+// coordinator (bounded by its reconcile timeout, up to 30s) must not freeze
+// the whole registry while the sweep drains. Pre-fix the stop ran under r.mu.
+func TestSessionRegistry_SweepDoesNotHoldLockDuringStop(t *testing.T) {
+	r := NewSessionRegistry()
+
+	stopEntered := make(chan struct{})
+	releaseStop := make(chan struct{})
+	coord := func(_ context.Context, _ *engine.MutableDAG) (stop func()) {
+		return func() {
+			close(stopEntered)
+			<-releaseStop
+		}
+	}
+	_, err := r.InitSession("s1", "p", nil, coord)
+	require.NoError(t, err)
+	_, err = r.InitSession("s2", "p", nil, nil)
+	require.NoError(t, err)
+
+	// Expire s1 without touching s2: GetSession on s2 refreshes its idle
+	// clock, so only s1 crosses the window.
+	_, err = r.GetSession("s2")
+	require.NoError(t, err)
+	time.Sleep(60 * time.Millisecond)
+	_, err = r.GetSession("s2")
+	require.NoError(t, err)
+
+	done := make(chan []string, 1)
+	go func() { done <- r.SweepExpired(50 * time.Millisecond) }()
+	<-stopEntered // the sweep is now blocked inside s1's stopSub
+
+	// The registry must stay fully usable while the stop is in flight.
+	unblocked := make(chan struct{})
+	go func() {
+		defer close(unblocked)
+		_, gerr := r.GetSession("s2")
+		require.NoError(t, gerr, "GetSession must not block on the sweep's compile stop")
+	}()
+	select {
+	case <-unblocked:
+	case <-time.After(2 * time.Second):
+		t.Fatal("registry reads blocked while SweepExpired waited on the compile stop (lock held across stopSub)")
+	}
+
+	close(releaseStop)
+	require.Equal(t, []string{"s1"}, <-done)
+}
+
+// TestSessionRegistry_SubscriptionContextOwnedByRegistry pins F-12: the
+// compile subscription runs on a context the REGISTRY owns — no caller-scoped
+// context can kill the projection while the entry stays live, and release
+// (or the idle sweep) cancels it.
+func TestSessionRegistry_SubscriptionContextOwnedByRegistry(t *testing.T) {
+	r := NewSessionRegistry()
+	var releaseCtx, sweepCtx context.Context
+	coordFor := func(out *context.Context) func(context.Context, *engine.MutableDAG) func() {
+		return func(ctx context.Context, _ *engine.MutableDAG) func() {
+			*out = ctx
+			return func() {}
+		}
+	}
+
+	_, err := r.InitSession("s1", "p", nil, coordFor(&releaseCtx))
+	require.NoError(t, err)
+	_, err = r.InitSession("s2", "p", nil, coordFor(&sweepCtx))
+	require.NoError(t, err)
+
+	require.NoError(t, releaseCtx.Err(), "subscription must be live while its session is")
+	require.NoError(t, sweepCtx.Err())
+
+	require.NoError(t, r.ReleaseSession("s1"))
+	require.ErrorIs(t, releaseCtx.Err(), context.Canceled,
+		"release must cancel the registry-owned subscription context")
+
+	// The idle sweep is the teardown path for sessions never released.
+	time.Sleep(5 * time.Millisecond)
+	require.Equal(t, []string{"s2"}, r.SweepExpired(time.Millisecond))
+	require.ErrorIs(t, sweepCtx.Err(), context.Canceled,
+		"idle sweep must cancel the registry-owned subscription context")
+}
+
+// TestSessionRootID verifies the deterministic root ID format so a
+// recompiled graph's root task is a 1:1 match to the original.
+func TestSessionRootID(t *testing.T) {
+	require.Equal(t, "sess/s1/root", SessionRootID("s1"))
+}
+
+// TestSessionTaskPrefix pins the whole-session stem used by targeted
+// harvests: both builders' outputs carry it.
+func TestSessionTaskPrefix(t *testing.T) {
+	require.Equal(t, "sess/s1/", SessionTaskPrefix("s1"))
+	require.True(t, strings.HasPrefix(SessionRootID("s1"), SessionTaskPrefix("s1")))
+	require.True(t, strings.HasPrefix(SessionNodeID("s1", 1, "grep", 0), SessionTaskPrefix("s1")))
+}
+
+// TestSessionNodeID verifies the deterministic instance node ID format.
+func TestSessionNodeID(t *testing.T) {
+	require.Equal(t, "sess/s1/d1/grep#0", SessionNodeID("s1", 1, "grep", 0))
+	require.Equal(t, "sess/s1/d2/read#1", SessionNodeID("s1", 2, "read", 1))
+}
+
+// TestSessionIDFromNode pins the ID inverse the reaper keep-set relies on:
+// every builder's output round-trips back to its session ID, and anything
+// that is not a session-scoped node is rejected (so the reaper never keeps
+// a task it cannot attribute to a live session).
+func TestSessionIDFromNode(t *testing.T) {
+	tests := []struct {
+		name   string
+		nodeID string
+		want   string
+		wantOK bool
+	}{
+		{"root", SessionRootID("s1"), "s1", true},
+		{"node", SessionNodeID("s1", 2, "grep", 7), "s1", true},
+		{"session id with slash-free dashes", "sess/adm-1/root", "adm-1", true},
+		{"non-session id", "plain/task", "", false},
+		{"bare prefix", "sess/", "", false},
+		{"missing terminator", "sess/s1", "", false},
+		{"empty session id", "sess//root", "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := SessionIDFromNode(tt.nodeID)
+			if ok != tt.wantOK || got != tt.want {
+				t.Errorf("SessionIDFromNode(%q) = (%q, %v), want (%q, %v)",
+					tt.nodeID, got, ok, tt.want, tt.wantOK)
+			}
+		})
+	}
+}

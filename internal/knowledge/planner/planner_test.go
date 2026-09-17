@@ -124,7 +124,7 @@ func (f *fakeTaskSearcher) SearchSimilarTasks(_ context.Context, _ string, _ int
 	return nil, nil
 }
 
-// TestSourceDiscoveryExcludesMemoryForCode verifies the B10 root-cause fix:
+// TestSourceDiscoveryExcludesMemoryForCode verifies the root-cause fix:
 // the intent now carries Scope.Types derived from the requirement Need, so
 // MemoryProvider's type-aware score (0.3 for code/architecture) falls below
 // providerSelectThreshold (0.35) and the provider is excluded from code
@@ -303,7 +303,6 @@ func TestDetectProviderType(t *testing.T) {
 		{"memory", &typedStub{name: "m", pt: provider.ProviderMemory}, string(provider.ProviderMemory)},
 		{"evolution", &typedStub{name: "e", pt: provider.ProviderEvolution}, string(provider.ProviderEvolution)},
 		{"postgres", &typedStub{name: "pg", pt: provider.ProviderPostgres}, string(provider.ProviderPostgres)},
-		{"mysql", &typedStub{name: "my", pt: provider.ProviderMySQL}, string(provider.ProviderMySQL)},
 		{"vector", &typedStub{name: "v", pt: provider.ProviderVector}, string(provider.ProviderVector)},
 		{"store", &typedStub{name: "s", pt: provider.ProviderStore}, string(provider.ProviderStore)},
 		{"code_provider", &typedStub{name: "c", pt: provider.ProviderCode}, string(provider.ProviderCode)},

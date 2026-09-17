@@ -1,6 +1,7 @@
 package discovery
 
 import (
+	"net/url"
 	"sort"
 	"strings"
 )
@@ -169,12 +170,22 @@ var knownLaunchers = map[string]bool{
 }
 
 // normalizeEndpoint creates a stable key from an endpoint string.
-// Uses the binary name (last path segment) as the key so that
-// "codegraph" and "/usr/local/bin/codegraph" are merged.
-// For known launchers (uvx, npx, etc.), includes the first argument.
+//
+// URL endpoints (http/https/… with a host) key on the full
+// scheme://host[:port]/path: taking only the last path segment would merge
+// every "*/mcp" URL into one identity (#52). The host is lowercased (DNS is
+// case-insensitive) and a trailing slash is dropped; the path is preserved
+// verbatim so different paths on one host stay distinct services.
+//
+// Local command endpoints (no URL scheme) keep the binary-name key so that
+// "codegraph" and "/usr/local/bin/codegraph" are merged. For known launchers
+// (uvx, npx, etc.), the first argument is included.
 func normalizeEndpoint(endpoint string) string {
 	if endpoint == "" {
 		return "unknown"
+	}
+	if u, err := url.Parse(endpoint); err == nil && u.Scheme != "" && u.Host != "" {
+		return strings.ToLower(u.Scheme) + "://" + strings.ToLower(u.Host) + strings.TrimSuffix(u.Path, "/")
 	}
 	// Extract binary name from path.
 	name := endpoint

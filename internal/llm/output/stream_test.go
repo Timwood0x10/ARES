@@ -404,3 +404,151 @@ func TestOpenAIAdapter_GenerateStream_MalformedChunk(t *testing.T) { //nolint:er
 		t.Errorf("expected 'OK!', got %q", got)
 	}
 }
+
+// TestOllamaAdapter_GenerateStream_TemperatureInOptionsAndTerminalDone
+// locks two REVIEW 3.8 adapter fixes:
+//  1. Sampling parameters must sit inside the "options" object — Ollama
+//     silently ignores a top-level "temperature".
+//  2. A clean stream end must emit a terminal {Done: true} chunk so
+//     consumers watching for Done (instead of channel close) don't hang.
+func TestOllamaAdapter_GenerateStream_TemperatureInOptionsAndTerminalDone(t *testing.T) {
+	var sawOptionsTemperature bool
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("failed to decode request: %v", err)
+			return
+		}
+		if _, ok := body["temperature"]; ok {
+			t.Error("temperature must NOT be a top-level field; Ollama ignores it there")
+		}
+		opts, ok := body["options"].(map[string]interface{})
+		if !ok {
+			t.Error("request must carry an options object")
+			return
+		}
+		if temp, ok := opts["temperature"].(float64); ok && temp == 0.7 {
+			sawOptionsTemperature = true
+		}
+
+		flusher := w.(http.Flusher)
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		chunks := []OllamaResponse{
+			{Model: "llama3.2", Response: "Hi"},
+			{Model: "llama3.2", Response: "", Done: true},
+		}
+		for _, chunk := range chunks {
+			data, _ := json.Marshal(chunk)
+			if _, err := w.Write(data); err != nil {
+				t.Errorf("failed to write data: %v", err)
+				return
+			}
+			if _, err := w.Write([]byte("\n")); err != nil {
+				t.Errorf("failed to write newline: %v", err)
+				return
+			}
+			flusher.Flush()
+		}
+	})
+
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	adapter := NewOllamaAdapter(&Config{
+		BaseURL:     server.URL,
+		Model:       "llama3.2",
+		Timeout:     5,
+		Temperature: 0.7,
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	ch, err := adapter.GenerateStream(ctx, "test prompt")
+	if err != nil {
+		t.Fatalf("GenerateStream failed: %v", err)
+	}
+
+	sawTerminalDone := false
+	for chunk := range ch {
+		if chunk.Err != nil {
+			t.Fatalf("unexpected stream error: %v", chunk.Err)
+		}
+		if chunk.Done {
+			sawTerminalDone = true
+		}
+	}
+	if !sawTerminalDone {
+		t.Error("clean stream end must emit a terminal {Done: true} chunk")
+	}
+	if !sawOptionsTemperature {
+		t.Error("temperature must be sent inside the options object")
+	}
+}
+
+// TestOpenAIAdapter_GenerateStream_TerminalDoneChunk locks REVIEW 3.8: the
+// OpenAI-compatible adapter must emit a terminal {Done: true} chunk on the
+// "data: [DONE]" sentinel (and on a server-side close without it) so
+// consumers watching for Done instead of channel close don't hang.
+func TestOpenAIAdapter_GenerateStream_TerminalDoneChunk(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		withEnd bool
+	}{
+		{name: "with DONE sentinel", withEnd: true},
+		{name: "server closes without sentinel", withEnd: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				flusher := w.(http.Flusher)
+				w.Header().Set("Content-Type", "text/event-stream")
+				events := []string{`data: {"choices":[{"delta":{"content":"Hi"}}]}`}
+				if tc.withEnd {
+					events = append(events, `data: [DONE]`)
+				}
+				for _, event := range events {
+					if _, err := w.Write([]byte(event + "\n\n")); err != nil {
+						t.Errorf("failed to write event: %v", err)
+						return
+					}
+					flusher.Flush()
+				}
+			})
+
+			server := httptest.NewServer(handler)
+			defer server.Close()
+
+			adapter := NewOpenAIAdapter(&Config{
+				BaseURL: server.URL,
+				APIKey:  "test-key",
+				Model:   "gpt-3.5-turbo",
+				Timeout: 5,
+			})
+
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			ch, err := adapter.GenerateStream(ctx, "test prompt")
+			if err != nil {
+				t.Fatalf("GenerateStream failed: %v", err)
+			}
+
+			sawDone, gotContent := false, ""
+			for chunk := range ch {
+				if chunk.Err != nil {
+					t.Fatalf("unexpected stream error: %v", chunk.Err)
+				}
+				if chunk.Done {
+					sawDone = true
+				}
+				gotContent += chunk.Content
+			}
+			if gotContent != "Hi" {
+				t.Errorf("expected 'Hi', got %q", gotContent)
+			}
+			if !sawDone {
+				t.Error("clean stream end must emit a terminal {Done: true} chunk")
+			}
+		})
+	}
+}

@@ -3,33 +3,33 @@ package ares_bootstrap
 
 import (
 	"context"
-	"errors"
 	"fmt"
+	"log/slog"
+	"time"
 
-	apiembed "github.com/Timwood0x10/ares/api/embedding"
+	"golang.org/x/sync/errgroup"
+
 	"github.com/Timwood0x10/ares/internal/ares_callbacks"
 	"github.com/Timwood0x10/ares/internal/ares_config"
-	"github.com/Timwood0x10/ares/internal/ares_eval"
 	"github.com/Timwood0x10/ares/internal/ares_events"
-	aresexp "github.com/Timwood0x10/ares/internal/ares_experience"
-	flight "github.com/Timwood0x10/ares/internal/ares_flight"
-	"github.com/Timwood0x10/ares/internal/ares_mcp"
-	ares_memory "github.com/Timwood0x10/ares/internal/ares_memory"
-	"github.com/Timwood0x10/ares/internal/ares_runtime"
 	"github.com/Timwood0x10/ares/internal/aresrecovery"
 	"github.com/Timwood0x10/ares/internal/evidence"
-	"github.com/Timwood0x10/ares/internal/evolution/deployment"
+	"github.com/Timwood0x10/ares/internal/fabric/task/workflow/engine"
+	"github.com/Timwood0x10/ares/internal/kernel"
 	"github.com/Timwood0x10/ares/internal/knowledge"
 	"github.com/Timwood0x10/ares/internal/knowledge/adapter"
 	knowledgeruntime "github.com/Timwood0x10/ares/internal/knowledge/runtime"
 	"github.com/Timwood0x10/ares/internal/knowledge/skills"
+	"github.com/Timwood0x10/ares/internal/runtime"
+	"github.com/Timwood0x10/ares/internal/runtime/eval"
+	ares_memory "github.com/Timwood0x10/ares/internal/runtime/memory"
+	aresexp "github.com/Timwood0x10/ares/internal/runtime/memory/experience"
+	"github.com/Timwood0x10/ares/internal/runtime/observability"
+	flight "github.com/Timwood0x10/ares/internal/runtime/observability/flight"
+	ares_mcp "github.com/Timwood0x10/ares/internal/runtime/protocol/mcp"
+	ares_skills "github.com/Timwood0x10/ares/internal/runtime/protocol/skills"
 	"github.com/Timwood0x10/ares/internal/storage"
-	"github.com/Timwood0x10/ares/internal/storage/postgres"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/repositories"
-	"github.com/Timwood0x10/ares/internal/system_runtime"
-	"github.com/Timwood0x10/ares/internal/workflow/engine"
-
-	"golang.org/x/sync/errgroup"
 )
 
 // DAG step identifiers used in the minimal evolution graph.
@@ -38,21 +38,25 @@ const dagStepProcess = "process"
 // Components holds all assembled system components.
 type Components struct {
 	MCP          *ares_mcp.MCPManager
-	Dashboard    *DashboardComponents
+	Dashboard    *ObservabilityProviders
 	LLM          *LLMComponents
 	Evolution    *EvolutionComponents
 	NewEvolution *NewEvolutionComponents
-	Runtime      *ares_runtime.Manager
+	Runtime      *runtime.Manager
 	Memory       ares_memory.MemoryManager
 	EventStore   ares_events.EventStore
 	Distillation *aresexp.DistillationService
 	// SkillsRegistry is the progressive-disclosure skill index seeded by
-	// wireSkills (REVIEW #11 closure). It powers two readers: the memory
+	// wireSkills. It powers two readers: the memory
 	// manager's resident "Available skills" block (attached via
 	// SetSkillsRegistry) and the environment-capability searcher (envcap) in
 	// serve, which exposes skills as searchable tool capabilities. Nil when
 	// memory is disabled or skill wiring was skipped.
 	SkillsRegistry *skills.Registry
+	// SkillCatalog is the live catalog handle: serve registers its
+	// CatalogTools into the agent tool registry and wires the experience
+	// confidence source from it. Nil when skills are disabled.
+	SkillCatalog *ares_skills.Catalog
 	// Discovery holds the optional service discovery engine. It is nil when
 	// cfg.Discovery.Enabled is false (the default), preserving prior behavior.
 	Discovery *DiscoveryComponents
@@ -87,8 +91,8 @@ type Components struct {
 	// building their own. Nil when the event store is unavailable.
 	FlightRecorder *flight.FlightRecorder
 	// ExpRepo is the experience repository used by distillation writes
-	// (Track A) and — in the Agent Fabric runtime — as the G1 spawn-prior
-	// source (aresos-agentos-plan G1: 蒸馏产出 → 经验仓库查询 → spawn 注入).
+	// and — in the Agent Fabric runtime — as the spawn-prior source
+	// (distillation output → experience repo query → spawn injection).
 	// It is the deps.ExpRepo when provided, or the repository created by
 	// wireDistillation when PostgreSQL distillation is enabled; nil otherwise
 	// (callers treat nil as "no prior", never as an error).
@@ -98,15 +102,15 @@ type Components struct {
 	// disabled, so downstream consumers (cmd/ares serve, tests) can
 	// reference it without nil guards.
 	EvidenceStore evidence.Store
-	// SystemRuntime is the system-level control plane (Stage 1): an
+	// SystemRuntime is the system-level control plane: an
 	// orchestrator that observes the assembled component graph and provides
 	// lifecycle states, a shared root context, and status snapshots. It is
 	// created at the end of Bootstrap; nil when wiring is skipped on failure.
-	SystemRuntime *system_runtime.Orchestrator
+	SystemRuntime *kernel.Orchestrator
 	// SystemRegistry backs SystemRuntime with one entry per constructed
 	// component, enabling dependency-aware lookup and snapshot queries.
-	SystemRegistry *system_runtime.Registry
-	// Observability holds the shared v0.3.0 M3/M4 observability components:
+	SystemRegistry *kernel.Registry
+	// Observability holds the shared observability components:
 	// the evolution trajectory tracer, the human-feedback store, and the
 	// cross-Fabric tracer. All three are created together once in Bootstrap
 	// and shared by the dashboard (read side) and the runtime write hooks
@@ -114,34 +118,79 @@ type Components struct {
 	// dashboard endpoints show live data. Non-nil whenever Bootstrap
 	// completed; nil only when wiring never ran.
 	Observability *ObservabilityComponents
-	// ExpiryCleaners lists repositories that own TTL/decay purges (REVIEW #7).
+	// ExpiryCleaners lists repositories that own TTL/decay purges.
 	// Subsystems append entries when they construct a repo with retention
 	// columns; startExpiryCleanupWorker purges them hourly on bgGroup. Empty
 	// by default (no cleaners wired = no worker goroutine).
 	ExpiryCleaners []NamedExpiryCleaner
 	// bgGroup manages all Bootstrap background goroutines (distillation
 	// subscriber, GA evolution ticker, LLM suggestion ticker) via errgroup
-	// (F06: no bare goroutines). WaitBackground blocks on it during shutdown.
+	// (no bare goroutines). WaitBackground blocks on it during shutdown.
 	bgGroup errgroup.Group
 }
 
-// ObservabilityComponents groups the shared v0.3.0 M3/M4 observability
-// surfaces. They are constructed together as one subsystem — Bootstrap creates
-// all three unconditionally and the dashboard reads them via provider
-// adapters, so the flat Components struct stays scannable.
+// ObservabilityComponents groups the shared observability surfaces, constructed
+// together as one subsystem — Bootstrap creates all three unconditionally and
+// the dashboard reads them via provider adapters, so the flat Components struct
+// stays scannable.
 type ObservabilityComponents struct {
-	// EvolutionTracer is the shared evolution trajectory tracer (v0.3.0
-	// M3-1). Shared by the dashboard (read side: /evolution/trajectory) and
-	// the GA wiring (write side: Record after each generation).
+	// EvolutionTracer is the shared evolution trajectory tracer. Shared
+	// by the dashboard (read side: /evolution/trajectory) and the GA
+	// wiring (write side: Record after each generation).
 	EvolutionTracer *aresrecovery.EvolutionTracer
-	// FeedbackStore is the shared human-feedback store (v0.3.0 M3-2). Written
-	// by POST /evolution/feedback; read by the evolution scoring path.
+	// FeedbackStore is the shared human-feedback store. Written by POST
+	// /evolution/feedback; read by the evolution scoring path.
 	FeedbackStore *aresrecovery.FeedbackStore
-	// GlobalTracer is the shared cross-Fabric tracer (v0.3.0 M4-1). It is
+	// GlobalTracer is the shared cross-Fabric tracer. It is shared
 	// shared by the dashboard (read side: /observability/spans) and the
 	// kernel wiring (write side: task/agent lifecycle hooks). Nil when the
 	// dashboard observability wiring is skipped.
 	GlobalTracer *aresrecovery.GlobalTracer
+}
+
+// GoBackground runs fn as an errgroup-managed background goroutine on the
+// Bootstrap group (no bare goroutines). A panic or a non-nil return is
+// recovered, logged, and the worker is RESTARTED after a bounded backoff —
+// a recover that merely logs and exits would leave the subsystem silently
+// dead for the rest of the process while looking healthy. The loop stops
+// only when ctx is cancelled or fn returns nil (a clean, intentional exit).
+func (c *Components) GoBackground(ctx context.Context, name string, fn func(ctx context.Context) error) {
+	c.bgGroup.Go(func() (err error) {
+		const (
+			initialBackoff = time.Second
+			maxBackoff     = 30 * time.Second
+		)
+		backoff := initialBackoff
+		for {
+			err = runBackgroundOnce(ctx, name, fn)
+			if err == nil || ctx.Err() != nil {
+				return err
+			}
+			slog.Warn("bootstrap: background worker failed; restarting",
+				"name", name, "error", err, "backoff", backoff)
+			select {
+			case <-ctx.Done():
+				return err
+			case <-time.After(backoff):
+			}
+			if backoff *= 2; backoff > maxBackoff {
+				backoff = maxBackoff
+			}
+		}
+	})
+}
+
+// runBackgroundOnce invokes fn under a panic-recover boundary, converting a
+// panic into an error so the GoBackground supervisor can restart the worker.
+func runBackgroundOnce(ctx context.Context, name string, fn func(ctx context.Context) error) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("bootstrap: background worker panicked",
+				"name", name, "panic", r)
+			err = fmt.Errorf("background %s panicked: %v", name, r)
+		}
+	}()
+	return fn(ctx)
 }
 
 // WaitBackground blocks until all background goroutines started by Bootstrap
@@ -158,22 +207,22 @@ func (c *Components) WaitBackground() {
 	}
 }
 
-// Snapshot returns the system-level component status snapshot (Stage 1
-// observability). It returns an empty snapshot when the System Runtime
+// Snapshot returns the system-level component status snapshot.
+// It returns an empty snapshot when the System Runtime
 // registry is not wired (Bootstrap failed before wiring completed), so
 // callers can always consume a valid value without nil guards.
-func (c *Components) Snapshot() system_runtime.Snapshot {
+func (c *Components) Snapshot() kernel.Snapshot {
 	if c == nil || c.SystemRegistry == nil {
-		return system_runtime.Snapshot{}
+		return kernel.Snapshot{}
 	}
 	return c.SystemRegistry.Snapshot()
 }
 
 // ComponentStatus returns the status of one managed component by name.
 // The bool is false when the component is not registered.
-func (c *Components) ComponentStatus(name string) (system_runtime.ComponentStatus, bool) {
+func (c *Components) ComponentStatus(name string) (kernel.ComponentStatus, bool) {
 	if c == nil || c.SystemRegistry == nil {
-		return system_runtime.ComponentStatus{}, false
+		return kernel.ComponentStatus{}, false
 	}
 	return c.SystemRegistry.GetStatus(name)
 }
@@ -191,360 +240,80 @@ func (c *Components) IsSystemReady() bool {
 type LLMComponents struct {
 	Client      interface{}
 	CallbackReg *ares_callbacks.Registry
+	// CostDashboard is the cost surface served at
+	// /api/v1/observability/cost*; fed by the LLM client's MetricsTracer.
+	CostDashboard *observability.CostDashboard
 }
 
 // BootstrapDeps holds optional external dependencies for full wiring.
 type BootstrapDeps struct {
 	EventStore ares_events.EventStore
 	ExpRepo    repositories.ExperienceRepositoryInterface
-	LLMClient  ares_eval.LLMClient
+	LLMClient  eval.LLMClient
 }
 
 // Bootstrap assembles all components from config and optional dependencies.
 // It is the single wiring hub — used by cmd/ares serve, and tests.
 // On partial failure, already-created components are cleaned up in reverse
-// order before returning the error.
-// extracted for each major component group (wireMemory, wireNewEvolution, etc.)
-// and the remaining complexity is inherent to the assembly orchestration.
-//
-//nolint:gocyclo // Bootstrap is a complex wiring hub; sub-functions are
+// order before returning the error. The heavy lifting lives in the
+// bootstrapBuilder methods (bootstrap_builder.go); this function only orders
+// the phases and maps phase errors to the caller.
 func Bootstrap(ctx context.Context, cfg *ares_config.Config, deps *BootstrapDeps) (*Components, error) {
-	var comp Components
-
 	if deps == nil {
 		deps = &BootstrapDeps{}
 	}
 
-	// Track cleanup functions for components created during bootstrap.
-	// On error, they are executed in reverse order of creation.
-	var cleanups []func()
+	// bctx scopes every background worker Bootstrap starts (bgGroup
+	// goroutines, event subscribers, tickers). It is a child of the caller's
+	// ctx, so on the SUCCESS path its cancellation semantics are identical:
+	// the caller cancels ctx at shutdown and the workers observe it. The
+	// derived context exists for the FAILURE path — runCleanups cancels it
+	// so workers started before a late wiring error stop immediately instead
+	// of lingering until the caller happens to cancel a ctx it may keep
+	// alive (e.g. a serve loop that retries bootstrap).
+	bctx, bcancel := context.WithCancel(ctx)
 
-	// runCleanups executes all cleanup functions in reverse order.
-	runCleanups := func() {
-		for i := len(cleanups) - 1; i >= 0; i-- {
-			cleanups[i]()
-		}
+	comp := &Components{}
+	b := &bootstrapBuilder{
+		ctx:     ctx,
+		cfg:     cfg,
+		deps:    deps,
+		comp:    comp,
+		bctx:    bctx,
+		bcancel: bcancel,
 	}
-
-	// 1. EventStore — from deps or create in-memory default
-	if deps.EventStore != nil {
-		comp.EventStore = deps.EventStore
-	} else {
-		comp.EventStore = ares_events.NewMemoryEventStore()
-	}
-
-	// 2. Runtime — always created (accepts nil eventStore)
-	rt, err := ProvideRuntime(comp.EventStore)
-	if err != nil {
-		runCleanups()
+	if err := b.assembleCore(); err != nil {
 		return nil, err
 	}
-	comp.Runtime = rt
-
-	// 3. Memory — only construct when cfg.Memory.IsEnabled() is true.
-	// Stage 2 fix (F01): respect the config gate so disabled = no goroutine,
-	// no event subscription, no store writes.
-	mem, memErr := wireMemory(cfg, comp.EventStore)
-	if memErr != nil {
-		runCleanups()
-		return nil, memErr
-	}
-	comp.Memory = mem
-
-	// 4. MCP
-	mcp, err := ProvideMCP(ctx, cfg.MCP)
-	if err != nil {
-		runCleanups()
+	if err := b.assembleExperience(); err != nil {
 		return nil, err
 	}
-	comp.MCP = mcp
-	cleanups = append(cleanups, func() {
-		if err := mcp.Stop(ctx); err != nil {
-			log.Warn("bootstrap: cleanup MCP stop error", "error", err)
-		}
-	})
-
-	// 4b. SKILLS progressive disclosure (REVIEW #11 closure): assemble the
-	// skill catalog once and seed it into the memory manager so the resident
-	// "Available skills" block is populated in serve (previously only the
-	// `ares status` CLI constructed the catalog). The seeded registry is also
-	// stored on comp.SkillsRegistry so the serve launcher can feed it to the
-	// environment-capability searcher (envcap), completing the second half of
-	// progressive disclosure: skills become searchable tool capabilities, not
-	// just a resident prompt block. Best-effort: skipped when memory is
-	// disabled or the manager does not expose SetSkillsRegistry.
-	if comp.Memory != nil {
-		if catalog, reg := wireSkills(ctx, comp.Memory, mcp); catalog != nil {
-			comp.SkillsRegistry = reg
-			cleanups = append(cleanups, func() {
-				if err := catalog.Close(); err != nil {
-					log.Warn("bootstrap: cleanup skills catalog close error", "error", err)
-				}
-			})
-		}
-	}
-
-	// 5. LLM — from config (for backward compat) or from deps
-	if deps.LLMClient != nil {
-		comp.LLM = &LLMComponents{Client: deps.LLMClient}
-	} else {
-		llm, err := ProvideLLM(cfg.LLM)
-		if err != nil {
-			runCleanups()
-			return nil, err
-		}
-		comp.LLM = llm
-	}
-
-	// 5b + 5c. Experience distillation + auto-distill on task completion
-	// (Track A). Wired conditionally (PG + embedding); failures are non-fatal.
-	// embClient is reused by wireRetrievers to build the MemoryRetriever, so
-	// the distillation and RAG retrieval paths share one embedding client.
-	guidanceProvider, embClient := wireDistillation(ctx, cfg, &comp, deps, &cleanups)
-	// G1: expose the experience repository (deps-provided or distillation-
-	// created) so consumers can query distilled experiences — e.g. the Agent
-	// Fabric spawn path injects the latest experience as the spawn prior.
-	comp.ExpRepo = deps.ExpRepo
-
-	// AKG closed loop (0.2.9): build the KnowledgeStore (in-memory default,
-	// PG optional) and the write-side DistillBridge, gated on
-	// cfg.Knowledge.RetrievalEnabled. Best-effort: when AKG or its deps are
-	// unavailable the loop is skipped with a warning, leaving the system
-	// fully functional (read-only mode keeps the store when write deps
-	// are missing). The store is shared by the knowledge runtime's
-	// StoreProvider (read side) and the leader's KnowledgeRetriever.
-	knowStore, akgBridge := wireAKGLoop(cfg, deps, embClient)
-	comp.KnowledgeStore = knowStore
-	comp.AKGBridge = akgBridge
-
-	subscribeDistillationEvents(ctx, &comp)
-
-	// REVIEW #7 closure: purge expired/decayed rows on a schedule instead of
-	// letting retention-managed tables grow unboundedly. No-op when no
-	// cleaners were wired (e.g. storage disabled).
-	startExpiryCleanupWorker(ctx, &comp)
-
-	// 6. Dashboard
-	// The v0.3.0 M3/M4 observability components (trajectory tracer, feedback
-	// store, global tracer) are created ONCE here and shared: the dashboard
-	// reads them via the provider adapters, and the runtime write hooks (GA
-	// generation recording, task/agent lifecycle tracing) write into the same
-	// instances — so the dashboard endpoints show live data, not empty lists.
-	comp.Observability = &ObservabilityComponents{
-		EvolutionTracer: aresrecovery.NewEvolutionTracer(),
-		FeedbackStore:   aresrecovery.NewFeedbackStore(),
-		GlobalTracer:    aresrecovery.NewGlobalTracer(),
-	}
-	dash, err := ProvideDashboard(ctx, mcp, cfg.Dashboard.Addr,
-		comp.Observability.EvolutionTracer, comp.Observability.FeedbackStore,
-		comp.Observability.GlobalTracer)
-	if err != nil {
-		runCleanups()
+	if err := b.assembleEvolutionDAG(); err != nil {
 		return nil, err
 	}
-	comp.Dashboard = dash
-	cleanups = append(cleanups, func() {
-		if err := dash.Stop(ctx); err != nil {
-			log.Warn("bootstrap: cleanup dashboard stop error", "error", err)
-		}
-	})
-
-	// 7+8. Evolution wiring order matters: ProvideNewEvolution (below) creates
-	// the shared evidence store (newEvol.EvidenceStore); ProvideEvolution's
-	// flight recorder must be built AFTER it so the flight collector's
-	// workflow/scheduler/recovery fitness evidence lands in the same store
-	// the GA genomes read (previously the recorder got a nil EvidenceStore
-	// and those three fitness signals were silently dropped).
-
-	// 8. New Evolution — runtime-evolution system (Genome + Diff + Coordinator).
-	// Stage 2 fix (F02): only construct when cfg.Evolution.Enabled is true.
-	// When disabled, no NewEvolution, no GA ticker, no LLM suggestion ticker.
-	if !cfg.Evolution.Enabled {
-		log.Info("bootstrap: evolution disabled (cfg.Evolution.Enabled=false), " +
-			"skipping NewEvolution and background tickers")
-	}
-	dag, dagErr := buildEvolutionDAG(cfg.Evolution.Enabled)
-	if dagErr != nil {
-		runCleanups()
-		return nil, dagErr
-	}
-
-	// Type-assert comp.Memory to MemoryConfigStore. Both *memoryManager and
-	// *ProductionMemoryManager implement MemoryConfigStore. When Memory is
-	// disabled (comp.Memory is nil), fall back to the minimal manager so
-	// the evolution system still has a MemoryConfigStore to write patches to.
-	liveMemoryStore := resolveLiveMemoryStore(comp.Memory)
-
-	// Create the KnowledgeRuntime once and share it between the evolution
-	// system and the agent's AKF tools so knowledge genome patches affect
-	// the actual runtime used by the agent's knowledge tools. The vector
-	// provider is registered when postgres vector storage + embedding are
-	// wired (comp.VectorStore / embClient); otherwise the runtime uses only
-	// the memory/code providers.
-	// Convert nil *EmbeddingClient to nil EmbeddingService interface to avoid
-	// the Go nil-interface-trap: a nil typed pointer wrapped in a non-nil
-	// interface passes nil checks but panics on method calls (e.g. GetModel).
-	var embForRuntime apiembed.EmbeddingService
-	if embClient != nil {
-		embForRuntime = embClient
-	}
-	knowRt := BuildKnowledgeRuntime(comp.VectorStore, embForRuntime, knowStore)
-	comp.KnowledgeRuntime = knowRt
-
-	// T1 (evidence persistence): when PostgreSQL is configured, use a
-	// persistent evidence store instead of the default in-memory one.
-	// Fail-loud: configured Postgres that cannot connect blocks startup.
-	var evidenceStore evidence.Store
-	if cfg.Storage.Enabled && cfg.Storage.Host != "" {
-		pgCfg := &postgres.Config{
-			Host:     cfg.Storage.Host,
-			Port:     cfg.Storage.Port,
-			User:     cfg.Storage.Username,
-			Password: cfg.Storage.Password,
-			Database: cfg.Storage.Database,
-			SSLMode:  cfg.Storage.SSLMode,
-		}
-		pgPool, pgErr := postgres.NewPool(pgCfg)
-		if pgErr != nil {
-			runCleanups()
-			return nil, fmt.Errorf("evidence: create postgres pool: %w", pgErr)
-		}
-		pgStore, storeErr := evidence.NewPostgresStore(pgPool)
-		if storeErr != nil {
-			runCleanups()
-			return nil, fmt.Errorf("evidence: create postgres store: %w", storeErr)
-		}
-		evidenceStore = pgStore
-		cleanups = append(cleanups, func() {
-			if cerr := pgPool.Close(); cerr != nil {
-				log.Warn("bootstrap: close evidence postgres pool",
-					"error", cerr)
-			}
-		})
-	}
-
-	newEvol, evStore, evErr := wireNewEvolution(cfg.Evolution.Enabled, dag, knowRt, liveMemoryStore, evidenceStore)
-	if evErr != nil {
-		runCleanups()
-		return nil, evErr
-	}
-	comp.NewEvolution = newEvol
-	comp.EvidenceStore = evStore
-
-	// Single shared flight recorder — created and started here, independent
-	// of the legacy evolution deps (ExpRepo). Its collector subscribes to
-	// comp.EventStore and emits workflow/scheduler/recovery fitness evidence
-	// into the shared evidence store (the same store the GA genomes read when
-	// evolution is enabled), so the fitness write loop works on every
-	// production path (ares serve / ares start) even when ProvideEvolution is
-	// skipped. ProvideEvolution and the serve launcher reuse this instance.
-	if comp.EventStore != nil {
-		comp.FlightRecorder = flight.NewFlightRecorder(flight.FlightRecorderConfig{
-			EventStore:    comp.EventStore,
-			EvidenceStore: evStore,
-		})
-		if err := comp.FlightRecorder.Start(ctx); err != nil {
-			log.WarnContext(ctx, "bootstrap: flight recorder start failed (fitness evidence disabled)",
-				"error", err)
-		}
-		cleanups = append(cleanups, comp.FlightRecorder.Stop)
-	}
-
-	// 7. Evolution (legacy system) — only if all required deps are wired.
-	// Built after the shared recorder so it reuses comp.FlightRecorder
-	// (which shares the evidence store with the GA genomes) instead of
-	// constructing a second recorder. Fully gated by cfg.Evolution.Enabled
-	// (F02) so the legacy scheduler/dream cycle cannot start behind the
-	// config's back.
-	evol, err := wireLegacyEvolution(ctx, cfg, deps, &comp)
-	if err != nil {
-		runCleanups()
+	if err := b.assembleNewEvolution(); err != nil {
 		return nil, err
 	}
-	comp.Evolution = evol
-
-	// Closed-loop wiring: inject MemoryRetriever (distilled experiences) and
-	// KnowledgeRetriever (AKG entries) into the MemoryManager so every
-	// BuildContext / BuildPromptMessages call augments the prompt with
-	// retrieved context when config.EnableRAG is true. Best-effort: skips
-	// retrievers whose dependencies (embedding client, experience repo, AKG
-	// runtime) are unavailable, so minimal configs are unaffected.
-	//
-	// Runs after ProvideNewEvolution so the retriever can emit retrieval
-	// evidence to the shared evidence store (Source "memory") consumed by the
-	// GA MemoryGenome.
-	wireRetrievers(ctx, cfg, comp.Memory, embClient, deps.ExpRepo, knowRt, knowStore, evStore)
-
-	// Track C (C-Safe): wire the DeploymentPipeline into the Coordinator so
-	// generated patches are safely promoted to the live runtime. Gated by
-	// cfg.Evolution.Deployment.Enabled — when disabled, the Coordinator falls
-	// back to applying patches directly (pre-deployment behavior). The live
-	// runtime is the real executor registry, so memory patches are written to
-	// the live comp.Memory; workflow/scheduler/recovery/knowledge patches hit
-	// their (still synthetic) executors — closing those requires a live DAG
-	// supply chain (Track C-Risky, deferred).
-	if cfg.Evolution.Enabled && cfg.Evolution.Deployment.Enabled && comp.NewEvolution != nil {
-		dp := deployment.NewDeploymentPipeline(
-			cfg.Evolution.Deployment,
-			&deploymentStagingRuntime{reg: comp.NewEvolution.PatchReg, evidenceStore: comp.EvidenceStore},
-			&deploymentLiveRuntime{reg: comp.NewEvolution.PatchReg},
-		)
-		comp.NewEvolution.Coordinator.SetDeployer(&deploymentAdapter{dp: dp})
-		log.Info("bootstrap: deployment pipeline wired into coordinator", "enabled", true)
+	if err := b.assembleLegacyEvolution(); err != nil {
+		return nil, err
 	}
-
-	// Register the minimal DAG with the runtime manager so the evolution
-	// system can apply workflow patches to the live DAG (v0.5.0 DAG reflux).
-	// When a real agent DAG is registered later, it replaces this minimal one.
-	if comp.Runtime != nil && dag != nil {
-		comp.Runtime.RegisterAgentDAG("evolution", dag)
+	b.wireEvolutionWiring()
+	if err := b.wirePlatform(); err != nil {
+		return nil, err
 	}
-
-	// 9. Wire the GA population adapter, coordinator bridge, and background
-	// evolution ticker (extracted to wireGAEvolution to keep Bootstrap's
-	// cyclomatic complexity within lint limits).
-	if cfg.Evolution.Enabled && comp.NewEvolution != nil {
-		if err := wireGAEvolution(ctx, cfg, &comp, comp.NewEvolution, guidanceProvider); err != nil {
-			runCleanups()
-			return nil, err
-		}
-	}
-
-	// 10. Optional service discovery (opt-in via config.Discovery.Enabled).
-	// When disabled, ProvideDiscovery returns ErrDiscoveryDisabled and the
-	// discovery packages remain unused, preserving prior behavior.
-	discoveryComp, err := ProvideDiscovery(ctx, &cfg.Discovery, comp.EventStore)
-	switch {
-	case errors.Is(err, ErrDiscoveryDisabled):
-		// Discovery is disabled — not an error, just no-op.
-		comp.Discovery = nil
-	case err != nil:
-		runCleanups()
-		return nil, fmt.Errorf("bootstrap: wire discovery: %w", err)
-	default:
-		comp.Discovery = discoveryComp
-	}
-
-	// 11. System Runtime (Stage 1): register the assembled component graph
-	// with the system-level control plane so entry points observe a uniform
-	// component list, lifecycle state, and readiness snapshot. Observational
-	// only — construction and startup stay with Bootstrap.
-	orch, sysReg, sysErr := wireSystemRuntime(ctx, cfg, &comp)
-	if sysErr != nil {
-		runCleanups()
-		return nil, sysErr
-	}
-	comp.SystemRuntime = orch
-	comp.SystemRegistry = sysReg
-
-	return &comp, nil
+	return comp, nil
 }
 
 // wireMemory constructs the memory manager when cfg.Memory.IsEnabled() is true.
-// Stage 2 fix (F01): disabled = no goroutine, no event subscription, no store
+// Disabled = no goroutine, no event subscription, no store
 // writes, so the gate is honored here instead of constructing unconditionally.
-// Stage 3 fix (B01): the event store is wired during construction, eliminating
+// The event store is wired during construction, eliminating
 // the post-Bootstrap SetEventStore bypass in serve.go. Returns nil when disabled.
+//
+// (nil, nil) on the disabled path is the documented contract: every caller
+// (Bootstrap and tests) probes `comp.Memory != nil` / `mem != nil` for the
+// disabled state and nil-checks before optional SetSkillsRegistry-style
+// wiring — none treats nil as an error.
 //
 //nolint:nilnil // nil manager + nil error is the documented "disabled" contract.
 func wireMemory(cfg *ares_config.Config, eventStore ares_events.EventStore) (ares_memory.MemoryManager, error) {
@@ -575,6 +344,11 @@ func wireMemory(cfg *ares_config.Config, eventStore ares_events.EventStore) (are
 // buildEvolutionDAG builds the minimal mutable DAG used by the evolution system
 // (workflow/scheduler/recovery genomes evolve against it). Returns nil when
 // evolution is disabled so no graph is constructed behind the config's back.
+//
+// (nil, nil) on the disabled path is the documented contract: Bootstrap's
+// continuation explicitly nil-checks (`comp.Runtime != nil && dag != nil`)
+// before RegisterAgentDAG, so a nil DAG means "nothing to register", never
+// an error state.
 //
 //nolint:nilnil // nil DAG + nil error is the documented "disabled" contract.
 func buildEvolutionDAG(enabled bool) (*engine.MutableDAG, error) {
@@ -611,8 +385,19 @@ func resolveLiveMemoryStore(mem ares_memory.MemoryManager) ares_memory.MemoryCon
 // evidence store: when disabled, a standalone store keeps the flight recorder's
 // fitness evidence flowing without a NewEvolution instance.
 //
+// (nil components + nil error) on the disabled path is the documented
+// contract: callers gate on `comp.NewEvolution != nil` (deployment wiring,
+// wireGAEvolution) and the evidence store is ALWAYS non-nil, so nothing
+// downstream can mistake the disabled state for a failure.
+//
 //nolint:nilnil // nil components + nil error is the documented "disabled" contract.
-func wireNewEvolution(enabled bool, dag *engine.MutableDAG, rt *knowledgeruntime.KnowledgeRuntime, memoryStore ares_memory.MemoryConfigStore, evStore evidence.Store) (*NewEvolutionComponents, evidence.Store, error) {
+func wireNewEvolution(
+	enabled bool,
+	dag *engine.MutableDAG,
+	rt *knowledgeruntime.KnowledgeRuntime,
+	memoryStore ares_memory.MemoryConfigStore,
+	evStore evidence.Store,
+) (*NewEvolutionComponents, evidence.Store, error) {
 	if !enabled {
 		return nil, evidence.NewMemoryStore(), nil
 	}
@@ -625,11 +410,22 @@ func wireNewEvolution(enabled bool, dag *engine.MutableDAG, rt *knowledgeruntime
 
 // wireLegacyEvolution wires the legacy evolution system when it is enabled and
 // all required deps are present; otherwise it is skipped (nil), preserving
-// prior behavior. Gated by cfg.Evolution.Enabled (F02) so the legacy scheduler
+// prior behavior. Gated by cfg.Evolution.Enabled so the legacy scheduler
 // cannot start behind the config's back.
 //
+// (nil, nil) on the skipped path is the documented contract: Bootstrap's
+// continuation nil-checks (`if evol != nil`) before arming the scheduler
+// shutdown goroutine, and bootstrap_steps.go re-asserts the scheduler type
+// — the absence of a legacy scheduler is a supported configuration
+// (wired-scheduler fallback), not a failure.
+//
 //nolint:nilnil // nil components + nil error is the documented "disabled" contract.
-func wireLegacyEvolution(ctx context.Context, cfg *ares_config.Config, deps *BootstrapDeps, comp *Components) (*EvolutionComponents, error) {
+func wireLegacyEvolution(
+	ctx context.Context,
+	cfg *ares_config.Config,
+	deps *BootstrapDeps,
+	comp *Components,
+) (*EvolutionComponents, error) {
 	if !cfg.Evolution.Enabled || deps.EventStore == nil || deps.ExpRepo == nil {
 		return nil, nil
 	}

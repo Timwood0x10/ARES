@@ -4,10 +4,11 @@ import (
 	"context"
 	"testing"
 
-	"github.com/Timwood0x10/ares/internal/ares_config"
-	ares_memory "github.com/Timwood0x10/ares/internal/ares_memory"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/Timwood0x10/ares/internal/ares_config"
+	ares_memory "github.com/Timwood0x10/ares/internal/runtime/memory"
 )
 
 func TestProvideRuntime(t *testing.T) {
@@ -66,7 +67,7 @@ func TestBootstrap_WithDeps(t *testing.T) {
 // boolPtr returns a pointer to a bool literal for *bool config fields.
 func boolPtr(b bool) *bool { return &b }
 
-// mockLLMClient is a minimal mock for ares_eval.LLMClient.
+// mockLLMClient is a minimal mock for eval.LLMClient.
 type mockLLMClient struct{}
 
 func (m *mockLLMClient) Generate(ctx context.Context, prompt string) (string, error) {

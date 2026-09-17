@@ -2,7 +2,7 @@ package memorystore
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"sort"
 	"strings"
 	"sync"
@@ -13,7 +13,7 @@ import (
 
 var (
 	// ErrObjectNotFound is returned when a Get call finds no matching object.
-	ErrObjectNotFound = fmt.Errorf("object not found")
+	ErrObjectNotFound = errors.New("object not found")
 )
 
 // Store is an in-memory implementation of KnowledgeStore.
@@ -32,26 +32,102 @@ func New() *Store {
 	}
 }
 
+// cloneObject deep-copies a KnowledgeObject. The in-memory store hands out
+// and accepts pointers, so without a copy at BOTH boundaries the stored
+// object aliases caller-owned slices/maps: a caller mutating an object after
+// Save (or through a previously returned pointer) races with every reader
+// under RLock. SQL-backed stores are naturally isolated (each row scan
+// allocates fresh values); the copy restores that contract here.
+func cloneObject(obj *knowledge.KnowledgeObject) *knowledge.KnowledgeObject {
+	if obj == nil {
+		return nil
+	}
+	cp := *obj
+	cp.Raw = append([]byte(nil), obj.Raw...)
+	if obj.Metadata != nil {
+		cp.Metadata = make(map[string]any, len(obj.Metadata))
+		for k, v := range obj.Metadata {
+			cp.Metadata[k] = v
+		}
+	}
+	if obj.Tags != nil {
+		cp.Tags = append([]string(nil), obj.Tags...)
+	}
+	if obj.Evidence != nil {
+		cp.Evidence = append([]knowledge.Evidence(nil), obj.Evidence...)
+	}
+	if obj.Representations != nil {
+		cp.Representations = make(map[string]string, len(obj.Representations))
+		for k, v := range obj.Representations {
+			cp.Representations[k] = v
+		}
+	}
+	if obj.Quality != nil {
+		q := *obj.Quality
+		cp.Quality = &q
+	}
+	if obj.Relations != nil {
+		cp.Relations = append([]knowledge.Relation(nil), obj.Relations...)
+	}
+	return &cp
+}
+
+// cloneRepresentation deep-copies a Representation (Vector slice, Metadata
+// map) — same isolation contract as cloneObject.
+func cloneRepresentation(rep *knowledge.Representation) *knowledge.Representation {
+	if rep == nil {
+		return nil
+	}
+	cp := *rep
+	if rep.Vector != nil {
+		cp.Vector = append([]float32(nil), rep.Vector...)
+	}
+	if rep.Metadata != nil {
+		cp.Metadata = make(map[string]string, len(rep.Metadata))
+		for k, v := range rep.Metadata {
+			cp.Metadata[k] = v
+		}
+	}
+	return &cp
+}
+
 func (s *Store) Save(_ context.Context, objects ...*knowledge.KnowledgeObject) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, obj := range objects {
 		if obj.ID == "" {
-			return fmt.Errorf("knowledge object ID cannot be empty")
+			return errors.New("knowledge object ID cannot be empty")
 		}
-		s.objects[obj.ID] = obj
+		if obj.Namespace == "" {
+			return errors.New("knowledge object namespace cannot be empty: an empty namespace is unreachable once any caller supplies a tenant (StoreProvider.namespaceFor never yields empty)")
+		}
+		// Objects are keyed by ID alone, so an upsert whose ID already exists
+		// under a DIFFERENT namespace would migrate another tenant's row into
+		// the caller's. Tenant-scoped Get/Delete/Search cannot catch this: a
+		// foreign row reads as absent there, and an upsert-on-miss caller
+		// (knowledge_update) would silently reassign it. Refusing the overwrite
+		// with ErrObjectNotFound keeps the foreign row indistinguishable from a
+		// missing one — the caller cannot probe other tenants' IDs via Save.
+		if existing, ok := s.objects[obj.ID]; ok && existing.Namespace != obj.Namespace {
+			return ErrObjectNotFound
+		}
+		// Store a private copy so later caller mutations cannot corrupt the
+		// stored state (see cloneObject).
+		s.objects[obj.ID] = cloneObject(obj)
 	}
 	return nil
 }
 
-func (s *Store) Get(_ context.Context, id string) (*knowledge.KnowledgeObject, error) {
+func (s *Store) Get(_ context.Context, tenantID, id string) (*knowledge.KnowledgeObject, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	obj, ok := s.objects[id]
-	if !ok {
+	// A foreign-namespace row is indistinguishable from a missing one, so a
+	// caller cannot probe another tenant for valid object IDs.
+	if !ok || obj.Namespace != tenantID {
 		return nil, ErrObjectNotFound
 	}
-	return obj, nil
+	return cloneObject(obj), nil
 }
 
 func (s *Store) Query(_ context.Context, q knowledge.Query) ([]*knowledge.KnowledgeObject, error) {
@@ -92,7 +168,7 @@ func (s *Store) Query(_ context.Context, q knowledge.Query) ([]*knowledge.Knowle
 				continue
 			}
 		}
-		result = append(result, obj)
+		result = append(result, cloneObject(obj))
 	}
 
 	// Sort by confidence descending.
@@ -117,9 +193,18 @@ func (s *Store) Query(_ context.Context, q knowledge.Query) ([]*knowledge.Knowle
 	return result, nil
 }
 
-func (s *Store) Delete(_ context.Context, id string) error {
+func (s *Store) Delete(_ context.Context, tenantID, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// A missing ID and a foreign-namespace ID must be indistinguishable:
+	// answering nil for one and ErrObjectNotFound for the other would let a
+	// caller enumerate IDs that exist under other tenants. postgres/sqlite
+	// reach the same contract by checking RowsAffected on
+	// `DELETE ... WHERE id = ? AND namespace = ?` (zero rows either way).
+	obj, ok := s.objects[id]
+	if !ok || obj.Namespace != tenantID {
+		return ErrObjectNotFound
+	}
 	delete(s.objects, id)
 	// Clean up related representations.
 	for key := range s.reps {
@@ -130,7 +215,7 @@ func (s *Store) Delete(_ context.Context, id string) error {
 	return nil
 }
 
-func (s *Store) Search(_ context.Context, text string, model string, limit int) ([]*knowledge.KnowledgeObject, error) {
+func (s *Store) Search(_ context.Context, tenantID, text string, model string, limit int) ([]*knowledge.KnowledgeObject, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -140,6 +225,9 @@ func (s *Store) Search(_ context.Context, text string, model string, limit int) 
 
 	var scored []*knowledge.KnowledgeObject
 	for _, obj := range s.objects {
+		if obj.Namespace != tenantID {
+			continue
+		}
 		content := strings.ToLower(obj.Summary + " " + strings.Join(obj.Tags, " "))
 		score := 0
 		for _, kw := range keywords {
@@ -148,7 +236,7 @@ func (s *Store) Search(_ context.Context, text string, model string, limit int) 
 			}
 		}
 		if score > 0 {
-			scored = append(scored, obj)
+			scored = append(scored, cloneObject(obj))
 		}
 	}
 
@@ -167,19 +255,25 @@ func (s *Store) SaveRepresentation(_ context.Context, rep *knowledge.Representat
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	key := rep.ObjectID + ":" + rep.Model
-	s.reps[key] = rep
+	s.reps[key] = cloneRepresentation(rep)
 	return nil
 }
 
-func (s *Store) GetRepresentation(_ context.Context, objectID string, model string) (*knowledge.Representation, error) {
+func (s *Store) GetRepresentation(_ context.Context, tenantID, objectID, model string) (*knowledge.Representation, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	// Tenant scope comes from the OWNING object (F-05): a representation is
+	// only reachable through its object, so a foreign-tenant object's vector
+	// reads as absent — the same anti-probing contract as Get.
+	if obj, ok := s.objects[objectID]; !ok || obj.Namespace != tenantID {
+		return nil, ErrObjectNotFound
+	}
 	key := objectID + ":" + model
 	rep, ok := s.reps[key]
 	if !ok {
 		return nil, ErrObjectNotFound
 	}
-	return rep, nil
+	return cloneRepresentation(rep), nil
 }
 
 // HybridSearch performs vector + lexical scoring over in-memory objects.
@@ -259,6 +353,13 @@ func (s *Store) HybridSearch(_ context.Context, req knowledge.HybridSearchReques
 	if len(scored) > finalK {
 		scored = scored[:finalK]
 	}
+	// The results embed pointers to the STORED objects; hand the caller
+	// private copies so it cannot mutate store state through a returned
+	// pointer (see cloneObject). The reps map above is internal-only and
+	// never escapes.
+	for i := range scored {
+		scored[i].Object = cloneObject(scored[i].Object)
+	}
 	return scored, nil
 }
 
@@ -280,7 +381,7 @@ func (s *Store) ListByStatus(_ context.Context, ns string, status knowledge.Obje
 				continue
 			}
 		}
-		result = append(result, obj)
+		result = append(result, cloneObject(obj))
 		if limit > 0 && len(result) >= limit {
 			break
 		}
@@ -289,11 +390,13 @@ func (s *Store) ListByStatus(_ context.Context, ns string, status knowledge.Obje
 }
 
 // UpdateStatus transitions an object's lifecycle status.
-func (s *Store) UpdateStatus(_ context.Context, id string, status knowledge.ObjectStatus) error {
+func (s *Store) UpdateStatus(_ context.Context, tenantID, id string, status knowledge.ObjectStatus) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	obj, ok := s.objects[id]
-	if !ok {
+	// Missing and foreign-namespace are the same answer, so a caller cannot
+	// probe other tenants for valid object IDs.
+	if !ok || obj.Namespace != tenantID {
 		return ErrObjectNotFound
 	}
 	obj.Status = status
@@ -302,15 +405,22 @@ func (s *Store) UpdateStatus(_ context.Context, id string, status knowledge.Obje
 }
 
 // Promote moves a candidate to active and records its computed Quality.
-func (s *Store) Promote(_ context.Context, id string, q *knowledge.Quality) error {
+func (s *Store) Promote(_ context.Context, tenantID, id string, q *knowledge.Quality) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	obj, ok := s.objects[id]
-	if !ok {
+	if !ok || obj.Namespace != tenantID {
 		return ErrObjectNotFound
 	}
 	obj.Status = knowledge.StatusActive
-	obj.Quality = q
+	// Copy the caller's Quality: storing the pointer verbatim would alias
+	// caller-owned memory (same isolation contract as cloneObject).
+	if q != nil {
+		qc := *q
+		obj.Quality = &qc
+	} else {
+		obj.Quality = nil
+	}
 	obj.UpdatedAt = time.Now().UTC()
 	return nil
 }

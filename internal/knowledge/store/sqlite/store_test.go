@@ -3,12 +3,14 @@ package sqlitestore
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"os"
 	"testing"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/knowledge"
 	_ "modernc.org/sqlite"
+
+	"github.com/Timwood0x10/ares/internal/knowledge"
 )
 
 func newTestStore(t *testing.T) *Store {
@@ -38,7 +40,7 @@ func newTestStore(t *testing.T) *Store {
 func TestSaveAndGet(t *testing.T) {
 	s := newTestStore(t)
 
-	obj := &knowledge.KnowledgeObject{
+	obj := &knowledge.KnowledgeObject{Namespace: "default",
 		ID:         "obj1",
 		Type:       knowledge.ObjectDecision,
 		Summary:    "Test decision",
@@ -49,13 +51,13 @@ func TestSaveAndGet(t *testing.T) {
 		CreatedAt:  time.Now(),
 		UpdatedAt:  time.Now(),
 	}
-	t.Cleanup(func() { _ = s.Delete(context.Background(), obj.ID) })
+	t.Cleanup(func() { _ = s.Delete(context.Background(), "default", obj.ID) })
 
 	if err := s.Save(context.Background(), obj); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 
-	got, err := s.Get(context.Background(), "obj1")
+	got, err := s.Get(context.Background(), "default", "obj1")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -73,7 +75,7 @@ func TestSaveAndGet(t *testing.T) {
 func TestGetNotFound(t *testing.T) {
 	s := newTestStore(t)
 
-	obj, err := s.Get(context.Background(), "nonexistent")
+	obj, err := s.Get(context.Background(), "default", "nonexistent")
 	if err != ErrObjectNotFound {
 		t.Fatalf("expected ErrObjectNotFound, got %v", err)
 	}
@@ -87,9 +89,9 @@ func TestSaveAndQueryByType(t *testing.T) {
 
 	now := time.Now()
 	objs := []*knowledge.KnowledgeObject{
-		{ID: "d1", Type: knowledge.ObjectDecision, Summary: "Dec 1", Confidence: 0.9, CreatedAt: now, UpdatedAt: now},
-		{ID: "d2", Type: knowledge.ObjectDecision, Summary: "Dec 2", Confidence: 0.8, CreatedAt: now, UpdatedAt: now},
-		{ID: "a1", Type: knowledge.ObjectArchitecture, Summary: "Arch 1", Confidence: 0.7, CreatedAt: now, UpdatedAt: now},
+		{Namespace: "default", ID: "d1", Type: knowledge.ObjectDecision, Summary: "Dec 1", Confidence: 0.9, CreatedAt: now, UpdatedAt: now},
+		{Namespace: "default", ID: "d2", Type: knowledge.ObjectDecision, Summary: "Dec 2", Confidence: 0.8, CreatedAt: now, UpdatedAt: now},
+		{Namespace: "default", ID: "a1", Type: knowledge.ObjectArchitecture, Summary: "Arch 1", Confidence: 0.7, CreatedAt: now, UpdatedAt: now},
 	}
 	for _, o := range objs {
 		if err := s.Save(context.Background(), o); err != nil {
@@ -98,7 +100,7 @@ func TestSaveAndQueryByType(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		for _, o := range objs {
-			_ = s.Delete(context.Background(), o.ID)
+			_ = s.Delete(context.Background(), "default", o.ID)
 		}
 	})
 
@@ -118,8 +120,8 @@ func TestSearch(t *testing.T) {
 
 	now := time.Now()
 	objs := []*knowledge.KnowledgeObject{
-		{ID: "r1", Summary: "Redis cache", Normalized: "Redis caching layer", Confidence: 0.9, CreatedAt: now, UpdatedAt: now},
-		{ID: "p1", Summary: "PostgreSQL database", Normalized: "PostgreSQL relational database", Confidence: 0.8, CreatedAt: now, UpdatedAt: now},
+		{Namespace: "default", ID: "r1", Summary: "Redis cache", Normalized: "Redis caching layer", Confidence: 0.9, CreatedAt: now, UpdatedAt: now},
+		{Namespace: "default", ID: "p1", Summary: "PostgreSQL database", Normalized: "PostgreSQL relational database", Confidence: 0.8, CreatedAt: now, UpdatedAt: now},
 	}
 	for _, o := range objs {
 		if err := s.Save(context.Background(), o); err != nil {
@@ -128,11 +130,11 @@ func TestSearch(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		for _, o := range objs {
-			_ = s.Delete(context.Background(), o.ID)
+			_ = s.Delete(context.Background(), "default", o.ID)
 		}
 	})
 
-	results, err := s.Search(context.Background(), "redis", "", 10)
+	results, err := s.Search(context.Background(), "default", "redis", "", 10)
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
@@ -148,14 +150,14 @@ func TestSaveAndGetRepresentation(t *testing.T) {
 	s := newTestStore(t)
 
 	// Save an object first (foreign key constraint).
-	obj := &knowledge.KnowledgeObject{
+	obj := &knowledge.KnowledgeObject{Namespace: "default",
 		ID: "rep-obj-1", Summary: "rep test", Confidence: 1.0,
 		CreatedAt: time.Now(), UpdatedAt: time.Now(),
 	}
 	if err := s.Save(context.Background(), obj); err != nil {
 		t.Fatalf("Save object: %v", err)
 	}
-	t.Cleanup(func() { _ = s.Delete(context.Background(), obj.ID) })
+	t.Cleanup(func() { _ = s.Delete(context.Background(), "default", obj.ID) })
 
 	rep := &knowledge.Representation{
 		ID:        "rep1",
@@ -169,7 +171,7 @@ func TestSaveAndGetRepresentation(t *testing.T) {
 		t.Fatalf("SaveRepresentation: %v", err)
 	}
 
-	got, err := s.GetRepresentation(context.Background(), "rep-obj-1", "openai-text-3-large")
+	got, err := s.GetRepresentation(context.Background(), "default", "rep-obj-1", "openai-text-3-large")
 	if err != nil {
 		t.Fatalf("GetRepresentation: %v", err)
 	}
@@ -184,7 +186,7 @@ func TestSaveAndGetRepresentation(t *testing.T) {
 func TestGetRepresentationNotFound(t *testing.T) {
 	s := newTestStore(t)
 
-	rep, err := s.GetRepresentation(context.Background(), "nonexistent", "any")
+	rep, err := s.GetRepresentation(context.Background(), "default", "nonexistent", "any")
 	if err != ErrObjectNotFound {
 		t.Fatalf("expected ErrObjectNotFound, got %v", err)
 	}
@@ -193,22 +195,223 @@ func TestGetRepresentationNotFound(t *testing.T) {
 	}
 }
 
-func TestDelete(t *testing.T) {
+// TestGetCorruptTimestampDegradesToZeroTimeAndLogs locks the scan-side
+// degrade contract for timestamp columns: a corrupted created_at/updated_at
+// (hand-written row or bit rot) keeps the zero time — one bad column must
+// not fail the whole read — while parseTimeField logs a warning with the
+// raw string so the corrupt row is observable in logs.
+func TestGetCorruptTimestampDegradesToZeroTimeAndLogs(t *testing.T) {
 	s := newTestStore(t)
 
-	obj := &knowledge.KnowledgeObject{ID: "del1", Summary: "delete me", Confidence: 1.0, CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	obj := &knowledge.KnowledgeObject{Namespace: "default",
+		ID: "corrupt-ts", Summary: "corrupt ts", Confidence: 1.0,
+		CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}
 	if err := s.Save(context.Background(), obj); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
-	if err := s.Delete(context.Background(), "del1"); err != nil {
+	t.Cleanup(func() { _ = s.Delete(context.Background(), "default", obj.ID) })
+
+	// Corrupt both timestamp columns directly (bypassing the writer).
+	if _, err := s.db.Exec(
+		`UPDATE akf_objects SET created_at = 'not-a-timestamp', updated_at = 'also-bad' WHERE id = ?`,
+		obj.ID,
+	); err != nil {
+		t.Fatalf("corrupt timestamps: %v", err)
+	}
+
+	got, err := s.Get(context.Background(), "default", obj.ID)
+	if err != nil {
+		t.Fatalf("Get with corrupt timestamps must degrade, not fail: %v", err)
+	}
+	if !got.CreatedAt.IsZero() {
+		t.Errorf("corrupt created_at must fold to zero time, got %v", got.CreatedAt)
+	}
+	if !got.UpdatedAt.IsZero() {
+		t.Errorf("corrupt updated_at must fold to zero time, got %v", got.UpdatedAt)
+	}
+}
+
+func TestDelete(t *testing.T) {
+	s := newTestStore(t)
+
+	obj := &knowledge.KnowledgeObject{Namespace: "default", ID: "del1", Summary: "delete me", Confidence: 1.0, CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	if err := s.Save(context.Background(), obj); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if err := s.Delete(context.Background(), "default", "del1"); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
 
-	got, err := s.Get(context.Background(), "del1")
+	got, err := s.Get(context.Background(), "default", "del1")
 	if err != ErrObjectNotFound {
 		t.Fatalf("expected ErrObjectNotFound after delete, got %v", err)
 	}
 	if got != nil {
 		t.Error("expected nil after delete")
+	}
+}
+
+// TestSaveRefusesCrossNamespaceOverwrite locks the Save ownership guard on the
+// SQL path: the upsert's ON CONFLICT clause carries
+// `WHERE akf_objects.namespace = excluded.namespace`, so a conflicting ID
+// owned by another namespace affects zero rows and is reported as
+// ErrObjectNotFound. Without it, an upsert-on-miss caller (knowledge_update)
+// would overwrite the victim row and re-stamp it with the caller's namespace.
+func TestSaveRefusesCrossNamespaceOverwrite(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	victim := &knowledge.KnowledgeObject{
+		ID: "obj-1", Namespace: "tenant-a", Normalized: "secret",
+		CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}
+	if err := s.Save(ctx, victim); err != nil {
+		t.Fatalf("seed Save: %v", err)
+	}
+
+	attacker := &knowledge.KnowledgeObject{
+		ID: "obj-1", Namespace: "tenant-b", Normalized: "attacker content",
+		CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}
+	if err := s.Save(ctx, attacker); !errors.Is(err, ErrObjectNotFound) {
+		t.Fatalf("cross-namespace Save = %v, want ErrObjectNotFound", err)
+	}
+
+	got, err := s.Get(ctx, "tenant-a", "obj-1")
+	if err != nil {
+		t.Fatalf("owning-tenant Get after refused Save: %v", err)
+	}
+	if got.Namespace != "tenant-a" || got.Normalized != "secret" {
+		t.Fatalf("victim row mutated by refused Save: ns=%q normalized=%q", got.Namespace, got.Normalized)
+	}
+	if _, err := s.Get(ctx, "tenant-b", "obj-1"); !errors.Is(err, ErrObjectNotFound) {
+		t.Fatalf("refused Save must not create the row in tenant-b, got %v", err)
+	}
+
+	// Same-tenant upsert still works after the guard.
+	victim.Normalized = "updated"
+	if err := s.Save(ctx, victim); err != nil {
+		t.Fatalf("same-tenant Save: %v", err)
+	}
+}
+
+// TestDeleteMissingAndForeignBothReportNotFound pins that Delete answers
+// identically for a missing ID and a foreign-namespace ID (both
+// ErrObjectNotFound): returning nil for one would let a caller enumerate
+// which IDs exist under other tenants.
+func TestDeleteMissingAndForeignBothReportNotFound(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	victim := &knowledge.KnowledgeObject{
+		ID: "secret", Namespace: "tenant-a",
+		CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}
+	if err := s.Save(ctx, victim); err != nil {
+		t.Fatalf("seed Save: %v", err)
+	}
+
+	if err := s.Delete(ctx, "tenant-b", "secret"); !errors.Is(err, ErrObjectNotFound) {
+		t.Errorf("cross-tenant Delete = %v, want ErrObjectNotFound", err)
+	}
+	if err := s.Delete(ctx, "tenant-a", "missing"); !errors.Is(err, ErrObjectNotFound) {
+		t.Errorf("missing-ID Delete = %v, want ErrObjectNotFound", err)
+	}
+	// The victim survived both refused deletes.
+	if _, err := s.Get(ctx, "tenant-a", "secret"); err != nil {
+		t.Fatalf("victim row must survive refused deletes: %v", err)
+	}
+	// And the owning tenant can still delete it.
+	if err := s.Delete(ctx, "tenant-a", "secret"); err != nil {
+		t.Fatalf("owning-tenant Delete: %v", err)
+	}
+}
+
+// TestQueryByTagExactTokenMatch locks REVIEW 3.5: the tag filter must match
+// whole comma-delimited tags, not substrings. The old `tags LIKE '%tag%'`
+// made a query for tag "go" return rows tagged "golang", and a query for
+// "a" matched "ab,ac".
+func TestQueryByTagExactTokenMatch(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	objects := []*knowledge.KnowledgeObject{
+		{Namespace: "default", ID: "tag-exact", Type: knowledge.ObjectDecision, Summary: "go only", Tags: []string{"go"}, CreatedAt: time.Now(), UpdatedAt: time.Now()},
+		{Namespace: "default", ID: "tag-super", Type: knowledge.ObjectDecision, Summary: "golang", Tags: []string{"golang"}, CreatedAt: time.Now(), UpdatedAt: time.Now()},
+		{Namespace: "default", ID: "tag-multi", Type: knowledge.ObjectDecision, Summary: "ab and ac", Tags: []string{"ab", "ac"}, CreatedAt: time.Now(), UpdatedAt: time.Now()},
+		{Namespace: "default", ID: "tag-wild", Type: knowledge.ObjectDecision, Summary: "literal percent", Tags: []string{"100%_done"}, CreatedAt: time.Now(), UpdatedAt: time.Now()},
+	}
+	for _, o := range objects {
+		if err := s.Save(ctx, o); err != nil {
+			t.Fatalf("Save %s: %v", o.ID, err)
+		}
+		t.Cleanup(func(id string) func() { return func() { _ = s.Delete(ctx, "default", id) } }(o.ID))
+	}
+
+	cases := []struct {
+		tag  string
+		want []string // object IDs expected, in created_at DESC order
+	}{
+		{"go", []string{"tag-exact"}},
+		{"golang", []string{"tag-super"}},
+		{"a", nil},
+		{"ab", []string{"tag-multi"}},
+		{"ac", []string{"tag-multi"}},
+		{"100%_done", []string{"tag-wild"}},
+		{"100", nil},
+		{"done", nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.tag, func(t *testing.T) {
+			got, err := s.Query(ctx, knowledge.Query{Tags: []string{tc.tag}})
+			if err != nil {
+				t.Fatalf("Query tag %q: %v", tc.tag, err)
+			}
+			var ids []string
+			for _, o := range got {
+				ids = append(ids, o.ID)
+			}
+			if len(ids) != len(tc.want) {
+				t.Fatalf("Query tag %q = %v, want %v", tc.tag, ids, tc.want)
+			}
+			for i := range ids {
+				if ids[i] != tc.want[i] {
+					t.Fatalf("Query tag %q = %v, want %v", tc.tag, ids, tc.want)
+				}
+			}
+		})
+	}
+}
+
+// TestDeleteCascadesRepresentations proves the `PRAGMA foreign_keys = ON`
+// fix (REVIEW 3.5): deleting an object must cascade to its representations.
+// Without the pragma, ON DELETE CASCADE is decorative and the child rows
+// are orphaned forever.
+func TestDeleteCascadesRepresentations(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	obj := &knowledge.KnowledgeObject{Namespace: "default",
+		ID: "cascade-obj", Type: knowledge.ObjectDecision, Summary: "cascade me",
+		CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}
+	if err := s.Save(ctx, obj); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	rep := &knowledge.Representation{
+		ID: "cascade-rep", ObjectID: "cascade-obj", Model: "test-model",
+		Dimension: 2, Vector: []float32{0.1, 0.2}, CreatedAt: time.Now(),
+	}
+	if err := s.SaveRepresentation(ctx, rep); err != nil {
+		t.Fatalf("SaveRepresentation: %v", err)
+	}
+
+	if err := s.Delete(ctx, "default", "cascade-obj"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+
+	if _, err := s.GetRepresentation(ctx, "default", "cascade-obj", "test-model"); err != ErrObjectNotFound {
+		t.Fatalf("representation must be cascade-deleted with its object, got err=%v", err)
 	}
 }

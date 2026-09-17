@@ -1,4 +1,4 @@
-// Package ares_bootstrap — Runtime Closure Lifecycle Tests (Stage 0).
+// Package ares_bootstrap — Runtime Closure Lifecycle Tests.
 //
 // These tests verify the Bootstrap lifecycle: complete start, reverse-order
 // stop, failure rollback, and no orphan goroutines after shutdown.
@@ -13,9 +13,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/ares_config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/Timwood0x10/ares/internal/ares_config"
 )
 
 // TestClosure_Lifecycle_CompleteStartStop verifies that Bootstrap can start
@@ -110,7 +111,7 @@ func TestClosure_Lifecycle_RuntimeStartStop(t *testing.T) {
 
 // TestClosure_Lifecycle_MCPStop verifies that MCP manager can stop cleanly.
 //
-// Gap B03: ProvideMCP starts the MCP manager during construction, which
+// Known gap: ProvideMCP starts the MCP manager during construction, which
 // violates the "construct has no side effects" principle. The test verifies
 // that MCP can still be stopped cleanly despite starting during construction.
 func TestClosure_Lifecycle_MCPStop(t *testing.T) {
@@ -131,7 +132,7 @@ func TestClosure_Lifecycle_MCPStop(t *testing.T) {
 	require.NotNil(t, comp)
 	require.NotNil(t, comp.MCP)
 
-	// B03: MCP was already started during Bootstrap (ProvideMCP calls Start).
+	// MCP was already started during Bootstrap (ProvideMCP calls Start).
 	// This is the construct-has-side-effects gap.
 	// Verify it can stop cleanly.
 	err = comp.MCP.Stop(ctx)
@@ -159,11 +160,9 @@ func TestClosure_Lifecycle_DashboardStop(t *testing.T) {
 	comp, err := Bootstrap(ctx, cfg, nil)
 	require.NoError(t, err)
 	require.NotNil(t, comp)
+	// The observability providers are assembled (the standalone
+	// :8090 dashboard server was removed, so there is nothing to Stop).
 	require.NotNil(t, comp.Dashboard)
-
-	// Dashboard should stop cleanly.
-	err = comp.Dashboard.Stop(ctx)
-	assert.NoError(t, err)
 
 	cancel()
 	comp.WaitBackground()
@@ -213,7 +212,7 @@ func TestClosure_Lifecycle_ConcurrentStop(t *testing.T) {
 // TestClosure_Lifecycle_RepeatedStartStop verifies that the Runtime can be
 // started and stopped multiple times without resource leaks.
 //
-// This is a simplified version of the "100x start/stop" soak test from §8.5.
+// This is a simplified version of the "100x start/stop" soak test.
 func TestClosure_Lifecycle_RepeatedStartStop(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -285,18 +284,10 @@ func TestClosure_Lifecycle_ContextCancellation(t *testing.T) {
 	}
 }
 
-// TestClosure_Lifecycle_BootstrapCleanup verifies that Bootstrap's cleanup
-// functions are executed in reverse order on failure.
-//
-// The cleanup logic is in Bootstrap's runCleanups function. We can verify
-// it works by checking that after a failed Bootstrap, resources are cleaned
-// up (e.g., MCP is stopped).
-func TestClosure_Lifecycle_BootstrapCleanup(t *testing.T) {
-	// This test is informational — Bootstrap's cleanup logic is internal
-	// and we cannot easily trigger a failure without mocking.
-	// The existing TestBootstrap_WithMinimalConfig already verifies the
-	// happy path. A failure injection test would require modifying
-	// production code (Stage 1+).
-	t.Skip("Failure injection requires Stage 1 Runtime interface; " +
-		"Bootstrap cleanup is verified by existing tests for now")
-}
+// NOTE: the previous TestClosure_Lifecycle_BootstrapCleanup was a no-op
+// (it only called t.Skip with the rationale "Failure injection requires Stage 1
+// Runtime interface"). Failure rollback is not observable without a
+// deterministic error injection point in Bootstrap, which would require a
+// production refactor to expose runCleanups. Rather than keep a test that
+// always skips (and inflate the test count), it was removed. Reverse-order
+// cleanup on the happy path is exercised indirectly by the stop/shutdown tests.

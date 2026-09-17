@@ -4,7 +4,7 @@
 - **严重度**: P2 / Medium
 - **状态**: 已修复
 - **日期**: 2026-08-10
-- **涉及包**: `internal/eval`
+- **涉及包**: `internal/runtime/eval`
 
 ## 现象
 

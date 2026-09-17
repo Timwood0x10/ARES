@@ -2,11 +2,10 @@ package ares_security
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
-
-	"github.com/gin-gonic/gin"
 )
 
 // AuthMiddleware enforces Bearer-token JWT authentication on the wrapped
@@ -18,11 +17,16 @@ import (
 //   - rejects the request unless the role holds the required permission;
 //   - injects the authenticated principal into the request context.
 //
-// When the secret is nil, every request is denied with 401 — the same
-// deny-by-default posture the existing API-key middleware uses, so enabling
-// JWT cannot accidentally open a destructive endpoint.
+// When the secret is nil or empty, EVERY request is denied — the same
+// deny-by-default posture the API-key middleware uses, so enabling JWT can
+// never accidentally open a destructive endpoint. The denial is enforced in
+// decodeSigned (see ErrUnconfiguredSecret), not by an early return here, so
+// every verification path inherits it; the middleware reports it as 503
+// because an absent key is a server misconfiguration rather than a client
+// error.
 type AuthMiddleware struct {
-	// secret is the HS256 signing key. nil disables auth entirely (deny all).
+	// secret is the HS256 signing key. Empty means "deny all": no token can
+	// verify, because verification refuses to run against an empty key.
 	secret []byte
 	// require is the minimum permission for the wrapped route.
 	require Permission
@@ -44,8 +48,9 @@ func WithAudit(a *AuditLogger) AuthOption {
 	}
 }
 
-// NewAuthMiddleware builds an AuthMiddleware. When secret is nil the
-// middleware is in "deny all" mode until a secret is provided.
+// NewAuthMiddleware builds an AuthMiddleware. When secret is nil or empty the
+// middleware is in "deny all" mode until a real key is provided; it never
+// becomes permissive.
 func NewAuthMiddleware(secret []byte, require Permission, opts ...AuthOption) *AuthMiddleware {
 	m := &AuthMiddleware{
 		secret:  secret,
@@ -79,48 +84,6 @@ func FromContext(ctx context.Context) *Principal {
 	return nil
 }
 
-// Wrap returns an http.Handler that authenticates requests before delegating
-// to next. Suitable for net/http ServeMux wrapping and for gin via
-// gin.WrapH.
-func (m *AuthMiddleware) Wrap(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		princ, status := m.authenticate(r)
-		if status != http.StatusOK {
-			http.Error(w, http.StatusText(status), status)
-			return
-		}
-		ctx := context.WithValue(r.Context(), principalKey{}, princ)
-		next.ServeHTTP(w, r.WithContext(ctx))
-	})
-}
-
-// WrapGin returns a gin.HandlerFunc enforcing the same policy. It aborts with
-// 401 when authentication fails and 403 when the role lacks the required
-// permission. gin is a first-party dependency of the repository, so importing
-// it here keeps the two adapters sharing one enforcement core.
-func (m *AuthMiddleware) WrapGin() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		princ, status := m.authenticate(c.Request)
-		if status != http.StatusOK {
-			c.AbortWithStatusJSON(status, gin.H{"error": http.StatusText(status)})
-			return
-		}
-		c.Set("ares.principal", princ)
-		c.Next()
-	}
-}
-
-// PrincipalFromGin reads the principal stored by WrapGin. Returns nil on
-// routes that did not run WrapGin (e.g. public routes).
-func PrincipalFromGin(c *gin.Context) *Principal {
-	if v, ok := c.Get("ares.principal"); ok {
-		if p, ok := v.(*Principal); ok {
-			return p
-		}
-	}
-	return nil
-}
-
 // Verify performs the JWT verification + role check for a request without
 // requiring a wrapped handler. It returns the principal and an HTTP status; a
 // non-200 status means the request must be rejected. Callers that need to
@@ -141,6 +104,13 @@ func (m *AuthMiddleware) authenticate(r *http.Request) (*Principal, int) {
 	}
 	sub, roleStr, err := VerifyJWT(m.secret, token, m.now())
 	if err != nil {
+		// An unconfigured key is OUR bug, not the caller's: answer 5xx so it
+		// cannot masquerade as a stream of bad client tokens, and never let it
+		// fall through to an allow.
+		if errors.Is(err, ErrUnconfiguredSecret) {
+			m.auditAuth(r, "unconfigured jwt secret", sub, roleStr, http.StatusServiceUnavailable)
+			return nil, http.StatusServiceUnavailable
+		}
 		m.auditAuth(r, "invalid token", sub, roleStr, http.StatusUnauthorized)
 		return nil, http.StatusUnauthorized
 	}
@@ -163,15 +133,17 @@ func (m *AuthMiddleware) auditAuth(r *http.Request, decision, subject, role stri
 	if m.audit == nil {
 		return
 	}
-	m.audit.Auth(decision, subject, role, r.Method, r.URL.Path, status)
+	m.audit.Auth(decision, subject, role, r.Method, r.URL.Path, status, RequestDetailsFrom(r))
 }
 
 // bearerToken extracts the token from an Authorization header. Only the
-// "Bearer " scheme is accepted; any other scheme is treated as missing so a
-// token cannot be smuggled in via a different scheme.
+// "Bearer" scheme is accepted (case-insensitive per RFC 7235); any other
+// scheme is treated as missing so a token cannot be smuggled in via a
+// different scheme.
 func bearerToken(authHeader string) string {
-	if !strings.HasPrefix(authHeader, "Bearer ") {
+	const prefix = "bearer "
+	if len(authHeader) < len(prefix) || !strings.EqualFold(authHeader[:len(prefix)], prefix) {
 		return ""
 	}
-	return strings.TrimSpace(strings.TrimPrefix(authHeader, "Bearer "))
+	return strings.TrimSpace(authHeader[len(prefix):])
 }

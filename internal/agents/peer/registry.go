@@ -12,11 +12,12 @@ package peer
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"sync"
 
-	"github.com/Timwood0x10/ares/internal/ares_protocol/ahp"
+	"github.com/Timwood0x10/ares/internal/runtime/protocol/ahp"
 )
 
 // SendFunc delivers a message to one agent. Implementations enqueue onto the
@@ -42,10 +43,10 @@ func NewRegistry() *Registry {
 // for restart/resurrection).
 func (r *Registry) Register(agentID string, send SendFunc) error {
 	if agentID == "" {
-		return fmt.Errorf("peer: agent ID must not be empty")
+		return errors.New("peer: agent ID must not be empty")
 	}
 	if send == nil {
-		return fmt.Errorf("peer: send function must not be nil")
+		return errors.New("peer: send function must not be nil")
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -90,7 +91,7 @@ func (r *Registry) Send(ctx context.Context, targetID string, msg *ahp.AHPMessag
 		return fmt.Errorf("peer: agent %q not registered", targetID)
 	}
 	if msg == nil {
-		return fmt.Errorf("peer: message must not be nil")
+		return errors.New("peer: message must not be nil")
 	}
 	stamped := msg.Clone()
 	stamped.TargetAgent = targetID

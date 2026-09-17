@@ -4,7 +4,9 @@ package ares_config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 )
 
 // TestLoad tests the Load function.
@@ -120,6 +122,90 @@ func TestLoadInvalidFile(t *testing.T) {
 	}
 }
 
+// TestLoad_ToolPoolAndGuardrails parses the evolution.tool_pool and
+// evolution.guardrails YAML blocks. These are the KnownTools single-source
+// configuration: the yaml enumerates the registered tool vocabulary and the
+// tool-whitelist pool, so the mutator and the guardrail agree on what a valid
+// whitelist looks like.
+func TestLoad_ToolPoolAndGuardrails(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.yaml")
+	configContent := `
+server:
+  host: "localhost"
+llm:
+  provider: "ollama"
+  model: "llama3.2"
+agents:
+  sub: []
+evolution:
+  tool_pool:
+    - "web_search,calculator"
+    - "web_search,calculator,code_runner"
+  guardrails:
+    max_tools_enabled: 4
+    require_any_tool: true
+    known_tools:
+      - "web_search"
+      - "calculator"
+      - "code_runner"
+`
+	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.Evolution.ToolPool) != 2 {
+		t.Fatalf("ToolPool len = %d, want 2: %v", len(cfg.Evolution.ToolPool), cfg.Evolution.ToolPool)
+	}
+	if cfg.Evolution.ToolPool[0] != "web_search,calculator" {
+		t.Errorf("ToolPool[0] = %q, want %q", cfg.Evolution.ToolPool[0], "web_search,calculator")
+	}
+	g := cfg.Evolution.Guardrails
+	if g.MaxToolsEnabled != 4 {
+		t.Errorf("MaxToolsEnabled = %d, want 4", g.MaxToolsEnabled)
+	}
+	if !g.RequireAnyTool {
+		t.Error("RequireAnyTool = false, want true")
+	}
+	if len(g.KnownTools) != 3 || g.KnownTools[0] != "web_search" {
+		t.Errorf("KnownTools = %v, want [web_search calculator code_runner]", g.KnownTools)
+	}
+}
+
+// TestLoad_GuardrailsAbsentDefaultsZero asserts an absent `guardrails` block
+// yields zero-values (bound disabled, vocabulary disabled) — preserving the
+// pre-existing permissive selection behavior.
+func TestLoad_GuardrailsAbsentDefaultsZero(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.yaml")
+	configContent := `
+server:
+  host: "localhost"
+llm:
+  provider: "ollama"
+  model: "llama3.2"
+agents:
+  sub: []
+evolution:
+  enabled: true
+`
+	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	g := cfg.Evolution.Guardrails
+	if g.MaxToolsEnabled != 0 || g.RequireAnyTool || len(g.KnownTools) != 0 {
+		t.Errorf("absent guardrails must default zero, got MaxToolsEnabled=%d RequireAnyTool=%v KnownTools=%v",
+			g.MaxToolsEnabled, g.RequireAnyTool, g.KnownTools)
+	}
+}
+
 // TestLoadInvalidYAML tests loading invalid YAML.
 func TestLoadInvalidYAML(t *testing.T) {
 	tmpDir := t.TempDir()
@@ -140,225 +226,6 @@ server:
 	}
 }
 
-// TestLoadFromEnv tests loading configuration from environment variables.
-//
-//nolint:gocyclo // Test function with comprehensive test cases
-func TestLoadFromEnv(t *testing.T) {
-	// Create minimal config
-	cfg := &Config{
-		Server: ServerConfig{
-			Host: "localhost",
-			Port: 8080,
-		},
-		LLM: LLMConfig{
-			Provider: defaultLLMProvider,
-			Model:    "llama3",
-		},
-		Storage: StorageConfig{
-			Type: "postgres",
-		},
-	}
-
-	// Set environment variables
-	// Test code: os.Setenv is used to set environment variables for testing
-	// nolint: errcheck // This is intentional in test code
-	if err := os.Setenv("SERVER_HOST", "0.0.0.0"); err != nil {
-		t.Fatalf("Failed to set SERVER_HOST: %v", err)
-	}
-
-	// Test code: os.Setenv is used to set environment variables for testing
-	// nolint: errcheck // This is intentional in test code
-	if err := os.Setenv("SERVER_PORT", "9000"); err != nil {
-		t.Fatalf("Failed to set SERVER_PORT: %v", err)
-	}
-	if err := os.Setenv("LLM_API_KEY", "test-api-key"); err != nil {
-		t.Fatalf("Failed to set LLM_API_KEY: %v", err)
-	}
-	if err := os.Setenv("LLM_PROVIDER", providerOpenAI); err != nil {
-		t.Fatalf("Failed to set LLM_PROVIDER: %v", err)
-	}
-	if err := os.Setenv("LLM_BASE_URL", "https://api.openai.com"); err != nil {
-		t.Fatalf("Failed to set LLM_BASE_URL: %v", err)
-	}
-	if err := os.Setenv("LLM_MODEL", "gpt-4"); err != nil {
-		t.Fatalf("Failed to set LLM_MODEL: %v", err)
-	}
-	if err := os.Setenv("DB_HOST", "db.example.com"); err != nil {
-		t.Fatalf("Failed to set DB_HOST: %v", err)
-	}
-	if err := os.Setenv("DB_PORT", "5433"); err != nil {
-		t.Fatalf("Failed to set DB_PORT: %v", err)
-	}
-	if err := os.Setenv("DB_USERNAME", "user"); err != nil {
-		t.Fatalf("Failed to set DB_USERNAME: %v", err)
-	}
-	if err := os.Setenv("DB_PASSWORD", "pass"); err != nil {
-		t.Fatalf("Failed to set DB_PASSWORD: %v", err)
-	}
-	if err := os.Setenv("DB_DATABASE", "testdb"); err != nil {
-		t.Fatalf("Failed to set DB_DATABASE: %v", err)
-	}
-	defer func() {
-		// Test code: os.Unsetenv is used to clean up environment variables in test
-		// nolint: errcheck // This is intentional in test code
-		if err := os.Unsetenv("SERVER_HOST"); err != nil {
-			t.Fatalf("Failed to unset SERVER_HOST: %v", err)
-		}
-		if err := os.Unsetenv("SERVER_PORT"); err != nil {
-			t.Fatalf("Failed to unset SERVER_PORT: %v", err)
-		}
-		if err := os.Unsetenv("LLM_API_KEY"); err != nil {
-			t.Fatalf("Failed to unset LLM_API_KEY: %v", err)
-		}
-		if err := os.Unsetenv("LLM_PROVIDER"); err != nil {
-			t.Fatalf("Failed to unset LLM_PROVIDER: %v", err)
-		}
-		if err := os.Unsetenv("LLM_BASE_URL"); err != nil {
-			t.Fatalf("Failed to unset LLM_BASE_URL: %v", err)
-		}
-		if err := os.Unsetenv("LLM_MODEL"); err != nil {
-			t.Fatalf("Failed to unset LLM_MODEL: %v", err)
-		}
-		if err := os.Unsetenv("DB_HOST"); err != nil {
-			t.Fatalf("Failed to unset DB_HOST: %v", err)
-		}
-		if err := os.Unsetenv("DB_PORT"); err != nil {
-			t.Fatalf("Failed to unset DB_PORT: %v", err)
-		}
-		if err := os.Unsetenv("DB_USERNAME"); err != nil {
-			t.Fatalf("Failed to unset DB_USERNAME: %v", err)
-		}
-		if err := os.Unsetenv("DB_PASSWORD"); err != nil {
-			t.Fatalf("Failed to unset DB_PASSWORD: %v", err)
-		}
-		if err := os.Unsetenv("DB_DATABASE"); err != nil {
-			t.Fatalf("Failed to unset DB_DATABASE: %v", err)
-		}
-	}()
-
-	// Load from environment
-	if err := LoadFromEnv(cfg); err != nil {
-		t.Fatalf("LoadFromEnv() error = %v", err)
-	}
-
-	// Verify environment overrides
-	if cfg.Server.Host != "0.0.0.0" {
-		t.Errorf("Server.Host = %v, want 0.0.0.0", cfg.Server.Host)
-	}
-	if cfg.Server.Port != 9000 {
-		t.Errorf("Server.Port = %v, want 9000", cfg.Server.Port)
-	}
-	if cfg.LLM.APIKey != "test-api-key" {
-		t.Errorf("LLM.APIKey = %v, want test-api-key", cfg.LLM.APIKey)
-	}
-	if cfg.LLM.Provider != providerOpenAI {
-		t.Errorf("LLM.Provider = %v, want openai", cfg.LLM.Provider)
-	}
-	if cfg.LLM.BaseURL != "https://api.openai.com" {
-		t.Errorf("LLM.BaseURL = %v, want https://api.openai.com", cfg.LLM.BaseURL)
-	}
-	if cfg.LLM.Model != "gpt-4" {
-		t.Errorf("LLM.Model = %v, want gpt-4", cfg.LLM.Model)
-	}
-	if cfg.Storage.Host != "db.example.com" {
-		t.Errorf("Storage.Host = %v, want db.example.com", cfg.Storage.Host)
-	}
-	if cfg.Storage.Port != 5433 {
-		t.Errorf("Storage.Port = %v, want 5433", cfg.Storage.Port)
-	}
-	if cfg.Storage.Username != "user" {
-		t.Errorf("Storage.Username = %v, want user", cfg.Storage.Username)
-	}
-	if cfg.Storage.Password != "pass" {
-		t.Errorf("Storage.Password = %v, want pass", cfg.Storage.Password)
-	}
-	if cfg.Storage.Database != "testdb" {
-		t.Errorf("Storage.Database = %v, want testdb", cfg.Storage.Database)
-	}
-}
-
-// TestLoadFromEnvOpenRouterAPIKey tests OPENROUTER_API_KEY environment variable.
-func TestLoadFromEnvOpenRouterAPIKey(t *testing.T) {
-	cfg := &Config{
-		LLM: LLMConfig{
-			Provider: providerOpenRouter,
-		},
-	}
-
-	if err := os.Setenv("OPENROUTER_API_KEY", "openrouter-key"); err != nil {
-		t.Fatalf("Failed to set OPENROUTER_API_KEY: %v", err)
-	}
-	defer func() {
-		if err := os.Unsetenv("OPENROUTER_API_KEY"); err != nil {
-			t.Fatalf("Failed to unset OPENROUTER_API_KEY: %v", err)
-		}
-	}()
-
-	if err := LoadFromEnv(cfg); err != nil {
-		t.Fatalf("LoadFromEnv() error = %v", err)
-	}
-
-	if cfg.LLM.APIKey != "openrouter-key" {
-		t.Errorf("LLM.APIKey = %v, want openrouter-key", cfg.LLM.APIKey)
-	}
-}
-
-// TestLoadFromEnvInvalidPort tests loading invalid port from environment.
-func TestLoadFromEnvInvalidPort(t *testing.T) {
-	cfg := &Config{
-		Server: ServerConfig{
-			Host: "localhost",
-			Port: 8080,
-		},
-	}
-
-	if err := os.Setenv("SERVER_PORT", "invalid"); err != nil {
-		t.Fatalf("Failed to set SERVER_PORT: %v", err)
-	}
-	defer func() {
-		if err := os.Unsetenv("SERVER_PORT"); err != nil {
-			t.Logf("Failed to unset SERVER_PORT: %v", err)
-		}
-	}()
-
-	// Should not fail, just ignore invalid value
-	if err := LoadFromEnv(cfg); err != nil {
-		t.Errorf("LoadFromEnv() should ignore invalid port, got error: %v", err)
-	}
-
-	// Port should remain unchanged
-	if cfg.Server.Port != 8080 {
-		t.Errorf("Server.Port = %v, want 8080 (unchanged)", cfg.Server.Port)
-	}
-}
-
-// TestLoadFromEnvSecurity verifies the JWT/security environment variables are
-// loaded: ARES_JWT_SECRET sets Security.JWTSecret and ARES_AUTH_ENABLED turns
-// on Security.AuthEnabled.
-func TestLoadFromEnvSecurity(t *testing.T) {
-	cfg := &Config{}
-	if err := os.Setenv("ARES_JWT_SECRET", "env-secret"); err != nil {
-		t.Fatalf("setenv: %v", err)
-	}
-	if err := os.Setenv("ARES_AUTH_ENABLED", "1"); err != nil {
-		t.Fatalf("setenv: %v", err)
-	}
-	defer func() {
-		_ = os.Unsetenv("ARES_JWT_SECRET")
-		_ = os.Unsetenv("ARES_AUTH_ENABLED")
-	}()
-
-	if err := LoadFromEnv(cfg); err != nil {
-		t.Fatalf("LoadFromEnv: %v", err)
-	}
-	if cfg.Security.JWTSecret != "env-secret" {
-		t.Errorf("Security.JWTSecret = %q, want env-secret", cfg.Security.JWTSecret)
-	}
-	if !cfg.Security.AuthEnabled {
-		t.Error("Security.AuthEnabled = false, want true")
-	}
-}
-
 // TestSetDefaults tests the setDefaults method.
 func TestSetDefaults(t *testing.T) {
 	cfg := &Config{}
@@ -366,8 +233,8 @@ func TestSetDefaults(t *testing.T) {
 	cfg.setDefaults()
 
 	// Verify default values
-	if cfg.Server.Host != "localhost" {
-		t.Errorf("Server.Host default = %v, want localhost", cfg.Server.Host)
+	if cfg.Server.Host != "127.0.0.1" {
+		t.Errorf("Server.Host default = %v, want 127.0.0.1 (loopback bind)", cfg.Server.Host)
 	}
 	if cfg.Server.Port != 8080 {
 		t.Errorf("Server.Port default = %v, want 8080", cfg.Server.Port)
@@ -943,4 +810,308 @@ func TestSetAllowedConfigDir_PathTraversal(t *testing.T) {
 	if _, err := Load(outConfig); err != nil {
 		t.Errorf("Load(%q) after clearing allowed dir failed: %v", outConfig, err)
 	}
+}
+
+// validKernelTestConfig returns a config that passes every validator, so a
+// kernel-specific assertion cannot be satisfied by an unrelated earlier error
+// (validateKernel runs last in Validate).
+func validKernelTestConfig() *Config {
+	return &Config{
+		Server: ServerConfig{Host: "localhost", Port: 8080},
+		LLM: LLMConfig{
+			Provider:  defaultLLMProvider,
+			Model:     "llama3",
+			Timeout:   60,
+			MaxTokens: 4096,
+		},
+		Output:     OutputConfig{Format: "simple"},
+		Validation: ValidationConfig{MaxRetries: 3},
+		Memory: MemoryConfig{
+			SessionMemory: SessionConfig{MaxHistory: 50},
+			Archive:       ArchiveConfig{Dir: ".context/rounds", MaxRounds: 200},
+		},
+	}
+}
+
+// TestValidateKernelLoopKnobs covers the loop-clock knobs' validation contract:
+// zero/unset is legal (0 = unlimited rounds, 0 = default 1 quantum per round)
+// because both are zero-value-safe, while negatives are rejected rather than
+// silently normalized — a negative is always an operator mistake.
+func TestValidateKernelLoopKnobs(t *testing.T) {
+	t.Run("zero values are legal", func(t *testing.T) {
+		cfg := validKernelTestConfig()
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("Validate() with unset kernel loop knobs error = %v, want nil", err)
+		}
+	})
+
+	t.Run("negative loop_max_iterations rejected", func(t *testing.T) {
+		cfg := validKernelTestConfig()
+		cfg.Kernel.LoopMaxIterations = -1
+		err := cfg.Validate()
+		if err == nil {
+			t.Fatal("Validate() with negative loop_max_iterations = nil, want error")
+		}
+		if !strings.Contains(err.Error(), "loop_max_iterations") {
+			t.Errorf("error %q must name the offending key loop_max_iterations", err)
+		}
+	})
+
+	t.Run("negative loop_round_quanta rejected", func(t *testing.T) {
+		cfg := validKernelTestConfig()
+		cfg.Kernel.LoopRoundQuanta = -3
+		err := cfg.Validate()
+		if err == nil {
+			t.Fatal("Validate() with negative loop_round_quanta = nil, want error")
+		}
+		if !strings.Contains(err.Error(), "loop_round_quanta") {
+			t.Errorf("error %q must name the offending key loop_round_quanta", err)
+		}
+	})
+
+	t.Run("positive values pass through", func(t *testing.T) {
+		cfg := validKernelTestConfig()
+		cfg.Kernel.LoopMaxIterations = 10
+		cfg.Kernel.LoopRoundQuanta = 4
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("Validate() with positive kernel loop knobs error = %v, want nil", err)
+		}
+	})
+}
+
+// TestValidateKernelMaxConcurrent covers the max_concurrent knob's
+// validation contract: 0 is legal (0 = auto — the scheduler's fallback chain
+// derives drain parallelism from the live candidate pool), while a negative
+// is rejected rather than silently normalized — a negative is always an
+// operator mistake.
+func TestValidateKernelMaxConcurrent(t *testing.T) {
+	t.Run("zero is legal (auto)", func(t *testing.T) {
+		cfg := validKernelTestConfig()
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("Validate() with unset max_concurrent error = %v, want nil", err)
+		}
+	})
+
+	t.Run("negative rejected", func(t *testing.T) {
+		cfg := validKernelTestConfig()
+		cfg.Kernel.MaxConcurrent = -2
+		err := cfg.Validate()
+		if err == nil {
+			t.Fatal("Validate() with negative max_concurrent = nil, want error")
+		}
+		if !strings.Contains(err.Error(), "max_concurrent") {
+			t.Errorf("error %q must name the offending key max_concurrent", err)
+		}
+	})
+
+	t.Run("positive passes through", func(t *testing.T) {
+		cfg := validKernelTestConfig()
+		cfg.Kernel.MaxConcurrent = 8
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("Validate() with positive max_concurrent error = %v, want nil", err)
+		}
+	})
+}
+
+// TestValidateKernelDAGExecution covers the dag_execution knobs' validation
+// contract (the L2 path is the only path — the `enabled` gate is gone;
+// what remains validated is the planner depth guard and the reaper/sweeper
+// windows): an absent section is legal, while negative values are rejected
+// rather than silently normalized.
+func TestValidateKernelDAGExecution(t *testing.T) {
+	t.Run("absent section is legal", func(t *testing.T) {
+		cfg := validKernelTestConfig()
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("Validate() with absent dag_execution error = %v, want nil", err)
+		}
+		if cfg.Kernel.DAGExecution.MaxPlanDepth != 0 {
+			t.Errorf("absent max_plan_depth = %d, want 0 (planner default)",
+				cfg.Kernel.DAGExecution.MaxPlanDepth)
+		}
+	})
+
+	t.Run("negative max_plan_depth rejected", func(t *testing.T) {
+		cfg := validKernelTestConfig()
+		cfg.Kernel.DAGExecution.MaxPlanDepth = -1
+		err := cfg.Validate()
+		if err == nil {
+			t.Fatal("Validate() with negative max_plan_depth = nil, want error")
+		}
+		if !strings.Contains(err.Error(), "max_plan_depth") {
+			t.Errorf("error %q must name the offending key max_plan_depth", err)
+		}
+	})
+
+	t.Run("negative reaper_grace rejected", func(t *testing.T) {
+		cfg := validKernelTestConfig()
+		cfg.Kernel.DAGExecution.ReaperGrace = -time.Second
+		err := cfg.Validate()
+		if err == nil {
+			t.Fatal("Validate() with negative reaper_grace = nil, want error")
+		}
+		if !strings.Contains(err.Error(), "reaper_grace") {
+			t.Errorf("error %q must name the offending key reaper_grace", err)
+		}
+	})
+
+	t.Run("positive values pass through", func(t *testing.T) {
+		cfg := validKernelTestConfig()
+		cfg.Kernel.DAGExecution.MaxPlanDepth = 3
+		cfg.Kernel.DAGExecution.ReaperGrace = 90 * time.Second
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("Validate() with positive dag_execution knobs error = %v, want nil", err)
+		}
+	})
+}
+
+// TestLoad_DAGExecutionSection verifies the kernel.dag_execution yaml keys
+// parse into the planner/reaper config end to end (no `enabled` gate;
+// the L2 path is unconditional).
+func TestLoad_DAGExecutionSection(t *testing.T) {
+	skeleton := `
+server:
+  host: "localhost"
+  port: 8080
+
+llm:
+  provider: "ollama"
+  model: "llama3.2"
+  timeout: 60
+  max_tokens: 4096
+
+agents:
+  sub: []
+`
+	t.Run("section present", func(t *testing.T) {
+		configPath := filepath.Join(t.TempDir(), "config.yaml")
+		content := skeleton + `
+kernel:
+  dag_execution:
+    max_plan_depth: 3
+    reaper_grace: 45s
+`
+		if err := os.WriteFile(configPath, []byte(content), 0644); err != nil {
+			t.Fatalf("Failed to write config file: %v", err)
+		}
+		cfg, err := Load(configPath)
+		if err != nil {
+			t.Fatalf("Load() error = %v", err)
+		}
+		if cfg.Kernel.DAGExecution.MaxPlanDepth != 3 {
+			t.Errorf("dag_execution.max_plan_depth = %d, want 3",
+				cfg.Kernel.DAGExecution.MaxPlanDepth)
+		}
+		if cfg.Kernel.DAGExecution.ReaperGrace != 45*time.Second {
+			t.Errorf("dag_execution.reaper_grace = %s, want 45s",
+				cfg.Kernel.DAGExecution.ReaperGrace)
+		}
+	})
+
+	t.Run("section absent stays legal", func(t *testing.T) {
+		configPath := filepath.Join(t.TempDir(), "config.yaml")
+		if err := os.WriteFile(configPath, []byte(skeleton), 0644); err != nil {
+			t.Fatalf("Failed to write config file: %v", err)
+		}
+		cfg, err := Load(configPath)
+		if err != nil {
+			t.Fatalf("Load() error = %v", err)
+		}
+		if cfg.Kernel.DAGExecution.MaxPlanDepth != 0 {
+			t.Errorf("absent max_plan_depth = %d, want 0",
+				cfg.Kernel.DAGExecution.MaxPlanDepth)
+		}
+	})
+}
+
+// TestLoad_IntrospectSection verifies the introspect.token yaml key parses
+// end to end, and that an absent section leaves the token empty (read side
+// open under the loopback default bind — the M-S1 default posture).
+func TestLoad_IntrospectSection(t *testing.T) {
+	skeleton := `
+server:
+  host: "127.0.0.1"
+  port: 8080
+
+llm:
+  provider: "ollama"
+  model: "llama3.2"
+`
+	t.Run("token present", func(t *testing.T) {
+		configPath := filepath.Join(t.TempDir(), "config.yaml")
+		content := skeleton + `
+introspect:
+  token: "panel-read-token"
+`
+		if err := os.WriteFile(configPath, []byte(content), 0644); err != nil {
+			t.Fatalf("Failed to write config file: %v", err)
+		}
+		cfg, err := Load(configPath)
+		if err != nil {
+			t.Fatalf("Load() error = %v", err)
+		}
+		if cfg.Introspect.Token != "panel-read-token" {
+			t.Errorf("introspect.token = %q, want panel-read-token", cfg.Introspect.Token)
+		}
+	})
+
+	t.Run("section absent stays legal", func(t *testing.T) {
+		configPath := filepath.Join(t.TempDir(), "config.yaml")
+		if err := os.WriteFile(configPath, []byte(skeleton), 0644); err != nil {
+			t.Fatalf("Failed to write config file: %v", err)
+		}
+		cfg, err := Load(configPath)
+		if err != nil {
+			t.Fatalf("Load() error = %v", err)
+		}
+		if cfg.Introspect.Token != "" {
+			t.Errorf("absent introspect.token = %q, want empty", cfg.Introspect.Token)
+		}
+	})
+}
+
+// TestValidateKernelAgentBudget covers the agent-budget gate's config
+// contract: zero = unlimited (legal), negatives and an unparsable deadline
+// are rejected, and a well-formed budget passes.
+func TestValidateKernelAgentBudget(t *testing.T) {
+	t.Run("zero is legal (unlimited)", func(t *testing.T) {
+		cfg := validKernelTestConfig()
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("Validate() with unset agent_budget error = %v, want nil", err)
+		}
+	})
+
+	t.Run("negative tokens rejected", func(t *testing.T) {
+		cfg := validKernelTestConfig()
+		cfg.Kernel.AgentBudget.Tokens = -1
+		err := cfg.Validate()
+		if err == nil || !strings.Contains(err.Error(), "agent_budget.tokens") {
+			t.Fatalf("negative tokens: err = %v, want agent_budget.tokens error", err)
+		}
+	})
+
+	t.Run("negative tools rejected", func(t *testing.T) {
+		cfg := validKernelTestConfig()
+		cfg.Kernel.AgentBudget.Tools = -3
+		err := cfg.Validate()
+		if err == nil || !strings.Contains(err.Error(), "agent_budget.tools") {
+			t.Fatalf("negative tools: err = %v, want agent_budget.tools error", err)
+		}
+	})
+
+	t.Run("invalid deadline rejected", func(t *testing.T) {
+		cfg := validKernelTestConfig()
+		cfg.Kernel.AgentBudget.Deadline = "half an hour"
+		err := cfg.Validate()
+		if err == nil || !strings.Contains(err.Error(), "agent_budget.deadline") {
+			t.Fatalf("invalid deadline: err = %v, want agent_budget.deadline error", err)
+		}
+	})
+
+	t.Run("well-formed budget passes", func(t *testing.T) {
+		cfg := validKernelTestConfig()
+		cfg.Kernel.AgentBudget = AgentBudgetConfig{Tokens: 200000, Tools: 500, Deadline: "2h"}
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("well-formed agent_budget error = %v, want nil", err)
+		}
+	})
 }

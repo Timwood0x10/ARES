@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Timwood0x10/ares/api/core"
+	llmcore "github.com/Timwood0x10/ares/internal/llmcore"
 )
 
 func TestChat_OpenAI_WithTools(t *testing.T) {
@@ -54,13 +54,13 @@ func TestChat_OpenAI_WithTools(t *testing.T) {
 		t.Fatalf("NewClient() error = %v", err)
 	}
 
-	messages := []*core.LLMMessage{
+	messages := []*llmcore.LLMMessage{
 		{Role: "user", Content: "What is the weather in Seattle?"},
 	}
-	tools := []core.Tool{
+	tools := []llmcore.Tool{
 		{
 			Type: "function",
-			Function: core.FunctionDefinition{
+			Function: llmcore.FunctionDefinition{
 				Name:        "get_weather",
 				Description: "Get weather for a city",
 				Parameters: map[string]interface{}{
@@ -122,7 +122,7 @@ func TestChat_OpenAI_TextOnly(t *testing.T) {
 		t.Fatalf("NewClient() error = %v", err)
 	}
 
-	resp, err := client.Chat(context.Background(), []*core.LLMMessage{
+	resp, err := client.Chat(context.Background(), []*llmcore.LLMMessage{
 		{Role: "user", Content: "Hello"},
 	}, nil, nil)
 	if err != nil {
@@ -175,10 +175,10 @@ func TestChat_OpenRouter_WithTools(t *testing.T) {
 		t.Fatalf("NewClient() error = %v", err)
 	}
 
-	resp, err := client.Chat(context.Background(), []*core.LLMMessage{
+	resp, err := client.Chat(context.Background(), []*llmcore.LLMMessage{
 		{Role: "user", Content: "Search for test"},
-	}, []core.Tool{
-		{Type: "function", Function: core.FunctionDefinition{Name: "search", Description: "Search the web"}},
+	}, []llmcore.Tool{
+		{Type: "function", Function: llmcore.FunctionDefinition{Name: "search", Description: "Search the web"}},
 	}, nil)
 	if err != nil {
 		t.Fatalf("Chat() error = %v", err)
@@ -200,7 +200,7 @@ func TestChat_OpenAI_NoAPIKey(t *testing.T) {
 		t.Fatalf("NewClient() error = %v", err)
 	}
 
-	_, err = client.Chat(context.Background(), []*core.LLMMessage{
+	_, err = client.Chat(context.Background(), []*llmcore.LLMMessage{
 		{Role: "user", Content: "Hello"},
 	}, nil, nil)
 	if err == nil {
@@ -260,12 +260,12 @@ func TestChat_Anthropic_WithTools(t *testing.T) {
 		t.Fatalf("NewClient() error = %v", err)
 	}
 
-	resp, err := client.Chat(context.Background(), []*core.LLMMessage{
+	resp, err := client.Chat(context.Background(), []*llmcore.LLMMessage{
 		{Role: "user", Content: "What is the weather in Seattle?"},
-	}, []core.Tool{
+	}, []llmcore.Tool{
 		{
 			Type: "function",
-			Function: core.FunctionDefinition{
+			Function: llmcore.FunctionDefinition{
 				Name:        "get_weather",
 				Description: "Get weather for a city",
 				Parameters: map[string]interface{}{
@@ -339,7 +339,7 @@ func TestChat_Anthropic_SystemMessage(t *testing.T) {
 		t.Fatalf("NewClient() error = %v", err)
 	}
 
-	resp, err := client.Chat(context.Background(), []*core.LLMMessage{
+	resp, err := client.Chat(context.Background(), []*llmcore.LLMMessage{
 		{Role: "system", Content: "You are a helpful assistant."},
 		{Role: "user", Content: "Hello"},
 	}, nil, nil)
@@ -386,10 +386,10 @@ func TestChat_Anthropic_ToolResult(t *testing.T) {
 		t.Fatalf("NewClient() error = %v", err)
 	}
 
-	resp, err := client.Chat(context.Background(), []*core.LLMMessage{
+	resp, err := client.Chat(context.Background(), []*llmcore.LLMMessage{
 		{Role: "user", Content: "What is the weather?"},
-		{Role: "assistant", Content: "", ToolCalls: []core.ToolCall{
-			{ID: "toolu_123", Type: "function", Function: core.FunctionCall{Name: "get_weather", Arguments: `{"city":"Seattle"}`}},
+		{Role: "assistant", Content: "", ToolCalls: []llmcore.ToolCall{
+			{ID: "toolu_123", Type: "function", Function: llmcore.FunctionCall{Name: "get_weather", Arguments: `{"city":"Seattle"}`}},
 		}},
 		{Role: "tool", ToolCallID: "toolu_123", Content: "Sunny, 72F"},
 	}, nil, nil)
@@ -433,7 +433,7 @@ func TestChat_Anthropic_NoAPIKey(t *testing.T) {
 		t.Fatalf("NewClient() error = %v", err)
 	}
 
-	_, err = client.Chat(context.Background(), []*core.LLMMessage{
+	_, err = client.Chat(context.Background(), []*llmcore.LLMMessage{
 		{Role: "user", Content: "Hello"},
 	}, nil, nil)
 	if err == nil {
@@ -475,10 +475,10 @@ func TestChat_Ollama_WithTools(t *testing.T) {
 		t.Fatalf("NewClient() error = %v", err)
 	}
 
-	resp, err := client.Chat(context.Background(), []*core.LLMMessage{
+	resp, err := client.Chat(context.Background(), []*llmcore.LLMMessage{
 		{Role: "user", Content: "What is 2+2?"},
-	}, []core.Tool{
-		{Type: "function", Function: core.FunctionDefinition{Name: "calculate", Description: "Calculate math"}},
+	}, []llmcore.Tool{
+		{Type: "function", Function: llmcore.FunctionDefinition{Name: "calculate", Description: "Calculate math"}},
 	}, nil)
 	if err != nil {
 		t.Fatalf("Chat() error = %v", err)
@@ -502,7 +502,7 @@ func TestChat_UnsupportedProvider(t *testing.T) {
 		t.Fatalf("NewClient() error = %v", err)
 	}
 
-	_, err = client.Chat(context.Background(), []*core.LLMMessage{
+	_, err = client.Chat(context.Background(), []*llmcore.LLMMessage{
 		{Role: "user", Content: "Hello"},
 	}, nil, nil)
 	if err == nil {
@@ -562,10 +562,10 @@ func TestChat_OpenAI_ToolResultMessage(t *testing.T) {
 		t.Fatalf("NewClient() error = %v", err)
 	}
 
-	resp, err := client.Chat(context.Background(), []*core.LLMMessage{
+	resp, err := client.Chat(context.Background(), []*llmcore.LLMMessage{
 		{Role: "user", Content: "What is the weather?"},
-		{Role: "assistant", Content: "", ToolCalls: []core.ToolCall{
-			{ID: "call_123", Type: "function", Function: core.FunctionCall{Name: "get_weather", Arguments: `{"city":"Seattle"}`}},
+		{Role: "assistant", Content: "", ToolCalls: []llmcore.ToolCall{
+			{ID: "call_123", Type: "function", Function: llmcore.FunctionCall{Name: "get_weather", Arguments: `{"city":"Seattle"}`}},
 		}},
 		{Role: "tool", ToolCallID: "call_123", Content: "Sunny, 72F"},
 	}, nil, nil)
@@ -632,7 +632,7 @@ func TestFailoverClient_Chat_AllProviders(t *testing.T) {
 		cooldowns:        make(map[string]time.Time),
 	}
 
-	resp, err := fc.Chat(context.Background(), []*core.LLMMessage{
+	resp, err := fc.Chat(context.Background(), []*llmcore.LLMMessage{
 		{Role: "user", Content: "Hello"},
 	}, nil, nil)
 	if err != nil {
@@ -642,5 +642,148 @@ func TestFailoverClient_Chat_AllProviders(t *testing.T) {
 	// Should succeed with OpenAI (first client), not skip to Ollama.
 	if resp.Content != "Hello from OpenAI" {
 		t.Errorf("expected response from OpenAI, got %s", resp.Content)
+	}
+}
+
+// TestBuildAnthropicChatMessages_ParallelToolResultsSingleUserMessage locks
+// REVIEW 2.8#43: consecutive tool-role messages (what a PARALLEL tool call
+// produces — one assistant message with N tool_use blocks, then N tool
+// results) must be batched into ONE user message with N tool_result content
+// blocks. Anthropic rejects consecutive user messages with HTTP 400, which
+// is exactly what one-user-message-per-tool-result produced.
+func TestBuildAnthropicChatMessages_ParallelToolResultsSingleUserMessage(t *testing.T) {
+	messages := []*llmcore.LLMMessage{
+		{Role: "user", Content: "check both repos"},
+		{Role: "assistant", Content: "", ToolCalls: []llmcore.ToolCall{
+			{ID: "toolu_1", Type: "function", Function: llmcore.FunctionCall{Name: "get_stars", Arguments: `{"repo":"ares"}`}},
+			{ID: "toolu_2", Type: "function", Function: llmcore.FunctionCall{Name: "get_stars", Arguments: `{"repo":"goagent"}`}},
+		}},
+		{Role: "tool", ToolCallID: "toolu_1", Content: "120 stars"},
+		{Role: "tool", ToolCallID: "toolu_2", Content: "340 stars"},
+		{Role: "user", Content: "thanks"},
+	}
+
+	out, system := buildAnthropicChatMessages(messages)
+	if system != "" {
+		t.Errorf("no system message in input, got system=%q", system)
+	}
+	if len(out) != 3 {
+		t.Fatalf("expected 3 messages (user, assistant-with-tools, ONE user with tool_results+text), got %d: %+v", len(out), out)
+	}
+
+	// The assistant message carries both tool_use blocks.
+	assistantContent := out[1]["content"].([]map[string]any)
+	toolUseCount := 0
+	for _, block := range assistantContent {
+		if block["type"] == "tool_use" {
+			toolUseCount++
+		}
+	}
+	if toolUseCount != 2 {
+		t.Errorf("assistant message must carry 2 tool_use blocks, got %d", toolUseCount)
+	}
+
+	// The tool results are ONE user message with two tool_result blocks —
+	// not two consecutive user messages (the HTTP 400 shape). The trailing
+	// user text ("thanks") is merged into the same message rather than
+	// creating a consecutive user message.
+	toolMsg := out[2]
+	if toolMsg["role"] != "user" {
+		t.Fatalf("tool results must be in a user message, got role=%v", toolMsg["role"])
+	}
+	content := toolMsg["content"].([]map[string]any)
+	if len(content) != 3 {
+		t.Fatalf("expected 2 tool_result blocks + 1 merged text block, got %d", len(content))
+	}
+	ids := map[string]bool{}
+	texts := 0
+	for _, block := range content {
+		switch block["type"] {
+		case "tool_result":
+			ids[block["tool_use_id"].(string)] = true
+		case "text":
+			texts++
+			if block["text"] != "thanks" {
+				t.Errorf("merged user text wrong: %v", block["text"])
+			}
+		default:
+			t.Errorf("unexpected block type %v", block["type"])
+		}
+	}
+	if !ids["toolu_1"] || !ids["toolu_2"] {
+		t.Errorf("tool_use ids not preserved: %v", ids)
+	}
+	if texts != 1 {
+		t.Errorf("expected the trailing user text merged once, got %d", texts)
+	}
+
+	// No consecutive user messages anywhere in the output.
+	for i := 1; i < len(out); i++ {
+		if out[i]["role"] == "user" && out[i-1]["role"] == "user" {
+			t.Errorf("consecutive user messages at %d/%d — the Anthropic 400 shape", i-1, i)
+		}
+	}
+}
+
+// TestBuildAnthropicChatMessages_TrailingToolResults verifies tool results
+// at the END of the conversation are still flushed into a user message
+// (the accumulator must not be dropped when the input ends).
+func TestBuildAnthropicChatMessages_TrailingToolResults(t *testing.T) {
+	messages := []*llmcore.LLMMessage{
+		{Role: "user", Content: "run it"},
+		{Role: "assistant", Content: "", ToolCalls: []llmcore.ToolCall{
+			{ID: "toolu_9", Type: "function", Function: llmcore.FunctionCall{Name: "run", Arguments: `{}`}},
+		}},
+		{Role: "tool", ToolCallID: "toolu_9", Content: "ok"},
+	}
+	out, _ := buildAnthropicChatMessages(messages)
+	if len(out) != 3 {
+		t.Fatalf("expected 3 messages, got %d", len(out))
+	}
+	if out[2]["role"] != "user" {
+		t.Fatalf("trailing tool result must flush as a user message, got %v", out[2]["role"])
+	}
+}
+
+// TestChat_OpenAI_UsagePassthrough locks REVIEW 2.8#42: the OpenAI path
+// must copy the response's usage block into the GenerateResponse — token
+// counts of 0 broke every cost-tracking consumer downstream.
+func TestChat_OpenAI_UsagePassthrough(t *testing.T) {
+	responseBody := `{
+		"choices": [{
+			"message": {"role": "assistant", "content": "ok"},
+			"finish_reason": "stop"
+		}],
+		"usage": {
+			"prompt_tokens": 42,
+			"completion_tokens": 7,
+			"total_tokens": 49
+		}
+	}`
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, responseBody)
+	}))
+	defer server.Close()
+
+	client, err := NewClient(&Config{
+		Provider: "openai",
+		APIKey:   "test-key",
+		BaseURL:  server.URL,
+		Model:    "gpt-4",
+	})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	resp, err := client.Chat(context.Background(), []*llmcore.LLMMessage{
+		{Role: "user", Content: "Hello"},
+	}, nil, nil)
+	if err != nil {
+		t.Fatalf("Chat() error = %v", err)
+	}
+	if resp.Usage.PromptTokens != 42 || resp.Usage.CompletionTokens != 7 || resp.Usage.TotalTokens != 49 {
+		t.Errorf("usage not passed through: %+v", resp.Usage)
 	}
 }

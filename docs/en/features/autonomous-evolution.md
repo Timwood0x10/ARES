@@ -71,7 +71,7 @@ graph TB
 
 ## Core Components
 
-### 1. Evolution Package (`internal/evolution/`)
+### 1. Evolution Package (`internal/runtime/evolution`)
 
 The **top-level orchestration package** that wires all components together into a cohesive system.
 
@@ -117,7 +117,7 @@ func Shutdown(system *WiredEvolutionSystem)
 
 ---
 
-### 2. Genome Package (`internal/evolution/genome/`)
+### 2. Genome Package (`internal/runtime/evolution/genome`)
 
 Manages the **population** of strategy agents across generations using genetic algorithm operations.
 
@@ -186,7 +186,7 @@ child, _ := crosser.Crossover(ctx, parentA, parentB)
 
 ---
 
-### 3. Mutation Package (`internal/evolution/mutation/`)
+### 3. Mutation Package (`internal/runtime/ares_evolution/mutation/`)
 
 Generates **child strategies** from a parent by varying parameters or prompt templates.
 
@@ -246,7 +246,7 @@ mutator, err := mutation.NewMutator(
 
 ---
 
-### 4. Arena Package (`internal/arena/`)
+### 4. Arena Package (`internal/runtime/arena`)
 
 Provides **statistical A/B testing** for comparing candidate strategies against the current baseline.
 
@@ -318,7 +318,7 @@ registry.Emit(&callbacks.Context{
 
 ---
 
-### 6. Experience Package (`internal/experience/`)
+### 6. Experience Package (`internal/runtime/ares_evolution/experience`)
 
 **Bandit feedback service** for experience quality reinforcement.
 

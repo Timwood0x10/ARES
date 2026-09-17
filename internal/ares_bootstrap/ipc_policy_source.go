@@ -6,13 +6,13 @@ import (
 	"errors"
 	"fmt"
 
-	evolution "github.com/Timwood0x10/ares/internal/ares_evolution"
 	"github.com/Timwood0x10/ares/internal/aresrecovery"
+	evolution "github.com/Timwood0x10/ares/internal/runtime/ares_evolution"
 )
 
 // IPC policy param keys read from the active evolution strategy's Params
 // map. The evolution system evolves these values; the Kernel enforces them
-// through aresrecovery.EvolutionAwareIPC (v0.3.0 M2-3).
+// through aresrecovery.EvolutionAwareIPC.
 const (
 	// ipcEncodingParam ("ipc.encoding") selects the wire encoding: "json"
 	// (default) or "json+gzip".

@@ -418,7 +418,7 @@ func TestRepository_SaveProfile(t *testing.T) {
 				models.StyleTag("casual"),
 			},
 
-			Budget: models.NewPriceRange(50.0, 200.0),
+			Budget: &models.PriceRange{Min: 50.0, Max: 200.0},
 
 			Colors: []string{"red", "blue"},
 
@@ -474,7 +474,7 @@ func TestRepository_SaveProfile(t *testing.T) {
 				models.StyleTag("formal"),
 			},
 
-			Budget: models.NewPriceRange(100.0, 300.0),
+			Budget: &models.PriceRange{Min: 100.0, Max: 300.0},
 
 			Colors: []string{"black", "white"},
 

@@ -3,8 +3,9 @@
 package ares_config
 
 import (
+	"errors"
 	"fmt"
-	"net"
+	"time"
 )
 
 // Validate validates the configuration values.
@@ -41,16 +42,20 @@ func (c *Config) Validate() error {
 		return err
 	}
 
-	if err := c.validateDashboard(); err != nil {
-		return err
-	}
-
 	if err := c.validateEvolution(); err != nil {
 		return err
 	}
 
 	if err := c.validateDiscovery(); err != nil {
 		return err
+	}
+
+	if err := c.validateKernel(); err != nil {
+		return err
+	}
+
+	if c.Storage.EventsRetentionDays < 0 {
+		return fmt.Errorf("invalid events retention days: %d, must be >= 0 (0 = keep forever)", c.Storage.EventsRetentionDays)
 	}
 
 	return nil
@@ -130,13 +135,13 @@ func (c *Config) validateStorage() error {
 	}
 
 	if c.Storage.Host == "" {
-		return fmt.Errorf("storage enabled but host is empty")
+		return errors.New("storage enabled but host is empty")
 	}
 	if c.Storage.Port < 1 || c.Storage.Port > 65535 {
 		return fmt.Errorf("invalid storage port: %d, must be between 1 and 65535", c.Storage.Port)
 	}
 	if c.Storage.Database == "" {
-		return fmt.Errorf("storage enabled but database name is empty")
+		return errors.New("storage enabled but database name is empty")
 	}
 	return nil
 }
@@ -176,7 +181,7 @@ func (c *Config) validateMemory() error {
 	// MaxRounds are set, but validate defensively in case defaults were skipped.
 	if c.Memory.Archive.IsEnabled() {
 		if c.Memory.Archive.Dir == "" {
-			return fmt.Errorf("archive dir must be non-empty when archive is enabled")
+			return errors.New("archive dir must be non-empty when archive is enabled")
 		}
 		if c.Memory.Archive.MaxRounds <= 0 {
 			return fmt.Errorf("invalid archive max_rounds: %d, must be positive", c.Memory.Archive.MaxRounds)
@@ -257,21 +262,6 @@ func (c *Config) validateMCPTransport(srv MCPServerEntry) error {
 	return nil
 }
 
-// validateDashboard validates dashboard configuration
-func (c *Config) validateDashboard() error {
-	if c.Dashboard.Addr == "" {
-		return nil
-	}
-
-	if _, _, err := net.SplitHostPort(c.Dashboard.Addr); err != nil {
-		return fmt.Errorf("invalid dashboard addr %q: %v", c.Dashboard.Addr, err)
-	}
-	if c.Dashboard.WSPingInterval < 1 {
-		return fmt.Errorf("invalid dashboard ws_ping_interval: %d, must be positive", c.Dashboard.WSPingInterval)
-	}
-	return nil
-}
-
 // validateEvolution validates evolution configuration
 func (c *Config) validateEvolution() error {
 	if !c.Evolution.Enabled {
@@ -299,6 +289,7 @@ func (c *Config) validateEvolution() error {
 				c.Evolution.LLMScoring.MaxCallsPerGeneration)
 		}
 	}
+
 	return nil
 }
 
@@ -311,6 +302,55 @@ func (c *Config) validateDiscovery() error {
 	}
 	if c.Discovery.Interval < 0 {
 		return fmt.Errorf("discovery: interval must be non-negative, got %s", c.Discovery.Interval)
+	}
+	return nil
+}
+
+// validateKernel validates the kernel loop-clock knobs.
+//
+// Both are zero-value-safe (0 = unlimited rounds / 0 = "every quantum closes a
+// round"), so only negatives are rejected. The runtime does normalize negatives
+// defensively, but a negative here is always a config mistake — reporting it
+// beats silently substituting a default the operator did not ask for.
+func (c *Config) validateKernel() error {
+	if c.Kernel.LoopMaxIterations < 0 {
+		return fmt.Errorf("kernel: loop_max_iterations must be non-negative (0 = unlimited), got %d",
+			c.Kernel.LoopMaxIterations)
+	}
+	if c.Kernel.LoopRoundQuanta < 0 {
+		return fmt.Errorf("kernel: loop_round_quanta must be non-negative (0 = default 1), got %d",
+			c.Kernel.LoopRoundQuanta)
+	}
+	if c.Kernel.MaxConcurrent < 0 {
+		return fmt.Errorf("kernel: max_concurrent must be non-negative (0 = auto), got %d",
+			c.Kernel.MaxConcurrent)
+	}
+	if c.Kernel.DAGExecution.MaxPlanDepth < 0 {
+		return fmt.Errorf("kernel: dag_execution.max_plan_depth must be non-negative (0 = planner default), got %d",
+			c.Kernel.DAGExecution.MaxPlanDepth)
+	}
+	if c.Kernel.DAGExecution.ReaperGrace < 0 {
+		return fmt.Errorf("kernel: dag_execution.reaper_grace must be non-negative (0 = default 30s), got %s",
+			c.Kernel.DAGExecution.ReaperGrace)
+	}
+	if c.Kernel.DAGExecution.SessionIdleTTL < 0 {
+		return fmt.Errorf("kernel: dag_execution.session_idle_ttl must be non-negative (0 = default 30m), got %s",
+			c.Kernel.DAGExecution.SessionIdleTTL)
+	}
+	if c.Kernel.AgentBudget.Tokens < 0 {
+		return fmt.Errorf("kernel: agent_budget.tokens must be non-negative (0 = unlimited), got %d",
+			c.Kernel.AgentBudget.Tokens)
+	}
+	if c.Kernel.AgentBudget.Tools < 0 {
+		return fmt.Errorf("kernel: agent_budget.tools must be non-negative (0 = unlimited), got %d",
+			c.Kernel.AgentBudget.Tools)
+	}
+	if c.Kernel.AgentBudget.Deadline != "" {
+		if d, err := time.ParseDuration(c.Kernel.AgentBudget.Deadline); err != nil {
+			return fmt.Errorf("kernel: agent_budget.deadline is not a valid duration: %w", err)
+		} else if d < 0 {
+			return fmt.Errorf("kernel: agent_budget.deadline must be non-negative, got %s", c.Kernel.AgentBudget.Deadline)
+		}
 	}
 	return nil
 }

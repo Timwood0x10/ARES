@@ -1,4 +1,4 @@
-// Package ares_bootstrap — System Runtime wiring tests (Stage 1).
+// Package ares_bootstrap — System Runtime wiring tests.
 package ares_bootstrap
 
 import (
@@ -6,10 +6,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/ares_config"
-	"github.com/Timwood0x10/ares/internal/system_runtime"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/Timwood0x10/ares/internal/ares_config"
+	"github.com/Timwood0x10/ares/internal/kernel"
 )
 
 // newBootstrapForSnapshot builds a minimal Components instance through the real
@@ -61,7 +62,7 @@ func TestComponentStatus_RegisteredAndUnknown(t *testing.T) {
 	status, ok := comp.ComponentStatus(sysCompEventStore)
 	assert.True(t, ok, "eventstore must be registered")
 	assert.Equal(t, sysCompEventStore, status.Name)
-	assert.Equal(t, system_runtime.ModeRequired, status.Mode)
+	assert.Equal(t, kernel.ModeRequired, status.Mode)
 
 	_, ok = comp.ComponentStatus("does-not-exist")
 	assert.False(t, ok, "unknown component must not be found")

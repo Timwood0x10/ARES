@@ -1,7 +1,7 @@
 # ARES Operator Runbook
 
-> Version: 0.3.0 · Commands: `ares serve` / `ares start`
-> This document is the M9 milestone deliverable (AGENTOS_DEVELOPMENT_PLAN.md §6),
+> Version: 0.3.1 · Commands: `ares serve` / `ares run`
+> This document is the M9 milestone deliverable (AGENTOS_DEVELOPMENT_PLAN.md Section 6),
 > covering: quick start, configuration tuning, health checks, authentication,
 > hot-reload, upgrades and troubleshooting. For the architecture overview see
 > [docs/en/architecture/ares-architecture.md](../en/architecture/ares-architecture.md).
@@ -15,7 +15,7 @@
 ollama pull llama3.2
 
 # 2. Build
-make build          # output bin/ares, embeds VERSION (0.3.0)
+make build          # output bin/ares, embeds VERSION (0.3.1)
 
 # 3. Prepare config (auto-detects ./ares.yaml by default)
 cp configs/ares.yaml ares.yaml   # edit llm.provider / server.port as needed
@@ -39,17 +39,18 @@ docker compose logs -f ares-demo
 | Section | Key field | Default | Notes |
 |---|---|---|---|
 | `server` | `host` / `port` | `127.0.0.1:8080` | Monitoring console HTTP listen address |
-| `llm` | `provider` / `base_url` / `api_key` / `model` | openai | Primary LLM; `api_key` overridable via `ARES_LLM_API_KEY` |
+| `llm` | `provider` / `base_url` / `api_key` / `model` | openai | Primary LLM; `api_key` is read from this YAML only (no env override) |
 | `llm.fallbacks` | `provider` / `api_key` / `model` | — | Backup LLMs on primary failure (automatic failover) |
 | `kernel` | `resources` / `quota_apply_interval` | 1m | Per-agent resource budget and quota application period |
 | `kernel` | `autopilot` | `false` | Demo task injector switch (keep off in production) |
-| `security` | `jwt_secret` / `auth_enabled` | empty / false | JWT authentication (see §4) |
+| `security` | `jwt_secret` / `auth_enabled` | empty / false | JWT authentication (see Section 4) |
 | `memory` | `archive.enabled` | true | Event archiving (compacted storage) |
 | `discovery` | `enabled` | false | Service discovery (optional, external deps) |
 
-**Secret hygiene**: do **not** commit JWT secrets, LLM API keys or DB passwords
-to version-controlled YAML. Inject via environment variables:
-`ARES_JWT_SECRET` / `ARES_LLM_API_KEY` / `DB_PASSWORD`.
+**Secret hygiene**: the config file is the **single** configuration entry point —
+there is no environment override. Keep `ares.yaml` out of version control (or
+protect it with strict file permissions); it carries `security.jwt_secret`,
+`llm.api_key` and `storage.password`.
 
 ## 3. Health Checks & Observability
 
@@ -88,14 +89,14 @@ curl -s localhost:8080/evolution/feedback | jq
 ## 4. Authentication (JWT + RBAC)
 
 ```bash
-# 1. Configure secret and enable (env-var style)
-export ARES_JWT_SECRET=$(openssl rand -hex 32)
-export ARES_AUTH_ENABLED=1
+# 1. Configure secret in ares.yaml and enable
+#    security:
+#      jwt_secret: <openssl rand -hex 32>
+#      auth_enabled: true
 bin/ares serve --config ares.yaml
 
-# 2. Mint a token (same secret)
-export ARES_JWT_SECRET=<same as above>
-bin/ares auth token --role operator --sub deploy-user --ttl 24h
+# 2. Mint a token (signed with security.jwt_secret from the same file)
+bin/ares auth token --config ares.yaml --role operator --sub deploy-user --ttl 24h
 #   → prints an HS256 JWT
 
 # 3. Call a destructive endpoint
@@ -104,8 +105,8 @@ curl -X POST localhost:8080/api/agents/worker-1/kill \
 ```
 
 Roles: `admin` (everything, incl. chaos), `operator` (write, no chaos),
-`agent` (read-only). Compatibility: when `ARES_API_KEY` is configured, the API
-key still works as a credential on destructive endpoints (dual credential).
+`agent` (read-only). Destructive endpoints additionally accept the
+`llm.api_key` value from `ares.yaml` as an `X-API-Key` credential.
 
 ## 5. Configuration Hot-Reload (P1)
 
@@ -134,10 +135,10 @@ key still works as a credential on destructive endpoints (dual credential).
 
 | Symptom | Check |
 |---|---|
-| Destructive endpoints return 401 | No `ARES_JWT_SECRET`/`ARES_API_KEY` configured (deny-by-default) or token expired |
+| Destructive endpoints return 401 | `security.jwt_secret` empty / auth disabled (deny-by-default), wrong `X-API-Key`, or token expired |
 | Hot-reload does not take effect | Confirm `--config` points at a file (auto-detected path is fixed); check `/api/runtime/config` history for a `reloaded` record |
 | Task fails without retry | `kernel.go` `RetryPolicy{MaxRetries:2}` semantics: `Attempts < MaxRetries`; after 1 failure Attempts=1 so 1 retry remains |
-| All LLM calls fail | Check `llm.fallbacks`; `createLLMAdapterWithFallback` returns `ErrNoLLMAdapter` (detectable via `errors.Is`) |
+| All LLM calls fail | Check `llm.fallbacks`; the `FailoverClient` built by `createChatClient` returns `all N clients failed; last error: ...` (original error reachable via `errors.Is`/`errors.As`). Since 0.3.1 `createLLMAdapterWithFallback`/`ErrNoLLMAdapter` are gone (independent-review F-07) — runtime failover is a single `FailoverClient` chain |
 | Agent stuck | Look at the `/api/health` agent pool; the runtime recovery chain (lease-expiry requeue) backstops automatically |
 
 ## 8. References

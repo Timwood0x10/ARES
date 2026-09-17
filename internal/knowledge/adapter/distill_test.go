@@ -6,10 +6,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/ares_memory/distillation"
 	"github.com/Timwood0x10/ares/internal/knowledge"
 	"github.com/Timwood0x10/ares/internal/knowledge/pipeline"
 	memorystore "github.com/Timwood0x10/ares/internal/knowledge/store/memory"
+	"github.com/Timwood0x10/ares/internal/runtime/memory/distillation"
 )
 
 // testDistiller is a minimal Distiller that returns fixed memories.
@@ -53,7 +53,7 @@ func (s *testStore) Save(_ context.Context, objects ...*knowledge.KnowledgeObjec
 	return nil
 }
 
-func (s *testStore) Get(_ context.Context, id string) (*knowledge.KnowledgeObject, error) {
+func (s *testStore) Get(_ context.Context, _, id string) (*knowledge.KnowledgeObject, error) {
 	obj, ok := s.objects[id]
 	if !ok {
 		return nil, fmt.Errorf("not found: %s", id)
@@ -69,12 +69,12 @@ func (s *testStore) Query(_ context.Context, _ knowledge.Query) ([]*knowledge.Kn
 	return result, nil
 }
 
-func (s *testStore) Delete(_ context.Context, id string) error {
+func (s *testStore) Delete(_ context.Context, _, id string) error {
 	delete(s.objects, id)
 	return nil
 }
 
-func (s *testStore) Search(_ context.Context, _ string, _ string, _ int) ([]*knowledge.KnowledgeObject, error) {
+func (s *testStore) Search(_ context.Context, _, _ string, _ string, _ int) ([]*knowledge.KnowledgeObject, error) {
 	return nil, nil
 }
 
@@ -82,7 +82,7 @@ func (s *testStore) SaveRepresentation(_ context.Context, _ *knowledge.Represent
 	return nil
 }
 
-func (s *testStore) GetRepresentation(_ context.Context, _, _ string) (*knowledge.Representation, error) {
+func (s *testStore) GetRepresentation(_ context.Context, _, _, _ string) (*knowledge.Representation, error) {
 	return nil, nil
 }
 
@@ -94,11 +94,11 @@ func (s *testStore) ListByStatus(_ context.Context, _ string, _ knowledge.Object
 	return nil, nil
 }
 
-func (s *testStore) UpdateStatus(_ context.Context, _ string, _ knowledge.ObjectStatus) error {
+func (s *testStore) UpdateStatus(_ context.Context, _, _ string, _ knowledge.ObjectStatus) error {
 	return nil
 }
 
-func (s *testStore) Promote(_ context.Context, _ string, _ *knowledge.Quality) error {
+func (s *testStore) Promote(_ context.Context, _, _ string, _ *knowledge.Quality) error {
 	return nil
 }
 
@@ -137,7 +137,7 @@ func TestDistillBridge_FullPipeline(t *testing.T) {
 
 	// Verify objects are in store.
 	for _, obj := range objects {
-		got, err := store.Get(context.Background(), obj.ID)
+		got, err := store.Get(context.Background(), "", obj.ID)
 		if err != nil {
 			t.Errorf("object %q not found in store: %v", obj.ID, err)
 		}
@@ -294,7 +294,10 @@ func TestDistillBridge_QualityGate(t *testing.T) {
 			}
 
 			// Verify the stored object reflects the same lifecycle state.
-			got, gErr := store.Get(context.Background(), obj.ID)
+			// DistillConversation was called with tenantID "t1", and the bridge lets a
+			// non-empty tenantID override its configured namespace — so the row lives
+			// under "t1", not the bridge default "akf".
+			got, gErr := store.Get(context.Background(), "t1", obj.ID)
 			if gErr != nil {
 				t.Fatalf("object not found in store: %v", gErr)
 			}
@@ -306,4 +309,100 @@ func TestDistillBridge_QualityGate(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestDistillBridge_ObjectsLandInTheCallerTenantNamespace locks the tenant
+// attribution contract.
+//
+// Regression: DistillConversation accepted tenantID and forwarded it to the
+// distiller, but stamped every resulting KnowledgeObject with the bridge's
+// FIXED namespace. Production wiring hardcodes that to the constant
+// "default" (ares_bootstrap/knowledge_akg.go), and the read side is wired to
+// the same constant — so every tenant's distilled facts landed in one
+// namespace and HybridSearch recalled them cross-tenant. Worse, FindDuplicate
+// is namespace-scoped, so tenant B's fresh fact was marked superseded because
+// tenant A had stored something similar: silent fact loss on top of the leak.
+func TestDistillBridge_ObjectsLandInTheCallerTenantNamespace(t *testing.T) {
+	store := newTestStore()
+	b := mustBridge(t, store, "bridge-default")
+
+	if _, err := b.DistillConversation(context.Background(), "conv-1",
+		[]distillation.Message{{Role: "user", Content: "hello"}}, "tenant-acme", "u1"); err != nil {
+		t.Fatalf("DistillConversation: %v", err)
+	}
+
+	if len(store.objects) == 0 {
+		t.Fatal("expected distilled objects to be persisted")
+	}
+	for id, obj := range store.objects {
+		if obj.Namespace != "tenant-acme" {
+			t.Fatalf("object %s landed in namespace %q, want the caller's tenant %q — "+
+				"a fixed bridge namespace makes every tenant share one corpus",
+				id, obj.Namespace, "tenant-acme")
+		}
+	}
+}
+
+// TestDistillBridge_EmptyTenantKeepsBridgeNamespace locks the fallback: a
+// caller that supplies no tenant keeps today's behaviour rather than
+// producing objects in an empty namespace (which the store's dedup and
+// several read paths reject or treat as "all namespaces").
+func TestDistillBridge_EmptyTenantKeepsBridgeNamespace(t *testing.T) {
+	store := newTestStore()
+	b := mustBridge(t, store, "bridge-default")
+
+	if _, err := b.DistillConversation(context.Background(), "conv-1",
+		[]distillation.Message{{Role: "user", Content: "hello"}}, "", "u1"); err != nil {
+		t.Fatalf("DistillConversation: %v", err)
+	}
+	for id, obj := range store.objects {
+		if obj.Namespace != "bridge-default" {
+			t.Fatalf("object %s namespace %q, want the bridge default when no tenant is given",
+				id, obj.Namespace)
+		}
+	}
+}
+
+// TestDistillBridge_IDsDoNotCollideAcrossTenants locks that the store's
+// global ID space cannot make two tenants overwrite each other. The
+// KnowledgeStore upserts ON CONFLICT (id) DO UPDATE, so an ID that ignores
+// the tenant turns "two tenants distilled the same sentence" into silent
+// data loss for the second one.
+func TestDistillBridge_IDsDoNotCollideAcrossTenants(t *testing.T) {
+	store := newTestStore()
+	b := mustBridge(t, store, "bridge-default")
+
+	msgs := []distillation.Message{{Role: "user", Content: "identical content"}}
+	if _, err := b.DistillConversation(context.Background(), "conv-a", msgs, "tenant-a", "u1"); err != nil {
+		t.Fatalf("tenant-a: %v", err)
+	}
+	firstCount := len(store.objects)
+	if firstCount == 0 {
+		t.Fatal("expected tenant-a to persist objects")
+	}
+
+	if _, err := b.DistillConversation(context.Background(), "conv-b", msgs, "tenant-b", "u1"); err != nil {
+		t.Fatalf("tenant-b: %v", err)
+	}
+	if len(store.objects) <= firstCount {
+		t.Fatalf("tenant-b's distill overwrote tenant-a's objects (count stayed %d) — "+
+			"object IDs must be tenant-bound because the store's ID space is global",
+			len(store.objects))
+	}
+
+	namespaces := map[string]bool{}
+	for _, obj := range store.objects {
+		namespaces[obj.Namespace] = true
+	}
+	if !namespaces["tenant-a"] || !namespaces["tenant-b"] {
+		t.Fatalf("both tenants must retain their own objects, saw namespaces %v", namespaces)
+	}
+}
+
+// mustBridge builds a DistillBridge over the shared test distiller with the
+// given fixed namespace and no pipeline/embedding (so only the namespace and
+// ID attribution paths run).
+func mustBridge(t *testing.T, store knowledge.KnowledgeStore, ns string) *DistillBridge {
+	t.Helper()
+	return NewDistillBridge(&testDistiller{}, nil, store, ns)
 }

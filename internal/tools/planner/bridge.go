@@ -2,6 +2,7 @@ package planner
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -31,10 +32,10 @@ type ToolExecutionBridge struct {
 // Returns error if registry or planner is nil.
 func NewToolExecutionBridge(registry *core.Registry, planner *Planner, evidence EvidenceStore) (*ToolExecutionBridge, error) {
 	if registry == nil {
-		return nil, fmt.Errorf("tool_bridge: registry is nil")
+		return nil, errors.New("tool_bridge: registry is nil")
 	}
 	if planner == nil {
-		return nil, fmt.Errorf("tool_bridge: planner is nil")
+		return nil, errors.New("tool_bridge: planner is nil")
 	}
 	if evidence == nil {
 		evidence = NewMemoryEvidenceStore()
@@ -45,6 +46,19 @@ func NewToolExecutionBridge(registry *core.Registry, planner *Planner, evidence 
 		evidence: evidence,
 		log:      logger.Module("tool_bridge"),
 	}, nil
+}
+
+// isHardBlockDAGError reports whether a DAG validation error code must abort
+// execution. Structural problems (cycles, missing dependencies, duplicate or
+// empty step IDs) make the plan unexecutable or silently wrong — duplicate
+// IDs make executeMultiStep resolve every lookup to the first step, skipping
+// the others (#50). Everything else (e.g. IO incompatibility) is advisory.
+func isHardBlockDAGError(code string) bool {
+	switch code {
+	case "cycle_detected", "missing_dependency", "incompatible_io", "duplicate_id", "empty_id":
+		return true
+	}
+	return false
 }
 
 // Execute runs a tool by name with fallback to planner resolution.
@@ -80,12 +94,18 @@ func (b *ToolExecutionBridge) Execute(
 			result, err := tool.Execute(ctx, params)
 			latency := time.Since(start)
 
-			// Save execution evidence.
+			// Save execution evidence. The direct path must populate CapabilityName
+			// so the evidence scorer (keyed by ToolName:CapabilityName) can match
+			// it with planner-based path evidence. Without this, the most common
+			// execution path (LLM directly naming a known tool) produces evidence
+			// that the scorer never consumes (REVIEW #15a).
+			capName := primaryCapabilityName(tool)
 			if saveErr := b.evidence.Save(ctx, &ToolEvidence{
-				ToolName:  toolName,
-				Success:   err == nil && result.Success,
-				Latency:   latency,
-				Timestamp: time.Now(),
+				ToolName:       toolName,
+				CapabilityName: capName,
+				Success:        err == nil && result.Success,
+				Latency:        latency,
+				Timestamp:      time.Now(),
 			}); saveErr != nil {
 				log.Warn("tool_bridge: failed to save evidence",
 					"tool", toolName,
@@ -127,8 +147,8 @@ func (b *ToolExecutionBridge) Execute(
 	if errs := validator.Validate(plan); len(errs) > 0 {
 		for _, e := range errs {
 			// Hard-block on structural errors.
-			if e.Code == "cycle_detected" || e.Code == "missing_dependency" || e.Code == "incompatible_io" {
-				return core.Result{}, fmt.Errorf("tool_bridge: plan DAG invalid: %s", e.Error())
+			if isHardBlockDAGError(e.Code) {
+				return core.Result{}, fmt.Errorf("tool_bridge: plan DAG invalid: %w", e)
 			}
 			// Advisory warnings only (IO incompatibility, etc).
 			log.Warn("tool_bridge: plan DAG advisory",
@@ -171,10 +191,10 @@ func (b *ToolExecutionBridge) ExecutePlan(
 	params map[string]interface{},
 ) (core.Result, error) {
 	if plan == nil {
-		return core.Result{}, fmt.Errorf("tool_bridge: plan is nil")
+		return core.Result{}, errors.New("tool_bridge: plan is nil")
 	}
 	if len(plan.Steps) == 0 {
-		return core.Result{}, fmt.Errorf("tool_bridge: plan has no steps")
+		return core.Result{}, errors.New("tool_bridge: plan has no steps")
 	}
 
 	log := b.log
@@ -183,8 +203,8 @@ func (b *ToolExecutionBridge) ExecutePlan(
 	validator := NewDAGValidator()
 	if errs := validator.Validate(plan); len(errs) > 0 {
 		for _, e := range errs {
-			if e.Code == "cycle_detected" || e.Code == "missing_dependency" || e.Code == "incompatible_io" {
-				return core.Result{}, fmt.Errorf("tool_bridge: plan DAG invalid: %s", e.Error())
+			if isHardBlockDAGError(e.Code) {
+				return core.Result{}, fmt.Errorf("tool_bridge: plan DAG invalid: %w", e)
 			}
 			log.Warn("tool_bridge: plan DAG advisory",
 				"plan_id", plan.PlanID,
@@ -304,6 +324,18 @@ func (b *ToolExecutionBridge) executeMultiStep(
 	return lastResult, nil
 }
 
+// primaryCapabilityName extracts the first capability name from a tool's
+// Capabilities() list. Returns an empty string when the tool has no
+// capabilities, preserving backward compatibility with tools that do not
+// declare capabilities.
+func primaryCapabilityName(tool core.Tool) string {
+	caps := tool.Capabilities()
+	if len(caps) == 0 {
+		return ""
+	}
+	return string(caps[0])
+}
+
 // executeStep runs a single step with the given parameters and saves evidence.
 func (b *ToolExecutionBridge) executeStep(
 	ctx context.Context,
@@ -396,7 +428,9 @@ func (b *ToolExecutionBridge) executeStepWithFallback(
 		if err != nil {
 			lastErr = err
 		} else if !result.Success && result.Error != "" {
-			lastErr = fmt.Errorf("%s", result.Error)
+			// result.Error is a string carried by the tool result, not an error chain;
+			// errors.New carries it directly, avoiding a pointless fmt.Errorf("%s") wrapper.
+			lastErr = errors.New(result.Error)
 		}
 	}
 

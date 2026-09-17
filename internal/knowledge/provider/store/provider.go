@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/Timwood0x10/ares/api/embedding"
+	"golang.org/x/sync/errgroup"
+
+	"github.com/Timwood0x10/ares/internal/embedding"
 	"github.com/Timwood0x10/ares/internal/knowledge"
 	"github.com/Timwood0x10/ares/internal/knowledge/provider"
-	"golang.org/x/sync/errgroup"
+	"github.com/Timwood0x10/ares/internal/tenantctx"
 )
 
 // StoreProvider adapts a KnowledgeStore into a GraphProvider. It is the read
@@ -23,7 +25,7 @@ import (
 type StoreProvider struct {
 	name  string
 	store knowledge.KnowledgeStore
-	emb   embedding.EmbeddingService // optional; nil = lexical-only search
+	emb   embedding.EmbeddingService // optional; nil = lexical-only recall
 	model string
 	ns    string
 }
@@ -38,7 +40,13 @@ type StoreProvider struct {
 //	        signals lexical-only recall.
 //	model - embedding model name selecting which Representation to compare;
 //	        empty is valid when emb is nil.
-//	ns    - namespace filter restricting recall to one AKG namespace.
+//
+// ns    - namespace filter restricting recall to one AKG namespace. It is
+//
+//	the FALLBACK: a per-call namespace (Intent.Scope.Namespaces, or the
+//	request-scoped tenant in the Stream context — see namespaceFor)
+//	overrides it, which is what keeps recall in lockstep with the
+//	tenant-attributed facts the DistillBridge write side stores.
 func New(name string, st knowledge.KnowledgeStore, emb embedding.EmbeddingService, model, ns string) *StoreProvider {
 	return &StoreProvider{
 		name:  name,
@@ -47,6 +55,31 @@ func New(name string, st knowledge.KnowledgeStore, emb embedding.EmbeddingServic
 		model: model,
 		ns:    ns,
 	}
+}
+
+// namespaceFor reports the namespace one Stream should search. Precedence:
+//
+//  1. the intent's declared scope — a caller explicitly asking for one wins
+//     over everything (an explicit override is never second-guessed);
+//  2. the request-scoped tenant in ctx (tenantctx) — the scheduler stamps the
+//     executing task's tenant onto the quantum's context, so recall resolves
+//     the same tenant the DistillBridge write side attributes facts to, per
+//     request instead of per process;
+//  3. the constructor's static namespace — the documented default for
+//     tenant-less requests, matching the write side's fallback.
+//
+// Only the FIRST declared scope namespace is honoured: the schema allows a
+// list, but cross-namespace recall has no read-side tenant story, so a
+// multi-entry scope is deliberately narrowed to its first entry rather than
+// silently unioning namespaces.
+func (p *StoreProvider) namespaceFor(ctx context.Context, intent knowledge.Intent) string {
+	if len(intent.Scope.Namespaces) > 0 && intent.Scope.Namespaces[0] != "" {
+		return intent.Scope.Namespaces[0]
+	}
+	if ns := tenantctx.From(ctx); ns != "" {
+		return ns
+	}
+	return p.ns
 }
 
 // Name returns the provider identifier.
@@ -106,7 +139,7 @@ func (p *StoreProvider) Stream(ctx context.Context, intent knowledge.Intent) (<-
 
 		req := knowledge.HybridSearchRequest{
 			Query:        intent.Goal,
-			Namespace:    p.ns,
+			Namespace:    p.namespaceFor(ctx, intent),
 			TopK:         limit * 2,
 			FinalK:       limit,
 			MinScore:     0, // provider does not filter; the retriever layer applies its minScore

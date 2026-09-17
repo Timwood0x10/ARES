@@ -2,15 +2,22 @@ package agentsyscall
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
-	"log"
+	"sync"
 	"sync/atomic"
 
-	"github.com/Timwood0x10/ares/internal/agentfabric"
 	"github.com/Timwood0x10/ares/internal/core/models"
-	"github.com/Timwood0x10/ares/internal/kernelctx"
-	"github.com/Timwood0x10/ares/internal/taskfabric"
+	"github.com/Timwood0x10/ares/internal/fabric/agent"
+	"github.com/Timwood0x10/ares/internal/fabric/task"
+	kctx "github.com/Timwood0x10/ares/internal/kernel/ctx"
+	"github.com/Timwood0x10/ares/internal/tenantctx"
 )
+
+// errUnroutableCapability is returned when a syscall asks for a capability
+// outside the single L2 execution path. Callers must use errors.Is.
+var errUnroutableCapability = errors.New("capability is not L2-routable")
 
 // SpawnAgentTool is the tool name exposed to the LLM for spawning peer agents.
 const SpawnAgentTool = "spawn_agent"
@@ -18,15 +25,38 @@ const SpawnAgentTool = "spawn_agent"
 // CreateTaskTool is the tool name exposed to the LLM for creating sub-tasks.
 const CreateTaskTool = "create_task"
 
-// goconst: these strings appear ≥3 times in ToolSchemas, so they must be
-// constants (code_rules_v2 §8.1).
+// AskAgentTool is the tool name exposed to the LLM for asking a target agent a
+// question. Unlike spawn_agent (create a new peer) and
+// create_task (decompose into the task fabric), ask_agent turns "which agent to
+// ask" into an agent-visible, changeable decision — the ACT half of the
+// collaboration channel. The Kernel forwards it to a collabatation IPC
+// primitive injected at serve time (ipc.Send), which lands in the existing
+// "collaboration" feedback source via the CollaborationObserver.
+const AskAgentTool = "ask_agent"
+
+// goconst: reuse the field keys across syscall schemas. The values originated
+// in the schema objects below; hoisting them keeps the ≥3-repetition
+// goconst rule satisfied.
+const (
+	paramTopic   = "topic"
+	paramTo      = "to"
+	paramPayload = "payload"
+)
+
+// goconst: these strings appear ≥3 times in ToolSchemas,
 const (
 	paramType        = "type"
 	paramTypeString  = "string"
 	paramTypeObject  = "object"
 	paramTypeArray   = "array"
+	paramTypeInteger = "integer"
 	paramDescription = "description"
 	paramCapability  = "capability"
+
+	// Schema object keys reused across tool schemas (goconst).
+	paramProperties = "properties"
+	paramItems      = "items"
+	paramRequired   = "required"
 )
 
 // ExecutorFactory creates a sub.Agent executor for a dynamically spawned agent.
@@ -36,7 +66,7 @@ type ExecutorFactory func(agentID, capability string) Executor
 
 // Executor is the minimal contract a spawned agent's executor must satisfy.
 // In production this is sub.Agent; the interface keeps this package decoupled
-// from the sub package (code_rules_v2 §5.2: interface at the consumer).
+// from the sub package (interface at the consumer).
 type Executor interface {
 	ID() string
 	Type() models.AgentType
@@ -51,9 +81,9 @@ type StepOutcome struct {
 }
 
 // cognitionFunc adapts an Executor to the agentfabric.Cognition contract
-// (aresos-agentos-plan C1: spawn 的 agent 带执行体). It converts the syscall
+// (a spawned agent carries its execution body). It converts the syscall
 // StepOutcome shape to the fabric one — the underlying quantum is the same
-// executor, so semantics are preserved by construction (code_rules_v2 §5.1).
+// executor, so semantics are preserved by construction.
 func cognitionFunc(executor Executor) agentfabric.Cognition {
 	return agentfabric.CognitionFunc(func(ctx context.Context, task *models.Task) (*agentfabric.StepOutcome, error) {
 		out, err := executor.ExecuteStep(ctx, task)
@@ -73,6 +103,16 @@ func cognitionFunc(executor Executor) agentfabric.Cognition {
 // method as kernelScheduler.RegisterExecutor.
 type RegisterExecutorFn func(agentID string, executor Executor)
 
+// AskAgentFn is the injected collaboration primitive behind the ask_agent tool.
+// It must send a cross-agent request to target on the given topic and deliver
+// the caller's payload. In production this is wired at serve time to
+// aresrecovery.EvolutionAwareIPC.Send, which routes through the agentipc Bus —
+// so the request lands in the existing "collaboration" feedback source via the
+// CollaborationObserver, reusing the already-closed OBSERVE half.
+// Declared as a function (not an interface) so this package stays decoupled
+// from agentipc/aresrecovery; the function is set at the consumer.
+type AskAgentFn func(ctx context.Context, from, to, topic string, payload any) error
+
 // Kernel is the ensemble of fabric-level subsystems the syscalls operate on.
 // It is the "Kernel enforces" surface: the syscalls validate against the
 // agent fabric (quota/capability) and the task fabric (task creation).
@@ -81,8 +121,110 @@ type Kernel struct {
 	fabric   *taskfabric.Fabric
 	factory  ExecutorFactory
 	register RegisterExecutorFn
+	// askAgent is the collaboration primitive behind ask_agent.
+	// nil means the tool is not wired and ask_agent fails loudly rather than
+	// pretend to collaborate. Held in an atomic.Pointer because serve
+	// replaces it at runtime via SetAskAgent while every LLM tool call reads
+	// it lock-free — a plain field would be a data race.
+	askAgent atomic.Pointer[AskAgentFn]
+	// loopCtx is the lifetime context for plan loops started via the
+	// create_plan loop option. A syscall Kernel is a long-lived managed
+	// object (it backs every agent's tool binder for the whole serve
+	// lifetime), so holding a context here is the sanctioned exception to
+	// the "no ctx in struct" rule; it is injected at
+	// assembly with WithLoopLifetime and bounds every loop goroutine.
+	loopCtx context.Context
 	// idSeq generates unique agent IDs for auto-named spawns.
 	idSeq atomic.Int64
+	// maxPlanLoops caps concurrently live plan loops. create_plan is an
+	// LLM-callable syscall, so an unbounded loop count is an unbounded
+	// goroutine count; the cap is the plan-loop analogue of the spawn quota.
+	maxPlanLoops int
+	// loopMu guards planLoops.
+	loopMu sync.Mutex
+	// planLoops tracks live plan loops by plan ID so their errors have a
+	// reader, they can be stopped individually, and the cap is enforceable.
+	planLoops map[string]*taskfabric.PlanLoop
+	// governance is the cognitive-execution budget applied to every agent
+	// spawned through the spawn_agent syscall. Zero value = unlimited (the
+	// pre-budget behavior). Injected at assembly via WithAgentGovernance so a
+	// syscall-spawned peer is bounded exactly like a configured one.
+	governance agentfabric.Governance
+}
+
+// KernelOption configures a syscall Kernel at construction time.
+type KernelOption func(*Kernel)
+
+// WithLoopLifetime injects the context that bounds plan-loop goroutines
+// started through the create_plan loop option. Without it, a create_plan
+// call carrying a loop spec fails loudly instead of leaking an unmanaged
+// goroutine (production: the serve lifetime ctx, wired in peer_mode).
+func WithLoopLifetime(ctx context.Context) KernelOption {
+	return func(k *Kernel) { k.loopCtx = ctx }
+}
+
+// WithMaxPlanLoops overrides the cap on concurrently live plan loops started
+// through create_plan. Non-positive values are ignored so the default cap can
+// never be disabled by a bad config value.
+func WithMaxPlanLoops(n int) KernelOption {
+	return func(k *Kernel) {
+		if n > 0 {
+			k.maxPlanLoops = n
+		}
+	}
+}
+
+// WithAgentGovernance sets the cognitive-execution budget applied to every
+// agent spawned through spawn_agent. Zero value = unlimited. Injected at
+// assembly so a syscall-spawned peer is bounded like a configured one.
+func WithAgentGovernance(g agentfabric.Governance) KernelOption {
+	return func(k *Kernel) { k.governance = g }
+}
+
+// WithAskAgent injects the collaboration primitive behind ask_agent.
+// Passed as a func so the Kernel stays decoupled from
+// agentipc/aresrecovery. Without it, ask_agent fails loudly at call time
+// (no silent no-op for a deliberately offered action).
+func WithAskAgent(fn AskAgentFn) KernelOption {
+	return func(k *Kernel) { k.SetAskAgent(fn) }
+}
+
+// SetAskAgent replaces the collaboration primitive at runtime. Used at serve
+// time to inject ipc.Send AFTER the Kernel is constructed but the IPC bridge
+// is only built later (setupPeerRegistry). Thread-safe via atomic pointer:
+// askAgent is read on every tool call, and the store here is wait-free for
+// the many-reader path.
+func (k *Kernel) SetAskAgent(fn AskAgentFn) {
+	k.askAgent.Store(&fn)
+}
+
+// askAgentFn returns the injected collaboration primitive, or nil when not
+// wired. (Dereferencing is safe: the pointer is only ever stored non-nil,
+// holding a possibly-nil function value.)
+func (k *Kernel) askAgentFn() AskAgentFn {
+	if p := k.askAgent.Load(); p != nil {
+		return *p
+	}
+	return nil
+}
+
+// SeedIDSeq advances the Kernel's shared ID sequence to at least min. Every
+// counter-derived ID family minted here (task-<capability>-N via CreateTask,
+// spawned-<capability>-N via SpawnAgent, plan-<origin>-N via create_plan)
+// resets to 1 on a fresh boot, while a Postgres-backed restore folds the
+// previous boot's tasks — with those exact IDs — back into the fabric. A
+// re-minted task-<capability>-N would fail Create with ErrTaskExists on the
+// agent's own decomposition syscall. serve seeds the sequence past the max N
+// found in restored task IDs right after restore. Grow-only via CAS: a min
+// below the current sequence is a no-op, so concurrent syscalls can never
+// move the counter backwards.
+func (k *Kernel) SeedIDSeq(min int64) {
+	for {
+		cur := k.idSeq.Load()
+		if min <= cur || k.idSeq.CompareAndSwap(cur, min) {
+			return
+		}
+	}
 }
 
 // NewKernel creates a syscall Kernel over the given fabrics. The factory and
@@ -95,13 +237,20 @@ func NewKernel(
 	fabric *taskfabric.Fabric,
 	factory ExecutorFactory,
 	register RegisterExecutorFn,
+	opts ...KernelOption,
 ) *Kernel {
-	return &Kernel{
-		agents:   agents,
-		fabric:   fabric,
-		factory:  factory,
-		register: register,
+	k := &Kernel{
+		agents:       agents,
+		fabric:       fabric,
+		factory:      factory,
+		register:     register,
+		maxPlanLoops: defaultMaxPlanLoops,
+		planLoops:    make(map[string]*taskfabric.PlanLoop),
 	}
+	for _, opt := range opts {
+		opt(k)
+	}
+	return k
 }
 
 // SpawnAgentArgs carries the LLM-provided arguments for the spawn_agent tool.
@@ -118,7 +267,7 @@ type SpawnAgentArgs struct {
 	// Resources are optional resource hints for quota validation.
 	Resources map[string]any `json:"resources,omitempty"`
 	// ParentID is the spawning agent's ID (for provenance). Kernel-enforced:
-	// when the tool context carries a caller (kernelctx.CallerID), that ID
+	// when the tool context carries a caller (kctx.CallerID), that ID
 	// wins and this field is ignored, so an LLM can never forge parentage;
 	// the value is used only for direct/Kernel-internal calls without a
 	// context identity. Empty parent = root spawn.
@@ -147,20 +296,25 @@ type SpawnAgentResult struct {
 // The LLM calls this via the tool binder; the Kernel enforces safety.
 func (k *Kernel) SpawnAgent(ctx context.Context, args SpawnAgentArgs) (*SpawnAgentResult, error) {
 	if k.agents == nil {
-		return nil, fmt.Errorf("agentsyscall: agent fabric not wired")
+		return nil, errors.New("agentsyscall: agent fabric not wired")
 	}
 	if args.Capability == "" {
-		return nil, fmt.Errorf("agentsyscall: capability is required")
+		return nil, errors.New("agentsyscall: capability is required")
+	}
+	// a spawned peer only receives scheduler quanta through the L2
+	// router — a non-routable capability would leave it permanently idle.
+	if !agentfabric.IsL2Capability(args.Capability) {
+		return nil, fmt.Errorf("agentsyscall: capability %q is not L2-routable (want ares/plan, ares/answer, ares/root, or tool/<name>): %w", args.Capability, errUnroutableCapability)
 	}
 
 	// Generate a unique agent ID when the LLM does not provide one.
 	agentID := fmt.Sprintf("spawned-%s-%d", args.Capability, k.idSeq.Add(1))
 
-	// C1: when an executor factory is wired, create the executor BEFORE spawn
+	// when an executor factory is wired, create the executor BEFORE spawn
 	// and inject it as the agent's CognitionFactory so the spawned agent is a
 	// REAL executable body (not just a provenance record) from birth. The
 	// factory is called exactly once — the same executor instance is reused
-	// for the scheduler registration below (code_rules_v2 §5.1: no second
+	// for the scheduler registration below (no second
 	// executor copy).
 	var executor Executor
 	if k.factory != nil {
@@ -173,7 +327,7 @@ func (k *Kernel) SpawnAgent(ctx context.Context, args SpawnAgentArgs) (*SpawnAge
 	// (bootstrap wiring, existing syscall tests) working with no context
 	// identity.
 	parentID := args.ParentID
-	if caller := kernelctx.CallerID(ctx); caller != "" {
+	if caller := kctx.CallerID(ctx); caller != "" {
 		parentID = caller
 	}
 
@@ -183,6 +337,10 @@ func (k *Kernel) SpawnAgent(ctx context.Context, args SpawnAgentArgs) (*SpawnAge
 		ParentID:     parentID,
 		TaskContext:  args.TaskContext,
 		Resources:    args.Resources,
+		// Budget from birth: syscall-spawned peers inherit the Kernel's
+		// configured governance so they are bounded like configured agents.
+		// Zero value = unlimited (pre-budget behavior).
+		Governance: k.governance,
 	}
 	if executor != nil {
 		spec.CognitionFactory = func([]string) agentfabric.Cognition {
@@ -199,11 +357,11 @@ func (k *Kernel) SpawnAgent(ctx context.Context, args SpawnAgentArgs) (*SpawnAge
 	if executor != nil && k.register != nil {
 		k.register(agent.Identity, executor)
 		registered = true
-		log.Printf("agentsyscall: spawned agent %q (%s) registered as executor", agent.Identity, args.Capability)
+		log.Info("agentsyscall: spawned agent registered as executor", "agent", agent.Identity, "capability", args.Capability)
 	}
 
 	if !registered {
-		log.Printf("agentsyscall: spawned agent %q (%s) not registered (no factory)", agent.Identity, args.Capability)
+		log.Warn("agentsyscall: spawned agent not registered (no factory)", "agent", agent.Identity, "capability", args.Capability)
 	}
 
 	return &SpawnAgentResult{
@@ -227,7 +385,7 @@ type CreateTaskArgs struct {
 	// Payload carries opaque task data (e.g. task_desc, profile).
 	Payload map[string]any `json:"payload,omitempty"`
 	// NOTE: there is deliberately no "creator" argument. The Kernel stamps
-	// Task.Origin from the tool context (kernelctx.CallerID) so provenance
+	// Task.Origin from the tool context (kctx.CallerID) so provenance
 	// is enforced by the Kernel — an LLM cannot forge a creator via params.
 }
 
@@ -242,10 +400,16 @@ type CreateTaskResult struct {
 // and execute it via the normal Schedule → Acquire → RunQuantum path.
 func (k *Kernel) CreateTask(ctx context.Context, args CreateTaskArgs) (*CreateTaskResult, error) {
 	if k.fabric == nil {
-		return nil, fmt.Errorf("agentsyscall: task fabric not wired")
+		return nil, errors.New("agentsyscall: task fabric not wired")
 	}
 	if args.Capability == "" {
-		return nil, fmt.Errorf("agentsyscall: capability is required")
+		return nil, errors.New("agentsyscall: capability is required")
+	}
+	// single execution path. Only L2-routable capabilities
+	// (ares/*, tool/*) are accepted — anything else would starve with no
+	// candidate executor. Fail fast with a routable hint instead.
+	if !agentfabric.IsL2Capability(args.Capability) {
+		return nil, fmt.Errorf("agentsyscall: capability %q is not L2-routable (want ares/plan, ares/answer, ares/root, or tool/<name>): %w", args.Capability, errUnroutableCapability)
 	}
 
 	taskID := fmt.Sprintf("task-%s-%d", args.Capability, k.idSeq.Add(1))
@@ -257,24 +421,94 @@ func (k *Kernel) CreateTask(ctx context.Context, args CreateTaskArgs) (*CreateTa
 		Dependencies: args.Dependencies,
 		RetryPolicy:  taskfabric.RetryPolicy{MaxRetries: 2},
 		// Origin is Kernel-enforced: stamped from the tool context caller
-		// (kernelctx.CallerID), never from LLM-supplied arguments. Empty =
+		// (kctx.CallerID), never from LLM-supplied arguments. Empty =
 		// root call (no agent caller in context).
-		Origin: kernelctx.CallerID(ctx),
-		Checkpoint: &taskfabric.CheckpointEnvelope{
-			Payload: args.Payload,
-		},
+		Origin: kctx.CallerID(ctx),
+		// The tenant is inherited from the CREATING quantum's context (never
+		// from args): an agent-spawned task must execute and recall knowledge
+		// under the same tenant its creating session runs under. Empty ctx
+		// tenant (tenant-less deployment) yields an empty envelope field —
+		// the documented default fallback.
+		Checkpoint: tenantStampedEnvelope(ctx, args.Payload),
 	}
 
 	if err := k.fabric.Create(task); err != nil {
 		return nil, fmt.Errorf("agentsyscall: create task failed: %w", err)
 	}
 
-	log.Printf("agentsyscall: created task %q (%s) → READY", taskID, args.Capability)
+	log.Info("agentsyscall: created task → READY", "task_id", taskID, "capability", args.Capability)
 
 	return &CreateTaskResult{
 		TaskID: taskID,
 		State:  string(taskfabric.StateReady),
 	}, nil
+}
+
+// AskAgentArgs carries the LLM-provided arguments for the ask_agent tool.
+// The LLM decides which agent to ask and on what topic; the Kernel validates
+// and forwards it to the injected collaboration primitive (ipc.Send in
+// production).
+type AskAgentArgs struct {
+	// To is the target agent ID. Required.
+	To string `json:"to"`
+	// Topic is the collaboration subject.
+	Topic string `json:"topic"`
+	// Payload is the question body (JSON-serializable).
+	Payload map[string]any `json:"payload,omitempty"`
+}
+
+// AskAgentResult is the return value of the ask_agent tool.
+type AskAgentResult struct {
+	// Accepted reports that the request was handed to the collaboration
+	// primitive (a fire-and-forget send — acceptance is not an answer).
+	Accepted bool `json:"accepted"`
+}
+
+// AskAgent is the Kernel syscall behind the ask_agent tool.
+// It forwards a cross-agent request to the injected AskAgentFn, which in
+// production is ipc.Send — so the attempt produces a collaboration receipt
+// in the existing "collaboration" feedback source, attributed to the active
+// strategy. The Kernel enforces:
+//
+//   - a non-empty target is required;
+//   - the primitive MUST be wired (fail-loud); a nil primitive would make the
+//     tool a silent no-op, which is exactly the open-loop the plan removes.
+func (k *Kernel) AskAgent(ctx context.Context, a AskAgentArgs) (*AskAgentResult, error) {
+	if a.To == "" {
+		return nil, errors.New("agentsyscall: ask_agent requires a target agent")
+	}
+	if fn := k.askAgentFn(); fn == nil {
+		return nil, errors.New("agentsyscall: ask_agent not wired (no collaboration IPC) — the agent cannot ask until serve injects it")
+	} else {
+		from := kctx.CallerID(ctx)
+		if err := fn(ctx, from, a.To, a.Topic, askAgentPayload(ctx, a.Payload)); err != nil {
+			return nil, fmt.Errorf("agentsyscall: ask_agent to %s failed: %w", a.To, err)
+		}
+	}
+	return &AskAgentResult{Accepted: true}, nil
+}
+
+// askAgentPayload stamps the asking quantum's tenant onto the message payload
+// so the collaboration session it spawns executes and recalls knowledge under
+// the asker's scope (executeAskViaSession copies the payload into the session
+// submission, whose envelope carries the tenant).
+//
+// The stamp is Kernel-enforced, exactly like Origin: an LLM-supplied
+// "tenant_id" in the ask arguments is OVERWRITTEN (never merged), so the
+// model cannot route its collaboration into another tenant's scope. A
+// non-map payload passes through unstamped — there is nothing to stamp and
+// no forgery surface (the session submission path only reads maps).
+func askAgentPayload(ctx context.Context, payload any) any {
+	m, ok := payload.(map[string]any)
+	if !ok {
+		return payload
+	}
+	cp := make(map[string]any, len(m)+1)
+	for k, v := range m {
+		cp[k] = v
+	}
+	cp["tenant_id"] = tenantctx.From(ctx)
+	return cp
 }
 
 // BindTools registers the spawn_agent and create_task tools on the given
@@ -318,10 +552,41 @@ func BindTools(binder ToolBinder, kernel *Kernel) {
 				}
 			}
 		}
-		if v, ok := args["payload"].(map[string]any); ok {
+		if v, ok := args[paramPayload].(map[string]any); ok {
 			ct.Payload = v
 		}
 		return kernel.CreateTask(ctx, ct)
+	})
+	// the whole-DAG planning entry. See plan.go. JSON round-trip keeps
+	// the parse strict: type mismatches surface as errors instead of silently
+	// dropping fields (e.g. a string "3" for priority).
+	binder.BindTool(AskAgentTool, func(ctx context.Context, args map[string]any) (any, error) {
+		var aa AskAgentArgs
+		if v, ok := args[paramTo].(string); ok {
+			aa.To = v
+		}
+		if v, ok := args[paramTopic].(string); ok {
+			aa.Topic = v
+		}
+		if v, ok := args[paramPayload].(map[string]any); ok {
+			aa.Payload = v
+		}
+		return kernel.AskAgent(ctx, aa)
+	})
+
+	binder.BindTool(CreatePlanTool, func(ctx context.Context, args map[string]any) (any, error) {
+		raw, err := json.Marshal(args)
+		if err != nil {
+			return nil, fmt.Errorf("agentsyscall: create_plan re-marshal: %w", err)
+		}
+		var cp CreatePlanArgs
+		if err := json.Unmarshal(raw, &cp); err != nil {
+			return nil, fmt.Errorf("agentsyscall: create_plan args: %w", err)
+		}
+		if len(cp.Steps) == 0 {
+			return nil, errors.New("agentsyscall: create_plan requires a non-empty steps array")
+		}
+		return kernel.CreatePlan(ctx, cp)
 	})
 }
 
@@ -342,7 +607,7 @@ func ToolSchemas() []ToolSchema {
 			Description: "Spawn a new peer agent with a declared capability. The Kernel validates quota and registers the agent as a schedulable executor. Use this when you decide a task should be split and worked on by another agent.",
 			Parameters: map[string]any{
 				paramType: paramTypeObject,
-				"properties": map[string]any{
+				paramProperties: map[string]any{
 					paramCapability: map[string]any{
 						paramType:        paramTypeString,
 						paramDescription: "The declared capability of the new agent (e.g. 'coder', 'reviewer', 'researcher').",
@@ -356,7 +621,7 @@ func ToolSchemas() []ToolSchema {
 						paramDescription: "Shared task state to pass to the new agent (goal, constraints). Never include private reasoning.",
 					},
 				},
-				"required": []string{paramCapability},
+				paramRequired: []string{paramCapability},
 			},
 		},
 		{
@@ -364,24 +629,47 @@ func ToolSchemas() []ToolSchema {
 			Description: "Create a new task in the Task Fabric. The task enters READY state and the scheduler will assign it to a capable agent. Use this to decompose work into sub-tasks.",
 			Parameters: map[string]any{
 				paramType: paramTypeObject,
-				"properties": map[string]any{
+				paramProperties: map[string]any{
 					paramCapability: map[string]any{
 						paramType:        paramTypeString,
 						paramDescription: "The required capability for this task (e.g. 'coder', 'reviewer').",
 					},
 					"dependencies": map[string]any{
 						paramType:        paramTypeArray,
-						"items":          map[string]any{paramType: paramTypeString},
+						paramItems:       map[string]any{paramType: paramTypeString},
 						paramDescription: "Prerequisite task IDs that must complete before this task runs.",
 					},
-					"payload": map[string]any{
+					paramPayload: map[string]any{
 						paramType:        paramTypeObject,
 						paramDescription: "Opaque task data (e.g. task_desc, parameters).",
 					},
 				},
-				"required": []string{paramCapability},
+				paramRequired: []string{paramCapability},
 			},
 		},
+		{
+			Name:        AskAgentTool,
+			Description: "Ask a specific target agent a question on a topic. The request is delivered to the target's collaboration handler. Use this when you know WHICH agent to ask, rather than spawning a new one (spawn_agent) or decomposing into tasks (create_task).",
+			Parameters: map[string]any{
+				paramType: paramTypeObject,
+				paramProperties: map[string]any{
+					paramTo: map[string]any{
+						paramType:        paramTypeString,
+						paramDescription: "The target agent ID to ask.",
+					},
+					paramTopic: map[string]any{
+						paramType:        paramTypeString,
+						paramDescription: "The collaboration subject (e.g. 'delegate-task').",
+					},
+					paramPayload: map[string]any{
+						paramType:        paramTypeObject,
+						paramDescription: "The question body (JSON-serializable).",
+					},
+				},
+				paramRequired: []string{paramTo},
+			},
+		},
+		CreatePlanToolSchema(),
 	}
 }
 
@@ -392,4 +680,14 @@ type ToolSchema struct {
 	Name        string
 	Description string
 	Parameters  map[string]any
+}
+
+// tenantStampedEnvelope builds a create_task envelope carrying the creating
+// quantum's tenant (tenantctx). The tenant comes from the CONTEXT, never from
+// LLM-supplied arguments — an agent cannot spawn work into another tenant's
+// scope, exactly as it cannot forge Origin.
+func tenantStampedEnvelope(ctx context.Context, payload map[string]any) *taskfabric.CheckpointEnvelope {
+	env := taskfabric.NewCheckpointEnvelope(payload)
+	env.TenantID = tenantctx.From(ctx)
+	return env
 }

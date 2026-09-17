@@ -1,5 +1,5 @@
 // The storage/knowledge adapters (experience searcher, knowledge retriever
-// adapter) live in internal/ares_memory/experienceadapters and are shared
+// adapter) live in internal/runtime/memory/experienceadapters and are shared
 // with the sdk layer, so the field mapping has a single source of truth.
 package ares_bootstrap
 
@@ -8,22 +8,23 @@ import (
 	"fmt"
 
 	aresconfig "github.com/Timwood0x10/ares/internal/ares_config"
-	memctx "github.com/Timwood0x10/ares/internal/ares_memory/context"
-	memembed "github.com/Timwood0x10/ares/internal/ares_memory/embedding"
-	"github.com/Timwood0x10/ares/internal/ares_memory/experienceadapters"
 	"github.com/Timwood0x10/ares/internal/evidence"
 	"github.com/Timwood0x10/ares/internal/knowledge"
 	"github.com/Timwood0x10/ares/internal/knowledge/adapter"
 	knowledgeruntime "github.com/Timwood0x10/ares/internal/knowledge/runtime"
+	memctx "github.com/Timwood0x10/ares/internal/runtime/memory/context"
+	memembed "github.com/Timwood0x10/ares/internal/runtime/memory/embedding"
+	"github.com/Timwood0x10/ares/internal/runtime/memory/experienceadapters"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/embedding"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/repositories"
 )
 
 // retrieverSetter is the minimal interface for injecting ContextRetrievers
-// into a MemoryManager. Both *memoryManager and *ProductionMemoryManager
-// satisfy it, but the public MemoryManager interface does not expose
-// SetRetrievers (retrieval is an optional capability), so we type-assert at
-// wiring time instead of widening the interface.
+// into a MemoryManager. Only *memoryManager satisfies it — the config-only
+// ProductionMemoryManager fallback exposes no retrieval, and the wiring below
+// logs and skips when the assertion fails — but the public MemoryManager
+// interface does not expose SetRetrievers (an optional capability), so we
+// type-assert at wiring time instead of widening the interface.
 type retrieverSetter interface {
 	SetRetrievers(retrievers []memctx.ContextRetriever)
 }
@@ -129,7 +130,11 @@ func wireRetrievers(
 			if embClient != nil {
 				modelName = akgModelName(embClient)
 			}
-			kr, err = adapter.NewKnowledgeRetrieverWithStore(ctx, knowRt, knowStore, modelName, minScore)
+			kr, err = adapter.NewKnowledgeRetrieverWithStore(ctx, knowRt, knowStore, modelName, minScore,
+				// Scope the store-backed hybrid search to the AKG namespace
+				// the write path stamps (store_adapter passes tenantID as
+				// Namespace) — empty meant a cross-namespace scan.
+				adapter.WithNamespace(defaultDistillTenant))
 			if err == nil {
 				log.Info("bootstrap: knowledge retriever wired (AKG store → RAG)",
 					"min_score", minScore, "backend", akgStoreBackend(cfg))

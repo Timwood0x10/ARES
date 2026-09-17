@@ -3,13 +3,14 @@ package llm
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
 
-	"github.com/Timwood0x10/ares/api/core"
-	"github.com/Timwood0x10/ares/internal/ares_observability"
 	"github.com/Timwood0x10/ares/internal/ares_ratelimit"
+	llmcore "github.com/Timwood0x10/ares/internal/llmcore"
+	"github.com/Timwood0x10/ares/internal/runtime/observability"
 )
 
 // Default cooldown duration for rate-limited providers.
@@ -59,7 +60,7 @@ func WithCooldownDuration(d time.Duration) FailoverOption {
 // Returns an error if no clients could be created.
 func NewFailoverClient(configs []*Config, timeout time.Duration, rate float64, burst int, opts ...FailoverOption) (*FailoverClient, error) {
 	if len(configs) == 0 {
-		return nil, fmt.Errorf("at least one LLM config is required")
+		return nil, errors.New("at least one LLM config is required")
 	}
 
 	clients := make([]*Client, 0, len(configs))
@@ -102,7 +103,7 @@ func NewFailoverClient(configs []*Config, timeout time.Duration, rate float64, b
 	}
 
 	if len(clients) == 0 {
-		return nil, fmt.Errorf("no LLM clients could be created")
+		return nil, errors.New("no LLM clients could be created")
 	}
 
 	if timeout <= 0 {
@@ -130,12 +131,7 @@ func NewFailoverClient(configs []*Config, timeout time.Duration, rate float64, b
 	return fc, nil
 }
 
-// NewFailoverScorer is a backward-compatible alias for NewFailoverClient.
-//
-// Deprecated: Use NewFailoverClient instead.
-func NewFailoverScorer(configs []*Config, timeout time.Duration, rate float64, burst int) (*FailoverClient, error) {
-	return NewFailoverClient(configs, timeout, rate, burst)
-}
+// NewFailoverScorer removed (deprecated alias, 0 production calls).
 
 // clientKey returns a unique key for cooldown tracking.
 func (fc *FailoverClient) clientKey(c *Client) string {
@@ -195,13 +191,60 @@ func (fc *FailoverClient) cooldownForError(err error) time.Duration {
 	return short
 }
 
+// callerAborted reports whether the CALLER's context ended (user abort,
+// upstream timeout, scheduler shutdown) rather than the provider failing.
+// An abort must never mark cooldown: the provider did nothing wrong, and
+// marking every client in the chain turned a single user cancel into a
+// "no provider available (all N cooled down)" outage for every unrelated
+// request during the next cooldown window.
+func callerAborted(ctx context.Context) bool {
+	return ctx.Err() != nil
+}
+
+// coolDown records a cooldown for key unless the caller aborted, in which
+// case the provider keeps its clean record. It returns the cooldown that was
+// recorded, or 0 when the failure was the caller's doing — callers use the
+// zero return to skip the "cooling down" log line.
+func (fc *FailoverClient) coolDown(ctx context.Context, key string, err error) time.Duration {
+	if callerAborted(ctx) {
+		return 0
+	}
+	cd := fc.cooldownForError(err)
+	fc.markCooldown(key, cd)
+	return cd
+}
+
 // Generate tries each LLM client in order and returns the first successful
 // response. All errors trigger cooldown so the next call skips the provider
 // instead of waiting for the same timeout/429 again.
 func (fc *FailoverClient) Generate(ctx context.Context, prompt string) (string, error) {
+	return fc.generateAttempting(ctx, func(c *Client, cctx context.Context) (string, error) {
+		return c.Generate(cctx, prompt)
+	})
+}
+
+// GenerateWithParams tries each LLM client in order with per-call parameter
+// overrides, applying the same cooldown policy as Generate. It lets the
+// service layer forward request-level Temperature/MaxTokens through the
+// failover path instead of silently dropping them.
+func (fc *FailoverClient) GenerateWithParams(ctx context.Context, prompt string, params map[string]any) (string, error) {
+	return fc.generateAttempting(ctx, func(c *Client, cctx context.Context) (string, error) {
+		return c.GenerateWithParams(cctx, prompt, params)
+	})
+}
+
+// generateAttempting runs call against each client in order until one
+// succeeds, applying the cooldown policy on failure.
+func (fc *FailoverClient) generateAttempting(ctx context.Context, call func(*Client, context.Context) (string, error)) (string, error) {
 	var lastErr error
 
 	for _, client := range fc.clients {
+		// The caller already gave up: stop failing over instead of burning
+		// through the rest of the chain and blaming each provider for it.
+		if callerAborted(ctx) {
+			lastErr = ctx.Err()
+			break
+		}
 		key := fc.clientKey(client)
 
 		if fc.isCooledDown(key) {
@@ -213,7 +256,7 @@ func (fc *FailoverClient) Generate(ctx context.Context, prompt string) (string, 
 		}
 
 		cctx, cancel := context.WithTimeout(ctx, fc.timeout)
-		resp, err := client.Generate(cctx, prompt)
+		resp, err := call(client, cctx)
 		cancel()
 
 		if err == nil {
@@ -222,8 +265,12 @@ func (fc *FailoverClient) Generate(ctx context.Context, prompt string) (string, 
 		}
 
 		lastErr = err
-		cd := fc.cooldownForError(err)
-		fc.markCooldown(key, cd)
+		// An abort mid-call is the caller's doing, not the provider's:
+		// coolDown records nothing and we stop failing over.
+		cd := fc.coolDown(ctx, key, err)
+		if cd == 0 {
+			break
+		}
 
 		if isRateLimitError(err) {
 			log.Warn("FailoverClient: rate limited, cooling down",
@@ -252,9 +299,13 @@ func (fc *FailoverClient) Generate(ctx context.Context, prompt string) (string, 
 // successful stream. Failed providers are cooled down with the same policy
 // as Generate (rate-limit = full cooldown, other errors = shorter cooldown).
 //
+// Note: no production caller invokes GenerateStream yet — it is a
+// capability reserve, exercised by tests but unwired from serve (review
+// finding F-10). Wire it before advertising streaming support.
+//
 // The stream itself runs under the caller's context (a streaming-specific
 // deadline), NOT the request-level fc.timeout: a fixed 30s request timeout
-// would cut long outputs off mid-stream (H8). fc.timeout is only used to
+// would cut long outputs off mid-stream. fc.timeout is only used to
 // bound the wait for the FIRST chunk, which covers the connection/handshake
 // phase so a silent provider still fails over.
 //
@@ -267,6 +318,12 @@ func (fc *FailoverClient) GenerateStream(ctx context.Context, prompt string) (<-
 	var lastErr error
 
 	for _, client := range fc.clients {
+		// The caller already gave up: stop failing over instead of burning
+		// through the rest of the chain and blaming each provider for it.
+		if callerAborted(ctx) {
+			lastErr = ctx.Err()
+			break
+		}
 		key := fc.clientKey(client)
 
 		if fc.isCooledDown(key) {
@@ -277,11 +334,19 @@ func (fc *FailoverClient) GenerateStream(ctx context.Context, prompt string) (<-
 			continue
 		}
 
-		ch, err := client.GenerateStream(ctx, prompt)
+		// per-attempt context so a silent provider can be cancelled and
+		// failed over without tearing down the caller's overall context.
+		attemptCtx, attemptCancel := context.WithCancel(ctx)
+		ch, err := client.GenerateStream(attemptCtx, prompt)
 		if err != nil {
+			attemptCancel()
 			lastErr = err
-			cd := fc.cooldownForError(err)
-			fc.markCooldown(key, cd)
+			// An abort mid-call is the caller's doing, not the provider's:
+			// coolDown records nothing and we stop failing over.
+			cd := fc.coolDown(ctx, key, err)
+			if cd == 0 {
+				break
+			}
 
 			if isRateLimitError(err) {
 				log.Warn("FailoverClient: rate limited on stream, cooling down",
@@ -300,26 +365,91 @@ func (fc *FailoverClient) GenerateStream(ctx context.Context, prompt string) (<-
 			continue
 		}
 
-		// On success, wrap the channel. The first chunk must arrive within
-		// fc.timeout (handshake bound); afterwards the stream runs until
-		// the caller's context is done or the provider finishes, so long
-		// outputs are not cut off by a fixed request timeout.
+		// The first chunk must arrive within fc.timeout (handshake bound).
+		// A timeout here is a FAILED attempt, not a success: the wrapped
+		// stream is cancelled and the next provider is tried, so a silent
+		// provider cannot surface as an empty successful stream (a stream
+		// timeout must not read as a false success).
+		// Use a stoppable timer, not time.After: the time.After timer goroutine
+		// would otherwise linger until fc.timeout after a successful handshake,
+		// leaking a timer per stream attempt (review finding).
+		timer := time.NewTimer(fc.timeout)
+		var first StreamChunk
+		select {
+		case chunk, ok := <-ch:
+			// Stop the timer on the success path. No channel drain: since
+			// Go 1.23 timer channels are unbuffered, so if the timer fired
+			// while the select picked this branch, its value was never
+			// queued and a drain receive would block forever (the old
+			// `if !t.Stop() { <-t.C }` idiom is deprecated for exactly this
+			// reason). Timer + goroutine are GC-reclaimed regardless.
+			timer.Stop()
+			if !ok {
+				attemptCancel()
+				lastErr = fmt.Errorf("stream from %s closed before first chunk", client.GetProvider())
+				// A stream torn down by the caller's cancel is not a
+				// provider fault; coolDown records nothing in that case.
+				if fc.coolDown(ctx, key, lastErr) == 0 {
+					break
+				}
+				log.Warn("FailoverClient: provider closed stream before first chunk, cooling down",
+					"provider", client.GetProvider(),
+					"model", client.GetModel(),
+				)
+				continue
+			}
+			first = chunk
+			if first.Err != nil {
+				// The handshake completed but the provider errored on the
+				// first chunk. That is a FAILED attempt, not a success:
+				// treating it as success cleared the cooldown and returned
+				// a dead stream, so a persistently broken provider never
+				// triggered failover (REVIEW 3.8).
+				attemptCancel()
+				lastErr = fmt.Errorf("stream from %s: first chunk carried error: %w",
+					client.GetProvider(), first.Err)
+				// coolDown records nothing when the caller aborted, which
+				// is what a cancel during the handshake looks like.
+				cd := fc.coolDown(ctx, key, first.Err)
+				if cd == 0 {
+					break
+				}
+				log.Warn("FailoverClient: provider errored on first chunk, cooling down and failing over",
+					"provider", client.GetProvider(),
+					"model", client.GetModel(),
+					"cooldown", cd,
+					"error", first.Err,
+				)
+				continue
+			}
+		case <-timer.C:
+			attemptCancel()
+			lastErr = fmt.Errorf("stream from %s: no first chunk within %s", client.GetProvider(), fc.timeout)
+			// The timer firing means ctx was still live at the select, so
+			// this is a genuine provider silence — coolDown records it.
+			fc.coolDown(ctx, key, lastErr)
+			log.Warn("FailoverClient: provider silent on stream (handshake timeout), cooling down and failing over",
+				"provider", client.GetProvider(),
+				"model", client.GetModel(),
+				"timeout", fc.timeout,
+			)
+			continue
+		case <-ctx.Done():
+			attemptCancel()
+			timer.Stop()
+			return nil, ctx.Err()
+		}
+
+		// Success: wrap the channel. The first chunk is forwarded, then the
+		// stream runs until the caller's context is done or the provider
+		// finishes, so long outputs are not cut off by a fixed timeout.
 		fc.clearCooldown(key)
 		wrappedCh := make(chan StreamChunk, defaultStreamBuffer)
 		go func() {
 			defer close(wrappedCh)
+			defer attemptCancel()
 			select {
-			case first, ok := <-ch:
-				if !ok {
-					return
-				}
-				select {
-				case wrappedCh <- first:
-				case <-ctx.Done():
-					return
-				}
-			case <-time.After(fc.timeout):
-				return
+			case wrappedCh <- first:
 			case <-ctx.Done():
 				return
 			}
@@ -354,12 +484,18 @@ func (fc *FailoverClient) GenerateStream(ctx context.Context, prompt string) (<-
 //
 // Returns:
 //
-//	*core.GenerateResponse - the chat response including optional tool_calls.
+//	*llmcore.GenerateResponse - the chat response including optional tool_calls.
 //	error - all clients failed or no provider available.
-func (fc *FailoverClient) Chat(ctx context.Context, messages []*core.LLMMessage, tools []core.Tool, params map[string]any) (*core.GenerateResponse, error) {
+func (fc *FailoverClient) Chat(ctx context.Context, messages []*llmcore.LLMMessage, tools []llmcore.Tool, params map[string]any) (*llmcore.GenerateResponse, error) {
 	var lastErr error
 
 	for _, client := range fc.clients {
+		// The caller already gave up: stop failing over instead of burning
+		// through the rest of the chain and blaming each provider for it.
+		if callerAborted(ctx) {
+			lastErr = ctx.Err()
+			break
+		}
 		key := fc.clientKey(client)
 
 		if fc.isCooledDown(key) {
@@ -380,8 +516,12 @@ func (fc *FailoverClient) Chat(ctx context.Context, messages []*core.LLMMessage,
 		}
 
 		lastErr = err
-		cd := fc.cooldownForError(err)
-		fc.markCooldown(key, cd)
+		// An abort mid-call is the caller's doing, not the provider's:
+		// coolDown records nothing and we stop failing over.
+		cd := fc.coolDown(ctx, key, err)
+		if cd == 0 {
+			break
+		}
 
 		log.Warn("FailoverClient: provider failed on chat, cooling down",
 			"provider", client.GetProvider(),
@@ -392,7 +532,7 @@ func (fc *FailoverClient) Chat(ctx context.Context, messages []*core.LLMMessage,
 	}
 
 	if lastErr == nil {
-		return nil, fmt.Errorf("FailoverClient: no provider available for chat")
+		return nil, errors.New("FailoverClient: no provider available for chat")
 	}
 	return nil, fmt.Errorf("FailoverClient: all chat clients failed; last error: %w",
 		lastErr)
@@ -423,7 +563,7 @@ func (fc *FailoverClient) GetModel() string {
 }
 
 // SetTracer sets the tracer on all underlying clients.
-func (fc *FailoverClient) SetTracer(t ares_observability.Tracer) {
+func (fc *FailoverClient) SetTracer(t observability.Tracer) {
 	for _, c := range fc.clients {
 		c.SetTracer(t)
 	}
@@ -463,16 +603,13 @@ func (fc *FailoverClient) ActiveProviders() []string {
 	return active
 }
 
-// FailoverScorer is a backward-compatible alias for FailoverClient.
-//
-// Deprecated: Use FailoverClient instead.
-type FailoverScorer = FailoverClient
+// FailoverScorer deprecated alias removed (use FailoverClient directly).
 
 // Ensure FailoverClient satisfies the common Generate and Chat interfaces.
 var _ interface {
 	Generate(ctx context.Context, prompt string) (string, error)
 	GenerateStream(ctx context.Context, prompt string) (<-chan StreamChunk, error)
-	Chat(ctx context.Context, messages []*core.LLMMessage, tools []core.Tool, params map[string]any) (*core.GenerateResponse, error)
+	Chat(ctx context.Context, messages []*llmcore.LLMMessage, tools []llmcore.Tool, params map[string]any) (*llmcore.GenerateResponse, error)
 	IsEnabled() bool
 	GetProvider() string
 	GetModel() string

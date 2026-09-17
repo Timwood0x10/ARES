@@ -42,14 +42,14 @@ import (
     "context"
     "fmt"
 
-    "github.com/Timwood0x10/ares/sdk"
+    "github.com/Timwood0x10/ares/api"
 )
 
 func main() {
-    rt := sdk.MustNew() // auto-detects Ollama / OPENAI_API_KEY / ANTHROPIC_API_KEY; use sdk.New(opts...) for fine-grained config
+    rt := api.MustNew() // reads ./ares.yaml (the single config entry point); use api.New(opts...) for fine-grained config
     defer rt.Close()
 
-    agent := rt.NewAgent("assistant", sdk.WithInstruction("You are helpful."))
+    agent := rt.NewAgent("assistant", api.WithInstruction("You are helpful."))
     result, _ := agent.Run(context.Background(), "hello")
     fmt.Println(result.Output)
 }
@@ -66,10 +66,8 @@ ares run -c ares.yaml "What is Go?"
 Or assemble from a YAML config in code — one option loads everything:
 
 ```go
-rt := sdk.NewRuntime(sdk.WithConfig("ares.yaml")) // LLM / memory / distillation / evolution / tools, all from one file
+rt := api.NewRuntime(api.WithConfig("ares.yaml")) // LLM / memory / distillation / evolution / tools, all from one file
 defer rt.Close()
-// Or honor the ARES_YAML env var (falls back to ./ares.yaml):
-// rt := sdk.NewRuntime(sdk.WithConfigFromEnv())
 ```
 
 > 📖 **Config guide**: see [config.yaml Guide (EN)](docs/articles/en/25-config-yaml-guide.en.md) / [config.yaml 配置指南 (中文)](docs/articles/zh/25-config-yaml-guide.zh.md) for the full reference — LLM, distillation, GA evolution, knowledge, tools, and chaos-related switches.
@@ -87,7 +85,7 @@ make examples          # build all examples
 
 | Feature | Description |
 |---|---|
-| **Unified SDK** | Single `sdk.MustNew()` API for LLM, tools, memory, evolution; `sdk.NewRuntime(sdk.WithConfig("ares.yaml"))` for config-driven assembly |
+| **Unified SDK** | Single `api.MustNew()` API for LLM, tools, memory, evolution; `api.NewRuntime(api.WithConfig("ares.yaml"))` for config-driven assembly |
 | **System Runtime lifecycle kernel** | Orchestrator reverse-topological start/stop + component snapshot observability + Degraded on missing deps; serve / start / SDK share one kernel |
 | **Evidence persistence** | `evidence.PostgresStore` accumulates GA feedback across restarts (the in-memory store resets on restart); opt-in + fail-loud via both serve and SDK |
 | **Runtime Evolution** | Genome + Diff Engine + Coordinator evolve DAG, scheduler, planner, recovery in production |
@@ -102,6 +100,54 @@ make examples          # build all examples
 | **MCP Ready** | Connect any Model Context Protocol server for tools and data |
 | **Multi-Agent** | Capability-based agent registration (`RegisterAgent`) + task dispatch (`Submit`) with peer IPC and recovery |
 | **Observability** | OpenTelemetry traces, structured logs, Prometheus metrics |
+
+## Tenancy Model
+
+Single-tenant by default; per-request tenant scoping when you opt in. **There is no config switch — the `tenant_id` field is the switch**, at request granularity.
+
+| Mode | Trigger | Behavior |
+|---|---|---|
+| **Default (single-tenant)** | Submit without `tenant_id` | Everything runs under the `default` tenant — tasks, planner-grown nodes, `ask_agent` sessions, distilled facts and knowledge recall. Behavior is identical to a system with no tenant concept. |
+| **Opt-in (tenant-scoped)** | Submit with `tenant_id` (`POST /api/tasks`, `POST /api/graphs`, or `payload["tenant_id"]` on SDK submissions) | That request and its derived work executes under that tenant; the experience/distillation store isolates per tenant column, the knowledge side isolates per namespace (see boundaries below). |
+
+How it holds together:
+
+- The tenant rides the task's **checkpoint envelope** (schema v5) through the scheduler's asynchronous execution, is restored into the quantum's context (`tenantctx`), and stamps downstream — grown tool/answer nodes, collaboration sessions, distillation. Empty means "no tenant known"; every consumer falls back to `default`.
+- **Anti-forgery is Kernel-enforced**: an LLM-supplied `tenant_id` in tool arguments, `create_task` payloads or `ask_agent` payloads is overwritten by the executing context's tenant (the same contract `Origin` follows). The system never generates a non-default tenant on its own.
+
+**Actual isolation boundaries** (stated honestly — do not read this as end-to-end column-level tenancy):
+
+- **Experience/distillation store**: every query in `internal/storage/postgres/repositories/experience_repository.go` carries a `tenant_id = $N` predicate — column-level isolation. Distillation writes take the tenant through a context seam (`distillation.WithTenant`), so a runtime override reaches the write side.
+- **Knowledge isolates by namespace, not by a tenant column**: `KnowledgeStore` objects have a `namespace` column and no `tenant_id` column. `StoreProvider` maps tenant → namespace via `namespaceFor` (explicit `Scope.Namespaces` → `tenantctx` → provider default), so isolation depends on the caller always supplying one; the underlying `Get`/`Delete`/`Search` carry no tenant or namespace predicate of their own.
+- **AKG-distilled facts are not tenant-split today**: `akgNamespace` in `internal/ares_bootstrap/knowledge_akg.go` is the constant `"default"`, so every AKG fact lands in the same namespace.
+
+- **Multi-tenant deployments**: the tenant is currently *caller-declared* at the HTTP boundary. A genuine multi-tenant deployment must bind the tenant at the auth layer (e.g. derive it from the JWT principal server-side) rather than trust the request body — and the two knowledge-side gaps above must be closed first before the isolation is end to end. See `SECURITY.md` → Tenancy.
+
+## Stability & Performance
+
+The 0.3.1 hardening cycle closed every known crash and leak class, and committed a performance baseline that future changes must compare against.
+
+**Where the records live:**
+
+- [plan/stability_performance_plan.md](plan/stability_performance_plan.md) — the phase-by-phase stability program: lock-in tests for every fixed defect, a leak program with `goleak` gates on the kernel and workflow-engine packages, HTTP panic guard + request-ID observability, flake attribution, and a soak harness (`SOAK_SECONDS=N go test ./tests/soak/`)
+- [plan/benchmarks/](plan/benchmarks/) — the committed benchmark baseline (38 benchmarks across 7 packages) and the benchstat comparison workflow; any optimization PR must show a before/after comparison
+
+**Why AKG used to crash on simple questions (fixed in 0.3.1).** The retrieval
+service's constructor treats the knowledge-base repository as optional, but
+every query of ≤10 runes unconditionally routes to the precision pipeline,
+which dereferenced it. On any deployment without the knowledge base wired,
+the first short query panicked the handler. The fix fails loudly with a
+configuration error instead of panicking (locked by
+`retrieval_nil_kbrepo_test.go`), and every HTTP handler now runs under a
+panic guard that returns a structured 500 carrying a request ID instead of
+dropping the connection.
+
+**Baseline headline numbers** (Apple M3 Max): scheduler drain ~8µs per task
+(empty tick ~8.5ns), 64-node L2 growth chain ~132ms end-to-end, hybrid
+retrieval over 500 objects ~340ms. See the baseline file for the full set.
+
+Quality gate: `make check` (vet + staticcheck + golangci-lint + tests) must
+stay green on every change.
 
 ## AKG — Knowledge Graph Without LLMs (Experimental)
 
@@ -129,7 +175,7 @@ The LLM never participates in extraction or build — it only consumes the retri
 - **Rule-based relation extraction** over a closed predicate vocabulary: `calls`, `fixes`, `depends_on`, `belongs_to`, `similar_to`, `supersedes`, `causes`, `related_to`.
 - **Multi-dimensional QualityGate** (extraction / consistency / freshness / usage) driving a `candidate → active → superseded/rejected` lifecycle with promotion.
 - **HybridSearch**: vector cosine + lexical Jaccard, filtered by namespace and status.
-- **Multi-backend persistence**: Memory, SQLite, PostgreSQL, **MySQL** (driver-free).
+- **Multi-backend persistence**: Memory, SQLite, PostgreSQL.
 
 ### Honest limitations
 
@@ -143,9 +189,9 @@ The LLM never participates in extraction or build — it only consumes the retri
 
 | Extension point | What to do | Interface touched |
 |---|---|---|
-| **New database backend** | Add `internal/knowledge/store/<name>/store.go` implementing `KnowledgeStore`. Shipped: Memory, SQLite, PostgreSQL, **MySQL** (no driver dependency — the consumer blank-imports their MySQL driver). CockroachDB / TiDB / Spanner are one file each. | `KnowledgeStore` (unchanged for new backends) |
-| **Professional vector DB** | Implement the `VectorIndex` interface (`Upsert` / `Search` / `Delete`) for pgvector, Milvus, Weaviate, Qdrant. `InMemoryVectorIndex` is the default. Stores delegate recall to a `VectorIndex` internally. | `VectorIndex` (new seam) — **`KnowledgeStore` stays unchanged** |
-| **Multi-tenancy** | Every `KnowledgeObject` carries a `Namespace`; `Query`, `HybridSearch`, and `ListByStatus` filter by it, so tenants sharing one store never see each other's facts. | No new interface |
+| **New database backend** | Add `internal/knowledge/store/<name>/store.go` implementing `KnowledgeStore`. Shipped: Memory, SQLite, PostgreSQL. A MySQL / CockroachDB / TiDB / Spanner backend is one file each — none has been written yet. | `KnowledgeStore` (unchanged for new backends) |
+| **Professional vector DB** | Add vector recall inside your `KnowledgeStore` implementation (the PostgreSQL store already uses pgvector `ORDER BY embedding <=> $1` for `HybridSearch`). | `KnowledgeStore` (unchanged for new backends) |
+| **Multi-tenancy** | Per-request opt-in (see [Tenancy Model](#tenancy-model)): the submission's `tenant_id` rides the checkpoint envelope into the execution context. **Isolation is layered**: the experience/distillation store isolates per tenant column (queries carry a `tenant_id` predicate); the knowledge side isolates per `namespace`, not a tenant column, and AKG facts currently all write to the `default` namespace. Default deployment is single-tenant (`default`). | No new interface |
 
 > Design invariant: `KnowledgeStore` is the single persistence contract. Adding a database or a vector index never changes it — only new implementations appear. This is what keeps the upper runtime logic untouched as the storage layer evolves.
 
@@ -153,7 +199,7 @@ The LLM never participates in extraction or build — it only consumes the retri
 
 > Start from "I want to use capability X" and find the code in one step.
 
-- [Capability–Module Map (English)](docs/CAPABILITY-MAP.en.md)
+- [Capability–Module Map (English)](docs/reference/CAPABILITY-MAP.en.md)
 
 ## CLI
 
@@ -182,11 +228,13 @@ ares version            # Show version
 ## SDK
 
 ```go
-rt, err := sdk.New(
-    sdk.WithOpenAI("gpt-4o-mini"),          // or WithOllama, WithAnthropic
-    sdk.WithDefaultMemory(),                 // session history
-    sdk.WithEvolution(),                     // strategy evolution
-    sdk.WithMCP(sdk.MCPConn{                 // MCP server tools
+import "github.com/Timwood0x10/ares/api"
+
+rt, err := api.New(
+    api.WithOpenAI("gpt-4o-mini"),          // or WithOllama, WithAnthropic
+    api.WithDefaultMemory(),                 // session history
+    api.WithEvolution(),                     // strategy evolution
+    api.WithMCP(api.MCPConn{               // MCP server tools
         Name: "my-server", Command: "/path/to/server", Args: []string{"serve"},
     }),
 )
@@ -195,27 +243,29 @@ if err != nil {
 }
 defer rt.Close()
 
-// Agent with tools and human-in-the-loop.
+// Agent with tools.
 agent := rt.NewAgent("assistant",
-    sdk.WithInstruction("You are helpful."),
-    sdk.WithTools(calculatorTool, weatherTool),
-    sdk.WithHumanInput(approveFn),
+    api.WithInstruction("You are helpful."),
+    api.WithTools(calculatorTool, weatherTool),
 )
 result, _ := agent.Run(ctx, "Calculate 15*23")
+
+// NOTE: api.WithHumanInput is deprecated and NOT enforced — the L2 execution
+// path has no per-tool-call approval hook, so Agent.Run refuses with
+// api.ErrHumanInputUnsupported rather than silently ignoring the gate.
+// Use api.WithAgentGovernance(tokens, tools, deadline) to bound a run.
 
 // Streaming response.
 ch, _ := agent.Stream(ctx, "Tell me a story")
 for chunk := range ch { fmt.Print(chunk.Content) }
 
 // Multi-agent: register capabilities and submit tasks.
-rt.RegisterAgent("researcher", sdk.WithInstruction("You research."))
-rt.RegisterAgent("writer", sdk.WithInstruction("You write."))
-result, _ := rt.Submit(ctx, sdk.Task{Capability: "researcher", Input: "Find sources on Go."})
+rt.RegisterAgent("researcher", api.WithInstruction("You research."))
+rt.RegisterAgent("writer", api.WithInstruction("You write."))
+result, _ := rt.Submit(ctx, api.Task{Capability: "researcher", Input: "Find sources on Go."})
 ```
 
-See [examples/README.md](examples/README.md) for hands-on examples, including
-[27-peer-spawn-demo](examples/27-peer-spawn-demo/) — a real LLM autonomously
-decomposing a task via the kernel syscalls.
+See [examples/README.md](examples/README.md) for hands-on examples.
 
 ## Agent-OS Primitives (2026-08)
 
@@ -225,22 +275,20 @@ the "agent OS" building blocks distilled from the prime-agent comparison.
 | Primitive | Package / API | Purpose |
 |-----------|---------------|---------|
 | Active tools subset | `internal/tools/resources/core`: `Registry.SetActiveTools` / `ActiveTools` / `ClearActiveTools` | Advertise only the active tool subset to the LLM (progressive disclosure) |
-| Native command discovery | `internal/tools/discovery` | Probe `command -v` + `--help` for allowlisted host commands and expose them as tools (`ARES_NATIVE_TOOLS`) |
+| Native command discovery | `internal/tools/discovery` | Probe `command -v` + `--help` for allowlisted host commands and expose them as tools (`tools.native_allowlist`) |
 | Peer messaging | `internal/agents/peer` | Direct agent-to-agent message registry + delivery |
-| Small-step evolution | `internal/ares_evolution/refine` | Baseline-checked, rollback-capable supplement-state updates (plan → apply → rollback) |
-| Runtime state snapshot | `internal/ares_runtime`: `SaveStateSnapshot` / `LoadStateSnapshot` | Versioned runtime state snapshots via CheckpointStore (schema-version guarded) |
-| Capability Fabric (SkillCatalog) | `internal/ares_skills`: `Catalog` / `SourceManager` / `Indexer` / `Discovery` / `Loader` / `Resolver` / `Experience` | Skill = capability package: declared-source metadata index (no disk scanning), progressive disclosure metadata → SKILL.md → resources, trust-gated tool resolution (MCP / Executable / Builtin), learned-source relevance priors |
+| Small-step evolution | `internal/runtime/ares_evolution/refine` | Baseline-checked, rollback-capable supplement-state updates (plan → apply → rollback) |
+| Capability Fabric (SkillCatalog) | `internal/runtime/protocol/skills`: `Catalog` / `SourceManager` / `Indexer` / `Discovery` / `Loader` / `Resolver` / `Experience` | Skill = capability package: declared-source metadata index (no disk scanning), progressive disclosure metadata → SKILL.md → resources, trust-gated tool resolution (MCP / Executable / Builtin), learned-source relevance priors |
 | Output guard | `internal/agents/outputguard` | Reject structurally inconsistent agent results at the boundary |
-| Run budgets | `sdk.WithMaxTokens` / `sdk.WithTimeout` (agentloop) | Bounded autonomous execution (token + wall-clock caps) |
-| Fingerprint cache | `internal/ares_arena`: `WithFingerprint` | Skip re-running regression when the environment is unchanged |
+| Run budgets | `api.WithTimeout` (`Task.Timeout`, enforced on the L2 submission) | Wall-clock-bounded autonomous execution. `api.WithMaxTokens` is retained for API compatibility but is not enforced on the shared L2 path (0.3.1) |
+| Fingerprint cache | `internal/runtime/arena`: `WithFingerprint` | Skip re-running regression when the environment is unchanged |
 | Skills (progressive disclosure) | `internal/knowledge/skills` | Description resident in context; detail loaded on demand |
 | Session lease | `internal/agents/lease` | Exclusive expiring holds for concurrent session access |
-| Action log | `internal/agents/actionlog` | Append-only, replayable action store for audit/recovery |
-| Task Fabric | `internal/taskfabric` | Durable Task state machine + Lease/fencing (epoch) + capability-aware Scheduler (Score/Pick/Schedule) + Work Stealing + DAG ReadyTasks + cooperative preempt (0.3.0 Kernel Scheduler pillar) |
-| Agent Fabric | `internal/agentfabric` | spawn/suspend/resume/retire/kill/recover + Process Tree (provenance, not hierarchy) + Cognitive State + 3-layer Context + P5 resource quota (`WithResourceBudget`) (0.3.0 Kernel Lifecycle pillar) |
+| Task Fabric | `internal/fabric/task` | Durable Task state machine (cross-restart rebuild from the event log via `RestoreFromStore`; non-terminal tasks resume from checkpoint unowned) + Lease/fencing (epoch) + capability-aware Scheduler (Score/Pick/Schedule) + Work Stealing + DAG ReadyTasks + cooperative preempt (0.3.0 Kernel Scheduler pillar) |
+| Agent Fabric | `internal/fabric/agent` | spawn/suspend/resume/retire/kill/recover + Process Tree (provenance, not hierarchy) + Cognitive State + 3-layer Context + P5 resource quota (`WithResourceBudget`) (0.3.0 Kernel Lifecycle pillar) |
 | Agent IPC | `internal/agentipc` | Peer Send/Request/Reply/Delegate/Handoff/Subscribe + policy-gated dispatch (single-track taskfabric; legacy leader path removed) (0.3.0 Kernel IPC pillar) |
 | Runtime Recovery | `internal/aresrecovery` | lease-expiry requeue / checkpoint resume / agent restart / Chaos fault-injection validation (**Agent death ≠ Task death**) |
-| Kernel assembly | `cmd/ares/kernel.go` + `scheduler.go` | `wireKernelDispatcher`/`wireKernelPolicy`/`kernelScheduler` — config `kernel.policy` (`taskfabric`) + `subagents[].dependencies` DAG wiring |
+| Kernel assembly | `cmd/ares/kernel.go` + `agent_kernel.go` | `wireKernelDispatcher`/`wireKernelPolicy`/`kernelScheduler` — config `kernel.policy` (`taskfabric`) + `subagents[].dependencies` DAG wiring |
 
 Wiring: output guard validates sub-agent results; native tools and the peer
 registry are wired in `cmd/ares/serve.go`; state snapshots ride workflow
@@ -305,8 +353,7 @@ flowchart TB
     BOOT --> HTTPG
 
     subgraph HTTPG["HTTP surfaces"]
-        API["Console :8080<br/>/api/tasks, graphs, chaos, tools<br/>JWT/API-key, deny-by-default, audit"]
-        DASH["Dashboard :8090<br/>trajectory, feedback, spans"]
+        API["Console :8080<br/>/api/tasks, graphs, chaos, tools<br/>/api/evolution, /api/observability, /api/flight<br/>JWT/API-key, deny-by-default, audit"]
     end
 
     HTTPG ~~~ KERNELG
@@ -381,7 +428,7 @@ flowchart LR
         DIS["Distillation<br/>ExpRepo"]
         KR["KnowledgeRuntime<br/>AKG store"]
         REC["Recovery"]
-        DASH["Dashboard<br/>:8090"]
+        OBS["Observability<br/>introspect routes"]
     end
 
     API -- "L1 submit / result reflux" --> FABRIC
@@ -399,13 +446,13 @@ flowchart LR
     AFABK["agent kill"] -. "L5 expiry → requeue → W1 rebind" .-> SCHED
     SCHED -. "L5 renew heartbeat" .-> FABRIC
 
-    SCHED -. "L6 traces · feedback · spans" .-> DASH
+    SCHED -. "L6 traces · feedback · spans" .-> OBS
 
     style STRAT fill:#2d1b69,stroke:#8b5cf6,color:#fff
     style DIS fill:#1a2332,stroke:#64748b,color:#fff
     style KR fill:#1a2332,stroke:#64748b,color:#fff
     style REC fill:#3b2f2f,stroke:#f59e0b,color:#fff
-    style DASH fill:#1a3a2a,stroke:#22c55e,color:#fff
+    style OBS fill:#1a3a2a,stroke:#22c55e,color:#fff
 ```
 
 The six loops, and what locks them shut:
@@ -417,7 +464,7 @@ The six loops, and what locks them shut:
 | **L3** distillation | task-finalize events → distillation → experience repo → spawn prior (G1) + RAG retrieval | bootstrap closure suite |
 | **L4** knowledge | DistillBridge → AKG store → shared KnowledgeRuntime ↔ AKF tools; knowledge patches hit the same instance (`recovery.strategy` target registered) | `TestUpdateLiveDAG_*`, patch-registry tests |
 | **L5** recovery | kill → lease expiry (heartbeat-aware) → requeue → W1 replacement bound → checkpoint resume; zombie registrations swept per drain | `TestReconcileFabricDeaths_*`, `TestSchedulerAttributesFailureAsFailure` |
-| **L6** observability | runtime hooks write tracers/feedback/spans → Dashboard APIv2 (**now actually listening on :8090**) reads them live | bootstrap dashboard tests |
+| **L6** observability | runtime hooks write tracers/feedback/spans → introspect ControlServer (`/api/observability/*`, `/api/flight/*`, `/api/evolution/*`) reads them live | bootstrap dashboard tests |
 
 
 ### Runtime Kernel (0.3.0)
@@ -432,9 +479,9 @@ The Kernel rests on three pillars (`Agents decide the work. Kernel schedules the
 
 | Pillar | Package | Responsibility |
 |--------|---------|----------------|
-| **Scheduler** | `internal/taskfabric` | durable Task state machine + Lease/fencing (epoch), capability-aware scoring (`cap×load×conf`), Work Stealing, DAG ReadyTasks as scheduling source, cooperative preempt |
+| **Scheduler** | `internal/fabric/task` | durable Task state machine + Lease/fencing (epoch), capability-aware scoring (`cap×load×conf`), Work Stealing, DAG ReadyTasks as scheduling source, cooperative preempt |
 | **IPC** | `internal/agentipc` | peer-level communication (Send/Request/Reply/Delegate/Handoff/Subscribe) + policy-gated dispatch (single-track taskfabric) |
-| **Lifecycle** | `internal/agentfabric` | spawn/suspend/resume/retire/kill/recover + Process Tree (provenance, not hierarchy) + Cognitive State + P5 resource quota (`WithResourceBudget`) |
+| **Lifecycle** | `internal/fabric/agent` | spawn/suspend/resume/retire/kill/recover + Process Tree (provenance, not hierarchy) + Cognitive State + P5 resource quota (`WithResourceBudget`) |
 
 - **DAG as scheduling source**: planner-produced `subagents[].dependencies`
   are resolved into `models.Task.Context.Dependencies` by the planner,
@@ -459,12 +506,12 @@ literal in the code:
 
 | OS concept | ARES | Where |
 |---|---|---|
-| Process / PCB | **Task** — durable, outlives its executor, has an explicit state machine (READY→RUNNING→SUSPENDED→…) | `internal/taskfabric` |
-| Ownership / fencing token | **Lease + epoch** — a resumed task rejects a stale owner's late write | `taskfabric.Fabric.Acquire/Preempt` |
-| Scheduled execution unit | **Agent** — acquires a task, runs it, yields it back | `internal/agentfabric` + `internal/kernelscheduler` |
-| Time slice | **Quantum** — **one** ReAct round (reason → tool → observe → checkpoint), then yield | `agentfabric/chat_cognition.go`, `taskfabric.Yield` |
+| Process / PCB | **Task** — durable, outlives its executor, has an explicit state machine (READY→RUNNING→SUSPENDED→…) | `internal/fabric/task` |
+| Ownership / fencing token | **Lease + epoch** — a resumed task rejects a stale owner's late write | `fabric/task.Fabric.Acquire/Preempt` |
+| Scheduled execution unit | **Agent** — acquires a task, runs it, yields it back | `internal/fabric/agent` + `internal/kernel` |
+| Time slice | **Quantum** — **one** ReAct round (reason → tool → observe → checkpoint), then yield | `fabric/agent/planner_cognition.go`, `fabric/task.Fabric.Yield` |
 | Context save/restore | **Checkpoint + event-sourced replay** — a crashed agent's task is requeued and resumed elsewhere | `internal/aresrecovery` |
-| Scheduler policy | capability match × load × confidence, priority, work-stealing | `kernelscheduler.Scheduler` |
+| Scheduler policy | capability match × load × confidence, priority, work-stealing | `kernel.Scheduler` |
 
 **Be precise about what this is and isn't:**
 
@@ -555,75 +602,74 @@ Execution → Evidence → Genome → Candidate → Diff Engine → RuntimePatch
 
 **Key design**: LLM is a **participant**, not a controller. The Coordinator treats all 7 `PatchSource` values equally. No source has privileged access.
 
-### Benchmarks (Apple M3 Max, darwin/arm64, 2026-08-25)
+### Benchmarks (Apple M3 Max, darwin/arm64, 2026-09-12)
 
 ```
-=== Runtime Evolution (internal/evolution) ===
-BenchmarkWorkflowGenome_Mutate     152k    7.92µs  11.9KB  157 allocs
-BenchmarkKnowledgeGenome_Mutate    2.67M    440ns    960B   11 allocs
-BenchmarkRecoveryGenome_Mutate     2.35M    521ns   1.28KB  21 allocs
-BenchmarkDiffEngine_Workflow       2.68M    448ns    304B    3 allocs
-BenchmarkCoordinator_Evaluate       188M   6.33ns      0B    0 allocs
-BenchmarkFullEvolutionCycle        277k    4.26µs   7.3KB   90 allocs
+=== Runtime Evolution (internal/runtime/evolution) ===
+BenchmarkWorkflowGenome_Mutate       19.2k    31.5µs   46.5KB    534 allocs
+BenchmarkKnowledgeGenome_Mutate      1.42M    427ns    960B       11 allocs
+BenchmarkRecoveryGenome_Mutate       1.00M    505ns    1.25KB     21 allocs
+BenchmarkDiffEngine_Workflow         1.00M    546ns    352B        3 allocs
+BenchmarkCoordinator_Evaluate        94.7M    6.26ns   0B          0 allocs
+BenchmarkFullEvolutionCycle          59.3k    9.81µs   13.5KB    157 allocs
 
 === Event System (internal/ares_events) ===
-BenchmarkMemoryStore_Append           2.24M   519ns    618B    7 allocs
-BenchmarkMemoryStore_AppendBatch      300k   3.74µs   8.9KB    1 alloc
-BenchmarkMemoryStore_Read             231k   5.40µs  17.5KB   11 allocs
-BenchmarkMemoryStore_ConcurrentAppend 1.67M   704ns    625B    6 allocs
+BenchmarkMemoryStore_Append             944k    571ns    727B       8 allocs
+BenchmarkMemoryStore_AppendBatch       91.5k    6.50µs   21.1KB   102 allocs
+BenchmarkMemoryStore_Read              127k    4.73µs   17.1KB    11 allocs
+BenchmarkMemoryStore_ConcurrentAppend   873k    753ns    729B       7 allocs
 
-=== Evaluation Framework (internal/ares_eval) ===
-BenchmarkExactMatchEvaluator_Evaluate     490M   2.41ns     0B     0 allocs
-BenchmarkToolUsageEvaluator_Evaluate     38.4M  32.3ns     0B     0 allocs
-BenchmarkAgentTestRunner_RunSingle        3.92M   306ns   320B     5 allocs
-BenchmarkReportGenerator_GenerateMarkdown 351k   3.45µs  4.3KB   76 allocs
-BenchmarkLoader_Load                      24.8k  49.3µs  34.1KB  601 allocs
+=== Evaluation Framework (internal/runtime/eval) ===
+BenchmarkExactMatchEvaluator_Evaluate        254M    2.35ns   0B        0 allocs
+BenchmarkToolUsageEvaluator_Evaluate        22.0M    27.8ns   0B        0 allocs
+BenchmarkAgentTestRunner_RunSingle          2.00M    301ns    320B      5 allocs
+BenchmarkReportGenerator_GenerateMarkdown   175k     3.39µs   4.16KB   76 allocs
+BenchmarkLoader_Load                        12.4k    48.0µs   33.3KB  601 allocs
 
-=== AKG Knowledge Fabric (internal/knowledge) ===
+=== AKG Knowledge Fabric (internal/knowledge/*) ===
 --- Linkers (100 objs) ---
-DecisionLinker                      73.4k  16.6µs  10.9KB  295 allocs
-ArchitectureLinker                  30.0k  40.8µs 167.0KB   85 allocs
-TimelineLinker                      646k    1.83µs   3.1KB   11 allocs
-SimilarityLinker                     636   1.87ms   4.7MB 20217 allocs
+DecisionLinker                          36.3k    16.6µs   10.6KB     295 allocs
+ArchitectureLinker                      14.8k    40.7µs   163KB       85 allocs
+TimelineLinker                          314k     1.80µs   3.05KB     11 allocs
+SimilarityLinker                        315      1.90ms   4.49MB  20217 allocs
 --- Compiler (100 nodes) ---
-DefaultCompiler Prompt              25.9k  46.6µs  73.3KB  819 allocs
-DefaultCompiler All Formats         4.97k   248µs 365.2KB 3476 allocs
+DefaultCompiler Prompt                  13.4k    46.5µs   71.6KB     819 allocs
+DefaultCompiler All Formats             2.01k    289µs    400KB     5777 allocs
 --- Memory Store ---
-Store_Save                          1.78M   622ns    679B   11 allocs
-Store_Get                          21.7M   54.7ns     13B    1 alloc
-Store_QueryByType                   202k    5.77µs   4.5KB   11 allocs
-Store_Search                        16.0k  76.0µs  69.4KB 1514 allocs
+Store_Save                              1.00M    885ns    1.11KB     14 allocs
+Store_Get                               3.40M    176ns    430B        4 allocs
+Store_QueryByType                       23.5k    26.1µs   72.3KB    512 allocs
+Store_Search                            4.29k    144µs    271KB    3014 allocs
 --- Pipeline ---
-DefaultNormalizer_Normalize         2.28M   497ns    688B   10 allocs
+DefaultNormalizer_Normalize             1.20M    507ns    688B       10 allocs
 --- Planner ---
-KnowledgePlanner_Plan               1.72M   691ns   1.0KB   14 allocs
+KnowledgePlanner_Plan                   809k     746ns    984B       14 allocs
 --- Retriever (end-to-end, 100 objs) ---
-Retrieve                             126   9.23ms  16.2MB 129671 allocs
+Retriever_Retrieve                      69       32.1ms   55.9MB 453393 allocs
 
-=== Kernel (internal/taskfabric · agentfabric · agentipc) ===
---- Task Fabric (internal/taskfabric) ---
-Fabric_Create             2.59M    389ns    931B     3 allocs
-Fabric_Schedule           1.54M    800ns   1.85KB   18 allocs
-Fabric_RunQuantum         796k    1.60µs   3.7KB    23 allocs
-Fabric_ReadyTasks         3.25M    359ns    960B     4 allocs
-Fabric_IsReady           78.7M   15.0ns      0B     0 allocs
---- Agent Fabric (internal/agentfabric) ---
-Fabric_Spawn              3.11M    385ns    936B    10 allocs
-Fabric_SpawnWithResources 1.58M    762ns   1.48KB   14 allocs
-Fabric_SuspendResume     45.9M   24.7ns      0B     0 allocs
-Fabric_Children          46.0M   26.5ns     80B     1 alloc
+=== Kernel (internal/fabric/task · fabric/agent · agentipc) ===
+--- Task Fabric (internal/fabric/task) ---
+Fabric_Create              1.41M    395ns    352B      4 allocs
+Fabric_Schedule            1.10M    568ns    428B     10 allocs
+Fabric_RunQuantum          466k     1.30µs   1.13KB   16 allocs
+Fabric_ReadyTasks          1.54M    386ns    960B      4 allocs
+Fabric_IsReady             39.1M    15.4ns   0B        0 allocs
+--- Agent Fabric (internal/fabric/agent) ---
+Fabric_Spawn               1.49M    411ns    936B     10 allocs
+Fabric_SpawnWithResources  705k     828ns    1.45KB   14 allocs
+Fabric_SuspendResume       24.9M    24.0ns   0B        0 allocs
+Fabric_Children            22.7M    26.4ns   80B        1 alloc
 --- IPC (internal/agentipc) ---
-Bus_Send                 8.28M    143ns    280B     4 allocs
-Bus_RequestReply         1.00M   1.10µs    912B    14 allocs
-Bus_Broadcast (10 subs)   840k   1.49µs   3.0KB    41 allocs
-DualTrackDispatch         121M    9.9ns      0B     0 allocs
+Bus_Send                   1.95M    313ns    400B      8 allocs
+Bus_RequestReply           351k     1.73µs   1.29KB   22 allocs
+Bus_Broadcast              2.25M    263ns    400B      8 allocs
 
 === Observability & Recovery (internal/aresrecovery) ===
-GlobalTracer_TraceTask                   16.0M  85.4ns   247B     0 allocs
-GlobalTracer_TraceMessage                14.0M  91.2ns   282B     0 allocs
-GlobalTracer_Spans (200 spans)           784k   1.40µs  10.0KB    5 allocs
-Sandbox_ReplayRecoveryChain              457k   2.69µs   6.9KB   60 allocs
-Sandbox_SimulateAgentDeath               589k   2.03µs   4.8KB   47 allocs
+GlobalTracer_TraceTask                    6.63M   92.2ns   243B      0 allocs
+GlobalTracer_TraceMessage                 6.89M   85.9ns   293B      0 allocs
+GlobalTracer_Spans (200 spans)            425k    1.24µs   10.0KB    5 allocs
+Sandbox_ReplayRecoveryChain               208k    2.87µs   7.36KB   66 allocs
+Sandbox_SimulateAgentDeath                274k    2.15µs   5.04KB   51 allocs
 ```
 
 ### CLI
@@ -636,16 +682,16 @@ ares evolution run      # Run one evolution cycle
 ### Examples
 
 ```bash
-go run examples/11-knowledge-import/ --dir ./notes          # Ingest markdown into pgvector
-go run examples/11-knowledge-import/ --ask "question"       # RAG query against KB
-go run examples/11-knowledge-import/ --evolve "task"        # GA evolution on import
-go run examples/11-knowledge-import/ --chat                 # Interactive chat with tools
-go run examples/11-knowledge-import/ --team --dir ./notes   # Multi-agent import
-go run examples/11-knowledge-import/ --chaos-fail 0.3       # With fault injection
-go run examples/11-knowledge-import/akg/                    # Build AKG from KB
-go run examples/runtime_evolution/basic/      # Full end-to-end evolution demo
-go run examples/runtime_evolution/knowledge/  # Knowledge parameter evolution
-go run examples/runtime_evolution/full/       # All 4 genomes + real executors
+go run examples/_internal/11-knowledge-import/ --dir ./notes          # Ingest markdown into pgvector
+go run examples/_internal/11-knowledge-import/ --ask "question"       # RAG query against KB
+go run examples/_internal/11-knowledge-import/ --evolve "task"        # GA evolution on import
+go run examples/_internal/11-knowledge-import/ --chat                 # Interactive chat with tools
+go run examples/_internal/11-knowledge-import/ --team --dir ./notes   # Multi-agent import
+go run examples/_internal/11-knowledge-import/ --chaos-fail 0.3       # With fault injection
+go run examples/_internal/11-knowledge-import/akg/                    # Build AKG from KB
+go run examples/_internal/runtime_evolution/basic/      # Full end-to-end evolution demo
+go run examples/_internal/runtime_evolution/knowledge/  # Knowledge parameter evolution
+go run examples/_internal/runtime_evolution/full/       # All 4 genomes + real executors
 ```
 
 ## Strategy Evolution (GA)
@@ -667,26 +713,26 @@ Beyond runtime-level evolution, ARES includes a **strategy-level Genetic Algorit
 | **Generation History** | Per-generation snapshots with metadata |
 | **Experience System** | 3-tier pipeline: ToolCallRecord → RawExperience → NormalizedExperience → EvolutionHint → GuidanceProvider |
 
-### Benchmarks (Apple M3 Max, darwin/arm64, 2026-08-25)
+### Benchmarks (Apple M3 Max, darwin/arm64, 2026-09-12)
 
 ```
-=== GA Genome (internal/ares_evolution/genome) ===
-CrossoverUniform (10 params)        500k    2.46µs   3.1KB   31 allocs
-CrossoverUniform (100 params)       61.5k  17.8µs   21.2KB  38 allocs
-TruncationSelection (pop=100)       209k    5.82µs   952B     3 allocs
-TournamentSelection (pop=50,k=2)    287k    4.45µs  14.4KB  101 allocs
-RouletteWheelSelection (pop=100)    422k    2.84µs   3.4KB    7 allocs
-Evolve_OneGeneration (pop=100)      4.60M   263ns    344B     6 allocs
-Evolve_MultipleGenerations (100)    45.3k  25.9µs  29.6KB  600 allocs
-ApplyFitnessSharing (pop=100)        896   1.34ms   540KB  106 allocs
-RealWorldEvolution (100 gen)         100  10.05ms   4.4MB 61871 allocs
+=== GA Genome (internal/runtime/ares_evolution/genome) ===
+CrossoverUniform (10 params)          262k    2.29µs   2.97KB     31 allocs
+CrossoverUniform (100 params)        34.1k    17.2µs   20.6KB     38 allocs
+TruncationSelection (pop=100)        103k     5.82µs   952B        3 allocs
+TournamentSelection (pop=50,k=2)     158k     3.84µs   13.3KB    101 allocs
+RouletteWheelSelection (pop=100)     208k     3.02µs   3.34KB      7 allocs
+Evolve_OneGeneration (pop=100)       2.22M    271ns    344B        6 allocs
+Evolve_MultipleGenerations (100)     23.2k    26.3µs   33.6KB    600 allocs
+ApplyFitnessSharing (pop=100)        429      1.36ms   527KB     106 allocs
+RealWorldEvolution (100 gen)         58       10.5ms   4.31MB  61922 allocs
 ```
 
 ### Examples
 
 ```bash
-go run examples/10-ga-full-evolution/main.go   # Full GA evolution demo
-go run examples/05-evolution-demo/main.go       # Pre-NSGA-II evolution demo
+go run examples/_internal/10-ga-full-evolution/main.go   # Full GA evolution demo
+go run examples/_fixtures/05-evolution-demo/main.go       # Pre-NSGA-II evolution demo
 ```
 
 

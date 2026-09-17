@@ -16,26 +16,41 @@ type Query struct {
 // data path. Provider → Pipeline → KnowledgeRuntime bypasses Store entirely.
 type KnowledgeStore interface {
 	// Save persists one or more KnowledgeObjects. Creates or updates.
+	// An upsert whose ID already exists under a DIFFERENT namespace is refused
+	// with ErrObjectNotFound and leaves the stored row untouched: objects are
+	// keyed by ID alone, so without this guard a knowledge_update carrying
+	// another tenant's ID would silently migrate that row into the caller's
+	// namespace.
 	Save(ctx context.Context, objects ...*KnowledgeObject) error
 
-	// Get retrieves a KnowledgeObject by ID.
-	// Returns ErrObjectNotFound if not found.
-	Get(ctx context.Context, id string) (*KnowledgeObject, error)
+	// Get retrieves a KnowledgeObject by ID, scoped to the owning tenant.
+	// Returns ErrObjectNotFound when no row with that ID exists IN THAT
+	// TENANT — deliberately the same error as "no such ID", so a caller
+	// cannot probe for another tenant's object IDs.
+	Get(ctx context.Context, tenantID, id string) (*KnowledgeObject, error)
 
 	// Query retrieves KnowledgeObjects matching the given criteria.
 	Query(ctx context.Context, q Query) ([]*KnowledgeObject, error)
 
-	// Delete removes a KnowledgeObject by ID.
-	Delete(ctx context.Context, id string) error
+	// Delete removes a KnowledgeObject by ID, scoped to the owning tenant.
+	// A row belonging to another tenant is reported as ErrObjectNotFound and
+	// left untouched; a missing ID answers identically, so a caller cannot
+	// enumerate which IDs exist under other tenants.
+	Delete(ctx context.Context, tenantID, id string) error
 
-	// Search performs semantic search using the given embedding model.
-	Search(ctx context.Context, text string, model string, limit int) ([]*KnowledgeObject, error)
+	// Search performs semantic search using the given embedding model,
+	// scoped to the owning tenant. Backends without vectors degrade to
+	// lexical matching but must still apply the tenant scope.
+	Search(ctx context.Context, tenantID, text string, model string, limit int) ([]*KnowledgeObject, error)
 
 	// SaveRepresentation stores an embedding vector.
 	SaveRepresentation(ctx context.Context, rep *Representation) error
 
-	// GetRepresentation retrieves an embedding vector by model.
-	GetRepresentation(ctx context.Context, objectID string, model string) (*Representation, error)
+	// GetRepresentation retrieves an embedding vector by model, scoped to
+	// the owning object's tenant: a representation whose object belongs to
+	// another tenant is reported as ErrObjectNotFound (indistinguishable
+	// from a missing one, same anti-probing contract as Get).
+	GetRepresentation(ctx context.Context, tenantID, objectID, model string) (*Representation, error)
 
 	// HybridSearch performs vector recall (cosine) plus lexical (keyword) scoring
 	// and returns ranked results. The caller supplies QueryVector (computed via
@@ -47,11 +62,15 @@ type KnowledgeStore interface {
 	// Empty status matches objects with no status (backward compatibility).
 	ListByStatus(ctx context.Context, ns string, status ObjectStatus, limit int) ([]*KnowledgeObject, error)
 
-	// UpdateStatus transitions an object's lifecycle status.
-	UpdateStatus(ctx context.Context, id string, status ObjectStatus) error
+	// UpdateStatus transitions an object's lifecycle status, scoped to the
+	// owning tenant. A row in another namespace is reported as ErrObjectNotFound
+	// and left untouched.
+	UpdateStatus(ctx context.Context, tenantID, id string, status ObjectStatus) error
 
-	// Promote moves a candidate to active and records its computed Quality.
-	Promote(ctx context.Context, id string, q *Quality) error
+	// Promote moves a candidate to active and records its computed Quality,
+	// scoped to the owning tenant. A row in another namespace is reported as
+	// ErrObjectNotFound and left untouched.
+	Promote(ctx context.Context, tenantID, id string, q *Quality) error
 }
 
 // HybridSearchRequest configures a HybridSearch call.

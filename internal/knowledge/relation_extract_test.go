@@ -1,6 +1,8 @@
 package knowledge
 
 import (
+	"regexp"
+	"strings"
 	"testing"
 )
 
@@ -91,6 +93,95 @@ func TestExtract_StripsTrailingPunctuation(t *testing.T) {
 			if r.ObjectText == "鉴权bug。" || r.ObjectText == "鉴权bug," {
 				t.Errorf("trailing punctuation not stripped: %q", r.ObjectText)
 			}
+		}
+	}
+}
+
+// TestExtract_EntityBoundTerminators is the regression for the terminator
+// matrix: every character the capture class excludes must also be able to
+// terminate the capture, otherwise the lazy +? has no valid stop position and
+// the whole pattern fails to match. '!' and '?' sat in the exclusion class but
+// were dropped from the terminator alternation, so "fixes the auth bug!"
+// extracted NOTHING. Cases are pinned through the public Extract contract, not
+// the regex internals.
+func TestExtract_EntityBoundTerminators(t *testing.T) {
+	cases := []struct {
+		name string
+		text string
+		want string
+	}{
+		// ASCII sentence punctuation must terminate.
+		{"ascii_period", "this commit fixes the auth bug.", "the auth bug"},
+		{"ascii_period_then_more", "fixes the auth bug. See also foo", "the auth bug"},
+		{"ascii_exclamation", "fixes the auth bug!", "the auth bug"},
+		{"ascii_question", "fixes the auth bug?", "the auth bug"},
+		{"ascii_comma", "fixes the auth bug, then refactors", "the auth bug"},
+		{"ascii_semicolon", "fixes the auth bug; also docs", "the auth bug"},
+		{"ascii_colon", "fixes the auth bug: a postmortem", "the auth bug"},
+		{"ascii_conjunction_and", "fixes A and B", "A"},
+
+		// Full-width CJK punctuation must terminate (the capture class
+		// excludes it, so the terminator must accept it).
+		{"fullwidth_period", "修复了鉴权bug。", "鉴权bug"},
+		{"fullwidth_comma", "修复了 A，B", "A"},
+		{"fullwidth_semicolon", "修复了 A；B", "A"},
+		{"fullwidth_colon", "修复了 A：B", "A"},
+		{"fullwidth_exclamation", "修复了 A！", "A"},
+		{"fullwidth_question", "修复了 A？", "A"},
+		{"fullwidth_conjunction_he", "修复了 A 和 B", "A"},
+
+		// Dotted identifiers/versions must SURVIVE a '.' that is not a
+		// sentence boundary — the whole point of keeping '.' out of the
+		// capture class.
+		{"dotted_identifier", "this depends on auth.service", "auth.service"},
+		{"dotted_version", "depends on v1.2.3. Next", "v1.2.3"},
+
+		// Bare entity with no trailing punctuation still matches via the
+		// end-of-text terminator.
+		{"no_terminator", "this commit fixes the login page", "the login page"},
+	}
+
+	ext := NewRelationExtractor()
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var got string
+			for _, r := range ext.Extract(&KnowledgeObject{ID: "obj", Normalized: tc.text}) {
+				if r.Predicate == RelFixes || r.Predicate == RelDependsOn {
+					got = r.ObjectText
+					break
+				}
+			}
+			if got != tc.want {
+				t.Errorf("Extract(%q) = %q, want %q", tc.text, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestExtract_CaptureClassNeverExcludesUnterminatableChar guards the invariant
+// behind TestExtract_EntityBoundTerminators: no character may appear in the
+// capture exclusion class without a matching terminator branch. Implemented
+// against entityBound itself so a future edit that reintroduces the asymmetry
+// fails here even if the table above is not extended.
+func TestExtract_CaptureClassNeverExcludesUnterminatableChar(t *testing.T) {
+	// Characters the capture class excludes.
+	excluded := []string{"，", "。", "；", "！", "？", ",", ";", "!", "?", "：", ":"}
+	// Each must be reachable as a terminator: either directly or as the '.'
+	// half of the '\.\s' sentence-boundary branch.
+	for _, ch := range excluded {
+		pat := `x*` + entityBound
+		re, err := regexp.Compile(pat)
+		if err != nil {
+			t.Fatalf("entityBound does not compile: %v", err)
+		}
+		m := re.FindStringSubmatch("ab" + ch + "cd")
+		if m == nil {
+			t.Errorf("entity %q followed by excluded char %q does not match; "+
+				"every excluded char must also terminate the capture", "ab", ch)
+			continue
+		}
+		if got := strings.TrimSpace(m[1]); got != "ab" {
+			t.Errorf("entity before %q captured as %q, want %q", ch, got, "ab")
 		}
 	}
 }
