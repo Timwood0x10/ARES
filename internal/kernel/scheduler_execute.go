@@ -163,7 +163,15 @@ func (s *Scheduler) executeWithCandidates(ctx context.Context, taskID string, ca
 	// acquire/release livelock).
 	cands = s.filterBudgetAffordable(cands)
 	if len(cands) == 0 {
-		return apperrors.Kernel("schedule", "no_capable_candidate", taskID, "", taskfabric.ErrNoCapableCandidate)
+		// Distinct code for the budget-filtered empty pool: the sentinel on
+		// the chain stays ErrNoCapableCandidate (the task is still in the
+		// throttled "wait for a capable agent" state and logFailure still
+		// throttles it), but the CODE must differ — "every capable agent is
+		// budget-exhausted" and "no agent ever matched" are different
+		// incidents, and collapsing them into one code made a governance
+		// budget that was simply too small for the LLM look exactly like a
+		// missing executor (07-hil's silent no_capable_candidate hang).
+		return apperrors.Kernel("schedule", "no_affordable_candidate", taskID, "", taskfabric.ErrNoCapableCandidate)
 	}
 	// Capability-specific confidence: the candidate builders only know
 	// agentID; the task capability is available here, so re-resolve each
