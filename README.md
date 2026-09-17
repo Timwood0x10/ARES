@@ -46,7 +46,7 @@ import (
 )
 
 func main() {
-    rt := api.MustNew() // auto-detects Ollama / OPENAI_API_KEY / ANTHROPIC_API_KEY; use api.New(opts...) for fine-grained config
+    rt := api.MustNew() // reads ./ares.yaml (the single config entry point); use api.New(opts...) for fine-grained config
     defer rt.Close()
 
     agent := rt.NewAgent("assistant", api.WithInstruction("You are helpful."))
@@ -275,22 +275,20 @@ the "agent OS" building blocks distilled from the prime-agent comparison.
 | Primitive | Package / API | Purpose |
 |-----------|---------------|---------|
 | Active tools subset | `internal/tools/resources/core`: `Registry.SetActiveTools` / `ActiveTools` / `ClearActiveTools` | Advertise only the active tool subset to the LLM (progressive disclosure) |
-| Native command discovery | `internal/tools/discovery` | Probe `command -v` + `--help` for allowlisted host commands and expose them as tools (`ARES_NATIVE_TOOLS`) |
+| Native command discovery | `internal/tools/discovery` | Probe `command -v` + `--help` for allowlisted host commands and expose them as tools (`tools.native_allowlist`) |
 | Peer messaging | `internal/agents/peer` | Direct agent-to-agent message registry + delivery |
-| Small-step evolution | `internal/ares_evolution/refine` | Baseline-checked, rollback-capable supplement-state updates (plan → apply → rollback) |
-| Runtime state snapshot | `internal/ares_runtime`: `SaveStateSnapshot` / `LoadStateSnapshot` | Versioned runtime state snapshots via CheckpointStore (schema-version guarded) |
-| Capability Fabric (SkillCatalog) | `internal/ares_skills`: `Catalog` / `SourceManager` / `Indexer` / `Discovery` / `Loader` / `Resolver` / `Experience` | Skill = capability package: declared-source metadata index (no disk scanning), progressive disclosure metadata → SKILL.md → resources, trust-gated tool resolution (MCP / Executable / Builtin), learned-source relevance priors |
+| Small-step evolution | `internal/runtime/ares_evolution/refine` | Baseline-checked, rollback-capable supplement-state updates (plan → apply → rollback) |
+| Capability Fabric (SkillCatalog) | `internal/runtime/protocol/skills`: `Catalog` / `SourceManager` / `Indexer` / `Discovery` / `Loader` / `Resolver` / `Experience` | Skill = capability package: declared-source metadata index (no disk scanning), progressive disclosure metadata → SKILL.md → resources, trust-gated tool resolution (MCP / Executable / Builtin), learned-source relevance priors |
 | Output guard | `internal/agents/outputguard` | Reject structurally inconsistent agent results at the boundary |
 | Run budgets | `api.WithTimeout` (`Task.Timeout`, enforced on the L2 submission) | Wall-clock-bounded autonomous execution. `api.WithMaxTokens` is retained for API compatibility but is not enforced on the shared L2 path (0.3.1) |
-| Fingerprint cache | `internal/ares_arena`: `WithFingerprint` | Skip re-running regression when the environment is unchanged |
+| Fingerprint cache | `internal/runtime/arena`: `WithFingerprint` | Skip re-running regression when the environment is unchanged |
 | Skills (progressive disclosure) | `internal/knowledge/skills` | Description resident in context; detail loaded on demand |
 | Session lease | `internal/agents/lease` | Exclusive expiring holds for concurrent session access |
-| Action log | `internal/agents/actionlog` | Append-only, replayable action store for audit/recovery |
-| Task Fabric | `internal/taskfabric` | Durable Task state machine (cross-restart rebuild from the event log via `RestoreFromStore`; non-terminal tasks resume from checkpoint unowned) + Lease/fencing (epoch) + capability-aware Scheduler (Score/Pick/Schedule) + Work Stealing + DAG ReadyTasks + cooperative preempt (0.3.0 Kernel Scheduler pillar) |
-| Agent Fabric | `internal/agentfabric` | spawn/suspend/resume/retire/kill/recover + Process Tree (provenance, not hierarchy) + Cognitive State + 3-layer Context + P5 resource quota (`WithResourceBudget`) (0.3.0 Kernel Lifecycle pillar) |
+| Task Fabric | `internal/fabric/task` | Durable Task state machine (cross-restart rebuild from the event log via `RestoreFromStore`; non-terminal tasks resume from checkpoint unowned) + Lease/fencing (epoch) + capability-aware Scheduler (Score/Pick/Schedule) + Work Stealing + DAG ReadyTasks + cooperative preempt (0.3.0 Kernel Scheduler pillar) |
+| Agent Fabric | `internal/fabric/agent` | spawn/suspend/resume/retire/kill/recover + Process Tree (provenance, not hierarchy) + Cognitive State + 3-layer Context + P5 resource quota (`WithResourceBudget`) (0.3.0 Kernel Lifecycle pillar) |
 | Agent IPC | `internal/agentipc` | Peer Send/Request/Reply/Delegate/Handoff/Subscribe + policy-gated dispatch (single-track taskfabric; legacy leader path removed) (0.3.0 Kernel IPC pillar) |
 | Runtime Recovery | `internal/aresrecovery` | lease-expiry requeue / checkpoint resume / agent restart / Chaos fault-injection validation (**Agent death ≠ Task death**) |
-| Kernel assembly | `cmd/ares/kernel.go` + `scheduler.go` | `wireKernelDispatcher`/`wireKernelPolicy`/`kernelScheduler` — config `kernel.policy` (`taskfabric`) + `subagents[].dependencies` DAG wiring |
+| Kernel assembly | `cmd/ares/kernel.go` + `agent_kernel.go` | `wireKernelDispatcher`/`wireKernelPolicy`/`kernelScheduler` — config `kernel.policy` (`taskfabric`) + `subagents[].dependencies` DAG wiring |
 
 Wiring: output guard validates sub-agent results; native tools and the peer
 registry are wired in `cmd/ares/serve.go`; state snapshots ride workflow
@@ -355,8 +353,7 @@ flowchart TB
     BOOT --> HTTPG
 
     subgraph HTTPG["HTTP surfaces"]
-        API["Console :8080<br/>/api/tasks, graphs, chaos, tools<br/>JWT/API-key, deny-by-default, audit"]
-        DASH["Dashboard :8090<br/>trajectory, feedback, spans"]
+        API["Console :8080<br/>/api/tasks, graphs, chaos, tools<br/>/api/evolution, /api/observability, /api/flight<br/>JWT/API-key, deny-by-default, audit"]
     end
 
     HTTPG ~~~ KERNELG
@@ -431,7 +428,7 @@ flowchart LR
         DIS["Distillation<br/>ExpRepo"]
         KR["KnowledgeRuntime<br/>AKG store"]
         REC["Recovery"]
-        DASH["Dashboard<br/>:8090"]
+        OBS["Observability<br/>introspect routes"]
     end
 
     API -- "L1 submit / result reflux" --> FABRIC
@@ -449,13 +446,13 @@ flowchart LR
     AFABK["agent kill"] -. "L5 expiry → requeue → W1 rebind" .-> SCHED
     SCHED -. "L5 renew heartbeat" .-> FABRIC
 
-    SCHED -. "L6 traces · feedback · spans" .-> DASH
+    SCHED -. "L6 traces · feedback · spans" .-> OBS
 
     style STRAT fill:#2d1b69,stroke:#8b5cf6,color:#fff
     style DIS fill:#1a2332,stroke:#64748b,color:#fff
     style KR fill:#1a2332,stroke:#64748b,color:#fff
     style REC fill:#3b2f2f,stroke:#f59e0b,color:#fff
-    style DASH fill:#1a3a2a,stroke:#22c55e,color:#fff
+    style OBS fill:#1a3a2a,stroke:#22c55e,color:#fff
 ```
 
 The six loops, and what locks them shut:
@@ -467,7 +464,7 @@ The six loops, and what locks them shut:
 | **L3** distillation | task-finalize events → distillation → experience repo → spawn prior (G1) + RAG retrieval | bootstrap closure suite |
 | **L4** knowledge | DistillBridge → AKG store → shared KnowledgeRuntime ↔ AKF tools; knowledge patches hit the same instance (`recovery.strategy` target registered) | `TestUpdateLiveDAG_*`, patch-registry tests |
 | **L5** recovery | kill → lease expiry (heartbeat-aware) → requeue → W1 replacement bound → checkpoint resume; zombie registrations swept per drain | `TestReconcileFabricDeaths_*`, `TestSchedulerAttributesFailureAsFailure` |
-| **L6** observability | runtime hooks write tracers/feedback/spans → Dashboard APIv2 (**now actually listening on :8090**) reads them live | bootstrap dashboard tests |
+| **L6** observability | runtime hooks write tracers/feedback/spans → introspect ControlServer (`/api/observability/*`, `/api/flight/*`, `/api/evolution/*`) reads them live | bootstrap dashboard tests |
 
 
 ### Runtime Kernel (0.3.0)
@@ -482,9 +479,9 @@ The Kernel rests on three pillars (`Agents decide the work. Kernel schedules the
 
 | Pillar | Package | Responsibility |
 |--------|---------|----------------|
-| **Scheduler** | `internal/taskfabric` | durable Task state machine + Lease/fencing (epoch), capability-aware scoring (`cap×load×conf`), Work Stealing, DAG ReadyTasks as scheduling source, cooperative preempt |
+| **Scheduler** | `internal/fabric/task` | durable Task state machine + Lease/fencing (epoch), capability-aware scoring (`cap×load×conf`), Work Stealing, DAG ReadyTasks as scheduling source, cooperative preempt |
 | **IPC** | `internal/agentipc` | peer-level communication (Send/Request/Reply/Delegate/Handoff/Subscribe) + policy-gated dispatch (single-track taskfabric) |
-| **Lifecycle** | `internal/agentfabric` | spawn/suspend/resume/retire/kill/recover + Process Tree (provenance, not hierarchy) + Cognitive State + P5 resource quota (`WithResourceBudget`) |
+| **Lifecycle** | `internal/fabric/agent` | spawn/suspend/resume/retire/kill/recover + Process Tree (provenance, not hierarchy) + Cognitive State + P5 resource quota (`WithResourceBudget`) |
 
 - **DAG as scheduling source**: planner-produced `subagents[].dependencies`
   are resolved into `models.Task.Context.Dependencies` by the planner,
@@ -509,12 +506,12 @@ literal in the code:
 
 | OS concept | ARES | Where |
 |---|---|---|
-| Process / PCB | **Task** — durable, outlives its executor, has an explicit state machine (READY→RUNNING→SUSPENDED→…) | `internal/taskfabric` |
-| Ownership / fencing token | **Lease + epoch** — a resumed task rejects a stale owner's late write | `taskfabric.Fabric.Acquire/Preempt` |
-| Scheduled execution unit | **Agent** — acquires a task, runs it, yields it back | `internal/agentfabric` + `internal/kernelscheduler` |
-| Time slice | **Quantum** — **one** ReAct round (reason → tool → observe → checkpoint), then yield | `agentfabric/chat_cognition.go`, `taskfabric.Yield` |
+| Process / PCB | **Task** — durable, outlives its executor, has an explicit state machine (READY→RUNNING→SUSPENDED→…) | `internal/fabric/task` |
+| Ownership / fencing token | **Lease + epoch** — a resumed task rejects a stale owner's late write | `fabric/task.Fabric.Acquire/Preempt` |
+| Scheduled execution unit | **Agent** — acquires a task, runs it, yields it back | `internal/fabric/agent` + `internal/kernel` |
+| Time slice | **Quantum** — **one** ReAct round (reason → tool → observe → checkpoint), then yield | `fabric/agent/planner_cognition.go`, `fabric/task.Fabric.Yield` |
 | Context save/restore | **Checkpoint + event-sourced replay** — a crashed agent's task is requeued and resumed elsewhere | `internal/aresrecovery` |
-| Scheduler policy | capability match × load × confidence, priority, work-stealing | `kernelscheduler.Scheduler` |
+| Scheduler policy | capability match × load × confidence, priority, work-stealing | `kernel.Scheduler` |
 
 **Be precise about what this is and isn't:**
 
@@ -685,16 +682,16 @@ ares evolution run      # Run one evolution cycle
 ### Examples
 
 ```bash
-go run examples/11-knowledge-import/ --dir ./notes          # Ingest markdown into pgvector
-go run examples/11-knowledge-import/ --ask "question"       # RAG query against KB
-go run examples/11-knowledge-import/ --evolve "task"        # GA evolution on import
-go run examples/11-knowledge-import/ --chat                 # Interactive chat with tools
-go run examples/11-knowledge-import/ --team --dir ./notes   # Multi-agent import
-go run examples/11-knowledge-import/ --chaos-fail 0.3       # With fault injection
-go run examples/11-knowledge-import/akg/                    # Build AKG from KB
-go run examples/runtime_evolution/basic/      # Full end-to-end evolution demo
-go run examples/runtime_evolution/knowledge/  # Knowledge parameter evolution
-go run examples/runtime_evolution/full/       # All 4 genomes + real executors
+go run examples/_internal/11-knowledge-import/ --dir ./notes          # Ingest markdown into pgvector
+go run examples/_internal/11-knowledge-import/ --ask "question"       # RAG query against KB
+go run examples/_internal/11-knowledge-import/ --evolve "task"        # GA evolution on import
+go run examples/_internal/11-knowledge-import/ --chat                 # Interactive chat with tools
+go run examples/_internal/11-knowledge-import/ --team --dir ./notes   # Multi-agent import
+go run examples/_internal/11-knowledge-import/ --chaos-fail 0.3       # With fault injection
+go run examples/_internal/11-knowledge-import/akg/                    # Build AKG from KB
+go run examples/_internal/runtime_evolution/basic/      # Full end-to-end evolution demo
+go run examples/_internal/runtime_evolution/knowledge/  # Knowledge parameter evolution
+go run examples/_internal/runtime_evolution/full/       # All 4 genomes + real executors
 ```
 
 ## Strategy Evolution (GA)
@@ -734,8 +731,8 @@ RealWorldEvolution (100 gen)         58       10.5ms   4.31MB  61922 allocs
 ### Examples
 
 ```bash
-go run examples/10-ga-full-evolution/main.go   # Full GA evolution demo
-go run examples/05-evolution-demo/main.go       # Pre-NSGA-II evolution demo
+go run examples/_internal/10-ga-full-evolution/main.go   # Full GA evolution demo
+go run examples/_fixtures/05-evolution-demo/main.go       # Pre-NSGA-II evolution demo
 ```
 
 

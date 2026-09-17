@@ -41,7 +41,7 @@ import (
 )
 
 func main() {
-    rt := sdk.MustNew() // 零参数：自动检测 Ollama / OPENAI_API_KEY / ANTHROPIC_API_KEY；需要精细配置时使用 sdk.New(opts...)
+    rt := sdk.MustNew() // 读取 ./ares.yaml（唯一配置入口）；需要精细配置时使用 sdk.New(opts...)
     defer rt.Close()
 
     agent := rt.NewAgent("assistant", sdk.WithInstruction("你是一个有用的助手。"))
@@ -190,7 +190,7 @@ LLM 从不参与抽取或构建 —— 它只在推理时消费检索到的事�
 ```bash
 ares init        # 创建新项目脚手架（main.go + ares.yaml）
 ares run         # 从配置文件运行 agent
-ares serve       # 启动完整运行时（LLM + MCP + Console :8080 + Dashboard :8090）
+ares serve       # 启动完整运行时（LLM + MCP + Console :8080）
 ares bench       # 快速性能基准测试
 ares doctor      # 诊断环境（LLM key、Ollama、Git）
 ares status      # 查看运行时状态（配置 / agents / kernel policy）
@@ -253,12 +253,12 @@ ARES 借用操作系统的调度模型作为**设计视角**——这是一个�
 
 | 操作系统概念 | ARES | 位置 |
 |---|---|---|
-| 进程 / PCB | **Task** —— 可持久化，独立于执行者存活，有显式状态机（READY→RUNNING→SUSPENDED→…） | `internal/taskfabric` |
-| 所有权 / fencing token | **Lease + epoch** —— 被恢复的任务会拒绝旧属主的迟到写入 | `taskfabric.Fabric.Acquire/Preempt` |
-| 被调度的执行单元 | **Agent** —— 获取任务、执行、让出 | `internal/agentfabric` + `internal/kernelscheduler` |
-| 时间片 | **Quantum（量子）** —— **一轮** ReAct（reason → tool → observe → checkpoint），然后让出 | `agentfabric/chat_cognition.go`、`taskfabric.Yield` |
+| 进程 / PCB | **Task** —— 可持久化，独立于执行者存活，有显式状态机（READY→RUNNING→SUSPENDED→…） | `internal/fabric/task` |
+| 所有权 / fencing token | **Lease + epoch** —— 被恢复的任务会拒绝旧属主的迟到写入 | `fabric/task.Fabric.Acquire/Preempt` |
+| 被调度的执行单元 | **Agent** —— 获取任务、执行、让出 | `internal/fabric/agent` + `internal/kernel` |
+| 时间片 | **Quantum（量子）** —— **一轮** ReAct（reason → tool → observe → checkpoint），然后让出 | `fabric/agent/planner_cognition.go`、`fabric/task.Fabric.Yield` |
 | 上下文保存/恢复 | **Checkpoint + 事件溯源重放** —— 崩溃 Agent 的任务被重新入队、在别处恢复 | `internal/aresrecovery` |
-| 调度策略 | 能力匹配 × 负载 × 置信度、优先级、工作窃取 | `kernelscheduler.Scheduler` |
+| 调度策略 | 能力匹配 × 负载 × 置信度、优先级、工作窃取 | `kernel.Scheduler` |
 
 **必须实事求是地说清楚它是什么、不是什么：**
 
@@ -295,8 +295,7 @@ flowchart TB
     BOOT --> HTTPG
 
     subgraph HTTPG["HTTP surfaces"]
-        API["Console :8080<br/>/api/tasks, graphs, chaos, tools<br/>JWT/API-key, deny-by-default, audit"]
-        DASH["Dashboard :8090<br/>trajectory, feedback, spans"]
+        API["Console :8080<br/>/api/tasks, graphs, chaos, tools<br/>/api/evolution, /api/observability, /api/flight<br/>JWT/API-key, deny-by-default, audit"]
     end
 
     HTTPG ~~~ KERNELG
@@ -371,7 +370,7 @@ flowchart LR
         DIS["Distillation<br/>ExpRepo"]
         KR["KnowledgeRuntime<br/>AKG store"]
         REC["Recovery"]
-        DASH["Dashboard<br/>:8090"]
+        OBS["Observability<br/>introspect routes"]
     end
 
     API -- "L1 submit / result reflux" --> FABRIC
@@ -389,13 +388,13 @@ flowchart LR
     AFABK["agent kill"] -. "L5 expiry → requeue → W1 rebind" .-> SCHED
     SCHED -. "L5 renew heartbeat" .-> FABRIC
 
-    SCHED -. "L6 traces · feedback · spans" .-> DASH
+    SCHED -. "L6 traces · feedback · spans" .-> OBS
 
     style STRAT fill:#2d1b69,stroke:#8b5cf6,color:#fff
     style DIS fill:#1a2332,stroke:#64748b,color:#fff
     style KR fill:#1a2332,stroke:#64748b,color:#fff
     style REC fill:#3b2f2f,stroke:#f59e0b,color:#fff
-    style DASH fill:#1a3a2a,stroke:#22c55e,color:#fff
+    style OBS fill:#1a3a2a,stroke:#22c55e,color:#fff
 ```
 
 六条环路的闭合点与回归锁定：
@@ -407,7 +406,7 @@ flowchart LR
 | **L3** 蒸馏 | 任务终结事件 → 蒸馏 → 经验仓库 → spawn prior (G1) + RAG 检索注入 | bootstrap closure 套件 |
 | **L4** 知识 | DistillBridge → AKG store → 共享 KnowledgeRuntime ↔ AKF 工具；知识补丁作用于同一实例（`recovery.strategy` target 已注册） | `TestUpdateLiveDAG_*`、patch-registry 测试 |
 | **L5** 恢复 | kill → 租约过期（心跳感知）→ 重排队 → W1 替换绑定 → checkpoint 续跑；僵尸注册每 drain 清扫 | `TestReconcileFabricDeaths_*`、`TestSchedulerAttributesFailureAsFailure` |
-| **L6** 可观测 | 运行时钩子写入 tracer/feedback/spans → Dashboard APIv2（**现已真正监听 :8090**）实时读取 | bootstrap dashboard 测试 |
+| **L6** 可观测 | 运行时钩子写入 tracer/feedback/spans → introspect ControlServer（`/api/observability/*`、`/api/flight/*`、`/api/evolution/*`）实时读取 | bootstrap dashboard 测试 |
 
 
 
@@ -543,16 +542,16 @@ ares evolution run      # 运行一个进化周期
 ### 示例
 
 ```bash
-go run examples/11-knowledge-import/ --dir ./notes          # 导入 markdown 到 pgvector
-go run examples/11-knowledge-import/ --ask "question"       # RAG 查询知识库
-go run examples/11-knowledge-import/ --evolve "task"        # GA 进化导入策略
-go run examples/11-knowledge-import/ --chat                 # 交互式对话 + 工具
-go run examples/11-knowledge-import/ --team --dir ./notes   # 多 Agent 团队导入
-go run examples/11-knowledge-import/ --chaos-fail 0.3       # 故障注入测试
-go run examples/11-knowledge-import/akg/                    # 从知识库构建 AKG 图
-go run examples/runtime_evolution/basic/      # 完整端到端进化演示
-go run examples/runtime_evolution/knowledge/  # Knowledge 参数进化
-go run examples/runtime_evolution/full/       # 全部 4 个 Genome + 真实 Executor
+go run examples/_internal/11-knowledge-import/ --dir ./notes          # 导入 markdown 到 pgvector
+go run examples/_internal/11-knowledge-import/ --ask "question"       # RAG 查询知识库
+go run examples/_internal/11-knowledge-import/ --evolve "task"        # GA 进化导入策略
+go run examples/_internal/11-knowledge-import/ --chat                 # 交互式对话 + 工具
+go run examples/_internal/11-knowledge-import/ --team --dir ./notes   # 多 Agent 团队导入
+go run examples/_internal/11-knowledge-import/ --chaos-fail 0.3       # 故障注入测试
+go run examples/_internal/11-knowledge-import/akg/                    # 从知识库构建 AKG 图
+go run examples/_internal/runtime_evolution/basic/      # 完整端到端进化演示
+go run examples/_internal/runtime_evolution/knowledge/  # Knowledge 参数进化
+go run examples/_internal/runtime_evolution/full/       # 全部 4 个 Genome + 真实 Executor
 ```
 
 ## 策略进化（GA）
@@ -592,8 +591,8 @@ RealWorldEvolution (100 gen)        58      10.5ms   4.31MB  61922 allocs
 ### 示例
 
 ```bash
-go run examples/10-ga-full-evolution/main.go   # 完整 GA 进化演示
-go run examples/05-evolution-demo/main.go       # NSGA-II 之前的进化演示
+go run examples/_internal/10-ga-full-evolution/main.go   # 完整 GA 进化演示
+go run examples/_fixtures/05-evolution-demo/main.go       # NSGA-II 之前的进化演示
 ```
 
 ## 许可证
