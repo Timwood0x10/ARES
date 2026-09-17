@@ -110,6 +110,7 @@ func (r *Runtime) submitThroughL2(ctx context.Context, execCore *agentruntime.Ex
 			}
 			return &Result{
 				Output:     answer,
+				ToolCalls:  l2SessionToolCalls(r.sdkFabric, sessionID),
 				TokenUsage: l2PlanTokenUsage(r.sdkFabric, taskID),
 				Duration:   time.Since(start),
 			}, nil
@@ -129,6 +130,7 @@ func (r *Runtime) submitThroughL2(ctx context.Context, execCore *agentruntime.Ex
 			if answer, ok := l2SessionAnswer(r.sdkFabric, sessionID); ok {
 				return &Result{
 					Output:     answer,
+					ToolCalls:  l2SessionToolCalls(r.sdkFabric, sessionID),
 					TokenUsage: l2PlanTokenUsage(r.sdkFabric, taskID),
 					Duration:   time.Since(start),
 				}, nil
@@ -235,6 +237,33 @@ func l2PlanTokenUsage(f *taskfabric.Fabric, planTaskID string) TokenUsage {
 		Output: dc.OutputTokens,
 		Total:  dc.InputTokens + dc.OutputTokens,
 	}
+}
+
+// l2SessionToolCalls counts the session's completed tool executions — the
+// L2-path equivalent of the pre-convergence Result.ToolCalls field. Every
+// tool round the planner grew compiles into a sess/<sid>/…/<tool>#… task, so
+// completed tool/* tasks are the tool calls this submission actually made.
+// Without it Result.ToolCalls stayed 0 on the L2 path and a caller (e.g. the
+// eval harness's tool-calling scenario) could not tell "used the tool"
+// apart from "answered without tools". Safe to read right after the answer
+// arrives: the answer node is the session's terminal exit, so the tool set
+// is frozen by then.
+func l2SessionToolCalls(f *taskfabric.Fabric, sessionID string) int {
+	prefix := "sess/" + sessionID + "/"
+	calls := 0
+	for _, id := range f.IDs() {
+		if !strings.HasPrefix(id, prefix) {
+			continue
+		}
+		tk, err := f.Task(id)
+		if err != nil || tk.State != taskfabric.StateCompleted {
+			continue
+		}
+		if strings.HasPrefix(tk.Capability, "tool/") {
+			calls++
+		}
+	}
+	return calls
 }
 
 // l2AnswerContent reads the terminal answer body from its completion

@@ -235,7 +235,7 @@ type Runtime struct {
 //
 // Quick start:
 //
-//	ares := sdk.NewRuntime(sdk.WithConfigFromEnv())
+//	ares := sdk.NewRuntime(sdk.WithConfig("ares.yaml"))
 //	defer ares.Close()
 //	agent := ares.NewAgent("assistant")
 //	result, _ := agent.Run(ctx, "hello")
@@ -442,6 +442,17 @@ func (r *Runtime) NewAgent(name string, opts ...AgentOption) *Agent {
 		r.gov.TokenBudget = ac.maxTokens
 	}
 	r.govMu.Unlock()
+	// Custom tools attached via WithTools must reach the runtime registry:
+	// the L2 planner only sees tools bridged from toolReg (resyncL2Tools),
+	// so leaving them solely on the Agent made WithTools a silent no-op on
+	// the L2 execution path. Registry.Register overwrites by name, so
+	// re-creating an agent with the same tool name is idempotent.
+	for _, t := range ac.tools {
+		if err := r.toolReg.Register(t); err != nil {
+			slog.Warn("sdk: register agent tool failed",
+				"agent", name, "tool", t.Name(), "error", err)
+		}
+	}
 	return &Agent{
 		name:        name,
 		instruction: ac.instruction,

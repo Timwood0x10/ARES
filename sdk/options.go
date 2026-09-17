@@ -3,7 +3,6 @@ package sdk
 import (
 	"errors"
 	"fmt"
-	"os"
 	"time"
 
 	tools "github.com/Timwood0x10/ares/internal/apitools"
@@ -18,8 +17,8 @@ import (
 
 // ConfigOption configures the Runtime during construction using a YAML file.
 // Loads ares.yaml from the given path and converts it to internal options.
-// It is an alias of Option so WithConfig/WithConfigFromEnv can be passed
-// directly to New/NewRuntime.
+// It is an alias of Option so WithConfig can be passed directly to
+// New/NewRuntime.
 type ConfigOption = Option
 
 // WithConfig loads configuration from a YAML file, parses and validates it,
@@ -38,21 +37,8 @@ func WithConfig(path string) ConfigOption {
 	}
 }
 
-// WithConfigFromEnv loads configuration from a YAML file, allowing override
-// via the ARES_YAML environment variable. If ARES_YAML is set, it will be
-// used as the config path. Otherwise, it falls back to ./ares.yaml.
-func WithConfigFromEnv() ConfigOption {
-	return func(c *config) error {
-		path := "./ares.yaml"
-		if p := os.Getenv("ARES_YAML"); p != "" {
-			path = p
-		}
-		return applyConfigFile(c, path)
-	}
-}
-
-// applyConfigFile is the shared implementation behind WithConfig and
-// WithConfigFromEnv: it loads the YAML file at path, converts it to internal
+// applyConfigFile is the shared implementation behind WithConfig: it loads
+// the YAML file at path, converts it to internal
 // options, and applies them in order. Keeping the load→convert→apply loop in
 // one place guarantees every config entry point behaves identically.
 func applyConfigFile(c *config, path string) error {

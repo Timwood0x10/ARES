@@ -4,13 +4,12 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	tools "github.com/Timwood0x10/ares/internal/apitools"
-	"github.com/Timwood0x10/ares/internal/detector"
 	llmcore "github.com/Timwood0x10/ares/internal/llmcore"
 	memory "github.com/Timwood0x10/ares/internal/runtime/memory"
 )
@@ -446,137 +445,95 @@ func TestAgentRun_DelegatesToL2(t *testing.T) {
 
 // ---- MustNew quickstart tests ----
 //
-// These tests exercise the zero-parameter MustNew entry point by overriding
-// the package-level detectFn with a deterministic detector, so no network
-// probe or environment variable is touched. Each test restores detectFn on
-// cleanup via setDetectFn.
+// MustNew reads ./ares.yaml — the single configuration entry point (no
+// environment variable is consulted). Each test writes a temporary
+// ares.yaml into a temp working directory so no real config or network
+// probe is involved. The LLM client is created lazily, so no running
+// server is required.
 
-// setDetectFn overrides the package-level detectFn for the duration of the
-// test, restoring the previous value on cleanup. Tests must use this instead
-// of writing detectFn directly so cleanup is guaranteed even on failure.
-func setDetectFn(t *testing.T, fn func(context.Context, time.Duration) *detector.Environment) {
+// writeMustNewConfig writes yaml into dir/ares.yaml and switches the test's
+// working directory there, restoring both on cleanup.
+func writeMustNewConfig(t *testing.T, yaml string) {
 	t.Helper()
-	prev := detectFn
-	detectFn = fn
-	t.Cleanup(func() { detectFn = prev })
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "ares.yaml"), []byte(yaml), 0o600); err != nil {
+		t.Fatalf("write temp ares.yaml: %v", err)
+	}
+	t.Chdir(dir)
 }
 
-// TestMustNew_PanicNoLLM verifies that MustNew panics with a message
-// containing "no LLM provider" when the detector returns an empty
-// Environment (no Ollama, no API keys).
-func TestMustNew_PanicNoLLM(t *testing.T) {
-	setDetectFn(t, func(_ context.Context, _ time.Duration) *detector.Environment {
-		return &detector.Environment{} // no provider detected
-	})
+// TestMustNew_PanicMissingConfig verifies that MustNew panics with a message
+// containing "load ./ares.yaml" when no config file exists in the working
+// directory — the config file is the only way to configure the quickstart.
+func TestMustNew_PanicMissingConfig(t *testing.T) {
+	t.Chdir(t.TempDir()) // empty dir: no ares.yaml
 	defer func() {
 		r := recover()
 		if r == nil {
 			t.Fatal("expected MustNew to panic, got none")
 		}
 		msg := fmt.Sprint(r)
-		if !strings.Contains(msg, "no LLM provider") {
-			t.Fatalf("panic message = %q, want substring %q", msg, "no LLM provider")
+		if !strings.Contains(msg, "load ./ares.yaml") {
+			t.Fatalf("panic message = %q, want substring %q", msg, "load ./ares.yaml")
 		}
 	}()
 	_ = MustNew()
 }
 
 // TestMustNew_Ollama verifies that MustNew returns a usable Runtime with
-// default memory enabled when the detector reports a running Ollama daemon.
-// The LLM client is created lazily, so no running server is required.
+// memory enabled when ares.yaml configures the Ollama provider and declares
+// memory.enabled (ToOptions maps an absent memory section to WithoutMemory —
+// the YAML is the single source of truth for the toggle).
 func TestMustNew_Ollama(t *testing.T) {
-	setDetectFn(t, func(_ context.Context, _ time.Duration) *detector.Environment {
-		return &detector.Environment{
-			LLMProvider: "ollama",
-			LLMModel:    "llama3.2",
-			LLMEndpoint: "http://localhost:11434",
-			HasOllama:   true,
-		}
-	})
+	writeMustNewConfig(t, "llm:\n  provider: ollama\n  model: llama3.2\n  base_url: http://localhost:11434\nmemory:\n  enabled: true\n")
 	rt := MustNew()
 	defer rt.Close()
 	if rt == nil {
 		t.Fatal("MustNew returned nil Runtime")
 	}
 	if !rt.memEnabled {
-		t.Fatal("rt.memEnabled = false, want true (default memory should be enabled)")
+		t.Fatal("rt.memEnabled = false, want true (memory.enabled declared in yaml)")
 	}
 }
 
-// TestMustNew_OpenAI verifies that MustNew returns a usable Runtime with
-// default memory enabled when the detector reports an OpenAI API key. The
-// API key is read from OPENAI_API_KEY to match buildOptsFromEnv's contract.
-func TestMustNew_OpenAI(t *testing.T) {
-	t.Setenv("OPENAI_API_KEY", "test-key")
-	setDetectFn(t, func(_ context.Context, _ time.Duration) *detector.Environment {
-		return &detector.Environment{
-			LLMProvider:  "openai",
-			LLMModel:     defaultOpenAIModel,
-			HasOpenAIKey: true,
-		}
-	})
-	rt := MustNew()
-	defer rt.Close()
-	if rt == nil {
-		t.Fatal("MustNew returned nil Runtime")
-	}
-	if !rt.memEnabled {
-		t.Fatal("rt.memEnabled = false, want true (default memory should be enabled)")
-	}
-}
-
-// TestMustNew_DefaultMemoryEnabled asserts the defaultConfig flip holds
-// across every provider supported by buildOptsFromEnv: each MustNew success
-// path must yield a Runtime with memEnabled == true without an explicit
-// WithDefaultMemory call. The anthropic case is covered here because the
-// dedicated TestMustNew_Ollama / TestMustNew_OpenAI tests cover the other two.
-func TestMustNew_DefaultMemoryEnabled(t *testing.T) {
+// TestMustNew_MemoryFollowsConfig asserts the memory toggle follows the YAML
+// across every provider ares.yaml can declare: memory.enabled: true yields
+// memEnabled == true; an absent memory section disables memory explicitly
+// (WithoutMemory), never silently-on.
+func TestMustNew_MemoryFollowsConfig(t *testing.T) {
 	tests := []struct {
-		name    string
-		env     *detector.Environment
-		envVars map[string]string
+		name        string
+		yaml        string
+		wantEnabled bool
 	}{
 		{
-			name: "ollama_default_memory_on",
-			env: &detector.Environment{
-				LLMProvider: "ollama",
-				LLMModel:    "llama3.2",
-				LLMEndpoint: "http://localhost:11434",
-				HasOllama:   true,
-			},
+			name:        "ollama_memory_on",
+			yaml:        "llm:\n  provider: ollama\n  model: llama3.2\n  base_url: http://localhost:11434\nmemory:\n  enabled: true\n",
+			wantEnabled: true,
 		},
 		{
-			name: "openai_default_memory_on",
-			env: &detector.Environment{
-				LLMProvider:  "openai",
-				LLMModel:     defaultOpenAIModel,
-				HasOpenAIKey: true,
-			},
-			envVars: map[string]string{"OPENAI_API_KEY": "test-key"},
+			name:        "openai_memory_on",
+			yaml:        "llm:\n  provider: openai\n  model: gpt-4o-mini\n  api_key: test-key\nmemory:\n  enabled: true\n",
+			wantEnabled: true,
 		},
 		{
-			name: "anthropic_default_memory_on",
-			env: &detector.Environment{
-				LLMProvider:     "anthropic",
-				LLMModel:        "claude-3-haiku",
-				HasAnthropicKey: true,
-			},
-			envVars: map[string]string{"ANTHROPIC_API_KEY": "test-key"},
+			name:        "anthropic_memory_on",
+			yaml:        "llm:\n  provider: anthropic\n  model: claude-3-haiku\n  api_key: test-key\nmemory:\n  enabled: true\n",
+			wantEnabled: true,
+		},
+		{
+			name:        "absent_memory_section_disables",
+			yaml:        "llm:\n  provider: ollama\n  model: llama3.2\n  base_url: http://localhost:11434\n",
+			wantEnabled: false,
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			for k, v := range tt.envVars {
-				t.Setenv(k, v)
-			}
-			env := tt.env
-			setDetectFn(t, func(_ context.Context, _ time.Duration) *detector.Environment {
-				return env
-			})
+			writeMustNewConfig(t, tt.yaml)
 			rt := MustNew()
 			defer rt.Close()
-			if !rt.memEnabled {
-				t.Fatalf("rt.memEnabled = false, want true for %s", tt.name)
+			if rt.memEnabled != tt.wantEnabled {
+				t.Fatalf("rt.memEnabled = %v, want %v for %s", rt.memEnabled, tt.wantEnabled, tt.name)
 			}
 		})
 	}

@@ -304,14 +304,11 @@ func (c *ConfigFile) validateKnowledge() error {
 	return nil
 }
 
-// resolveAPIKey returns the config-provided key when non-empty, otherwise falls
-// back to the named environment variable. This avoids storing secrets in YAML.
-func resolveAPIKey(configKey, envVar string) string {
-	if configKey != "" {
-		return configKey
-	}
-	return os.Getenv(envVar)
-}
+// NOTE: this package intentionally reads NO environment variables. The YAML
+// file is the single source of truth for the API key (llm.api_key) — an
+// earlier env fallback (OPENAI_API_KEY / ANTHROPIC_API_KEY /
+// OPENROUTER_API_KEY) was removed so behavior can never differ between an
+// exported variable and the checked-in config.
 
 // ToOptions converts a ConfigFile into a slice of Option values that can be
 // passed to New or NewRuntime.
@@ -332,8 +329,8 @@ func (c *ConfigFile) ToOptions() ([]Option, error) {
 			model = defaultOpenAIModel
 		}
 		opts = append(opts, WithOpenAI(model))
-		if key := resolveAPIKey(c.LLM.APIKey, "OPENAI_API_KEY"); key != "" {
-			opts = append(opts, WithAPIKey(key))
+		if c.LLM.APIKey != "" {
+			opts = append(opts, WithAPIKey(c.LLM.APIKey))
 		}
 	case providerAnthropic:
 		model := c.LLM.Model
@@ -341,8 +338,8 @@ func (c *ConfigFile) ToOptions() ([]Option, error) {
 			model = "claude-3-haiku"
 		}
 		opts = append(opts, WithAnthropic(model))
-		if key := resolveAPIKey(c.LLM.APIKey, "ANTHROPIC_API_KEY"); key != "" {
-			opts = append(opts, WithAPIKey(key))
+		if c.LLM.APIKey != "" {
+			opts = append(opts, WithAPIKey(c.LLM.APIKey))
 		}
 	case providerOpenRouter:
 		model := c.LLM.Model
@@ -350,8 +347,8 @@ func (c *ConfigFile) ToOptions() ([]Option, error) {
 			model = "openai/gpt-4o-mini"
 		}
 		opts = append(opts, WithOpenRouter(model))
-		if key := resolveAPIKey(c.LLM.APIKey, "OPENROUTER_API_KEY"); key != "" {
-			opts = append(opts, WithAPIKey(key))
+		if c.LLM.APIKey != "" {
+			opts = append(opts, WithAPIKey(c.LLM.APIKey))
 		}
 	default:
 		return nil, fmt.Errorf("unknown LLM provider: %s", c.LLM.Provider)
