@@ -4,6 +4,7 @@ import (
 	stderrors "errors"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/errors"
@@ -27,33 +28,28 @@ import (
 	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
 
-// fileToolsAllowedDirEnv is the environment variable used to configure the
-// FileTools allowed directory at registration time. Operators MUST set this to
-// a directory the agent is permitted to read and write.
-const fileToolsAllowedDirEnv = "ARES_FILE_TOOLS_ALLOWED_DIR"
-
 // resolveFileToolsAllowedDir returns the directory that FileTools and PDFTool
-// may operate within. It reads from the ARES_FILE_TOOLS_ALLOWED_DIR environment
-// variable — the single knob for every file-facing tool surface (the public
-// HTTP tool registry resolves the same variable first).
+// may operate within. It uses the configured dir — tools.file_sandbox_dir in
+// ares.yaml, the single knob for every file-facing tool surface (the public
+// HTTP tool registry reads the same config entry).
 //
-// When unset it falls back to a process-PRIVATE subdirectory of the OS temp
-// dir — neither the working directory (typically the deployment's source
-// tree; granting the agent read/write there is privilege escalation) nor the
-// shared temp dir itself (world-writable: any local user could pre-plant or
-// read the agent's files). The per-boot private dir costs nothing for a
-// scratch sandbox. A loud warning marks the fallback so the operator sees
-// the reduced scope.
-func resolveFileToolsAllowedDir() (string, error) {
-	if dir := os.Getenv(fileToolsAllowedDirEnv); dir != "" {
+// When the configured dir is empty it falls back to a process-PRIVATE
+// subdirectory of the OS temp dir — neither the working directory (typically
+// the deployment's source tree; granting the agent read/write there is
+// privilege escalation) nor the shared temp dir itself (world-writable: any
+// local user could pre-plant or read the agent's files). The per-boot private
+// dir costs nothing for a scratch sandbox. A loud warning marks the fallback
+// so the operator sees the reduced scope.
+func resolveFileToolsAllowedDir(configured string) (string, error) {
+	if dir := strings.TrimSpace(configured); dir != "" {
 		return dir, nil
 	}
 	fallback, err := os.MkdirTemp("", "ares-file-tools-")
 	if err != nil {
 		return "", fmt.Errorf("builtin: create private file-tools sandbox dir: %w", err)
 	}
-	log.Warn("builtin: ARES_FILE_TOOLS_ALLOWED_DIR not set; file tools fall back to a process-private temp dir",
-		"fallback_dir", fallback, "env", fileToolsAllowedDirEnv)
+	log.Warn("builtin: tools.file_sandbox_dir not set; file tools fall back to a process-private temp dir",
+		"fallback_dir", fallback, "config", "tools.file_sandbox_dir")
 	return fallback, nil
 }
 
@@ -74,6 +70,10 @@ type GeneralToolsDeps struct {
 	MemoryMgr memory.MemoryManager
 	// LLMClient backs task_planner.
 	LLMClient *llm.Client
+	// FileSandboxDir roots the FileTools/PDFTool sandbox — wired from
+	// tools.file_sandbox_dir in ares.yaml. Empty falls back to a
+	// process-private temp dir (see resolveFileToolsAllowedDir).
+	FileSandboxDir string
 }
 
 // RegisterGeneralTools registers all general-purpose tools into the provided
@@ -103,7 +103,7 @@ func RegisterGeneralTools(reg *core.Registry, deps ...GeneralToolsDeps) error {
 	// Resolve the file sandbox ONCE so FileTools and PDFTool share the exact
 	// same directory — two resolutions could diverge under the private-dir
 	// fallback and silently split the sandbox.
-	fileSandboxDir, err := resolveFileToolsAllowedDir()
+	fileSandboxDir, err := resolveFileToolsAllowedDir(d.FileSandboxDir)
 	if err != nil {
 		return errors.Wrap(err, "register general tools")
 	}

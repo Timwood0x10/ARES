@@ -22,6 +22,7 @@ import (
 
 	"github.com/Timwood0x10/ares/internal/agents/sub"
 	api_tools "github.com/Timwood0x10/ares/internal/apitools"
+	"github.com/Timwood0x10/ares/internal/ares_config"
 	"github.com/Timwood0x10/ares/internal/ares_security"
 	"github.com/Timwood0x10/ares/internal/knowledge/skills"
 	ares_mcp "github.com/Timwood0x10/ares/internal/runtime/protocol/mcp"
@@ -186,22 +187,16 @@ func (h *actionHandler) handleCallMCPTool(w http.ResponseWriter, r *http.Request
 
 // ── Tool registry assembly (serve wiring helpers) ────────
 
-// nativeToolsEnvVar names the comma-separated allowlist of host commands to
-// discover and register as tools (primitive 7: native command discovery).
-// Empty disables discovery so hosts without the commands degrade gracefully.
-const nativeToolsEnvVar = "ARES_NATIVE_TOOLS"
-
-// nativeToolsAllowlist parses the ARES_NATIVE_TOOLS env var into a cleaned
-// allowlist of host command names. Returns an empty slice when unset/blank so
-// callers disable native discovery gracefully. This is the single security
-// boundary: only listed commands are ever probed or executed.
-func nativeToolsAllowlist() []string {
-	raw := strings.TrimSpace(os.Getenv(nativeToolsEnvVar))
-	if raw == "" {
+// nativeToolsAllowlist returns the cleaned allowlist of host command names
+// from tools.native_allowlist in ares.yaml. Returns an empty slice when
+// unset so callers disable native discovery gracefully. This is the single
+// security boundary: only listed commands are ever probed or executed.
+func nativeToolsAllowlist(cfg *ares_config.Config) []string {
+	if cfg == nil {
 		return nil
 	}
-	allowlist := make([]string, 0)
-	for _, name := range strings.Split(raw, ",") {
+	allowlist := make([]string, 0, len(cfg.Tools.NativeAllowlist))
+	for _, name := range cfg.Tools.NativeAllowlist {
 		if name = strings.TrimSpace(name); name != "" {
 			allowlist = append(allowlist, name)
 		}
@@ -211,10 +206,10 @@ func nativeToolsAllowlist() []string {
 
 // registerNativeTools probes the allowlisted host commands via `command -v` +
 // `--help` and registers the ones present into the internal registry. Only
-// commands explicitly listed in ARES_NATIVE_TOOLS are ever probed or executed
-// (allowlist security boundary); non-existent commands are skipped.
-func registerNativeTools(ctx context.Context, internalReg *core.Registry) error {
-	allowlist := nativeToolsAllowlist()
+// commands explicitly listed in tools.native_allowlist are ever probed or
+// executed (allowlist security boundary); non-existent commands are skipped.
+func registerNativeTools(ctx context.Context, internalReg *core.Registry, cfg *ares_config.Config) error {
+	allowlist := nativeToolsAllowlist(cfg)
 	if len(allowlist) == 0 {
 		return nil
 	}
@@ -237,15 +232,14 @@ func registerNativeTools(ctx context.Context, internalReg *core.Registry) error 
 }
 
 // newToolRegistry creates the public tool registry with built-in + custom tools.
-// The file tool is sandboxed to prevent path-traversal attacks. Resolution
-// order: ARES_FILE_TOOLS_ALLOWED_DIR (the SAME knob the agent-side builtin
-// tools use — one env var governs both file-tool surfaces), then the legacy
-// ARES_WORKSPACE_DIR, then the current working directory.
-func newToolRegistry() (*api_tools.Registry, error) {
+// The file tool is sandboxed to prevent path-traversal attacks. The sandbox
+// root is tools.file_sandbox_dir in ares.yaml (the same knob governs both
+// file-tool surfaces); empty falls back to the current working directory.
+func newToolRegistry(cfg *ares_config.Config) (*api_tools.Registry, error) {
 	r := api_tools.NewRegistry()
-	sandboxDir := os.Getenv("ARES_FILE_TOOLS_ALLOWED_DIR")
-	if sandboxDir == "" {
-		sandboxDir = os.Getenv("ARES_WORKSPACE_DIR")
+	sandboxDir := ""
+	if cfg != nil {
+		sandboxDir = strings.TrimSpace(cfg.Tools.FileSandboxDir)
 	}
 	if sandboxDir == "" {
 		wd, err := os.Getwd()

@@ -45,7 +45,7 @@ llm:
   timeout: 60               # request timeout in seconds, default 60
   max_tokens: 4096          # max response tokens, default 4096
   max_prompt_length: 8192   # max prompt chars, default 8192
-  extra: {}                 # provider-specific KV extensions
+  extra: {}                 # provider-specific KV → applied as HTTP headers on LLM requests (set after built-in headers, may override reserved fields; effective since 0.3.1 / F-16)
   fallbacks: []             # LLMConfigs tried in order on failure (failover)
   # sdk-side only:
   temperature: 0.7          # [0,2], default 0.7 (serve llm parsing has no temperature)

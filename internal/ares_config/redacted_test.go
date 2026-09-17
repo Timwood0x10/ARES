@@ -67,8 +67,9 @@ func TestConfigRedacted(t *testing.T) {
 // (stdio env / SSE headers) plus LLM.Extra passed through in clear text.
 func TestConfigRedactedChaosAndMCPSecrets(t *testing.T) {
 	cfg := &Config{
-		LLM:    LLMConfig{Provider: "openai", Extra: map[string]string{"org": "sk-extra"}},
-		Kernel: KernelConfig{Chaos: ChaosConfig{StopToken: "chaos-token"}},
+		LLM:      LLMConfig{Provider: "openai", Extra: map[string]string{"org": "sk-extra"}},
+		Security: SecurityConfig{JWTSecret: "jwt-secret", ArenaAPIKey: "arena-key"},
+		Kernel:   KernelConfig{Chaos: ChaosConfig{StopToken: "chaos-token"}},
 		MCP: MCPConfig{Servers: []MCPServerEntry{
 			{
 				Name: "stdio-srv",
@@ -91,6 +92,9 @@ func TestConfigRedactedChaosAndMCPSecrets(t *testing.T) {
 
 	// The receiver must not be mutated: redaction has to deep-copy the maps
 	// before overwriting values, otherwise the live config loses its secrets.
+	if cfg.Security.ArenaAPIKey != "arena-key" {
+		t.Error("Redacted must not mutate Security.ArenaAPIKey")
+	}
 	if cfg.Kernel.Chaos.StopToken != "chaos-token" {
 		t.Error("Redacted must not mutate Kernel.Chaos.StopToken")
 	}
@@ -105,6 +109,12 @@ func TestConfigRedactedChaosAndMCPSecrets(t *testing.T) {
 	}
 
 	// Secrets redacted.
+	if got.Security.JWTSecret != "***" {
+		t.Errorf("Security.JWTSecret = %q, want ***", got.Security.JWTSecret)
+	}
+	if got.Security.ArenaAPIKey != "***" {
+		t.Errorf("Security.ArenaAPIKey = %q, want ***", got.Security.ArenaAPIKey)
+	}
 	if got.Kernel.Chaos.StopToken != "***" {
 		t.Errorf("Kernel.Chaos.StopToken = %q, want ***", got.Kernel.Chaos.StopToken)
 	}

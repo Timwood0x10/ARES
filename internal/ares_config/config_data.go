@@ -236,6 +236,16 @@ type DistillConfig struct {
 type ToolsConfig struct {
 	Defaults []string                   `yaml:"defaults"` // Default tools for all agents
 	Agents   map[string]AgentToolConfig `yaml:"agents"`   // Agent-specific tool assignments
+	// NativeAllowlist is the set of host commands discovered and registered
+	// as tools (primitive 7: native command discovery). Empty (default)
+	// disables discovery. This is the single security boundary: only listed
+	// commands are ever probed or executed. Formerly the ARES_NATIVE_TOOLS
+	// comma-separated env var.
+	NativeAllowlist []string `yaml:"native_allowlist"`
+	// FileSandboxDir roots the file tool's path-traversal sandbox. Empty
+	// (default) roots it at the process working directory. Formerly the
+	// ARES_FILE_TOOLS_ALLOWED_DIR / ARES_WORKSPACE_DIR env vars.
+	FileSandboxDir string `yaml:"file_sandbox_dir"`
 }
 
 // AgentToolConfig holds tool configuration for a specific agent.

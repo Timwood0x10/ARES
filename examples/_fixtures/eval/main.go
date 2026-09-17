@@ -9,7 +9,7 @@
 //	getting better?" questions.
 //
 // Learning objectives:
-//   - How to build a runtime with sdk options (WithOllama / WithEvolution /
+//   - How to build a runtime with sdk options (LoadConfigFile / WithEvolution /
 //     WithTrace).
 //   - How evaluation.Scenario + RunnerFunc define a measurable capability
 //     test (Runs, Timeout, per-run Metrics).
@@ -17,7 +17,7 @@
 //     EvoImprovement.
 //
 // Core APIs (with package paths):
-//   - sdk.NewRuntime / NewAgent (github.com/Timwood0x10/ares/sdk)
+//   - ares.NewRuntime / NewAgent (github.com/Timwood0x10/ares/api)
 //   - evaluation.New / Scenario / RunnerFunc / RunAll (evaluation/)
 //
 // Run:
@@ -37,8 +37,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Timwood0x10/ares/api"
 	"github.com/Timwood0x10/ares/examples/_fixtures/evaluation"
-	"github.com/Timwood0x10/ares/sdk"
 )
 
 func main() {
@@ -52,10 +52,20 @@ func main() {
 
 func run(ctx context.Context) error {
 	// ── Step 1: Build the runtime with the capabilities under test ──
-	// WithOllama picks the local model; WithEvolution enables instruction
+	// The LLM provider is loaded from ./ares.yaml (override path via
+	// ARES_YAML) so the harness runs against the configured endpoint instead
+	// of a hardcoded local Ollama model; WithEvolution enables instruction
 	// evolution for the evolution scenario; WithTrace(false) keeps logs
 	// quiet.
-	rt := sdk.NewRuntime(sdk.WithOllama("llama3.2"), sdk.WithEvolution(), sdk.WithTrace(false))
+	cfg, err := ares.LoadConfigFile("ares.yaml")
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+	opts, err := cfg.ToOptions()
+	if err != nil {
+		return fmt.Errorf("config: %w", err)
+	}
+	rt := ares.NewRuntime(append(opts, ares.WithEvolution(), ares.WithTrace(false))...)
 	defer rt.Close()
 
 	// Register the calculator tool for tool-using scenarios.
@@ -75,7 +85,7 @@ func run(ctx context.Context) error {
 		Runs:        3,
 		Timeout:     30 * time.Second,
 		Runner: evaluation.RunnerFunc(func(ctx context.Context, task string) (*evaluation.Metrics, error) {
-			agent := rt.NewAgent("chat", sdk.WithInstruction("Respond concisely."))
+			agent := rt.NewAgent("chat", ares.WithInstruction("Respond concisely."))
 			start := time.Now()
 			result, err := agent.Run(ctx, "What is the capital of France?")
 			latency := time.Since(start)
@@ -104,7 +114,7 @@ func run(ctx context.Context) error {
 		Timeout:     30 * time.Second,
 		Runner: evaluation.RunnerFunc(func(ctx context.Context, task string) (*evaluation.Metrics, error) {
 			agent := rt.NewAgent("tool-user",
-				sdk.WithInstruction("Use the calculator tool for math."),
+				ares.WithInstruction("Use the calculator tool for math."),
 			)
 			start := time.Now()
 			result, err := agent.Run(ctx, "Calculate 15*23 + 100")
@@ -135,10 +145,10 @@ func run(ctx context.Context) error {
 		Runs:        2,
 		Timeout:     60 * time.Second,
 		Runner: evaluation.RunnerFunc(func(ctx context.Context, task string) (*evaluation.Metrics, error) {
-			rt.RegisterAgent("lead", sdk.WithInstruction("Plan and summarize."))
-			rt.RegisterAgent("worker", sdk.WithInstruction("Execute tasks."))
+			rt.RegisterAgent("lead", ares.WithInstruction("Plan and summarize."))
+			rt.RegisterAgent("worker", ares.WithInstruction("Execute tasks."))
 			start := time.Now()
-			result, err := rt.Submit(ctx, sdk.Task{
+			result, err := rt.Submit(ctx, ares.Task{
 				Capability: "lead",
 				Input:      "Say hello briefly",
 			})
@@ -167,8 +177,8 @@ func run(ctx context.Context) error {
 		Timeout:     30 * time.Second,
 		Runner: evaluation.RunnerFunc(func(ctx context.Context, task string) (*evaluation.Metrics, error) {
 			agent := rt.NewAgent("resilient",
-				sdk.WithInstruction("If a tool fails, explain gracefully."),
-				sdk.WithTools(failTool),
+				ares.WithInstruction("If a tool fails, explain gracefully."),
+				ares.WithTools(failTool),
 			)
 			start := time.Now()
 			result, err := agent.Run(ctx, "Use the unreliable_tool and handle failure")
@@ -198,10 +208,14 @@ func run(ctx context.Context) error {
 		Name:        "evolution",
 		Description: "Instruction evolution improves response quality",
 		Runs:        1,
-		Timeout:     90 * time.Second,
+		// A full Evolve pass is many LLM calls (population evaluation across
+		// generations plus the before/after probes). Against a local Ollama
+		// this fit in 90s; a remote chat endpoint needs several minutes, and
+		// the scenario ctx cancelling mid-Evolve surfaces as a failed run.
+		Timeout: 5 * time.Minute,
 		Runner: evaluation.RunnerFunc(func(ctx context.Context, task string) (*evaluation.Metrics, error) {
 			baseInstr := "Answer questions."
-			agent := rt.NewAgent("evolvable", sdk.WithInstruction(baseInstr))
+			agent := rt.NewAgent("evolvable", ares.WithInstruction(baseInstr))
 
 			// Before evolution.
 			start := time.Now()
@@ -219,7 +233,7 @@ func run(ctx context.Context) error {
 			}
 
 			// After evolution.
-			agent2 := rt.NewAgent("evolved", sdk.WithInstruction(evolvedInstr))
+			agent2 := rt.NewAgent("evolved", ares.WithInstruction(evolvedInstr))
 			r2, err2 := agent2.Run(ctx, "Explain closures in Go with a short example")
 			if err2 != nil {
 				return &evaluation.Metrics{
@@ -301,16 +315,16 @@ func (t *simpleTool) Name() string               { return t.name }
 func (t *simpleTool) Description() string        { return t.desc }
 func (t *simpleTool) Parameters() map[string]any { return nil }
 func (t *simpleTool) Capabilities() []string     { return nil }
-func (t *simpleTool) Execute(_ context.Context, params map[string]any) (sdk.ToolResult, error) {
+func (t *simpleTool) Execute(_ context.Context, params map[string]any) (ares.ToolResult, error) {
 	input, _ := params["input"].(string)
 	if t.name == "unreliable_tool" {
-		return sdk.ToolResult{Success: false, Data: "service unavailable"}, nil
+		return ares.ToolResult{Success: false, Data: "service unavailable"}, nil
 	}
 	result := t.fn(input)
 	if result == "" {
-		return sdk.ToolResult{Success: false, Data: "empty result"}, nil
+		return ares.ToolResult{Success: false, Data: "empty result"}, nil
 	}
-	return sdk.ToolResult{Success: true, Data: result}, nil
+	return ares.ToolResult{Success: true, Data: result}, nil
 }
 
 func toolFunc(name, desc string, fn func(string) string) *simpleTool {

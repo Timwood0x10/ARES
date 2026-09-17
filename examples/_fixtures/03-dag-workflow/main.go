@@ -1,17 +1,17 @@
-// DAG workflow — dynamic orchestration with the peer Runtime (sdk.Graph).
+// DAG workflow — dynamic orchestration with the peer Runtime (ares.Graph).
 //
 // The legacy internal/workflow spec/Runner engine was retired (fusion plan
 // Phase B): the core patterns — conditional edge, linear chain, fan-out +
 // join, bounded loop — plus the THREE collaboration modes (delegate /
 // pipeline / orchestrate, formerly the agentipc collaboration APIs) are all
-// expressed with sdk.Graph on the single kernel execution path.
+// expressed with ares.Graph on the single kernel execution path.
 //
 // Ops alternative: any of these shapes can also be submitted over HTTP via
 // POST /api/graphs — see examples/_fixtures/28-collab-graphs and
 // docs/cookbook/orchestration-modes.md.
 //
 // Core APIs used (with package paths):
-//   - sdk.NewGraph / (*Graph).AddNode / AddEdge / SetRouter / MaxRoundConcurrency — sdk
+//   - ares.NewGraph / (*Graph).AddNode / AddEdge / SetRouter / MaxRoundConcurrency — sdk
 //   - (*Runtime).RunGraph / GraphResult                                          — sdk
 //
 // Run:
@@ -22,13 +22,27 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 
-	"github.com/Timwood0x10/ares/sdk"
+	"github.com/Timwood0x10/ares/api"
 )
 
 func main() {
 	ctx := context.Background()
-	rt := sdk.NewRuntime(sdk.WithOllama("llama3.2"), sdk.WithTrace(false))
+	// Load the LLM provider from ./ares.yaml (override path via ARES_YAML) so
+	// the demo runs against whatever endpoint the operator configured instead
+	// of hardcoding a local Ollama model.
+	cfg, err := ares.LoadConfigFile("ares.yaml")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "❌ load config: %v\n", err)
+		return
+	}
+	opts, err := cfg.ToOptions()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "❌ config: %v\n", err)
+		return
+	}
+	rt := ares.NewRuntime(append(opts, ares.WithTrace(false))...)
 	defer rt.Close()
 
 	conditionalEdge(ctx, rt)
@@ -42,9 +56,9 @@ func main() {
 
 // conditionalEdge: an edge whose condition is false kills that branch while
 // the sibling continues — data-driven routing at the edge level.
-func conditionalEdge(ctx context.Context, rt *sdk.Runtime) {
-	fmt.Println("\n═══ Conditional Edge (sdk.Graph) ═══")
-	g := sdk.NewGraph("cond").
+func conditionalEdge(ctx context.Context, rt *ares.Runtime) {
+	fmt.Println("\n═══ Conditional Edge (ares.Graph) ═══")
+	g := ares.NewGraph("cond").
 		AddNode("ingest", func(_ context.Context, st map[string]any) error {
 			st["large"] = true
 			return nil
@@ -71,9 +85,9 @@ func conditionalEdge(ctx context.Context, rt *sdk.Runtime) {
 }
 
 // linearChain: strict A→B→C ordering through shared state.
-func linearChain(ctx context.Context, rt *sdk.Runtime) {
-	fmt.Println("\n═══ Linear DAG (sdk.Graph) ═══")
-	g := sdk.NewGraph("chain").
+func linearChain(ctx context.Context, rt *ares.Runtime) {
+	fmt.Println("\n═══ Linear DAG (ares.Graph) ═══")
+	g := ares.NewGraph("chain").
 		AddNode("a", appendStep("a")).
 		AddNode("b", appendStep("b")).
 		AddNode("c", appendStep("c")).
@@ -98,10 +112,10 @@ func appendStep(id string) func(context.Context, map[string]any) error {
 
 // fanOutJoin: one root fans out to parallel branches; a join node runs only
 // after ALL branches settle (round barrier semantics).
-func fanOutJoin(ctx context.Context, rt *sdk.Runtime) {
-	fmt.Println("\n═══ Fan-out + Join (sdk.Graph) ═══")
+func fanOutJoin(ctx context.Context, rt *ares.Runtime) {
+	fmt.Println("\n═══ Fan-out + Join (ares.Graph) ═══")
 	var done int
-	g := sdk.NewGraph("fanout").
+	g := ares.NewGraph("fanout").
 		AddNode("root", func(_ context.Context, _ map[string]any) error { return nil }).
 		AddNode("b1", func(_ context.Context, _ map[string]any) error { done++; return nil }).
 		AddNode("b2", func(_ context.Context, _ map[string]any) error { done++; return nil }).
@@ -123,9 +137,9 @@ func fanOutJoin(ctx context.Context, rt *sdk.Runtime) {
 
 // boundedLoop: the router re-enters a DONE node as a loop; MaxIterations and
 // the router's own counter bound it, then static edges finish the graph.
-func boundedLoop(ctx context.Context, rt *sdk.Runtime) {
-	fmt.Println("\n═══ Controlled Loop (sdk.Graph router) ═══")
-	g := sdk.NewGraph("loop").
+func boundedLoop(ctx context.Context, rt *ares.Runtime) {
+	fmt.Println("\n═══ Controlled Loop (ares.Graph router) ═══")
+	g := ares.NewGraph("loop").
 		AddNode("start", appendStep("start")).
 		AddNode("iter", func(_ context.Context, st map[string]any) error {
 			n, _ := st["n"].(int)
@@ -159,16 +173,16 @@ func boundedLoop(ctx context.Context, rt *sdk.Runtime) {
 }
 
 // collaborationModes — the three M1 patterns (ex- agentipc collaboration
-// APIs) as pure sdk.Graph shapes:
+// APIs) as pure ares.Graph shapes:
 //
 //	delegate    leader → specialists → aggregate   (fan-out + fan-in)
 //	pipeline    fetch → transform → store          (linear chain)
 //	orchestrate coordinator → workers → join        (fan-out + join)
-func collaborationModes(ctx context.Context, rt *sdk.Runtime) {
+func collaborationModes(ctx context.Context, rt *ares.Runtime) {
 	fmt.Println("\n═══ Collaboration Modes (delegate / pipeline / orchestrate) ═══")
 
 	// ── Delegate ──
-	g := sdk.NewGraph("delegate").
+	g := ares.NewGraph("delegate").
 		AddNode("leader", func(_ context.Context, st map[string]any) error {
 			st["task"] = "analyze codebase"
 			return nil
@@ -196,7 +210,7 @@ func collaborationModes(ctx context.Context, rt *sdk.Runtime) {
 	}
 
 	// ── Pipeline ──
-	g = sdk.NewGraph("pipeline").
+	g = ares.NewGraph("pipeline").
 		AddNode("fetch", func(_ context.Context, st map[string]any) error {
 			st["raw"] = "resp-body"
 			return nil
@@ -217,7 +231,7 @@ func collaborationModes(ctx context.Context, rt *sdk.Runtime) {
 	}
 
 	// ── Orchestrate ──
-	g = sdk.NewGraph("orchestrate").
+	g = ares.NewGraph("orchestrate").
 		AddNode("coordinator", func(_ context.Context, _ map[string]any) error { return nil }).
 		AddNode("worker-1", func(_ context.Context, st map[string]any) error {
 			st["w1"] = true

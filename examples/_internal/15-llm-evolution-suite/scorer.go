@@ -15,7 +15,7 @@
 //     ares_arena.TestCaseInput{Strategy, TestCase, Index}.
 //
 // Core APIs (with package paths):
-//   - evosvc.NewLLMArenaScorer (internal/ares_evolution/service)
+//   - evosvc.NewLLMArenaScorer (internal/runtime/ares_evolution/service)
 //   - (*LLMArenaScorer).Score (implements ares_arena.Scorer)
 //   - ares_arena.TestCaseInput (internal/ares_arena)
 //
@@ -28,15 +28,14 @@
 //	good strategy score: 0.xxx
 //	bad strategy score:  0.xxx
 //
-// Optionally, set LLM_SMOKE_EXPECT_REGRESSION=1 to fail the run unless the
-// bad strategy scores lower than the good one.
+// Use the scorer-assert scenario instead of scorer to fail the run unless
+// the bad strategy scores lower than the good one.
 package main
 
 import (
 	"context"
 	"fmt"
 	"log"
-	"os"
 
 	"github.com/Timwood0x10/ares/internal/llm"
 	ares_arena "github.com/Timwood0x10/ares/internal/runtime/arena"
@@ -44,9 +43,9 @@ import (
 
 // runScorerSmoke performs a live smoke test of the LLMArenaScorer: it scores
 // the good and bad strategies on a single preserved case and reports both
-// scores. With LLM_SMOKE_EXPECT_REGRESSION=1 the run fails unless the bad
-// strategy scores lower, asserting the scorer can distinguish quality.
-func runScorerSmoke(ctx context.Context, client *llm.Client) {
+// scores. With expectRegression the run fails unless the bad strategy scores
+// lower, asserting the scorer can distinguish quality.
+func runScorerSmoke(ctx context.Context, client *llm.Client, expectRegression bool) {
 	// ── Step 1: Build the arena scorer around the real LLM client ──
 	// buildScorer (defined in main.go) wraps the client into an
 	// LLMArenaScorer, which performs two LLM calls per Score: one to make the
@@ -83,14 +82,13 @@ func runScorerSmoke(ctx context.Context, client *llm.Client) {
 	}
 
 	// ── Step 4: Report and optionally assert the quality gap ──
-	// The smoke test is informational by default; with the
-	// LLM_SMOKE_EXPECT_REGRESSION env var it becomes an assertion that the
-	// scorer can tell good from bad — useful to validate a provider before
-	// trusting its gate-3 verdicts.
+	// The `scorer` scenario is informational; `scorer-assert` (expectRegression)
+	// becomes an assertion that the scorer can tell good from bad — useful to
+	// validate a provider before trusting its gate-3 verdicts.
 	fmt.Printf("good strategy score: %.3f\n", oldScore)
 	fmt.Printf("bad strategy score:  %.3f\n", newScore)
 
-	if os.Getenv("LLM_SMOKE_EXPECT_REGRESSION") == "1" && newScore >= oldScore {
+	if expectRegression && newScore >= oldScore {
 		log.Fatalf("expected the bad strategy to score lower, got good=%.3f bad=%.3f", oldScore, newScore)
 	}
 	log.Printf("scorer smoke ok (good=%.3f, bad=%.3f)", oldScore, newScore)

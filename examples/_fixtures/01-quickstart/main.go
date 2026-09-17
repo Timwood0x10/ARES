@@ -13,14 +13,14 @@
 //   - How to create an Agent with a system instruction and call Run().
 //
 // Core APIs used (with package paths):
-//   - sdk.LoadConfigFile             — github.com/Timwood0x10/ares/sdk
-//   - (*cfg.ConfigFile).ToOptions()  — github.com/Timwood0x10/ares/sdk
-//   - sdk.NewRuntime                 — github.com/Timwood0x10/ares/sdk
-//   - rt.ToolRegistry().Register     — github.com/Timwood0x10/ares/sdk
-//   - rt.NewAgent                    — github.com/Timwood0x10/ares/sdk
-//   - sdk.WithInstruction            — github.com/Timwood0x10/ares/sdk
-//   - agent.Run                      — github.com/Timwood0x10/ares/sdk
-//   - sdk.ToolFunc                 — github.com/Timwood0x10/ares/sdk
+//   - ares.LoadConfigFile             — github.com/Timwood0x10/ares/api
+//   - (*cfg.ConfigFile).ToOptions()  — github.com/Timwood0x10/ares/api
+//   - ares.NewRuntime                 — github.com/Timwood0x10/ares/api
+//   - rt.ToolRegistry().Register     — github.com/Timwood0x10/ares/api
+//   - rt.NewAgent                    — github.com/Timwood0x10/ares/api
+//   - ares.WithInstruction            — github.com/Timwood0x10/ares/api
+//   - agent.Run                      — github.com/Timwood0x10/ares/api
+//   - ares.ToolFunc                 — github.com/Timwood0x10/ares/api
 //
 // Run:
 //
@@ -43,7 +43,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/Timwood0x10/ares/sdk"
+	"github.com/Timwood0x10/ares/api"
 )
 
 // main is the entry point; it delegates to run() so that error handling
@@ -64,7 +64,7 @@ func run() error {
 	// LoadConfigFile reads and parses the YAML config file, returning *ConfigFile.
 	// Passing "ares.yaml" makes the Runtime look for it in the current directory
 	// (the $ARES_YAML env var can also specify a path).
-	cfg, err := sdk.LoadConfigFile("ares.yaml")
+	cfg, err := ares.LoadConfigFile("ares.yaml")
 	if err != nil {
 		return fmt.Errorf("load ares.yaml: %w", err)
 	}
@@ -76,14 +76,14 @@ func run() error {
 	}
 	// NewRuntime builds the runtime from the options; LLM, memory, AKG and
 	// evolution are all auto-wired — no manual assembly required.
-	rt := sdk.NewRuntime(opts...)
+	rt := ares.NewRuntime(opts...)
 	// defer Close releases the connections and background resources held by Runtime.
 	defer rt.Close()
 
 	// ── Step 2: Register a custom tool (optional customisation point) ──
 	// Most projects only need to register custom tools in Go; everything else
 	// is driven by YAML.
-	// ToolRegistry() returns the global tool registry; Register adds a sdk.Tool.
+	// ToolRegistry() returns the global tool registry; Register adds a ares.Tool.
 	if err := rt.ToolRegistry().Register(calculatorTool); err != nil {
 		return fmt.Errorf("register tool: %w", err)
 	}
@@ -92,7 +92,7 @@ func run() error {
 	// NewAgent creates a named Agent on the current Runtime.
 	// WithInstruction sets the system prompt (prepended to the conversation).
 	agent := rt.NewAgent("assistant",
-		sdk.WithInstruction("You are a helpful assistant. Use tools when needed."),
+		ares.WithInstruction("You are a helpful assistant. Use tools when needed."),
 	)
 
 	// ── Step 4: Run one conversational turn ──
@@ -114,14 +114,14 @@ func run() error {
 }
 
 // ── Custom Tool ──────────────────────────────────────────────
-// calculatorTool is a demo "calculator" tool. It implements sdk.Tool via
-// the sdk.ToolFunc convenience struct:
+// calculatorTool is a demo "calculator" tool. It implements ares.Tool via
+// the ares.ToolFunc convenience struct:
 //   - ToolName: the tool name the LLM sees to decide when to call it.
 //   - ToolDesc: a description helping the LLM understand the tool's purpose.
 //   - Fn:       the actual function, receiving context and params (map[string]any).
 //
 // For simplicity Fn returns a hard-coded result string and does no real math.
-var calculatorTool = sdk.ToolFunc{
+var calculatorTool = ares.ToolFunc{
 	ToolName: "calculator",
 	ToolDesc: "Evaluate a mathematical expression",
 	Fn: func(ctx context.Context, params map[string]any) (any, error) {

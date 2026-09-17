@@ -30,11 +30,11 @@
 //     including the syscalls.
 //
 // Core APIs used (with package paths):
-//   - sdk.LoadConfigFile             — github.com/Timwood0x10/ares/sdk
-//   - (*cfg.ConfigFile).ToOptions()  — github.com/Timwood0x10/ares/sdk
-//   - sdk.NewRuntime                 — github.com/Timwood0x10/ares/sdk
-//   - (*Runtime).RegisterAgent       — github.com/Timwood0x10/ares/sdk
-//   - (*Runtime).Submit              — github.com/Timwood0x10/ares/sdk
+//   - ares.LoadConfigFile             — github.com/Timwood0x10/ares/api
+//   - (*cfg.ConfigFile).ToOptions()  — github.com/Timwood0x10/ares/api
+//   - ares.NewRuntime                 — github.com/Timwood0x10/ares/api
+//   - (*Runtime).RegisterAgent       — github.com/Timwood0x10/ares/api
+//   - (*Runtime).Submit              — github.com/Timwood0x10/ares/api
 //
 // Run (from the repo root — reads ./ares.yaml for your real LLM endpoints):
 //
@@ -55,14 +55,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Timwood0x10/ares/sdk"
+	"github.com/Timwood0x10/ares/api"
 )
 
 func main() {
 	ctx := context.Background()
 
 	// ── Step 1: Load ares.yaml (real LLM endpoints + key) ──
-	cfg, err := sdk.LoadConfigFile("ares.yaml")
+	cfg, err := ares.LoadConfigFile("ares.yaml")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "❌ load config: %v\n", err)
 		return
@@ -72,7 +72,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "❌ config: %v\n", err)
 		return
 	}
-	rt := sdk.NewRuntime(opts...)
+	rt := ares.NewRuntime(opts...)
 	defer rt.Close()
 
 	// ── Step 2: Register the coordinator peer ──
@@ -80,7 +80,7 @@ func main() {
 	// decompose, and it knows the syscalls exist. The decision to actually
 	// call spawn_agent is left to the LLM — that decision is the point.
 	rt.RegisterAgent("coordinator",
-		sdk.WithInstruction(`You are a peer-coordinator agent in a flat agent
+		ares.WithInstruction(`You are a peer-coordinator agent in a flat agent
 runtime. Peers are equal — you are not a leader, you delegate work by spawning
 specialist peers.
 
@@ -118,7 +118,7 @@ final answer from the parts. When it does not, just answer directly.`),
 	fmt.Println("🕸️  agent \"coordinator\" carries spawn_agent + create_task in its LLM tool list (auto-wired by the runtime)")
 
 	start := time.Now()
-	result, err := rt.Submit(ctx, sdk.Task{
+	result, err := rt.Submit(ctx, ares.Task{
 		Capability: "coordinator",
 		Input:      task,
 	})

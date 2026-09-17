@@ -290,7 +290,7 @@ func configToStatus(source string, cfg *ares_config.Config, minimal bool) status
 			Provider:  cfg.LLM.Provider,
 			Model:     cfg.LLM.Model,
 			BaseURL:   cfg.LLM.BaseURL,
-			APIKeySet: cfg.LLM.APIKey != "" || os.Getenv("LLM_API_KEY") != "",
+			APIKeySet: cfg.LLM.APIKey != "",
 		},
 		Kernel: statusKernel{Policy: policy},
 		Memory: statusMemory{Enabled: cfg.Memory.IsEnabled()},

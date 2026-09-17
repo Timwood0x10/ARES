@@ -42,14 +42,14 @@ import (
     "context"
     "fmt"
 
-    "github.com/Timwood0x10/ares/sdk"
+    "github.com/Timwood0x10/ares/api"
 )
 
 func main() {
-    rt := sdk.MustNew() // auto-detects Ollama / OPENAI_API_KEY / ANTHROPIC_API_KEY; use sdk.New(opts...) for fine-grained config
+    rt := api.MustNew() // auto-detects Ollama / OPENAI_API_KEY / ANTHROPIC_API_KEY; use api.New(opts...) for fine-grained config
     defer rt.Close()
 
-    agent := rt.NewAgent("assistant", sdk.WithInstruction("You are helpful."))
+    agent := rt.NewAgent("assistant", api.WithInstruction("You are helpful."))
     result, _ := agent.Run(context.Background(), "hello")
     fmt.Println(result.Output)
 }
@@ -66,10 +66,8 @@ ares run -c ares.yaml "What is Go?"
 Or assemble from a YAML config in code — one option loads everything:
 
 ```go
-rt := sdk.NewRuntime(sdk.WithConfig("ares.yaml")) // LLM / memory / distillation / evolution / tools, all from one file
+rt := api.NewRuntime(api.WithConfig("ares.yaml")) // LLM / memory / distillation / evolution / tools, all from one file
 defer rt.Close()
-// Or honor the ARES_YAML env var (falls back to ./ares.yaml):
-// rt := sdk.NewRuntime(sdk.WithConfigFromEnv())
 ```
 
 > 📖 **Config guide**: see [config.yaml Guide (EN)](docs/articles/en/25-config-yaml-guide.en.md) / [config.yaml 配置指南 (中文)](docs/articles/zh/25-config-yaml-guide.zh.md) for the full reference — LLM, distillation, GA evolution, knowledge, tools, and chaos-related switches.
@@ -87,7 +85,7 @@ make examples          # build all examples
 
 | Feature | Description |
 |---|---|
-| **Unified SDK** | Single `sdk.MustNew()` API for LLM, tools, memory, evolution; `sdk.NewRuntime(sdk.WithConfig("ares.yaml"))` for config-driven assembly |
+| **Unified SDK** | Single `api.MustNew()` API for LLM, tools, memory, evolution; `api.NewRuntime(api.WithConfig("ares.yaml"))` for config-driven assembly |
 | **System Runtime lifecycle kernel** | Orchestrator reverse-topological start/stop + component snapshot observability + Degraded on missing deps; serve / start / SDK share one kernel |
 | **Evidence persistence** | `evidence.PostgresStore` accumulates GA feedback across restarts (the in-memory store resets on restart); opt-in + fail-loud via both serve and SDK |
 | **Runtime Evolution** | Genome + Diff Engine + Coordinator evolve DAG, scheduler, planner, recovery in production |
@@ -230,11 +228,13 @@ ares version            # Show version
 ## SDK
 
 ```go
-rt, err := sdk.New(
-    sdk.WithOpenAI("gpt-4o-mini"),          // or WithOllama, WithAnthropic
-    sdk.WithDefaultMemory(),                 // session history
-    sdk.WithEvolution(),                     // strategy evolution
-    sdk.WithMCP(sdk.MCPConn{                 // MCP server tools
+import "github.com/Timwood0x10/ares/api"
+
+rt, err := api.New(
+    api.WithOpenAI("gpt-4o-mini"),          // or WithOllama, WithAnthropic
+    api.WithDefaultMemory(),                 // session history
+    api.WithEvolution(),                     // strategy evolution
+    api.WithMCP(api.MCPConn{               // MCP server tools
         Name: "my-server", Command: "/path/to/server", Args: []string{"serve"},
     }),
 )
@@ -245,24 +245,24 @@ defer rt.Close()
 
 // Agent with tools.
 agent := rt.NewAgent("assistant",
-    sdk.WithInstruction("You are helpful."),
-    sdk.WithTools(calculatorTool, weatherTool),
+    api.WithInstruction("You are helpful."),
+    api.WithTools(calculatorTool, weatherTool),
 )
 result, _ := agent.Run(ctx, "Calculate 15*23")
 
-// NOTE: sdk.WithHumanInput is deprecated and NOT enforced — the L2 execution
+// NOTE: api.WithHumanInput is deprecated and NOT enforced — the L2 execution
 // path has no per-tool-call approval hook, so Agent.Run refuses with
-// sdk.ErrHumanInputUnsupported rather than silently ignoring the gate.
-// Use sdk.WithAgentGovernance(tokens, tools, deadline) to bound a run.
+// api.ErrHumanInputUnsupported rather than silently ignoring the gate.
+// Use api.WithAgentGovernance(tokens, tools, deadline) to bound a run.
 
 // Streaming response.
 ch, _ := agent.Stream(ctx, "Tell me a story")
 for chunk := range ch { fmt.Print(chunk.Content) }
 
 // Multi-agent: register capabilities and submit tasks.
-rt.RegisterAgent("researcher", sdk.WithInstruction("You research."))
-rt.RegisterAgent("writer", sdk.WithInstruction("You write."))
-result, _ := rt.Submit(ctx, sdk.Task{Capability: "researcher", Input: "Find sources on Go."})
+rt.RegisterAgent("researcher", api.WithInstruction("You research."))
+rt.RegisterAgent("writer", api.WithInstruction("You write."))
+result, _ := rt.Submit(ctx, api.Task{Capability: "researcher", Input: "Find sources on Go."})
 ```
 
 See [examples/README.md](examples/README.md) for hands-on examples.
@@ -281,7 +281,7 @@ the "agent OS" building blocks distilled from the prime-agent comparison.
 | Runtime state snapshot | `internal/ares_runtime`: `SaveStateSnapshot` / `LoadStateSnapshot` | Versioned runtime state snapshots via CheckpointStore (schema-version guarded) |
 | Capability Fabric (SkillCatalog) | `internal/ares_skills`: `Catalog` / `SourceManager` / `Indexer` / `Discovery` / `Loader` / `Resolver` / `Experience` | Skill = capability package: declared-source metadata index (no disk scanning), progressive disclosure metadata → SKILL.md → resources, trust-gated tool resolution (MCP / Executable / Builtin), learned-source relevance priors |
 | Output guard | `internal/agents/outputguard` | Reject structurally inconsistent agent results at the boundary |
-| Run budgets | `sdk.WithTimeout` (`Task.Timeout`, enforced on the L2 submission) | Wall-clock-bounded autonomous execution. `sdk.WithMaxTokens` is retained for API compatibility but is not enforced on the shared L2 path (0.3.1) |
+| Run budgets | `api.WithTimeout` (`Task.Timeout`, enforced on the L2 submission) | Wall-clock-bounded autonomous execution. `api.WithMaxTokens` is retained for API compatibility but is not enforced on the shared L2 path (0.3.1) |
 | Fingerprint cache | `internal/ares_arena`: `WithFingerprint` | Skip re-running regression when the environment is unchanged |
 | Skills (progressive disclosure) | `internal/knowledge/skills` | Description resident in context; detail loaded on demand |
 | Session lease | `internal/agents/lease` | Exclusive expiring holds for concurrent session access |

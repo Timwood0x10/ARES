@@ -394,8 +394,12 @@ examples:  ## Build all example fixtures
 	@echo "Building all example fixtures..."
 	@for d in examples/_fixtures/*/; do \
 		name=$$(basename $$d); \
-		echo "  building $$name..."; \
-		go build ./examples/_fixtures/$$name/... || exit 1; \
+		if ls examples/_fixtures/$$name/*.go >/dev/null 2>&1; then \
+			echo "  building $$name..."; \
+			go build ./examples/_fixtures/$$name/... || exit 1; \
+		else \
+			echo "  skipping $$name (config-only, no Go sources)"; \
+		fi; \
 	done
 	@echo "✅ All example fixtures built successfully"
 

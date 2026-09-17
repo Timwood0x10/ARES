@@ -49,10 +49,13 @@ func (c *Config) Redacted() *Config {
 		out.Storage.Password = redactedMarker
 	}
 
-	// JWT signing secret.
+	// JWT signing secret and arena write credential.
 	out.Security = c.Security
 	if out.Security.JWTSecret != "" {
 		out.Security.JWTSecret = redactedMarker
+	}
+	if out.Security.ArenaAPIKey != "" {
+		out.Security.ArenaAPIKey = redactedMarker
 	}
 
 	// Introspect read-side bearer token.

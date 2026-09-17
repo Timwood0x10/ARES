@@ -23,14 +23,14 @@
 //   - How YAML-driven config keeps Go code minimal.
 //
 // Core APIs used (with package paths):
-//   - sdk.LoadConfigFile             — github.com/Timwood0x10/ares/sdk
-//   - (*cfg.ConfigFile).ToOptions()  — github.com/Timwood0x10/ares/sdk
-//   - sdk.NewRuntime                 — github.com/Timwood0x10/ares/sdk
-//   - rt.NewAgent                    — github.com/Timwood0x10/ares/sdk
-//   - sdk.WithInstruction            — github.com/Timwood0x10/ares/sdk
-//   - rt.RegisterAgent               — github.com/Timwood0x10/ares/sdk
-//   - rt.Submit                      — github.com/Timwood0x10/ares/sdk
-//   - sdk.Task (struct)              — github.com/Timwood0x10/ares/sdk
+//   - ares.LoadConfigFile             — github.com/Timwood0x10/ares/api
+//   - (*cfg.ConfigFile).ToOptions()  — github.com/Timwood0x10/ares/api
+//   - ares.NewRuntime                 — github.com/Timwood0x10/ares/api
+//   - rt.NewAgent                    — github.com/Timwood0x10/ares/api
+//   - ares.WithInstruction            — github.com/Timwood0x10/ares/api
+//   - rt.RegisterAgent               — github.com/Timwood0x10/ares/api
+//   - rt.Submit                      — github.com/Timwood0x10/ares/api
+//   - ares.Task (struct)              — github.com/Timwood0x10/ares/api
 //
 // Run:
 //
@@ -64,7 +64,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/Timwood0x10/ares/sdk"
+	"github.com/Timwood0x10/ares/api"
 )
 
 func main() {
@@ -73,7 +73,7 @@ func main() {
 	// ── Step 1: Load ares.yaml and wire everything ──
 	// LoadConfigFile reads the YAML config; ToOptions converts it to Runtime
 	// options that auto-wire LLM, memory, distillation, AKG, and evolution.
-	cfg, err := sdk.LoadConfigFile("ares.yaml")
+	cfg, err := ares.LoadConfigFile("ares.yaml")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "❌ load config: %v\n", err)
 		return
@@ -84,7 +84,7 @@ func main() {
 		return
 	}
 	// NewRuntime builds the runtime; LLM and all subsystems are auto-wired.
-	rt := sdk.NewRuntime(opts...)
+	rt := ares.NewRuntime(opts...)
 	// defer Close releases connections and background resources.
 	defer rt.Close()
 
@@ -94,15 +94,15 @@ func main() {
 	// leader and no hierarchy: Submit dispatches a task to the agent
 	// registered for its capability.
 	rt.RegisterAgent("coordinator",
-		sdk.WithInstruction(`You are a coordinator. You plan tasks and produce a clear synthesis.
+		ares.WithInstruction(`You are a coordinator. You plan tasks and produce a clear synthesis.
 Be concise.`),
 	)
 	rt.RegisterAgent("researcher",
-		sdk.WithInstruction(`You are a researcher. You find facts, analyze data, and provide insights.
+		ares.WithInstruction(`You are a researcher. You find facts, analyze data, and provide insights.
 Be factual and concise.`),
 	)
 	rt.RegisterAgent("writer",
-		sdk.WithInstruction(`You are a writer. You produce clear, well-structured content.
+		ares.WithInstruction(`You are a writer. You produce clear, well-structured content.
 Be concise and engaging.`),
 	)
 
@@ -122,7 +122,7 @@ Be concise and engaging.`),
 	for _, t := range tasks {
 		fmt.Printf("\n📋 [%s] %s\n", t.capability, t.input)
 
-		result, err := rt.Submit(ctx, sdk.Task{
+		result, err := rt.Submit(ctx, ares.Task{
 			Capability: t.capability,
 			Input:      t.input,
 		})

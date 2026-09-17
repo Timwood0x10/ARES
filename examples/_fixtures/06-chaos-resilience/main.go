@@ -9,7 +9,7 @@
 //	handle the resulting error gracefully.
 //
 // Learning objectives (what this example teaches you):
-//   - How to build custom tools with sdk.ToolFunc and register them on the
+//   - How to build custom tools with ares.ToolFunc and register them on the
 //     Runtime's tool registry.
 //   - How different failure modes (timeout, not-found, connection reset,
 //     corrupted data) surface through tool errors.
@@ -19,17 +19,17 @@
 //     assess agent behaviour under stress.
 //
 // Core APIs used (package path → symbol):
-//   - github.com/Timwood0x10/ares/sdk.NewRuntime              // create Runtime
-//   - github.com/Timwood0x10/ares/sdk.WithOllama              // pick Ollama provider + model
-//   - github.com/Timwood0x10/ares/sdk.WithTrace               // enable per-step trace logging
-//   - github.com/Timwood0x10/ares/sdk.(*Runtime).ToolRegistry // access tool registry
-//   - github.com/Timwood0x10/ares/sdk.Tool              // tool interface
-//   - github.com/Timwood0x10/ares/sdk.ToolFunc          // struct-based tool implementation
-//   - github.com/Timwood0x10/ares/sdk.(*Registry).Register
-//   - github.com/Timwood0x10/ares/sdk.(*Runtime).NewAgent
-//   - github.com/Timwood0x10/ares/sdk.WithInstruction         // set system prompt
-//   - github.com/Timwood0x10/ares/sdk.(*Agent).Run            // run a single task
-//   - github.com/Timwood0x10/ares/sdk.Result                  // Output, ToolCalls, TokenUsage…
+//   - github.com/Timwood0x10/ares/api.NewRuntime              // create Runtime
+//   - github.com/Timwood0x10/ares/api.LoadConfigFile           // LLM provider from ./ares.yaml
+//   - github.com/Timwood0x10/ares/api.WithTrace               // enable per-step trace logging
+//   - github.com/Timwood0x10/ares/api.(*Runtime).ToolRegistry // access tool registry
+//   - github.com/Timwood0x10/ares/api.Tool              // tool interface
+//   - github.com/Timwood0x10/ares/api.ToolFunc          // struct-based tool implementation
+//   - github.com/Timwood0x10/ares/api.(*Registry).Register
+//   - github.com/Timwood0x10/ares/api.(*Runtime).NewAgent
+//   - github.com/Timwood0x10/ares/api.WithInstruction         // set system prompt
+//   - github.com/Timwood0x10/ares/api.(*Agent).Run            // run a single task
+//   - github.com/Timwood0x10/ares/api.Result                  // Output, ToolCalls, TokenUsage…
 //
 // Run:
 //
@@ -50,7 +50,7 @@
 //   - Change the failure rates or timeout durations in the chaos tool definitions.
 //   - Add a retry wrapper around agent.Run to see how repeated attempts affect
 //     recovery.
-//   - Swap sdk.WithOllama("llama3.2") for a different model to compare
+//   - Point ./ares.yaml at a different provider/model to compare
 //     resilience across providers.
 //   - Add new chaos tools (e.g. disk-full, permission-denied) and register them
 //     to explore additional failure modes.
@@ -65,18 +65,30 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Timwood0x10/ares/sdk"
+	"github.com/Timwood0x10/ares/api"
 )
 
 func main() {
 	ctx := context.Background()
 
-	// ── Step 1: Create a Runtime with Ollama and trace enabled ──
+	// ── Step 1: Create a Runtime from ares.yaml with trace enabled ──
 	// NewRuntime initialises the top-level container (LLM client, tool registry,
-	// memory engine, etc.). WithOllama selects the Ollama provider with model
-	// "llama3.2" — no API key required. WithTrace(true) turns on per-step trace
-	// logging so you can follow the agent's reasoning steps in the console.
-	rt := sdk.NewRuntime(sdk.WithOllama("llama3.2"), sdk.WithTrace(true))
+	// memory engine, etc.). LoadConfigFile reads the LLM provider from
+	// ./ares.yaml (override path via ARES_YAML) so the demo runs against the
+	// configured endpoint instead of a hardcoded local Ollama model.
+	// WithTrace(true) turns on per-step trace logging so you can follow the
+	// agent's reasoning steps in the console.
+	cfg, err := ares.LoadConfigFile("ares.yaml")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "❌ load config: %v\n", err)
+		return
+	}
+	opts, err := cfg.ToOptions()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "❌ config: %v\n", err)
+		return
+	}
+	rt := ares.NewRuntime(append(opts, ares.WithTrace(true))...)
 	defer rt.Close()
 
 	// ── Step 2: Inject all chaos tools into the tool registry ──
@@ -84,7 +96,7 @@ func main() {
 	// on the Runtime's tool registry so the agent can discover and call them.
 	// readFileTool points at the example's data directory for file-system tests.
 	dataDir := filepath.Join("examples", "06-chaos-resilience", "data")
-	chaosTools := []sdk.Tool{
+	chaosTools := []ares.Tool{
 		readFileTool(dataDir),
 		slowTool,
 		unreliableTool,
@@ -161,7 +173,7 @@ func main() {
 		for _, task := range sc.tasks {
 			fmt.Printf("  📋 %s\n", task)
 			agent := rt.NewAgent("resilient-agent",
-				sdk.WithInstruction("You are resilient. Handle tool failures gracefully. Always explain what happened."),
+				ares.WithInstruction("You are resilient. Handle tool failures gracefully. Always explain what happened."),
 			)
 			result, err := agent.Run(ctx, task)
 			if err != nil {
@@ -186,8 +198,8 @@ func main() {
 
 // readFileTool returns a tool that reads and pretty-prints a JSON file from the
 // given data directory. It exercises file-not-found and invalid-JSON error paths.
-func readFileTool(dataDir string) sdk.Tool {
-	return sdk.ToolFunc{
+func readFileTool(dataDir string) ares.Tool {
+	return ares.ToolFunc{
 		ToolName: "read_file",
 		ToolDesc: "Read a JSON data file from the data directory",
 		Fn: func(_ context.Context, params map[string]any) (any, error) {
@@ -218,7 +230,7 @@ func readFileTool(dataDir string) sdk.Tool {
 
 // slowTool is a deliberately slow tool that sleeps for 5 seconds before
 // returning, exercising the tool-timeout code path.
-var slowTool = sdk.ToolFunc{
+var slowTool = ares.ToolFunc{
 	ToolName: "slow_tool",
 	ToolDesc: "A deliberately slow tool that takes 5 seconds",
 	Fn: func(ctx context.Context, params map[string]any) (any, error) {
@@ -234,7 +246,7 @@ var slowTool = sdk.ToolFunc{
 
 // unreliableTool simulates a service that fails 80% of the time. Used together
 // with echoTool to demonstrate graceful degradation and fallback.
-var unreliableTool = sdk.ToolFunc{
+var unreliableTool = ares.ToolFunc{
 	ToolName: "unreliable_tool",
 	ToolDesc: "A tool that fails 80% of the time",
 	Fn: func(_ context.Context, params map[string]any) (any, error) {
@@ -246,7 +258,7 @@ var unreliableTool = sdk.ToolFunc{
 }
 
 // echoTool is a simple fallback tool that echoes its input string.
-var echoTool = sdk.ToolFunc{
+var echoTool = ares.ToolFunc{
 	ToolName: "echo_tool",
 	ToolDesc: "Fallback tool that echoes input",
 	Fn: func(_ context.Context, params map[string]any) (any, error) {
@@ -257,7 +269,7 @@ var echoTool = sdk.ToolFunc{
 
 // flakyNetworkTool simulates a flaky network API that times out after 3 seconds,
 // exercising the network-failure and cancellation code paths.
-var flakyNetworkTool = sdk.ToolFunc{
+var flakyNetworkTool = ares.ToolFunc{
 	ToolName: "flaky_network_api",
 	ToolDesc: "Simulates a flaky network API that sometimes times out",
 	Fn: func(ctx context.Context, params map[string]any) (any, error) {
@@ -276,7 +288,7 @@ var flakyNetworkTool = sdk.ToolFunc{
 
 // mcpDisconnectTool simulates an MCP server disconnection, returning a transport-
 // closed error that the agent should explain to the user.
-var mcpDisconnectTool = sdk.ToolFunc{
+var mcpDisconnectTool = ares.ToolFunc{
 	ToolName: "mcp_disconnect_tool",
 	ToolDesc: "Simulates an MCP server disconnection",
 	Fn: func(_ context.Context, params map[string]any) (any, error) {
@@ -288,7 +300,7 @@ var mcpDisconnectTool = sdk.ToolFunc{
 
 // llmFailureTool simulates an LLM service failure (HTTP 503, rate-limit
 // exceeded), exercising the LLM-provider-error recovery path.
-var llmFailureTool = sdk.ToolFunc{
+var llmFailureTool = ares.ToolFunc{
 	ToolName: "llm_failure_tool",
 	ToolDesc: "Simulates an LLM service failure",
 	Fn: func(_ context.Context, params map[string]any) (any, error) {
@@ -300,7 +312,7 @@ var llmFailureTool = sdk.ToolFunc{
 
 // memoryCorruptTool simulates corrupted memory/data retrieval, returning a
 // checksum-mismatch error for the given key.
-var memoryCorruptTool = sdk.ToolFunc{
+var memoryCorruptTool = ares.ToolFunc{
 	ToolName: "memory_corrupt_tool",
 	ToolDesc: "Simulates corrupted memory/data retrieval",
 	Fn: func(_ context.Context, params map[string]any) (any, error) {

@@ -1,5 +1,5 @@
 // Collaboration graphs — submit an explicit DAG over HTTP and let the kernel
-// execute it (fusion plan Phase C4: sdk.Graph shapes reachable from ops).
+// execute it (fusion plan Phase C4: ares.Graph shapes reachable from ops).
 //
 // The endpoint reuses the same kernel fabric + scheduler as every other
 // submission path. Validation happens BEFORE execution: unknown capability →
@@ -10,10 +10,14 @@
 //  1. Start a peer runtime in another terminal:
 //     ares serve                       (reads ./ares.yaml)
 //  2. This example then POSTs two graphs:
-//     - pipeline: research → write
-//     - orchestrate: root fans out to two workers, join aggregates
+//     - pipeline: collect → shape
+//     - orchestrate: root fans out to two workers, join validates
+//     Node capabilities are tool/* names — the scheduler-visible set since
+//     the B3 convergence (see the note in main).
 //
-// Core APIs used: none beyond net/http — this is the OPERATIONS surface.
+// Core APIs used: net/http (the OPERATIONS surface) plus ares.LoadConfigFile
+// to read llm.api_key from ares.yaml — the single credential entry point
+// (no environment variable).
 //
 // Run:
 //
@@ -27,6 +31,8 @@ import (
 	"net/http"
 	"os"
 	"time"
+
+	"github.com/Timwood0x10/ares/api"
 )
 
 const baseURL = "http://localhost:8080"
@@ -65,14 +71,29 @@ func submit(apiKey string, req graphReq) map[string]any {
 }
 
 func main() {
-	apiKey := os.Getenv("ARES_API_KEY")
+	// The control-plane credential is llm.api_key from ares.yaml — the same
+	// value `ares serve` enforces on destructive endpoints. The config file
+	// is the only entry point; no environment variable is read.
+	cfg, err := ares.LoadConfigFile("ares.yaml")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "❌ load ares.yaml: %v\n", err)
+		os.Exit(1)
+	}
+	apiKey := cfg.LLM.APIKey
 
-	fmt.Println("═══ 1. Pipeline graph (research → write) ═══")
+	// Node capabilities must be SCHEDULER-VISIBLE. Since the B3 convergence
+	// every peer is a self-contained L2 executor registered with the shared
+	// capability set (ares/root, ares/plan, ares/answer, tool/<name> for each
+	// built-in tool) — a bespoke capability like "research" declared in
+	// ares.yaml is identity metadata only and the graph validator rejects it
+	// with 400 + the available list. These local, IO-free tools keep the DAG
+	// demo deterministic while exercising the same pipeline/orchestrate shapes.
+	fmt.Println("═══ 1. Pipeline graph (collect → shape) ═══")
 	r1 := submit(apiKey, graphReq{
 		SchemaVersion: 1,
 		Nodes: []node{
-			{ID: "s1", Capability: "research", Input: "topic X"},
-			{ID: "s2", Capability: "writer", Input: "draft from s1"},
+			{ID: "s1", Capability: "tool/id_generator", Input: "run"},
+			{ID: "s2", Capability: "tool/text_processor", Input: "draft from s1"},
 		},
 		Edges: []edge{{From: "s1", To: "s2"}},
 	})
@@ -82,10 +103,10 @@ func main() {
 	r2 := submit(apiKey, graphReq{
 		SchemaVersion: 1,
 		Nodes: []node{
-			{ID: "root", Capability: "research"},
-			{ID: "w1", Capability: "research"},
-			{ID: "w2", Capability: "writer"},
-			{ID: "join", Capability: "review"},
+			{ID: "root", Capability: "tool/id_generator"},
+			{ID: "w1", Capability: "tool/text_processor"},
+			{ID: "w2", Capability: "tool/string_utils"},
+			{ID: "join", Capability: "tool/data_validation"},
 		},
 		Edges: []edge{
 			{From: "root", To: "w1"}, {From: "root", To: "w2"},

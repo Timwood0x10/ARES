@@ -55,8 +55,6 @@ func main() {
 ```go
 rt := sdk.NewRuntime(sdk.WithConfig("ares.yaml")) // 详见 config.yaml 配置指南
 defer rt.Close()
-// 或读取 ARES_YAML 环境变量（未设置时回退到 ./ares.yaml）：
-// rt := sdk.NewRuntime(sdk.WithConfigFromEnv())
 ```
 
 > 📖 **配置指南**：[config.yaml 配置指南（中文）](docs/articles/zh/25-config-yaml-guide.zh.md) / [config.yaml Guide (EN)](docs/articles/en/25-config-yaml-guide.en.md) —— LLM、蒸馏、GA 进化、知识、工具与混沌相关开关的完整参考。

@@ -2,15 +2,16 @@
 //
 // Purpose:
 //
-//	Build the embedded MCP null server, then use WithConfigFromEnv() for the
-//	runtime and WithMCP() for the MCP connection. This shows how to compose
-//	YAML-driven defaults with programmatic overrides so that external tool
-//	servers become first-class citizens of the agent's tool set.
+//	Build the embedded MCP null server, then load ares.yaml (the single
+//	config entry point) for the runtime and use WithMCP() for the MCP
+//	connection. This shows how to compose YAML-driven defaults with
+//	programmatic overrides so that external tool servers become first-class
+//	citizens of the agent's tool set.
 //
 // Learning objectives (what this example teaches you):
 //   - How to build an external MCP server binary with `go build` and connect to
-//     it via sdk.WithMCP(sdk.MCPConn{…}).
-//   - How to compose YAML config (sdk.LoadConfigFile + cfg.ToOptions) with
+//     it via ares.WithMCP(ares.MCPConn{…}).
+//   - How to compose YAML config (ares.LoadConfigFile + cfg.ToOptions) with
 //     programmatic MCP options appended at call time.
 //   - How an agent discovers and calls MCP-provided tools (e.g. echo) at run
 //     time, just like natively registered tools.
@@ -18,15 +19,15 @@
 //     names, lifecycle states, and a readiness summary.
 //
 // Core APIs used (package path → symbol):
-//   - github.com/Timwood0x10/ares/sdk.LoadConfigFile    // read & validate ares.yaml
-//   - github.com/Timwood0x10/ares/sdk.(*ConfigFile).ToOptions
-//   - github.com/Timwood0x10/ares/sdk.WithMCP           // connect to an MCP server
-//   - github.com/Timwood0x10/ares/sdk.MCPConn           // MCP connection config struct
-//   - github.com/Timwood0x10/ares/sdk.NewRuntime         // create Runtime from options
-//   - github.com/Timwood0x10/ares/sdk.(*Runtime).NewAgent
-//   - github.com/Timwood0x10/ares/sdk.WithInstruction   // set the agent's system prompt
-//   - github.com/Timwood0x10/ares/sdk.(*Agent).Run      // run a single task
-//   - github.com/Timwood0x10/ares/sdk.(*Runtime).Snapshot // get system-runtime snapshot
+//   - github.com/Timwood0x10/ares/api.LoadConfigFile    // read & validate ares.yaml
+//   - github.com/Timwood0x10/ares/api.(*ConfigFile).ToOptions
+//   - github.com/Timwood0x10/ares/api.WithMCP           // connect to an MCP server
+//   - github.com/Timwood0x10/ares/api.MCPConn           // MCP connection config struct
+//   - github.com/Timwood0x10/ares/api.NewRuntime         // create Runtime from options
+//   - github.com/Timwood0x10/ares/api.(*Runtime).NewAgent
+//   - github.com/Timwood0x10/ares/api.WithInstruction   // set the agent's system prompt
+//   - github.com/Timwood0x10/ares/api.(*Agent).Run      // run a single task
+//   - github.com/Timwood0x10/ares/api.(*Runtime).Snapshot // get system-runtime snapshot
 //
 // Run:
 //
@@ -47,7 +48,7 @@
 //   - Replace `ares mcp-null serve` with a real MCP server (e.g. a filesystem
 //     or database tool server) to see how the agent interacts with live
 //     external tools.
-//   - Add a second sdk.WithMCP(…) call to connect to multiple MCP servers
+//   - Add a second ares.WithMCP(…) call to connect to multiple MCP servers
 //     simultaneously.
 //   - Change the agent's system prompt to steer which MCP tool it prefers.
 //   - Inspect rt.Snapshot().JSON() output to verify all components reached the
@@ -62,7 +63,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/Timwood0x10/ares/sdk"
+	"github.com/Timwood0x10/ares/api"
 )
 
 func main() {
@@ -84,12 +85,12 @@ func main() {
 	defer func() { _ = os.Remove(mcpBin) }() // best-effort cleanup of temp binary
 
 	// ── Step 2: Load ares.yaml and compose with an MCP connection ──
-	// sdk.LoadConfigFile reads and validates the YAML configuration; cfg.ToOptions
+	// ares.LoadConfigFile reads and validates the YAML configuration; cfg.ToOptions
 	// converts it into the Option list that NewRuntime accepts. We then append a
-	// sdk.WithMCP(…) option to connect the Runtime to the MCP null server built
+	// ares.WithMCP(…) option to connect the Runtime to the MCP null server built
 	// in Step 1. This demonstrates composing YAML-driven defaults with
 	// programmatic overrides at call time.
-	cfg, err := sdk.LoadConfigFile("ares.yaml")
+	cfg, err := ares.LoadConfigFile("ares.yaml")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "❌ load config: %v\n", err)
 		return
@@ -99,12 +100,12 @@ func main() {
 		fmt.Fprintf(os.Stderr, "❌ config: %v\n", err)
 		return
 	}
-	opts = append(opts, sdk.WithMCP(sdk.MCPConn{
+	opts = append(opts, ares.WithMCP(ares.MCPConn{
 		Name:    "null-server", // human-readable label for this MCP server
 		Command: mcpBin,        // path to the MCP server binary
 		Args:    []string{"mcp-null", "serve"},
 	}))
-	rt := sdk.NewRuntime(opts...) // create Runtime with YAML options + MCP connection
+	rt := ares.NewRuntime(opts...) // create Runtime with YAML options + MCP connection
 	defer rt.Close()
 
 	// ── Step 3: Create an Agent with a system instruction ──
@@ -113,14 +114,14 @@ func main() {
 	// to echo something. The MCP tools are auto-discovered by the agent through
 	// the Runtime's tool registry.
 	agent := rt.NewAgent("assistant",
-		sdk.WithInstruction(`You are a helpful assistant with access to MCP tools.
+		ares.WithInstruction(`You are a helpful assistant with access to MCP tools.
 Use the echo tool when asked to echo something.`),
 	)
 
 	// ── Step 4: Run each task and print results ──
 	// For every task we call agent.Run, which streams the task through the LLM,
 	// invokes any necessary tools (including MCP-provided ones), and returns a
-	// *sdk.Result. API-key / refusal errors are fatal; other errors are printed
+	// *ares.Result. API-key / refusal errors are fatal; other errors are printed
 	// and the loop continues to the next task.
 	for _, task := range []string{
 		"Use the echo tool to echo 'Hello from MCP!'",

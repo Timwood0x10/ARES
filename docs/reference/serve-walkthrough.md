@@ -614,31 +614,25 @@ if serveConfigPath != "" {
 
 末尾打印 SystemRuntime 组件快照（名称/模式/生命周期状态）。
 
-### 5.2 `createLLMAdapterWithFallback` — `serve.go:314`
+### 5.2 ~~`createLLMAdapterWithFallback`~~ — 已移除（0.3.1 / independent-review F-07）
 
-三级降级链：
+旧版在此构造 `internal/llm/output` 的 `LLMAdapter` 并穿针引线传入 `createAndServeAgents`/`createPeerAgents`，但函数体从未消费它——它宣称的"运行时 fallback 链"从未真正执行。0.3.1 删除了这条死装配，`cmd/ares/llm_adapter.go`（含 `ErrNoLLMAdapter`）随之移除。`internal/llm/output` 包本体保留（仍有 `evolution` 侧的 Parse 消费者与测试），登记为 0.4 删除候选。
 
-```go
-adapter, err := factory.Create(cfg.LLM.Provider, primaryCfg) // 主
-if err == nil { return adapter, nil }
-for _, fb := range cfg.LLM.Fallbacks { ... } // 配置的 fallback
-// Last resort: local ollama — but ONLY when the config did not
-// explicitly name any LLM
-```
+运行期的 provider 降级只剩一条链：**`FailoverClient`**（见 5.3）。
 
-### 5.3 `createChatClient` — `agent_kernel.go:408`
+### 5.3 `createChatClient` — `agent_kernel.go:406`
 
-`serve.go:128` 调用，与 `llmAdapter` 并列，是**原生 tool calling** 用的那条客户端。
+`serve.go:128` 调用，是**唯一**的 LLM 客户端装配点（原生 tool calling 与 agent 共用），内部是带 fallback 链的 `FailoverClient`。
 
 ```go
-configs = append(configs, &llm.Config{Provider: cfg.LLM.Provider, ...}) // :410-417 主配置
-for _, fb := range cfg.LLM.Fallbacks { ... } // :418-431 fallback 链
+configs = append(configs, &llm.Config{Provider: cfg.LLM.Provider, ...}) // :408-415 主配置
+for _, fb := range cfg.LLM.Fallbacks { ... } // :416-429 fallback 链
 timeout := time.Duration(cfg.LLM.Timeout) * time.Second
-if timeout <= 0 { timeout = 60 * time.Second } // :433-436
-return llm.NewFailoverClient(configs, timeout, rate, burst) // :440
+if timeout <= 0 { timeout = 60 * time.Second } // :432-435
+return llm.NewFailoverClient(configs, timeout, rate, burst) // :438
 ```
 
-注意它与第5.2节`createLLMAdapterWithFallback` 是**两套并行的降级链**：那个给 LLM adapter，这个给 ChatClient。fallback provider 为空时默认 `"openai"`（`:420-422`）。
+fallback provider 为空时默认 `"openai"`（`:417-419`）。全部失败时返回 `all N clients failed; last error: ...`，被拒绝的请求（ctx 已取消）不再触发 failover（见 `internal/llm/failover.go` 的 caller-abort 早退，FINAL-REVIEW R4）。注意：底层每个 client 的重试/熔断被显式关闭——failover 层拥有 provider 级切换语义，避免内部重试拖慢切换（independent-review F-08 的现设计意图）。
 
 ### 5.4 `wiringServeToolchain` — `serve_wiring.go:182`
 
@@ -665,7 +659,7 @@ if comp.KnowledgeRuntime != nil {
 `serve.go:141`：
 
 ```go
-subAgents, peerKernel, err := createAndServeAgents(ctx, cfg, internalReg, llmAdapter, chatClient, toolBinder, comp, mgr)
+subAgents, peerKernel, err := createAndServeAgents(ctx, cfg, internalReg, chatClient, toolBinder, comp, mgr)
 ```
 
 ### 6.1 `createAndServeAgents` — `cmd/ares/serve_peer.go:35`
@@ -673,7 +667,7 @@ subAgents, peerKernel, err := createAndServeAgents(ctx, cfg, internalReg, llmAda
 先做进化相关的前置（`injectToolClassDAG` 把 L1 ToolClass 能力图注入进化系统），然后：
 
 ```go
-subAgents, peerKernel, err := createPeerAgents(ctx, cfg, comp, llmAdapter, chatClient, toolBinder, comp.EventStore, strategySrc, comp.ExpRepo)
+subAgents, peerKernel, err := createPeerAgents(ctx, cfg, comp, chatClient, toolBinder, comp.EventStore, strategySrc, comp.ExpRepo)
 if err != nil { return nil, nil, fmt.Errorf("create peer agents: %w", err) }
 for _, sa := range subAgents {
  mgr.RegisterAgent(sa, factory)

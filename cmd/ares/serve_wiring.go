@@ -181,7 +181,7 @@ func wiringServeCfgStoreWatch(ctx context.Context, g *errgroup.Group, cfg *ares_
 // (M-C2 segment extraction: body moved verbatim from runServe).
 func wiringServeToolchain(ctx context.Context, cfg *ares_config.Config, comp *ares_bootstrap.Components) (toolBinder sub.ToolBinder, registry *api_tools.Registry, internalReg *core_tools.Registry, err error) {
 	// --- Tool registry (public API) ---
-	registry, err = newToolRegistry()
+	registry, err = newToolRegistry(cfg)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("create tool registry: %w", err)
 	}
@@ -189,7 +189,12 @@ func wiringServeToolchain(ctx context.Context, cfg *ares_config.Config, comp *ar
 	// --- MCP servers: reuse the manager started by Bootstrap (single manager,
 	// single set of connections; its Stop hook is registered below) and bridge
 	// its tools into the internal + public registries. ---
-	internalReg, err = setupMCP(ctx, comp.MCP, registry, ares_bootstrap.ToolDepsFromComponents(comp))
+	deps := ares_bootstrap.ToolDepsFromComponents(comp)
+	// One config knob (tools.file_sandbox_dir) roots BOTH file-tool surfaces:
+	// the public HTTP registry (newToolRegistry above) and the agent-side
+	// builtin tools registered here.
+	deps.FileSandboxDir = cfg.Tools.FileSandboxDir
+	internalReg, err = setupMCP(ctx, comp.MCP, registry, deps)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("MCP setup: %w", err)
 	}
@@ -209,7 +214,7 @@ func wiringServeToolchain(ctx context.Context, cfg *ares_config.Config, comp *ar
 	// GetLLMTools naturally; SetActiveTools lets the runtime narrow the active
 	// subset per task (progressive disclosure), and serve keeps the full set
 	// active by default (zero-value behavior, no change to LLM tool injection).
-	if err := registerNativeTools(ctx, internalReg); err != nil {
+	if err := registerNativeTools(ctx, internalReg, cfg); err != nil {
 		return nil, nil, nil, fmt.Errorf("register native tools: %w", err)
 	}
 
@@ -479,9 +484,14 @@ func startServeHTTPAndHooks(
 	authConfigured := cfg.Security.AuthEnabled && cfg.Security.JWTSecret != ""
 
 	// API key for destructive endpoints (agents/chaos/tools). When empty,
-	// all destructive requests are denied (deny-by-default). Configure via
-	// ARES_API_KEY environment variable.
-	serveAPIKey := os.Getenv("ARES_API_KEY")
+	// all destructive requests are denied (deny-by-default). The credential
+	// is llm.api_key from ares.yaml — the single configuration entry point
+	// (no environment variable exists for it). Local clients (e.g. the
+	// 28-collab-graphs fixture) present the same ares.yaml key. Anything
+	// that learns the LLM key also holds the control-plane write
+	// credential, so keep ares.yaml protected (loopback bind, file
+	// permissions, not committed to VCS).
+	serveAPIKey := cfg.LLM.APIKey
 
 	// M-S1: the control plane's exposure state is printed on every startup —
 	// bind address, credential layers, introspect token — so the effective

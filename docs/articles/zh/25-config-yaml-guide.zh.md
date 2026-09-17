@@ -45,7 +45,7 @@ llm:
   timeout: 60               # 请求超时（秒），默认 60
   max_tokens: 4096          # 响应最大 tokens，默认 4096
   max_prompt_length: 8192   # 最大提示词字符数，默认 8192
-  extra: {}                 # provider 专属扩展 KV
+  extra: {}                 # provider 专属扩展 KV → 作为 HTTP header 附加到 LLM 请求（内置 header 之后设置，可覆盖保留字段；0.3.1 / F-16 起真正生效）
   fallbacks: []             # 失败时按序接管的各 LLMConfig（failover）
   # sdk 侧额外字段：
   temperature: 0.7          # 生成温度 [0,2]，默认 0.7（serve llm 解析无 temperature）

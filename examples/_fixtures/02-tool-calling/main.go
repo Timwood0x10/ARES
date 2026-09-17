@@ -7,7 +7,7 @@
 //	weather, string_tools) are registered and exercised across two tasks.
 //
 // Learning objectives (what this example teaches you):
-//   - How to define several custom tools using sdk.ToolFunc.
+//   - How to define several custom tools using ares.ToolFunc.
 //   - How to register a slice of tools through the Runtime's ToolRegistry.
 //   - How to run multiple conversational turns against the same Agent and
 //     observe per-turn statistics (tool calls, tokens, duration).
@@ -15,15 +15,15 @@
 //     that backs the "calculator" tool.
 //
 // Core APIs used (with package paths):
-//   - sdk.LoadConfigFile             — github.com/Timwood0x10/ares/sdk
-//   - (*cfg.ConfigFile).ToOptions()  — github.com/Timwood0x10/ares/sdk
-//   - sdk.NewRuntime                 — github.com/Timwood0x10/ares/sdk
-//   - rt.ToolRegistry().Register     — github.com/Timwood0x10/ares/sdk
-//   - rt.NewAgent                    — github.com/Timwood0x10/ares/sdk
-//   - sdk.WithInstruction            — github.com/Timwood0x10/ares/sdk
-//   - agent.Run                      — github.com/Timwood0x10/ares/sdk
-//   - sdk.ToolFunc                 — github.com/Timwood0x10/ares/sdk
-//   - sdk.Tool (interface)         — github.com/Timwood0x10/ares/sdk
+//   - ares.LoadConfigFile             — github.com/Timwood0x10/ares/api
+//   - (*cfg.ConfigFile).ToOptions()  — github.com/Timwood0x10/ares/api
+//   - ares.NewRuntime                 — github.com/Timwood0x10/ares/api
+//   - rt.ToolRegistry().Register     — github.com/Timwood0x10/ares/api
+//   - rt.NewAgent                    — github.com/Timwood0x10/ares/api
+//   - ares.WithInstruction            — github.com/Timwood0x10/ares/api
+//   - agent.Run                      — github.com/Timwood0x10/ares/api
+//   - ares.ToolFunc                 — github.com/Timwood0x10/ares/api
+//   - ares.Tool (interface)         — github.com/Timwood0x10/ares/api
 //
 // Run:
 //
@@ -52,7 +52,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/Timwood0x10/ares/sdk"
+	"github.com/Timwood0x10/ares/api"
 )
 
 func main() {
@@ -61,7 +61,7 @@ func main() {
 	// ── Step 1: Load ares.yaml and wire everything ──
 	// LoadConfigFile reads the YAML config; ToOptions converts it to Runtime
 	// options that auto-wire LLM, memory, distillation, AKG, and evolution.
-	cfg, err := sdk.LoadConfigFile("ares.yaml")
+	cfg, err := ares.LoadConfigFile("ares.yaml")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "❌ load config: %v\n", err)
 		return
@@ -72,7 +72,7 @@ func main() {
 		return
 	}
 	// NewRuntime builds the runtime; LLM and all subsystems are auto-wired.
-	rt := sdk.NewRuntime(opts...)
+	rt := ares.NewRuntime(opts...)
 	// defer Close releases connections and background resources.
 	defer rt.Close()
 
@@ -90,7 +90,7 @@ func main() {
 	// NewAgent creates a named Agent on the current Runtime.
 	// WithInstruction sets the system prompt that guides tool selection.
 	agent := rt.NewAgent("assistant",
-		sdk.WithInstruction(`You are a helpful assistant with access to tools.
+		ares.WithInstruction(`You are a helpful assistant with access to tools.
 Use the calculator for math, weather for forecasts, and string_tools for text operations.`),
 	)
 
@@ -117,14 +117,14 @@ Use the calculator for math, weather for forecasts, and string_tools for text op
 
 // ── Custom Tools ─────────────────────────────────────────────
 // customTools is the slice of tools registered with the Runtime.
-var customTools = []sdk.Tool{
+var customTools = []ares.Tool{
 	calculatorTool,
 	weatherTool,
 	stringTool,
 }
 
 // calculatorTool evaluates a basic arithmetic expression using simpleEval.
-var calculatorTool = sdk.ToolFunc{
+var calculatorTool = ares.ToolFunc{
 	ToolName: "calculator",
 	ToolDesc: "Evaluate a mathematical expression",
 	Fn: func(_ context.Context, params map[string]any) (any, error) {
@@ -139,7 +139,7 @@ var calculatorTool = sdk.ToolFunc{
 }
 
 // weatherTool returns a mock weather forecast for a given city.
-var weatherTool = sdk.ToolFunc{
+var weatherTool = ares.ToolFunc{
 	ToolName: "get_weather",
 	ToolDesc: "Get the current weather for a city",
 	Fn: func(_ context.Context, params map[string]any) (any, error) {
@@ -149,7 +149,7 @@ var weatherTool = sdk.ToolFunc{
 }
 
 // stringTool performs string operations: reverse, uppercase, lowercase, word_count.
-var stringTool = sdk.ToolFunc{
+var stringTool = ares.ToolFunc{
 	ToolName: "string_tools",
 	ToolDesc: "String operations: reverse, uppercase, lowercase, word_count",
 	Fn: func(_ context.Context, params map[string]any) (any, error) {

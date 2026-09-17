@@ -162,7 +162,9 @@ func (m *AssistantMsg) toMap() map[string]interface{} {
 
 ---
 
-## The Output Adapter: a Factory, Not a Switch
+## The Output Adapter: a Factory, Not a Switch (zero production callers since 0.3.1)
+
+> **0.3.1 status (independent-review F-07)**: `internal/llm/output` now has **no production caller**. Serve used to thread an adapter through peer assembly via `createLLMAdapterWithFallback`, but nothing ever consumed it — that dead assembly was removed, and runtime LLM failover is a single `FailoverClient` chain in `internal/llm`. The Factory described below is still the package's real design, but the whole package is registered as a **0.4 deletion candidate**.
 
 Production code has no `NewAdapter(provider) + switch`. It's a **registration-based `Factory`** (`output/factory.go`). Adapters register into `Factory.adapters` by provider name; `Create`/`CreateAdapter` looks them up; an unknown provider returns `ErrUnsupportedProvider`. `RegisterProvider` lets you mount a custom adapter externally:
 

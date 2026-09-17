@@ -1,6 +1,6 @@
 # ARES Operator Runbook
 
-> Version: 0.3.0 · Commands: `ares serve` / `ares start`
+> Version: 0.3.1 · Commands: `ares serve` / `ares run`
 > This document is the M9 milestone deliverable (AGENTOS_DEVELOPMENT_PLAN.md Section 6),
 > covering: quick start, configuration tuning, health checks, authentication,
 > hot-reload, upgrades and troubleshooting. For the architecture overview see
@@ -15,7 +15,7 @@
 ollama pull llama3.2
 
 # 2. Build
-make build          # output bin/ares, embeds VERSION (0.3.0)
+make build          # output bin/ares, embeds VERSION (0.3.1)
 
 # 3. Prepare config (auto-detects ./ares.yaml by default)
 cp configs/ares.yaml ares.yaml   # edit llm.provider / server.port as needed
@@ -137,7 +137,7 @@ key still works as a credential on destructive endpoints (dual credential).
 | Destructive endpoints return 401 | No `ARES_JWT_SECRET`/`ARES_API_KEY` configured (deny-by-default) or token expired |
 | Hot-reload does not take effect | Confirm `--config` points at a file (auto-detected path is fixed); check `/api/runtime/config` history for a `reloaded` record |
 | Task fails without retry | `kernel.go` `RetryPolicy{MaxRetries:2}` semantics: `Attempts < MaxRetries`; after 1 failure Attempts=1 so 1 retry remains |
-| All LLM calls fail | Check `llm.fallbacks`; `createLLMAdapterWithFallback` returns `ErrNoLLMAdapter` (detectable via `errors.Is`) |
+| All LLM calls fail | Check `llm.fallbacks`; the `FailoverClient` built by `createChatClient` returns `all N clients failed; last error: ...` (original error reachable via `errors.Is`/`errors.As`). Since 0.3.1 `createLLMAdapterWithFallback`/`ErrNoLLMAdapter` are gone (independent-review F-07) — runtime failover is a single `FailoverClient` chain |
 | Agent stuck | Look at the `/api/health` agent pool; the runtime recovery chain (lease-expiry requeue) backstops automatically |
 
 ## 8. References

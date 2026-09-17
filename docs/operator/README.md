@@ -1,6 +1,6 @@
 # ARES Operator Runbook
 
-> 版本：0.3.0 · 适用命令：`ares serve` / `ares start`
+> 版本：0.3.1 · 适用命令：`ares serve` / `ares run`
 > 本文档是 M9 里程碑交付（AGENTOS_DEVELOPMENT_PLAN.md 第6节），覆盖：快速启动、配置调优、
 > 健康检查、认证、热重载、升级与故障排查。架构总览见
 > [docs/zh/architecture/ares-runtime.md](../zh/architecture/ares-runtime.md)。
@@ -14,7 +14,7 @@
 ollama pull llama3.2
 
 # 2. 构建
-make build          # 产物 bin/ares，注入 VERSION（0.3.0）
+make build          # 产物 bin/ares，注入 VERSION（0.3.1）
 
 # 3. 准备配置（默认探测 ./ares.yaml）
 cp configs/ares.yaml ares.yaml   # 按需修改 llm.provider / server.port
@@ -126,7 +126,7 @@ curl -X POST localhost:8080/api/agents/worker-1/kill \
 | 破坏性端点 401 | 未配置 `ARES_JWT_SECRET`/`ARES_API_KEY`（deny-by-default）或 token 过期 |
 | 热重载未生效 | 确认 `--config` 指定了文件（自动探测路径已修复）；看 `/api/runtime/config` history 是否有 `reloaded` 记录 |
 | 任务失败无重试 | `kernel.go` 的 `RetryPolicy{MaxRetries:2}` 语义：`Attempts < MaxRetries`，1 次失败后 Attempts=1 仍可重试 1 次 |
-| LLM 调用全失败 | 检查 `llm.fallbacks`；`createLLMAdapterWithFallback` 返回 `ErrNoLLMAdapter`（`errors.Is` 可检测） |
+| LLM 调用全失败 | 检查 `llm.fallbacks`；`createChatClient` 构造的 `FailoverClient` 会返回 `all N clients failed; last error: ...`（`errors.Is`/`errors.As` 可检测原始错误）。0.3.1 起 `createLLMAdapterWithFallback`/`ErrNoLLMAdapter` 已移除（independent-review F-07），运行期降级只走 `FailoverClient` 一条链 |
 | agent 卡死 | 看 `/api/health` agent 池；runtime 恢复链（lease 过期 requeue）会自动兜底 |
 
 ## 8. 参考

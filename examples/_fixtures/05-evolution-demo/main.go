@@ -14,14 +14,14 @@
 //   - How to export a simple evolution-history JSON for offline analysis.
 //
 // Core APIs used (package path → symbol):
-//   - github.com/Timwood0x10/ares/sdk.LoadConfigFile    // read & validate ares.yaml
-//   - github.com/Timwood0x10/ares/sdk.(*ConfigFile).ToOptions
-//   - github.com/Timwood0x10/ares/sdk.NewRuntime         // create Runtime from options
-//   - github.com/Timwood0x10/ares/sdk.(*Runtime).NewAgent
-//   - github.com/Timwood0x10/ares/sdk.(*Runtime).Evolve  // GA-free, LLM-driven evolution
-//   - github.com/Timwood0x10/ares/sdk.WithInstruction    // set the agent's system prompt
-//   - github.com/Timwood0x10/ares/sdk.(*Agent).Run       // run a single task
-//   - github.com/Timwood0x10/ares/sdk.Result             // Output, TokenUsage, Duration…
+//   - github.com/Timwood0x10/ares/api.LoadConfigFile    // read & validate ares.yaml
+//   - github.com/Timwood0x10/ares/api.(*ConfigFile).ToOptions
+//   - github.com/Timwood0x10/ares/api.NewRuntime         // create Runtime from options
+//   - github.com/Timwood0x10/ares/api.(*Runtime).NewAgent
+//   - github.com/Timwood0x10/ares/api.(*Runtime).Evolve  // GA-free, LLM-driven evolution
+//   - github.com/Timwood0x10/ares/api.WithInstruction    // set the agent's system prompt
+//   - github.com/Timwood0x10/ares/api.(*Agent).Run       // run a single task
+//   - github.com/Timwood0x10/ares/api.Result             // Output, TokenUsage, Duration…
 //
 // Run:
 //
@@ -38,7 +38,7 @@
 //
 // Things you can try to modify:
 //   - Change the `task` string to a domain you care about and re-run.
-//   - Swap sdk.WithInstruction text to see how a stronger/softer prompt
+//   - Swap ares.WithInstruction text to see how a stronger/softer prompt
 //     affects evolution.
 //   - Set a tighter context.WithTimeout on the Evolve call to limit LLM cost.
 //   - Replace exportHistory's map with writing to a file for a regression
@@ -53,29 +53,34 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Timwood0x10/ares/sdk"
+	"github.com/Timwood0x10/ares/api"
 )
 
 func main() {
 	ctx := context.Background()
 
 	// ── Step 1: Load ares.yaml and construct Runtime ──
-	// Call sdk.LoadConfigFile to read and validate the YAML configuration,
+	// Call ares.LoadConfigFile to read and validate the YAML configuration,
 	// then cfg.ToOptions() converts it into the Option list that NewRuntime
 	// accepts. This keeps evolution toggles in YAML while the Go code only
 	// cares about the loop logic.
-	cfg, err := sdk.LoadConfigFile("ares.yaml")
+	cfg, err := ares.LoadConfigFile("ares.yaml")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "❌ load config: %v\n", err)
 		return
 	}
-	opts, err := cfg.ToOptions() // YAML → []sdk.Option
+	opts, err := cfg.ToOptions() // YAML → []ares.Option
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "❌ config: %v\n", err)
 		return
 	}
-	rt := sdk.NewRuntime(opts...) // create Runtime from YAML-derived options
-	defer rt.Close()              // close Runtime, releasing underlying resources
+	// This demo exists to exercise rt.Evolve(), so force-enable the evolution
+	// subsystem regardless of the loaded YAML's evolution.enabled toggle —
+	// otherwise running from a directory whose ares.yaml disables evolution
+	// makes the demo fail with "evolution not enabled".
+	opts = append(opts, ares.WithEvolution())
+	rt := ares.NewRuntime(opts...) // create Runtime from YAML-derived options
+	defer rt.Close()               // close Runtime, releasing underlying resources
 
 	task := "Explain what a closure is in programming, with a concise code example"
 
@@ -86,11 +91,11 @@ func main() {
 	fmt.Println("═══ Before evolution ═══")
 	fmt.Println("Strategy: default (auto tool selection, depth 3, fifo scheduler)")
 	agent1 := rt.NewAgent("coder-v1",
-		sdk.WithInstruction("You are a programmer. Answer questions."),
+		ares.WithInstruction("You are a programmer. Answer questions."),
 	)
 
 	start := time.Now()
-	result1, err := agent1.Run(ctx, task) // execute task synchronously, returns *sdk.Result
+	result1, err := agent1.Run(ctx, task) // execute task synchronously, returns *ares.Result
 	if err != nil {
 		if strings.Contains(err.Error(), "API key") || strings.Contains(err.Error(), "refused") {
 			fmt.Fprintf(os.Stderr, "❌ %v\n", err)
@@ -124,7 +129,7 @@ func main() {
 	fmt.Println("\n═══ After evolution ═══")
 	fmt.Println("Strategy: GA-evolved (tool selection, search depth, scheduler)")
 	agent2 := rt.NewAgent("coder-v2",
-		sdk.WithInstruction("You are a programmer. Answer questions."),
+		ares.WithInstruction("You are a programmer. Answer questions."),
 	)
 
 	start = time.Now()
@@ -167,7 +172,7 @@ func truncate(s string, n int) string {
 
 // exportHistory marshals before/after strategy metrics (token count, latency)
 // into a human-readable JSON snapshot for offline analysis.
-func exportHistory(r1, r2 *sdk.Result, d1, d2 time.Duration) {
+func exportHistory(r1, r2 *ares.Result, d1, d2 time.Duration) {
 	history := map[string]any{
 		"before": map[string]any{
 			"strategy": "default",

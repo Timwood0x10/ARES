@@ -6,26 +6,25 @@ import (
 	"testing"
 )
 
-// TestResolveFileToolsAllowedDir pins E-3/E-4: the env var is the single knob
-// for the file-tool sandbox, and the unset fallback is a process-PRIVATE
-// directory — neither the working directory (privilege escalation into the
-// source tree) nor the shared world-writable temp dir itself (any local user
-// could pre-plant or read the agent's files).
+// TestResolveFileToolsAllowedDir pins E-3/E-4: the configured dir
+// (tools.file_sandbox_dir in ares.yaml) is the single knob for the file-tool
+// sandbox, and the empty fallback is a process-PRIVATE directory — neither
+// the working directory (privilege escalation into the source tree) nor the
+// shared world-writable temp dir itself (any local user could pre-plant or
+// read the agent's files).
 func TestResolveFileToolsAllowedDir(t *testing.T) {
-	t.Run("env wins", func(t *testing.T) {
-		t.Setenv(fileToolsAllowedDirEnv, "/custom/sandbox")
-		dir, err := resolveFileToolsAllowedDir()
+	t.Run("configured dir wins", func(t *testing.T) {
+		dir, err := resolveFileToolsAllowedDir("/custom/sandbox")
 		if err != nil {
 			t.Fatalf("resolve: %v", err)
 		}
 		if dir != "/custom/sandbox" {
-			t.Fatalf("expected the env dir, got %q", dir)
+			t.Fatalf("expected the configured dir, got %q", dir)
 		}
 	})
 
-	t.Run("unset falls back to a private dir", func(t *testing.T) {
-		t.Setenv(fileToolsAllowedDirEnv, "")
-		dir, err := resolveFileToolsAllowedDir()
+	t.Run("empty config falls back to a private dir", func(t *testing.T) {
+		dir, err := resolveFileToolsAllowedDir("")
 		if err != nil {
 			t.Fatalf("resolve: %v", err)
 		}

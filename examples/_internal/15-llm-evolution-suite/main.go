@@ -57,7 +57,8 @@ func main() {
 
 	if len(os.Args) < 2 {
 		fmt.Println("usage: go run ./examples/_internal/15-llm-evolution-suite <scenario>")
-		fmt.Println("  scorer     — LLMArenaScorer smoke test (single case, old vs bad score)")
+		fmt.Println("  scorer       — LLMArenaScorer smoke test (single case, old vs bad score)")
+		fmt.Println("  scorer-assert— same as scorer, but FAILS unless the bad strategy scores lower")
 		fmt.Println("  regression — preserved-case regression comparison (old vs new strategy)")
 		fmt.Println("  gate3      — candidate gate-3 end-to-end (bad rejected, good verified)")
 		fmt.Println("  release    — candidate release closed loop (verify + release-time gate-3)")
@@ -84,7 +85,9 @@ func main() {
 
 	switch os.Args[1] {
 	case "scorer":
-		runScorerSmoke(ctx, client)
+		runScorerSmoke(ctx, client, false)
+	case "scorer-assert":
+		runScorerSmoke(ctx, client, true)
 	case "regression":
 		runRegressionDemo(ctx, client)
 	case "gate3":

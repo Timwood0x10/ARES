@@ -22,6 +22,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/Timwood0x10/ares/internal/agents/base"
+	"github.com/Timwood0x10/ares/internal/ares_config"
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/core/models"
 	"github.com/Timwood0x10/ares/internal/evidence"
@@ -195,14 +196,21 @@ var arenaListCmd = &cobra.Command{
 	},
 }
 
-// setArenaAuthHeader attaches the arena API key from the environment to an
-// outgoing request. Client subcommands need this because the arena server
-// denies unauthenticated requests by default; without it every CLI call would
-// 401 against a properly configured server, pushing operators towards
-// --allow-anonymous and undoing the hardening.
+// setArenaAuthHeader attaches the arena API key from ares.yaml
+// (security.arena_api_key) to an outgoing request. Client subcommands need
+// this because the arena server denies unauthenticated requests by default;
+// without it every CLI call would 401 against a properly configured server,
+// pushing operators towards --allow-anonymous and undoing the hardening.
+// A config load failure simply omits the header — the server then answers
+// 401, the same posture as an unset key.
 func setArenaAuthHeader(req *http.Request) {
-	if key := os.Getenv("ARENA_API_KEY"); key != "" {
-		req.Header.Set("X-API-Key", key)
+	allowConfigDirFor(arenaConfigPath)
+	cfg, err := ares_config.Load(arenaConfigPath)
+	if err != nil {
+		return
+	}
+	if cfg.Security.ArenaAPIKey != "" {
+		req.Header.Set("X-API-Key", cfg.Security.ArenaAPIKey)
 	}
 }
 
@@ -250,19 +258,23 @@ var arenaServeCmd = &cobra.Command{
 		defer flightRec.Stop()
 		handler.SetFlightRecorder(flightRec)
 		svc.SetFlightBridge(arena.NewFlightBridge(flightRec))
-		// Enable API key auth when configured via env or flag. Without a key,
-		// the middleware denies every request unless anonymous access was
+		// Enable API key auth when configured via the --api-key flag or
+		// security.arena_api_key in ares.yaml. Without a key, the
+		// middleware denies every request unless anonymous access was
 		// explicitly requested (local development only).
 		apiKey := arenaServeAPIKey
 		if apiKey == "" {
-			apiKey = os.Getenv("ARENA_API_KEY")
+			allowConfigDirFor(arenaConfigPath)
+			if cfg, err := ares_config.Load(arenaConfigPath); err == nil {
+				apiKey = cfg.Security.ArenaAPIKey
+			}
 		}
 		if apiKey != "" {
 			handler.SetAPIKey(apiKey)
 		} else if arenaServeAllowAnon {
 			handler.AllowAnonymous(true)
 		} else {
-			return errors.New("arena serve requires an API key: set --api-key or ARENA_API_KEY, " +
+			return errors.New("arena serve requires an API key: set --api-key or security.arena_api_key in ares.yaml, " +
 				"or pass --allow-anonymous to run without authentication (local development only)")
 		}
 
@@ -432,6 +444,7 @@ var (
 	arenaServeAddr          string
 	arenaServeAPIKey        string
 	arenaServeAllowAnon     bool
+	arenaConfigPath         string
 	arenaSurvivalAddr       string
 	arenaSurvivalDuration   time.Duration
 	arenaSurvivalInterval   time.Duration
@@ -447,6 +460,11 @@ var (
 func init() {
 	rootCmd.AddCommand(arenaCmd)
 
+	// One config path governs every arena subcommand: the server reads
+	// security.arena_api_key from it, the client subcommands attach the
+	// same key. The config file is the single entry point — no env var.
+	arenaCmd.PersistentFlags().StringVar(&arenaConfigPath, "config", "ares.yaml", "Path to ares.yaml (security.arena_api_key)")
+
 	arenaCmd.AddCommand(arenaRunCmd)
 	arenaRunCmd.Flags().StringVar(&arenaRunAddr, "addr", "http://localhost:8080", "Arena server address")
 
@@ -458,7 +476,7 @@ func init() {
 
 	arenaCmd.AddCommand(arenaServeCmd)
 	arenaServeCmd.Flags().StringVar(&arenaServeAddr, "addr", ":8080", "Listen address")
-	arenaServeCmd.Flags().StringVar(&arenaServeAPIKey, "api-key", "", "API key required for all arena endpoints (also via ARENA_API_KEY env)")
+	arenaServeCmd.Flags().StringVar(&arenaServeAPIKey, "api-key", "", "API key required for all arena endpoints (defaults to security.arena_api_key in ares.yaml)")
 	arenaServeCmd.Flags().BoolVar(&arenaServeAllowAnon, "allow-anonymous", false,
 		"Serve arena endpoints without authentication (local development only; destructive endpoints become unprotected)")
 

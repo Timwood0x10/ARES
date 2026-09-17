@@ -161,7 +161,9 @@ func (m *AssistantMsg) toMap() map[string]interface{} {
 
 ---
 
-## Output adapter：是 Factory，不是 switch
+## Output adapter：是 Factory，不是 switch（0.3.1 起生产零调用）
+
+> **0.3.1 现状（independent-review F-07）**：`internal/llm/output` 已经**没有生产调用方**。serve 原先的 `createLLMAdapterWithFallback` 把 adapter 穿针引线传进 peer 装配，但从未被消费——该死装配已删除，运行期 LLM 降级只走 `internal/llm` 的 `FailoverClient` 一条链。本节描述的 Factory 仍是包内真实设计，但整包登记为 **0.4 删除候选**。
 
 生产代码里并没有 `NewAdapter(provider) + switch`。它是个**注册式 Factory**（`output/factory.go`）。适配器按 provider 名注册进 `Factory.adapters`，`Create`/`CreateAdapter` 取出，未知 provider 返回 `ErrUnsupportedProvider`。还支持 `RegisterProvider` 在外部挂自定义 adapter：
 

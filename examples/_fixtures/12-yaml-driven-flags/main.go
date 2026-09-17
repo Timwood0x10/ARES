@@ -13,13 +13,13 @@
 //   - Run a single agent turn and inspect token usage and latency.
 //
 // Core APIs used:
-//   - github.com/Timwood0x10/ares/sdk.LoadConfigFile
-//   - github.com/Timwood0x10/ares/sdk.Config.ToOptions
-//   - github.com/Timwood0x10/ares/sdk.NewRuntime
-//   - github.com/Timwood0x10/ares/sdk.Runtime.NewAgent
-//   - github.com/Timwood0x10/ares/sdk.Runtime.Close
-//   - github.com/Timwood0x10/ares/sdk.WithInstruction
-//   - github.com/Timwood0x10/ares/sdk.Agent.Run
+//   - github.com/Timwood0x10/ares/api.LoadConfigFile
+//   - github.com/Timwood0x10/ares/api.Config.ToOptions
+//   - github.com/Timwood0x10/ares/api.NewRuntime
+//   - github.com/Timwood0x10/ares/api.Runtime.NewAgent
+//   - github.com/Timwood0x10/ares/api.Runtime.Close
+//   - github.com/Timwood0x10/ares/api.WithInstruction
+//   - github.com/Timwood0x10/ares/api.Agent.Run
 //
 // Run:
 //
@@ -43,7 +43,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/Timwood0x10/ares/sdk"
+	"github.com/Timwood0x10/ares/api"
 )
 
 func main() {
@@ -61,7 +61,7 @@ func run() error {
 	// ── Step 1: Load ares.yaml and convert to SDK options ──
 	// LoadConfigFile reads the YAML file; ToOptions turns each populated
 	// field into a functional SDK option. Unset fields keep defaults.
-	cfg, err := sdk.LoadConfigFile("ares.yaml")
+	cfg, err := ares.LoadConfigFile("ares.yaml")
 	if err != nil {
 		return fmt.Errorf("load ares.yaml: %w", err)
 	}
@@ -73,14 +73,14 @@ func run() error {
 	// ── Step 2: Create the runtime from options ──
 	// NewRuntime wires all subsystems (LLM, memory, distillation, AKG)
 	// from the options slice. Close releases resources at exit.
-	rt := sdk.NewRuntime(opts...)
+	rt := ares.NewRuntime(opts...)
 	defer rt.Close()
 
 	// ── Step 3: Create an agent with a custom instruction ──
 	// WithInstruction sets the system prompt that guides the agent's
 	// response style and tool selection behaviour.
 	agent := rt.NewAgent("assistant",
-		sdk.WithInstruction("You are a helpful assistant. Answer briefly."),
+		ares.WithInstruction("You are a helpful assistant. Answer briefly."),
 	)
 
 	// ── Step 4: Run one agent turn ──

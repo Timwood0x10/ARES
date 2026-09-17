@@ -1,6 +1,6 @@
 // agent — opt-in pprof/expvar exposure (Phase 3 observability,
-// plan/stability_performance_plan.md). Deliberately NOT config-surface:
-// env-gated (ARES_PPROF_ADDR), loopback-enforced, off by default.
+// plan/stability_performance_plan.md). Config-gated (server.pprof_addr in
+// ares.yaml), loopback-enforced, off by default.
 package main
 
 import (
@@ -11,10 +11,11 @@ import (
 	"net"
 	"net/http"
 	_ "net/http/pprof" // registers /debug/pprof/* on http.DefaultServeMux
-	"os"
 	"time"
 
 	"golang.org/x/sync/errgroup"
+
+	"github.com/Timwood0x10/ares/internal/ares_config"
 )
 
 // validatePprofAddr enforces the loopback-only contract for the pprof
@@ -37,11 +38,11 @@ func validatePprofAddr(addr string) error {
 }
 
 // startPprofServer serves net/http/pprof and expvar on the address named by
-// ARES_PPROF_ADDR (e.g. "127.0.0.1:6060"). Unset = off (the default); a
-// non-loopback address is a startup error. The listener is managed by the
-// serve errgroup and shuts down with the process.
-func startPprofServer(ctx context.Context, g *errgroup.Group) error {
-	addr := os.Getenv("ARES_PPROF_ADDR")
+// server.pprof_addr in ares.yaml (e.g. "127.0.0.1:6060"). Unset = off (the
+// default); a non-loopback address is a startup error. The listener is
+// managed by the serve errgroup and shuts down with the process.
+func startPprofServer(ctx context.Context, g *errgroup.Group, cfg *ares_config.Config) error {
+	addr := cfg.Server.PprofAddr
 	if addr == "" {
 		return nil
 	}

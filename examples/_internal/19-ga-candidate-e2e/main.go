@@ -26,11 +26,11 @@
 //     standard CandidateVerifier gates 1/2.
 //
 // Core APIs (with package paths):
-//   - ares_genome.NewPopulation (internal/ares_evolution/genome)
+//   - ares_genome.NewPopulation (internal/runtime/ares_evolution/genome)
 //   - (*Population).ScoreAgents / (*Population).Evolve / (*Population).Stats
 //   - (*Population).BestStrategy / (*Population).BestEverScore
-//   - mutation.NewMutator (internal/ares_evolution/mutation)
-//   - ares_genome.NewCrossover (internal/ares_evolution/genome)
+//   - mutation.NewMutator (internal/runtime/ares_evolution/mutation)
+//   - ares_genome.NewCrossover (internal/runtime/ares_evolution/genome)
 //   - evolution.NewCandidate / CandidateVerifier (internal/evolution)
 //
 // Run from the repo root:

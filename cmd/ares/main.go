@@ -98,11 +98,13 @@ func init() {
 	})
 
 	// doctor
-	rootCmd.AddCommand(&cobra.Command{
+	doctorCmd := &cobra.Command{
 		Use:   "doctor",
 		Short: "Diagnose ARES environment",
 		RunE:  runDoctor,
-	})
+	}
+	doctorCmd.Flags().String("config", "ares.yaml", "Path to ares.yaml (the single configuration entry point)")
+	rootCmd.AddCommand(doctorCmd)
 
 	// init
 	var initDir string
@@ -155,8 +157,9 @@ func goMinorVersion(v string) int {
 
 // ── doctor ─────────────────────────────────────────────────────
 
-func runDoctor(_ *cobra.Command, _ []string) error {
+func runDoctor(cmd *cobra.Command, _ []string) error {
 	ok := true
+	doctorConfigPath, _ := cmd.Flags().GetString("config")
 
 	fmt.Println("🔍 ARES Doctor")
 	fmt.Println()
@@ -173,26 +176,24 @@ func runDoctor(_ *cobra.Command, _ []string) error {
 		fmt.Println(" ⚠  Go 1.25+ recommended")
 	}
 
-	// LLM key check. Hosted keys are OPTIONAL when a local Ollama is
-	// available: an Ollama-only environment is a legitimate setup, so a
-	// missing hosted key must not fail doctor on its own. Key material is
-	// never echoed (not even a prefix — terminal scrollback and logs are
-	// not a safe channel for credentials).
+	// LLM key check. The config file is the ONLY credential entry point —
+	// no environment variable is consulted. A hosted key is OPTIONAL when a
+	// local Ollama is available: an Ollama-only environment is a legitimate
+	// setup, so a missing llm.api_key must not fail doctor on its own. Key
+	// material is never echoed (not even a prefix — terminal scrollback and
+	// logs are not a safe channel for credentials).
 	hostedKeySet := false
-	providers := []struct {
-		name string
-		env  string
-	}{
-		{"OpenAI", "OPENAI_API_KEY"},
-		{"Anthropic", "ANTHROPIC_API_KEY"},
-		{"OpenRouter", "OPENROUTER_API_KEY"},
-	}
-	for _, p := range providers {
-		if v := os.Getenv(p.env); v != "" {
+	allowConfigDirFor(doctorConfigPath)
+	cfg, cfgErr := ares_config.Load(doctorConfigPath)
+	if cfgErr != nil {
+		fmt.Printf("  Config     ⚠  %s not loadable: %v\n", doctorConfigPath, cfgErr)
+	} else {
+		fmt.Printf("  Config    ✅ %s (%s / %s)\n", doctorConfigPath, cfg.LLM.Provider, cfg.LLM.Model)
+		if cfg.LLM.APIKey != "" {
 			hostedKeySet = true
-			fmt.Printf("  %-10s ✅ (set)\n", p.name)
+			fmt.Println("  LLM key   ✅ (llm.api_key set)")
 		} else {
-			fmt.Printf("  %-10s ❌ set %s\n", p.name, p.env)
+			fmt.Println("  LLM key   ⚠  llm.api_key empty (fine for Ollama-only)")
 		}
 	}
 
@@ -596,9 +597,8 @@ func init() {
 		Long: `Issue a signed JWT (HS256) for protected HTTP endpoints (agent kill/resume/
 retry, MCP tool calls, chaos actions). The token is signed with the configured
 JWT secret — the same one the serve process validates. Configure the secret in
-security.jwt_secret in ares.yaml or via the ARES_JWT_SECRET environment
-variable, and enable enforcement with security.auth_enabled: true (or
-ARES_AUTH_ENABLED=1).
+security.jwt_secret in ares.yaml, and enable enforcement with
+security.auth_enabled: true.
 
 Roles: admin (full control), operator (write, no destructive chaos), agent
 (read-only).
@@ -607,16 +607,16 @@ The token lifetime resolves in this order: --ttl flag, then the
 security.jwt_expiry config, then the built-in default of ` + defaultTokenTTL + `.
 
 Example:
-  ARES_JWT_SECRET=changeme ares auth token --role operator --sub "deploy-user"`,
+  ares auth token --config ares.yaml --role operator --sub "deploy-user"`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			allowConfigDirFor(tokenConfigPath)
 			cfg, err := ares_config.Load(tokenConfigPath)
 			if err != nil {
 				return fmt.Errorf("load config: %w", err)
 			}
-			secret := tokenEnvSecret(cfg)
+			secret := tokenSecret(cfg)
 			if secret == "" {
-				return errors.New("no JWT secret configured: set security.jwt_secret or ARES_JWT_SECRET")
+				return errors.New("no JWT secret configured: set security.jwt_secret in ares.yaml")
 			}
 			// Lifetime precedence: explicit --ttl flag > security.jwt_expiry
 			// config > defaultTokenTTL. An empty flag leaves the config (and
@@ -643,7 +643,7 @@ Example:
 			return nil
 		},
 	}
-	tokenCmd.Flags().StringVar(&tokenConfigPath, "config", "", "Path to ares.yaml (uses ARES_JWT_SECRET otherwise)")
+	tokenCmd.Flags().StringVar(&tokenConfigPath, "config", "ares.yaml", "Path to ares.yaml (security.jwt_secret is the only credential source)")
 	tokenCmd.Flags().StringVar(&tokenRole, "role", "operator", "Role: admin, operator, or agent")
 	tokenCmd.Flags().StringVar(&tokenSubject, "sub", "cli-user", "Token subject")
 	tokenCmd.Flags().StringVar(&tokenTTL, "ttl", "", "Token lifetime (e.g. 24h, 1h30m); defaults to security.jwt_expiry or "+defaultTokenTTL)
@@ -652,14 +652,11 @@ Example:
 	rootCmd.AddCommand(authCmd)
 }
 
-// tokenEnvSecret exposes the JWT secret resolution used by both the CLI and
-// serve wiring: the environment variable wins, then the config file. It is a
-// small helper kept beside the command so tests can exercise the precedence
-// without spawning a subprocess.
-func tokenEnvSecret(cfg *ares_config.Config) string {
-	if v := os.Getenv("ARES_JWT_SECRET"); v != "" {
-		return v
-	}
+// tokenSecret exposes the JWT secret resolution used by the CLI: the config
+// file (security.jwt_secret) is the only source — no environment override
+// exists. Kept as a helper so tests can exercise it without spawning a
+// subprocess.
+func tokenSecret(cfg *ares_config.Config) string {
 	return cfg.Security.JWTSecret
 }
 
@@ -773,9 +770,6 @@ func loadRecallConfig() (*ares_config.Config, error) {
 	cfg, err := ares_config.Load(configPath)
 	if err != nil {
 		return nil, fmt.Errorf("load config: %w", err)
-	}
-	if err := ares_config.LoadFromEnv(cfg); err != nil {
-		return nil, fmt.Errorf("load env: %w", err)
 	}
 	return cfg, nil
 }

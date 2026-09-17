@@ -79,14 +79,19 @@ type ServerConfig struct {
 	// introspect.token) to keep the read side closed.
 	Host string `yaml:"host"`
 	Port int    `yaml:"port"`
+	// PprofAddr opts into a net/http/pprof + expvar listener (e.g.
+	// "127.0.0.1:6060"). Empty (default) disables it. Non-loopback
+	// addresses refuse to start — pprof exposes memory and goroutine dumps.
+	// Formerly the ARES_PPROF_ADDR env var.
+	PprofAddr string `yaml:"pprof_addr"`
 }
 
 // SecurityConfig holds JWT authentication and RBAC settings for the HTTP
 // surfaces (monitoring console, dashboard, arena). When JWTSecret is empty
 // every protected endpoint stays deny-by-default (401) — the same posture as
-// the legacy ARES_API_KEY, so enabling JWT cannot accidentally open a
-// destructive endpoint. JWTSecret must be kept out of YAML config committed
-// to VCS; prefer the ARES_JWT_SECRET environment variable.
+// the legacy API key, so enabling JWT cannot accidentally open a destructive
+// endpoint. Secrets live in this YAML file only (the single config entry
+// point); keep ares.yaml out of VCS or protect it with file permissions.
 type SecurityConfig struct {
 	// JWTSecret is the HS256 signing key for issued tokens. Empty disables
 	// JWT (deny all protected endpoints).
@@ -99,6 +104,12 @@ type SecurityConfig struct {
 	// safer than open). Default false preserves the pre-JWT behavior for
 	// read-only surfaces; destructive endpoints always require auth.
 	AuthEnabled bool `yaml:"auth_enabled"`
+	// ArenaAPIKey is the credential `ares arena serve` requires on every
+	// request (X-API-Key), and the key the arena CLI subcommands attach to
+	// their outgoing calls. Empty + no --api-key flag keeps arena
+	// deny-by-default (refuses to start unless --allow-anonymous).
+	// Formerly the ARENA_API_KEY env var.
+	ArenaAPIKey string `yaml:"arena_api_key"`
 }
 
 // IntrospectConfig configures the runtime introspection read side: the

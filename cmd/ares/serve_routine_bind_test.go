@@ -58,10 +58,9 @@ func TestServerBindAddr(t *testing.T) {
 	}
 }
 
-// --host must win over both SERVER_HOST and the YAML value, mirroring the
-// --port precedence: the explicit argument is the most specific intent. Guards
-// the ordering inside loadServeConfig, where the flag override has to sit
-// AFTER LoadFromEnv or the env silently wins.
+// --host must win over the YAML value, mirroring the --port precedence: the
+// explicit argument is the most specific intent. No environment layer exists —
+// the config file is the single configuration entry point.
 func TestServeHostFlagPrecedence(t *testing.T) {
 	origHost, origURL := serveHost, serveLLMURL
 	t.Cleanup(func() { serveHost, serveLLMURL = origHost, origURL })
@@ -77,7 +76,7 @@ func TestServeHostFlagPrecedence(t *testing.T) {
 		t.Errorf("minimal setup Server.Host = %q, want the --host value", cfg.Server.Host)
 	}
 
-	// Config-file branch: --host must beat SERVER_HOST.
+	// Config-file branch: --host must beat the YAML value.
 	serveLLMURL = ""
 	path := filepath.Join(t.TempDir(), "ares.yaml")
 	if err := os.WriteFile(path, []byte("server:\n  host: 10.0.0.1\n  port: 8080\n"), 0o600); err != nil {
@@ -86,24 +85,23 @@ func TestServeHostFlagPrecedence(t *testing.T) {
 	origPath := serveConfigPath
 	t.Cleanup(func() { serveConfigPath = origPath })
 	serveConfigPath = path
-	t.Setenv("SERVER_HOST", "192.168.1.1")
 	serveHost = "127.0.0.1"
 	cfg, err = loadServeConfig()
 	if err != nil {
 		t.Fatalf("loadServeConfig (file): %v", err)
 	}
 	if cfg.Server.Host != "127.0.0.1" {
-		t.Errorf("Server.Host = %q, want the --host value to beat SERVER_HOST and YAML", cfg.Server.Host)
+		t.Errorf("Server.Host = %q, want the --host value to beat YAML", cfg.Server.Host)
 	}
 
-	// Without the flag, SERVER_HOST still applies.
+	// Without the flag, the YAML value applies.
 	serveHost = ""
 	cfg, err = loadServeConfig()
 	if err != nil {
-		t.Fatalf("loadServeConfig (env only): %v", err)
+		t.Fatalf("loadServeConfig (yaml only): %v", err)
 	}
-	if cfg.Server.Host != "192.168.1.1" {
-		t.Errorf("Server.Host = %q, want SERVER_HOST to beat YAML when no flag is set", cfg.Server.Host)
+	if cfg.Server.Host != "10.0.0.1" {
+		t.Errorf("Server.Host = %q, want the YAML value when no flag is set", cfg.Server.Host)
 	}
 }
 

@@ -13,12 +13,12 @@
 //   - Track token usage, tool-call count, and latency per query.
 //
 // Core APIs used:
-//   - github.com/Timwood0x10/ares/sdk.LoadConfigFile
-//   - github.com/Timwood0x10/ares/sdk.Config.ToOptions
-//   - github.com/Timwood0x10/ares/sdk.NewRuntime
-//   - github.com/Timwood0x10/ares/sdk.Runtime.NewAgent
-//   - github.com/Timwood0x10/ares/sdk.Agent.Run
-//   - github.com/Timwood0x10/ares/sdk.ToolFunc
+//   - github.com/Timwood0x10/ares/api.LoadConfigFile
+//   - github.com/Timwood0x10/ares/api.Config.ToOptions
+//   - github.com/Timwood0x10/ares/api.NewRuntime
+//   - github.com/Timwood0x10/ares/api.Runtime.NewAgent
+//   - github.com/Timwood0x10/ares/api.Agent.Run
+//   - github.com/Timwood0x10/ares/api.ToolFunc
 //
 // Run:
 //
@@ -48,11 +48,10 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"os"
 	"sync"
 	"time"
 
-	"github.com/Timwood0x10/ares/sdk"
+	"github.com/Timwood0x10/ares/api"
 )
 
 func main() {
@@ -60,7 +59,7 @@ func main() {
 	// LoadConfigFile reads the YAML; ToOptions converts each populated
 	// field into a functional SDK option. NewRuntime wires the LLM,
 	// memory, distillation, and AKG subsystems from those options.
-	cfg, err := sdk.LoadConfigFile("ares.yaml")
+	cfg, err := ares.LoadConfigFile("ares.yaml")
 	if err != nil {
 		log.Fatalf("load config: %v", err)
 	}
@@ -68,7 +67,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("config: %v", err)
 	}
-	rt := sdk.NewRuntime(opts...) // runtime owns all subsystem lifecycles
+	rt := ares.NewRuntime(opts...) // runtime owns all subsystem lifecycles
 	defer rt.Close()
 
 	// ── Step 2: Register custom tools ──
@@ -85,7 +84,7 @@ func main() {
 	// NewAgent returns a configured Agent. WithInstruction sets the
 	// system prompt that guides tool selection and response style.
 	agent := rt.NewAgent("assistant",
-		sdk.WithInstruction("You are a helpful assistant with tools. Use calculator for math, weather for forecasts."),
+		ares.WithInstruction("You are a helpful assistant with tools. Use calculator for math, weather for forecasts."),
 	)
 
 	// ── Step 4: Wire HTTP routes and start the server ──
@@ -100,20 +99,14 @@ func main() {
 	http.HandleFunc("/api/chat", app.handleChat) // POST a user message
 	http.HandleFunc("/api/stats", app.handleStats)
 
-	// Bind loopback by default (0.3.1 hardening): this dashboard has no
+	// Bind loopback only (0.3.1 hardening): this dashboard has no
 	// authentication at all, so binding every interface would expose the chat
 	// endpoint — and through it the configured LLM credentials' spend — to the
-	// whole network. SERVER_HOST opts into a wider bind for containers, where
-	// reaching the process through a published port requires 0.0.0.0.
-	host := os.Getenv("SERVER_HOST")
-	if host == "" {
-		host = "127.0.0.1"
-	}
-	addr := net.JoinHostPort(host, "8080")
-	fmt.Printf("🌐 Open http://localhost:8080 (listening on %s)\n", addr)
-	if host == "0.0.0.0" {
-		log.Printf("WARNING: SERVER_HOST=0.0.0.0 exposes this UNAUTHENTICATED demo dashboard on every interface")
-	}
+	// whole network. There is deliberately no env/flag override: ares.yaml is
+	// the single configuration entry point elsewhere, and an unauthenticated
+	// demo dashboard must never widen its bind.
+	addr := net.JoinHostPort("127.0.0.1", "8080")
+	fmt.Printf("🌐 Open http://localhost:8080 (loopback only)\n")
 	if err := http.ListenAndServe(addr, nil); err != nil {
 		log.Printf("server: %v", err)
 	}
@@ -134,7 +127,7 @@ type chatEntry struct {
 // appState holds the agent and chat history shared across HTTP handlers.
 type appState struct {
 	mu      sync.Mutex // guards history
-	agent   *sdk.Agent
+	agent   *ares.Agent
 	history []chatEntry
 }
 
@@ -207,8 +200,8 @@ func (app *appState) handleStats(w http.ResponseWriter, r *http.Request) {
 // ---- tools ----
 
 // appTools is the set of custom tools registered with the runtime.
-var appTools = []sdk.Tool{
-	sdk.ToolFunc{
+var appTools = []ares.Tool{
+	ares.ToolFunc{
 		ToolName: "calculator",
 		ToolDesc: "Evaluate a mathematical expression",
 		Fn: func(_ context.Context, params map[string]any) (any, error) {
@@ -216,7 +209,7 @@ var appTools = []sdk.Tool{
 			return fmt.Sprintf("result: %s = (demo) 42", expr), nil // demo returns a fixed value
 		},
 	},
-	sdk.ToolFunc{
+	ares.ToolFunc{
 		ToolName: "get_weather",
 		ToolDesc: "Get current weather for a city",
 		Fn: func(_ context.Context, params map[string]any) (any, error) {

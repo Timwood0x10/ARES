@@ -378,6 +378,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed (breaking)
 
+- **Environment-variable configuration layer removed** (`SERVER_HOST` /
+  `SERVER_PORT` / `LLM_API_KEY` / `LLM_PROVIDER` / `LLM_BASE_URL` /
+  `LLM_MODEL` / `DB_*` / `ARES_JWT_SECRET` / `ARES_AUTH_ENABLED` /
+  `ARES_API_KEY` / `ARES_PPROF_ADDR` / `ARES_NATIVE_TOOLS` /
+  `ARES_FILE_TOOLS_ALLOWED_DIR` / `ARES_WORKSPACE_DIR` / `ARENA_API_KEY` /
+  `SYNONYM_CONFIG_PATH`, the SDK's `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` /
+  `OPENROUTER_API_KEY` fallbacks, and `sdk.WithConfigFromEnv` incl. its
+  `api` alias): `ares.yaml` is now the single configuration entry point.
+  `ares_config.LoadFromEnv` and every per-caller env reader are gone, so
+  behavior can no longer diverge between "works via export on my machine"
+  and the checked-in config. Formerly-env knobs moved into YAML:
+  `server.pprof_addr`, `security.arena_api_key`,
+  `tools.native_allowlist`, `tools.file_sandbox_dir`. `ares db migrate`
+  gains `--config` (absent file keeps the built-in defaults; a
+  present-but-broken file is a hard error), `ares arena *` gains a
+  persistent `--config` flag, `ares doctor` diagnoses the config file
+  itself, and `sdk.New` / `MustNew` read `./ares.yaml`. The SDK's
+  env-probing `internal/detector` package went with them; the only
+  surviving `os.Getenv` is `code_runner`'s child-process `PATH`
+  injection — process plumbing, not configuration.
 - **`internal/agentloop` engine**: the SDK's synchronous ReAct loop is
   retired — `Agent.Run`, `Submit` and `RunGraph` now route through the
   shared L2 execution core (see Changed). The per-capability static
@@ -444,6 +464,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Evidence storage, selection sorting & evidence collection defects**
   (commit `871bb004`): multiple correctness fixes across the evidence
   persistence, candidate selection ordering, and evidence-collection paths.
+- **Dead `LLMAdapter` assembly removed** (independent-review F-07):
+  `createLLMAdapterWithFallback` built an `internal/llm/output` adapter and
+  threaded it through `createAndServeAgents`/`createPeerAgents`, but no
+  function body ever consumed it — the "runtime fallback chain" it advertised
+  never ran, and `ErrNoLLMAdapter` was dead code. The assembly and
+  `cmd/ares/llm_adapter.go` are deleted; runtime LLM failover is a single
+  `FailoverClient` chain (`createChatClient`). `internal/llm/output` keeps no
+  production caller and is a 0.4 deletion candidate.
+- **SQLite `HybridSearch` recall cap** (independent-review F-09): the keyword
+  candidate query was an unbounded `LIKE` scan (postgres capped at
+  `hybridRecallCap = 512`) — a pathological `LIKE` pattern turned every hybrid
+  query into a full table scan plus O(candidates) similarity scoring. SQLite
+  now mirrors the 512-row cap (`hybridRecallCap`) via `LIMIT` with relevance
+  tiebreak, and a bounded-scan regression test locks it in.
+- **`llm.extra` no longer a dead config** (independent-review F-16):
+  `ares_config.LLMConfig.Extra` was plumbed into `llm.Config.Extra` and then
+  never read — a full `extra: {}` map survived validation via the contract
+  gate's one-touch blind spot. `Client` now applies the entries as HTTP
+  headers on every request, set *after* the built-in provider headers so a
+  proxy/gateway can override reserved fields (`Authorization`, `X-Title`).
 
 ### Added (post-release review)
 

@@ -188,8 +188,8 @@ func runServe() error {
 	}
 
 	// Opt-in pprof/expvar on a loopback listener (Phase 3 observability):
-	// ARES_PPROF_ADDR unset = off; non-loopback addresses refuse to start.
-	if err := startPprofServer(ctx, g); err != nil {
+	// server.pprof_addr unset = off; non-loopback addresses refuse to start.
+	if err := startPprofServer(ctx, g, cfg); err != nil {
 		return err
 	}
 
@@ -269,11 +269,9 @@ func loadServeConfig() (*ares_config.Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load config: %w", err)
 	}
-	if err := ares_config.LoadFromEnv(cfg); err != nil {
-		return nil, fmt.Errorf("load env: %w", err)
-	}
-	// CLI flags win over env (SERVER_HOST/SERVER_PORT) and YAML: the explicit
-	// argument is the most specific intent.
+	// CLI flags win over YAML: the explicit argument is the most specific
+	// intent. (No environment overrides exist — the config file is the only
+	// entry point.)
 	if serveHost != "" {
 		cfg.Server.Host = serveHost
 	}

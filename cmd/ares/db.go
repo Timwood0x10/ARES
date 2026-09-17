@@ -8,12 +8,14 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/spf13/cobra"
 
+	"github.com/Timwood0x10/ares/internal/ares_config"
 	"github.com/Timwood0x10/ares/internal/storage/postgres"
 )
 
@@ -32,11 +34,14 @@ func init() {
 	rootCmd.AddCommand(dbCmd)
 }
 
+var dbConfigPath string
+
 var dbMigrateCmd = &cobra.Command{
 	Use:   "migrate",
 	Short: "Run full database migration",
 	Long: `Creates the database if it doesn't exist and runs all migrations.
-Reads DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME env vars.
+Reads the storage section of ares.yaml (host/port/username/password/database/
+ssl_mode); an absent config file falls back to the built-in defaults.
 Default: postgres://postgres:postgres@localhost:5432/ARES?sslmode=disable`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runDbMigrate()
@@ -45,22 +50,45 @@ Default: postgres://postgres:postgres@localhost:5432/ARES?sslmode=disable`,
 
 func init() {
 	dbCmd.AddCommand(dbMigrateCmd)
+	dbMigrateCmd.Flags().StringVar(&dbConfigPath, "config", "ares.yaml", "Path to ares.yaml (storage section)")
 }
 
 func runDbMigrate() error {
-	host := getEnv("DB_HOST", "localhost")
-	port := getEnv("DB_PORT", "5432")
-	// Both spellings are accepted because the two entry points historically
-	// disagreed: `ares serve` (LoadFromEnv) read DB_USERNAME/DB_DATABASE while
-	// this command read DB_USER/DB_NAME, so setting one of them silently left
-	// the other on its default. The longer name wins when both are set.
-	user := getEnv("DB_USERNAME", getEnv("DB_USER", "postgres"))
-	password := getEnv("DB_PASSWORD", "postgres")
-	dbname := getEnv("DB_DATABASE", getEnv("DB_NAME", "ARES"))
+	// Defaults match the documented connection string; a present config file
+	// overrides field by field. A present-but-invalid file is a hard error —
+	// the config is the single entry point, so silently migrating against
+	// defaults when the YAML is broken would hit the wrong database.
+	host, port, user, password, dbname, sslMode :=
+		"localhost", "5432", "postgres", "postgres", "ARES", "disable"
+	if _, statErr := os.Stat(dbConfigPath); statErr == nil {
+		allowConfigDirFor(dbConfigPath)
+		cfg, err := ares_config.Load(dbConfigPath)
+		if err != nil {
+			return fmt.Errorf("load config %s: %w", dbConfigPath, err)
+		}
+		if cfg.Storage.Host != "" {
+			host = cfg.Storage.Host
+		}
+		if cfg.Storage.Port > 0 {
+			port = strconv.Itoa(cfg.Storage.Port)
+		}
+		if cfg.Storage.Username != "" {
+			user = cfg.Storage.Username
+		}
+		if cfg.Storage.Password != "" {
+			password = cfg.Storage.Password
+		}
+		if cfg.Storage.Database != "" {
+			dbname = cfg.Storage.Database
+		}
+		if cfg.Storage.SSLMode != "" {
+			sslMode = cfg.Storage.SSLMode
+		}
+	}
 
-	dsn := fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=disable",
+	dsn := fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=%s",
 		url.QueryEscape(user), url.QueryEscape(password),
-		host, port, dbname)
+		host, port, dbname, sslMode)
 
 	parsed, _ := url.Parse(dsn)
 	dbname = strings.TrimPrefix(parsed.Path, "/")
@@ -78,7 +106,7 @@ func runDbMigrate() error {
 		User:            parsed.User.Username(),
 		Password:        passwordFromURL(parsed),
 		Database:        dbname,
-		SSLMode:         getEnv("DB_SSL_MODE", "disable"),
+		SSLMode:         sslMode,
 		MaxOpenConns:    25,
 		MaxIdleConns:    10,
 		ConnMaxLifetime: 0,
@@ -152,13 +180,6 @@ func ensureDatabase(db *sql.DB, name string) {
 		}
 		fmt.Printf("Created database: %s\n", name)
 	}
-}
-
-func getEnv(key, defaultValue string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return defaultValue
 }
 
 func changeDB(dsn, dbname string) string {

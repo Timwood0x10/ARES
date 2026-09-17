@@ -137,7 +137,7 @@ flowchart TD
     end
 
     subgraph L10["横切基础设施"]
-        CFG["ares_config/<br/>config.go:54 Config 18 段<br/>Load:626 · LoadFromEnv:675<br/>config_validate · config_defaults<br/>store.go:30 ConfigStore 热加载"]
+        CFG["ares_config/<br/>config.go:53 Config 18 段<br/>Load:198 · config-only（无 env 层）<br/>config_validate · config_defaults<br/>store.go:30 ConfigStore 热加载"]
         SEC["ares_security/<br/>jwt.go:58 SignJWT · :81 VerifyJWT<br/>rbac.go:12 Role · middleware.go:69 Principal<br/>audit.go:23 · sanitizer.go:69"]
         RL["ares_ratelimit/<br/>limiter.go:10 Limiter · :51 Factory<br/>token_bucket · sliding_window · semaphore"]
         SD["ares_shutdown/<br/>manager.go:48 四阶段<br/>signal.go:12 · callbacks.go:10"]
@@ -147,7 +147,6 @@ flowchart TD
         MDL["core/models/<br/>task.go:6 · session.go:9<br/>recommend.go:28 RecommendItem<br/>user.go:10 · types.go AgentType:48"]
         TRC["truncate/truncate.go:12"]
         SCU["scoreutil/scoreutil.go:20"]
-        DET["detector/environment.go:27 Detect:49"]
         DIS["discovery/<br/>engine.go:18 · discovery.go:81<br/>providers/ filesystem binary<br/>health.go:26 · store.go:11"]
         INTRO["introspect/<br/>introspect.go:20 · api.go:30<br/>control.go:66 ControlServer<br/>intel.go:70 · collab.go:39<br/>chaos.go:100 · flight.go:28 · sink.go:31"]
         FB["feedback/feedback.go:27 Outcome<br/>CollaborationOutcome:93<br/>ToolCallOutcome:110"]
@@ -613,17 +612,17 @@ kernel.go:975 recovery loop
 `ControlServer control.go:66`（`/api/agents` · `/api/runtime/config` · `/api/health*` · `/api/anomalies` · `/api/insights` · `/api/evolution/{trajectory,lifecycle}` · `/api/observability/spans` · `/api/flight/{timeline,summary,graph,decisions,diagnostics,genealogy}`）
 `Engine intel.go:70`（健康评分 + 异常）· `CollabReporter collab.go:39` · `ChaosReporter chaos.go:100` · `Sink sink.go:31` · `FlightProvider flight.go:28`
 
-### 5.18 服务发现与环境探测
+### 5.18 服务发现
 
 `discovery/`：`Engine:18`（`AddProvider:35` → `DiscoverNow:49` → 身份合并 → `CheckHealth:235` → EventBus）· `DiscoveryProvider:81` · `Confidence`（Low60/Med80/High95/Max100 `discovery.go:30-37`）· `providers/`（`FilesystemProvider:24`：Claude/Cursor/VSCode/ARES 四种 · `BinaryProbeProvider:57`）· `MCPHealthChecker health.go:26` · `MemoryStore store.go:11`
 
-`detector/`：`Environment:27` · `Detect:49`（Ollama 探测 → API key → PostgreSQL → MCP，全部有界超时，永不 panic/hang）。**仅 SDK 零配置启动用**（`sdk/quickstart.go`）。
+> 环境探测（`internal/detector`，Ollama/API key/PostgreSQL/MCP 探测）已于 0.3.1 整包移除：`ares.yaml` 是唯一配置入口，SDK 的 `MustNew` 读 `./ares.yaml`，不存在"零配置探测"路径（见 5.19）。
 
 ### 5.19 横切基础设施
 
 | 包 | 关键符号 | 消费规模 |
 |---|---|---|
-| `ares_config/` | `Config:54` 18 段 · `Load:626` · `LoadFromEnv:675` · `Validate config_validate.go:12` · `ConfigStore store.go:30`（fsnotify + 200ms debounce）· `Redacted redacted.go:18` | 51 个 import |
+| `ares_config/` | `Config:53` 18 段 · `Load:198`（**config-only**：`LoadFromEnv` 与全部 env 覆盖已于 0.3.1 移除；新增 `server.pprof_addr` `security.arena_api_key` `tools.native_allowlist` `tools.file_sandbox_dir`）· `Validate config_validate.go:12` · `ConfigStore store.go:30`（fsnotify + 200ms debounce）· `Redacted redacted.go:18` | 51 个 import |
 | `ares_security/` | `SignJWT jwt.go:58` · `VerifyJWT:81` · `Role rbac.go:12` · `Principal middleware.go:69` · `AuthMiddleware:27` · `AuditLogger audit.go:23` · `Sanitizer sanitizer.go:69`（9 类敏感字段） | 16 个 import |
 | `ares_ratelimit/` | `Limiter limiter.go:10` · `Factory:51` · `TokenBucketLimiter` · `SlidingWindowLimiter` · `SemaphoreLimiter` + `WeightedSemaphoreLimiter` | 4 个 import |
 | `ares_shutdown/` | `Manager manager.go:48` 四阶段 PreShutdown→Graceful→Force→Done · `SignalHandler signal.go:12` · `CallbackRegistry callbacks.go:10` | 仅 `cmd/ares/serve.go` |
@@ -656,7 +655,7 @@ kernel.go:975 recovery loop
 | answer 失败释放 | 事件订阅 `:401` | 等待循环快败 `l2_submit.go:169` | — |
 | 混沌 | `wireChaos` `serve_chaos_domain.go:165` | 无 | — |
 | Arena | `serve_arena.go` | 无 | — |
-| 环境探测 | 无（配置驱动） | `detector.Detect` 零配置 | 无 |
+| 环境探测 | 无（配置驱动） | 无（config-only，`MustNew` 读 `./ares.yaml`） | 无 |
 
 ---
 

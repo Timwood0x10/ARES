@@ -147,8 +147,7 @@ func TestLoadSynonymRulesRejectsSiblingDirectoryPrefix(t *testing.T) {
 	defer SetAllowedSynonymDir("")
 
 	// Sibling path sharing the prefix must be rejected → default rules.
-	t.Setenv("SYNONYM_CONFIG_PATH", filepath.Join(sibling, "synonyms.yaml"))
-	rules := loadSynonymRules()
+	rules := loadSynonymRulesFrom(filepath.Join(sibling, "synonyms.yaml"))
 	if _, ok := rules["evil-marker"]; ok {
 		t.Fatal("sibling directory with shared prefix must be rejected")
 	}
@@ -157,8 +156,7 @@ func TestLoadSynonymRulesRejectsSiblingDirectoryPrefix(t *testing.T) {
 	}
 
 	// A path inside the allowed dir must be loaded.
-	t.Setenv("SYNONYM_CONFIG_PATH", filepath.Join(allowed, "synonyms.yaml"))
-	rules = loadSynonymRules()
+	rules = loadSynonymRulesFrom(filepath.Join(allowed, "synonyms.yaml"))
 	if _, ok := rules["good-marker"]; !ok {
 		t.Fatalf("allowed path must be loaded; got %v", rules)
 	}
