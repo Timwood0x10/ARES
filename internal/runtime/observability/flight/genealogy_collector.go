@@ -2,6 +2,7 @@ package flight
 
 import (
 	"context"
+	"time"
 
 	"golang.org/x/sync/errgroup"
 
@@ -38,11 +39,48 @@ func (c *GenealogyCollector) Start(ctx context.Context) error {
 	}
 
 	c.eg.Go(func() error {
-		c.collectLoop(ctx, ch)
+		c.runCollectLoopSupervised(ctx, ch)
 		return nil
 	})
 
 	return nil
+}
+
+// runCollectLoopSupervised runs collectLoop and restarts it ONLY after a
+// panic, with bounded backoff. A clean return (ctx cancelled or the
+// subscription channel closed) ends the supervisor — restarting onto the
+// same closed channel would spin. errgroup does not recover panics, so this
+// boundary is what keeps genealogy tracking from dying with the process.
+func (c *GenealogyCollector) runCollectLoopSupervised(ctx context.Context, ch <-chan *ares_events.Event) {
+	const (
+		initialBackoff = time.Second
+		maxBackoff     = 30 * time.Second
+	)
+	backoff := initialBackoff
+	for {
+		panicked := func() (panicked bool) {
+			defer func() {
+				if r := recover(); r != nil {
+					panicked = true
+					log.Error("flight: genealogy collect loop panicked; restarting",
+						"panic", r, "backoff", backoff)
+				}
+			}()
+			c.collectLoop(ctx, ch)
+			return false
+		}()
+		if !panicked || ctx.Err() != nil {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(backoff):
+		}
+		if backoff *= 2; backoff > maxBackoff {
+			backoff = maxBackoff
+		}
+	}
 }
 
 // Stop stops the collector.

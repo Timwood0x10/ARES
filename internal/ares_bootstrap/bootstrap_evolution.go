@@ -408,7 +408,7 @@ func wireEvolutionScheduler(ctx context.Context, comp *Components, wired *evolut
 // runEvolutionTicker starts the background ticker that triggers evolution via the unified scheduler.Tick path (gated by shouldEvolve + guardrails + MinInterval).
 
 func runEvolutionTicker(ctx context.Context, cfg *ares_config.Config, comp *Components, wired *evolution.WiredEvolutionSystem, legacySched *evolution.EvolutionScheduler, popAdapter *evolution.GenomePopulationAdapter) {
-	comp.bgGroup.Go(func() error {
+	comp.GoBackground(ctx, "evolution-ticker", func(ctx context.Context) error {
 		// Honor evolution.min_interval from yaml (the 5-minute
 		// ticker was hardcoded, leaving MinInterval dead config).
 		tick := 5 * time.Minute
@@ -464,7 +464,7 @@ func runLLMSuggestions(ctx context.Context, comp *Components, newEvol *NewEvolut
 	// evolution suggestions (LLM → Parse → PatchProposal → Coordinator.Evaluate).
 	if newEvol.LLMAdapter != nil && comp.LLM != nil && comp.LLM.Client != nil {
 		if llmClient, ok := comp.LLM.Client.(evoService.LLMClient); ok {
-			comp.bgGroup.Go(func() error {
+			comp.GoBackground(ctx, "llm-suggestions", func(ctx context.Context) error {
 				suggestTicker := time.NewTicker(15 * time.Minute)
 				defer suggestTicker.Stop()
 				for {

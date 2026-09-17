@@ -199,7 +199,9 @@ func (c *Collector) Pipeline(sessionID string) *MemoryPipeline {
 	return p
 }
 
-// collectLoop reads ares_events and routes them to the appropriate data structure.
+// collectLoop reads ares_events and routes them to the appropriate data
+// structure. Each event is recovered independently: errgroup does not
+// recover panics, so an unguarded handler panic would crash the process.
 func (c *Collector) collectLoop(ctx context.Context, ch <-chan *ares_events.Event) {
 	for {
 		select {
@@ -209,9 +211,31 @@ func (c *Collector) collectLoop(ctx context.Context, ch <-chan *ares_events.Even
 			if !ok {
 				return
 			}
-			c.processEvent(ctx, evt)
+			c.processEventRecovered(ctx, evt)
 		}
 	}
+}
+
+// processEventRecovered runs processEvent under a panic-recover boundary,
+// logging and skipping the offending event instead of letting the panic
+// unwind the collect loop (or the process).
+func (c *Collector) processEventRecovered(ctx context.Context, evt *ares_events.Event) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Error("flight: processEvent panicked; event skipped",
+				"panic", r, "event_type", fmt.Sprintf("%v", evtTypeOf(evt)))
+		}
+	}()
+	c.processEvent(ctx, evt)
+}
+
+// evtTypeOf extracts the event type for logging without dereferencing a nil
+// event (processEvent tolerates nil; the recover path must too).
+func evtTypeOf(evt *ares_events.Event) ares_events.EventType {
+	if evt == nil {
+		return ""
+	}
+	return evt.Type
 }
 
 // processEvent routes a single event to the right handler.

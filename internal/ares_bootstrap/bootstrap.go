@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"golang.org/x/sync/errgroup"
 
@@ -148,21 +149,48 @@ type ObservabilityComponents struct {
 }
 
 // GoBackground runs fn as an errgroup-managed background goroutine on the
-// Bootstrap group (no bare goroutines) with a panic-recover boundary so
-// one panicking tick logs and returns instead of killing the process.
-// The goroutine runs until WaitBackground; fn should exit promptly when its
-// ctx is cancelled.
+// Bootstrap group (no bare goroutines). A panic or a non-nil return is
+// recovered, logged, and the worker is RESTARTED after a bounded backoff —
+// a recover that merely logs and exits would leave the subsystem silently
+// dead for the rest of the process while looking healthy. The loop stops
+// only when ctx is cancelled or fn returns nil (a clean, intentional exit).
 func (c *Components) GoBackground(ctx context.Context, name string, fn func(ctx context.Context) error) {
 	c.bgGroup.Go(func() (err error) {
-		defer func() {
-			if r := recover(); r != nil {
-				slog.Error("bootstrap: background goroutine panicked",
-					"name", name, "panic", r)
-				err = fmt.Errorf("background %s panicked: %v", name, r)
+		const (
+			initialBackoff = time.Second
+			maxBackoff     = 30 * time.Second
+		)
+		backoff := initialBackoff
+		for {
+			err = runBackgroundOnce(ctx, name, fn)
+			if err == nil || ctx.Err() != nil {
+				return err
 			}
-		}()
-		return fn(ctx)
+			slog.Warn("bootstrap: background worker failed; restarting",
+				"name", name, "error", err, "backoff", backoff)
+			select {
+			case <-ctx.Done():
+				return err
+			case <-time.After(backoff):
+			}
+			if backoff *= 2; backoff > maxBackoff {
+				backoff = maxBackoff
+			}
+		}
 	})
+}
+
+// runBackgroundOnce invokes fn under a panic-recover boundary, converting a
+// panic into an error so the GoBackground supervisor can restart the worker.
+func runBackgroundOnce(ctx context.Context, name string, fn func(ctx context.Context) error) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("bootstrap: background worker panicked",
+				"name", name, "panic", r)
+			err = fmt.Errorf("background %s panicked: %v", name, r)
+		}
+	}()
+	return fn(ctx)
 }
 
 // WaitBackground blocks until all background goroutines started by Bootstrap

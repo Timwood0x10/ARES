@@ -106,7 +106,7 @@ func subscribeDistillationEvents(ctx context.Context, comp *Components) {
 	if comp.Distillation == nil || comp.EventStore == nil {
 		return
 	}
-	comp.bgGroup.Go(func() error {
+	comp.GoBackground(ctx, "distillation-subscriber", func(ctx context.Context) error {
 		ctx, cancel := context.WithCancel(ctx)
 		defer cancel()
 		ch, err := comp.EventStore.Subscribe(ctx, ares_events.EventFilter{

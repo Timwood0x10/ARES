@@ -627,6 +627,11 @@ func (t *trackingWriter) Write(b []byte) (int, error) {
 	return t.ResponseWriter.Write(b)
 }
 
+// Unwrap exposes the wrapped ResponseWriter to http.NewResponseController.
+// Without it, extendWriteDeadline always fails with errNotSupported and the
+// 15s server WriteTimeout kills long-running tool/MCP/graph routes mid-flight.
+func (t *trackingWriter) Unwrap() http.ResponseWriter { return t.ResponseWriter }
+
 // requestIDMaxLen bounds an inbound correlation ID: the value flows into
 // logs and responses, so an attacker-supplied multi-kilobyte header must not
 // be echoed verbatim.

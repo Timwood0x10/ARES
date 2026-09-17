@@ -346,7 +346,9 @@ func (s *DefaultPushService) Stop() {
 	}
 }
 
-// scheduledLoop runs a periodic push on the configured interval until ctx is cancelled.
+// scheduledLoop runs a periodic push on the configured interval until ctx is
+// cancelled. Each tick is recovered independently: a panicking target or
+// provider must not kill the loop (or the process).
 func (s *DefaultPushService) scheduledLoop(ctx context.Context) {
 	defer s.finishLoop()
 
@@ -359,10 +361,23 @@ func (s *DefaultPushService) scheduledLoop(ctx context.Context) {
 			slog.InfoContext(ctx, "[PushService] scheduled loop stopped")
 			return
 		case <-ticker.C:
-			if _, err := s.PushRelevant(ctx); err != nil {
-				slog.WarnContext(ctx, "[PushService] scheduled push failed", "error", err)
-			}
+			s.pushOnceRecovered(ctx)
 		}
+	}
+}
+
+// pushOnceRecovered runs one scheduled push under a panic-recover boundary,
+// logging and skipping the offending tick instead of letting a panic in an
+// arbitrary Deliver target or knowledge provider unwind the loop.
+func (s *DefaultPushService) pushOnceRecovered(ctx context.Context) {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.ErrorContext(ctx, "[PushService] scheduled push panicked; tick skipped",
+				"panic", r)
+		}
+	}()
+	if _, err := s.PushRelevant(ctx); err != nil {
+		slog.WarnContext(ctx, "[PushService] scheduled push failed", "error", err)
 	}
 }
 
