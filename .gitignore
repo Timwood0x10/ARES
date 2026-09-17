@@ -111,3 +111,6 @@ coverage.html
 
 # Go test binaries (go test -c output)
 *.test
+
+# Local eval run artifacts (contain run timestamps; never committed)
+eval-report.json
