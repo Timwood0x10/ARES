@@ -101,13 +101,12 @@ if serveLLMURL != "" {
 allowConfigDirFor(configPath)
 cfg, err := ares_config.Load(configPath)
 if err != nil { return nil, fmt.Errorf("load config: %w", err) }
-if err := ares_config.LoadFromEnv(cfg); err != nil { ... }
-// CLI flags win over env (SERVER_HOST/SERVER_PORT) and YAML
+// CLI flags win over YAML (no env layer — config is the only entry point)
 if serveHost != "" { cfg.Server.Host = serveHost }
 if servePort > 0 { cfg.Server.Port = servePort }
 ```
 
-优先级：**CLI flag > 环境变量 > YAML**。
+优先级：**CLI flag > YAML**（0.3.1 起环境变量层已移除）。
 
 `allowConfigDirFor`（`serve.go:214`）把路径遍历守卫 `SetAllowedConfigDir` 绑到配置文件所在目录——注释说明这是修 review C-3：原先该守卫"有文档无调用方"。
 
@@ -1024,7 +1023,7 @@ log.Info("serve: control-plane endpoint registry",
  "routes", len(actionRoutes), "none", ..., "read", ..., "write", ..., "local", ...)
 ```
 
-`serveAPIKey` 来自环境变量 `ARES_API_KEY`（`serve_wiring.go:484`），为空时所有破坏性请求 deny-by-default。
+`serveAPIKey` 取自 `llm.api_key`（YAML 单一入口，`serve_wiring.go`），为空时所有破坏性请求 deny-by-default。
 
 然后构造 handler 和 HTTP server（`serve_wiring.go:540-576`）：
 

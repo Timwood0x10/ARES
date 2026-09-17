@@ -116,11 +116,9 @@ invalid LLM provider: foo, must be 'openai', 'ollama', 'openrouter', or 'anthrop
 
 MCP validation requires `stdio` to carry a `command` and `sse` to carry a `url`, refusing to boot with a broken transport rather than limping along.
 
-### The Env-Var Layer (LoadFromEnv)
+### The Env-Var Layer (removed in 0.3.1)
 
-YAML stays, env-vars override above it (and below programmatic Options). Verified variable names:
-
-`SERVER_HOST`, `SERVER_PORT`, `LLM_API_KEY`, `OPENROUTER_API_KEY` (fallback, only when `LLM_API_KEY` is empty), `LLM_PROVIDER`, `LLM_BASE_URL`, `LLM_MODEL`; storage `DB_HOST`/`DB_PORT`/`DB_USERNAME`/`DB_PASSWORD`/`DB_DATABASE`; security `ARES_JWT_SECRET`, `ARES_AUTH_ENABLED`.
+The former `LoadFromEnv` override layer is gone: `ares.yaml` is the single configuration entry point, so behavior can never diverge between "works via export on my machine" and the checked-in config. Formerly-env knobs (`SERVER_HOST`/`SERVER_PORT`, `LLM_*`, `DB_*`, `ARES_JWT_SECRET`/`ARES_AUTH_ENABLED`) live in their YAML sections; the SDK's `OPENAI_API_KEY`/`ANTHROPIC_API_KEY`/`OPENROUTER_API_KEY` fallbacks and `WithConfigFromEnv` went with them.
 
 ---
 
@@ -217,7 +215,7 @@ func (c *ConfigFile) Validate() error
 func (c *ConfigFile) ToOptions() ([]Option, error)
 ```
 
-`ToOptions()` maps each provider to `WithOpenAI`/`WithOllama`/`WithAnthropic`/`WithOpenRouter` with distinct default models (ollama→`llama3.2`, openai→`gpt-4o-mini`, anthropic→`claude-3-haiku`, openrouter→`openai/gpt-4o-mini`); `llm.max_prompt_length` is bridged into `cfg.llmCfg.MaxPromptLength` via an inline Option (the old code silently dropped the field, so long agent runs died at the 8192 provider default — the source comment's own words); Database only calls `WithPostgres` when host is set; memory enabled → `WithMemoryConfig`/`WithDistillation`/`WithRAG`, else `WithoutMemory()`; knowledge requires `chunk_size`; evolution only `WithEvolution()` when enabled. API keys fall back to env vars via `resolveAPIKey(configKey, envVar)`.
+`ToOptions()` maps each provider to `WithOpenAI`/`WithOllama`/`WithAnthropic`/`WithOpenRouter` with distinct default models (ollama→`llama3.2`, openai→`gpt-4o-mini`, anthropic→`claude-3-haiku`, openrouter→`openai/gpt-4o-mini`); `llm.max_prompt_length` is bridged into `cfg.llmCfg.MaxPromptLength` via an inline Option (the old code silently dropped the field, so long agent runs died at the 8192 provider default — the source comment's own words); Database only calls `WithPostgres` when host is set; memory enabled → `WithMemoryConfig`/`WithDistillation`/`WithRAG`, else `WithoutMemory()`; knowledge requires `chunk_size`; evolution only `WithEvolution()` when enabled. API keys come from the config file only (the `resolveAPIKey` env fallback was removed in 0.3.1).
 
 That lets users write:
 

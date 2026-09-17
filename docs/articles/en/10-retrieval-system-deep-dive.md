@@ -174,7 +174,7 @@ LLM rewrite (`llmBasedRewrite`, skipped if `llmClient` nil/disabled):
 - `validateRewrites` uses `calculateSimilarity` (actually a **Jaccard word-overlap**) to drop rewrites with similarity < **0.6**, longer than **2×** the original, or empty
 - `uniqueRewrites` dedupes, then caps at `maxLLMRewrites=2`
 
-Rule rewrite (`ruleBasedRewrite`): goes through `loadSynonymRules` reading `configs/synonyms.yaml` (env `SYNONYM_CONFIG_PATH` can redirect; built-in defaults cover), using `replaceCaseInsensitive` to swap matched synonym keys.
+Rule rewrite (`ruleBasedRewrite`): goes through `loadSynonymRules` reading `configs/synonyms.yaml` (the path is parameterized via `loadSynonymRulesFrom` — no env override since 0.3.1; built-in defaults cover), using `replaceCaseInsensitive` to swap matched synonym keys.
 
 ### 6.2 Precision mode (isPrecisionMode)
 Trigger conditions (`retrieval_service.go`):

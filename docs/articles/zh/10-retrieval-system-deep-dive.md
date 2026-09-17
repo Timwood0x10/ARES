@@ -174,7 +174,7 @@ LLM 重写（`llmBasedRewrite`，llmClient 可为 nil/不可用则跳过）：
 - `validateRewrites` 用 `calculateSimilarity`（实际上是一个 **Jaccard 词重叠**）过滤相似度 < **0.6** 的重写、剔除长度超过原句 **2x**、空串
 - `uniqueRewrites` 去重后 `maxLLMRewrites=2` 截断
 
-规则重写（`ruleBasedRewrite`）：走 `loadSynonymRules` 读 `configs/synonyms.yaml`（环境变量 `SYNONYM_CONFIG_PATH` 可指向，内置默认规则兜底），`replaceCaseInsensitive` 把命中同义词 key 的片段替换成扩展。
+规则重写（`ruleBasedRewrite`）：走 `loadSynonymRules` 读 `configs/synonyms.yaml`（路径经 `loadSynonymRulesFrom` 参数化注入——0.3.1 起无 env 覆盖，内置默认规则兜底），`replaceCaseInsensitive` 把命中同义词 key 的片段替换成扩展。
 
 ### 6.2 精确模式（isPrecisionMode）
 触发条件（`retrieval_service.go`）：

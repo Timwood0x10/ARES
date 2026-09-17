@@ -257,7 +257,7 @@ embedding:
 
 # --- serve 侧 SecurityConfig（JWT/RBAC）---
 security:
-  jwt_secret: ""               # 建议走 ARES_JWT_SECRET，勿提交 YAML
+  jwt_secret: ""               # 唯一凭证入口；勿提交 YAML（用文件权限保护）
   jwt_expiry: "24h"
   auth_enabled: false
 ```
@@ -322,11 +322,11 @@ embedding:
 
 配置可来自**多个来源**，合并进 `ares_config.Config`（serve）或 `sdk.ConfigFile`（sdk）：
 
-serve：`Config` 结构体 → `setDefaults()` → YAML → `LoadFromEnv()`（`SERVER_*`/`LLM_*`/`DB_*`/`ARES_*`）→ 程序化 Options。后者覆盖前者，零值字段回退组件默认。
+serve：`Config` 结构体 → `setDefaults()` → YAML → 程序化 Options。后者覆盖前者，零值字段回退组件默认。（`LoadFromEnv()` 环境变量层——`SERVER_*`/`LLM_*`/`DB_*`/`ARES_*`——已于 0.3.1 移除：YAML 是唯一入口。）
 
-sdk：`LoadConfigFile` 读 YAML → `Validate` → `ToOptions` 转 `sdk.Option`；API key 缺省才回退 `resolveAPIKey` 绑定的环境变量。
+sdk：`LoadConfigFile` 读 YAML → `Validate` → `ToOptions` 转 `sdk.Option`；API key 仅来自 YAML（`resolveAPIKey` 环境变量兜底已于 0.3.1 移除）。
 
-> 诚实提醒：旧文"十二个来源"的三态优先级表格无法在代码里一一对应核实，故本文不照搬；环境变量的确切名单见 `internal/ares_config/config.go` 的 `LoadFromEnv`（22 篇已列）。
+> 诚实提醒：旧文"十二个来源"的三态优先级表格描述的是 0.3.1 之前（含环境变量层）的世界；0.3.1 起优先级简化为 YAML < 程序化 Options，serve 侧 CLI flag 最高。
 
 ## 相关文档
 

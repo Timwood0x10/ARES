@@ -65,8 +65,7 @@ Besides construction and teardown, `Runtime` exposes a few read-only entry point
 
 | Option | Signature | What it does |
 |--------|-----------|--------------|
-| `WithConfig` | `(path string)` | Load config from a YAML file |
-| `WithConfigFromEnv` | `()` | Read `./ares.yaml`, `$ARES_YAML` overrides the path |
+| `WithConfig` | `(path string)` | Load config from a YAML file (the only entry point; `WithConfigFromEnv` was removed in 0.3.1) |
 | `WithOpenAI` | `(model string)` | Configure OpenAI provider |
 | `WithOllama` | `(model string)` | Configure Ollama provider |
 | `WithAnthropic` | `(model string)` | Configure Anthropic provider |

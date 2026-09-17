@@ -37,7 +37,7 @@ docker compose logs -f ares-demo
 | 配置段 | 关键项 | 默认 | 说明 |
 |---|---|---|---|
 | `server` | `host` / `port` | `127.0.0.1:8080` | 监控 console HTTP 监听 |
-| `llm` | `provider` / `base_url` / `api_key` / `model` | openai | 主 LLM；`api_key` 可用 `ARES_LLM_API_KEY` 覆盖 |
+| `llm` | `provider` / `base_url` / `api_key` / `model` | openai | 主 LLM；`api_key` 仅从此 YAML 读取（无 env 覆盖） |
 | `llm.fallbacks` | `provider` / `api_key` / `model` | — | 主 LLM 失败时的备用（错误时自动降级） |
 | `kernel` | `resources` / `quota_apply_interval` | 1m | 每 agent 资源预算与配额应用周期 |
 | `kernel` | `autopilot` | `false` | 演示任务注入器开关（生产勿开） |
@@ -45,8 +45,9 @@ docker compose logs -f ares-demo
 | `memory` | `archive.enabled` | true | 事件归档（压缩存储） |
 | `discovery` | `enabled` | false | 服务发现（可选，需外部依赖） |
 
-**敏感配置纪律**：JWT secret、LLM API key、DB 密码**不要**写进提交到 VCS 的 YAML，
-用环境变量注入：`ARES_JWT_SECRET` / `ARES_LLM_API_KEY` / `DB_PASSWORD`。
+**敏感配置纪律**：配置文件是**唯一**配置入口——不存在环境变量覆盖。
+把 `ares.yaml` 排除出版本控制（或用严格文件权限保护）；它承载
+`security.jwt_secret`、`llm.api_key` 与 `storage.password`。
 
 ## 3. 健康检查与可观测
 
@@ -83,14 +84,14 @@ curl -s localhost:8080/evolution/feedback | jq
 ## 4. 认证（JWT + RBAC）
 
 ```bash
-# 1. 配置 secret 并启用（环境变量方式）
-export ARES_JWT_SECRET=$(openssl rand -hex 32)
-export ARES_AUTH_ENABLED=1
+# 1. 在 ares.yaml 里配置 secret 并启用
+#    security:
+#      jwt_secret: <openssl rand -hex 32>
+#      auth_enabled: true
 bin/ares serve --config ares.yaml
 
-# 2. 签发 token（同一 secret）
-export ARES_JWT_SECRET=<同上>
-bin/ares auth token --role operator --sub deploy-user --ttl 24h
+# 2. 签发 token（用同一文件的 security.jwt_secret 签名）
+bin/ares auth token --config ares.yaml --role operator --sub deploy-user --ttl 24h
 #   → 输出 HS256 JWT
 
 # 3. 调用破坏性端点
@@ -99,7 +100,7 @@ curl -X POST localhost:8080/api/agents/worker-1/kill \
 ```
 
 角色：`admin`（全部权限，含混沌）、`operator`（写，无混沌）、`agent`（只读）。
-兼容：配置了 `ARES_API_KEY` 时，API key 仍可作破坏性端点凭据（双凭据并存）。
+破坏性端点同时接受 `ares.yaml` 中 `llm.api_key` 的值作为 `X-API-Key` 凭据。
 
 ## 5. 配置热重载（P1）
 
@@ -123,7 +124,7 @@ curl -X POST localhost:8080/api/agents/worker-1/kill \
 
 | 症状 | 排查 |
 |---|---|
-| 破坏性端点 401 | 未配置 `ARES_JWT_SECRET`/`ARES_API_KEY`（deny-by-default）或 token 过期 |
+| 破坏性端点 401 | `security.jwt_secret` 为空 / 未启用认证（deny-by-default）、`X-API-Key` 不匹配或 token 过期 |
 | 热重载未生效 | 确认 `--config` 指定了文件（自动探测路径已修复）；看 `/api/runtime/config` history 是否有 `reloaded` 记录 |
 | 任务失败无重试 | `kernel.go` 的 `RetryPolicy{MaxRetries:2}` 语义：`Attempts < MaxRetries`，1 次失败后 Attempts=1 仍可重试 1 次 |
 | LLM 调用全失败 | 检查 `llm.fallbacks`；`createChatClient` 构造的 `FailoverClient` 会返回 `all N clients failed; last error: ...`（`errors.Is`/`errors.As` 可检测原始错误）。0.3.1 起 `createLLMAdapterWithFallback`/`ErrNoLLMAdapter` 已移除（independent-review F-07），运行期降级只走 `FailoverClient` 一条链 |

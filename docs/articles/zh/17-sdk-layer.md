@@ -65,8 +65,7 @@ result, err := agent.Run(ctx, "hello")
 
 | 选项 | 签名 | 做什么 |
 |------|------|--------|
-| `WithConfig` | `(path string)` | 从 YAML 加载配置 |
-| `WithConfigFromEnv` | `()` | 读 `./ares.yaml`，`$ARES_YAML` 可覆盖路径 |
+| `WithConfig` | `(path string)` | 从 YAML 加载配置（唯一入口；`WithConfigFromEnv` 已于 0.3.1 移除） |
 | `WithOpenAI` | `(model string)` | 配置 OpenAI provider |
 | `WithOllama` | `(model string)` | 配置 Ollama provider |
 | `WithAnthropic` | `(model string)` | 配置 Anthropic provider |

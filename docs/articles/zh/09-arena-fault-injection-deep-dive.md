@@ -247,7 +247,7 @@ flowchart TB
 `http.go` 的 `Handler` 注册了约 27 个路由：`/arena/leader/kill`、`/arena/agent/{id}/kill|pause|resume|slow|partition|tool-timeout|memory-corrupt|mcp-disconnect|llm-failure`、`/arena/node/{id}/remove`、`/arena/edge/remove`、`/arena/orchestrator/kill`，以及 `stats/history/stream`（SSE）/`score/metrics`、survival 三件套、flight timeline/diagnostics、scenario run/validate。
 
 arena 暴露的都是破坏性端点（杀 leader、删节点、内存破坏），所以认证默认是 **deny**：
-- 设了 API key（`--api-key` 或 `ARENA_API_KEY`），则所有请求必须带 `X-API-Key` 头（常量时间比较）。
+- 设了 API key（`--api-key` 或 ares.yaml 的 `security.arena_api_key`），则所有请求必须带 `X-API-Key` 头（常量时间比较）。
 - 没设 key 且没显式 `--allow-anonymous`，`APIKeyAuthMiddleware` 一律 401——旧文里"打开 Dashboard 点按钮"那种无需鉴权的用法，在真实代码里默认是被拒绝的。`--allow-anonymous` 只能用于本地开发，且注释警告绝不能用于可被网络到达的部署。
 
 ---

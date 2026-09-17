@@ -257,7 +257,7 @@ embedding:
 
 # --- serve-side SecurityConfig (JWT/RBAC) ---
 security:
-  jwt_secret: ""               # prefer ARES_JWT_SECRET, don't commit YAML
+  jwt_secret: ""               # the only credential entry point; keep YAML out of VCS
   jwt_expiry: "24h"
   auth_enabled: false
 ```
@@ -322,11 +322,11 @@ embedding:
 
 Config may come from **multiple sources**, merged into `ares_config.Config` (serve) or `sdk.ConfigFile` (sdk):
 
-serve: `Config` struct → `setDefaults()` → YAML → `LoadFromEnv()` (`SERVER_*`/`LLM_*`/`DB_*`/`ARES_*`) → programmatic Options. Later sources override earlier ones; zero-value fields fall back to component defaults.
+serve: `Config` struct → `setDefaults()` → YAML → programmatic Options. Later sources override earlier ones; zero-value fields fall back to component defaults. (The `LoadFromEnv()` env layer — `SERVER_*`/`LLM_*`/`DB_*`/`ARES_*` — was removed in 0.3.1: YAML is the single entry point.)
 
-sdk: `LoadConfigFile` reads YAML → `Validate` → `ToOptions` turns it into `sdk.Option`s; API keys fall back to env vars only when unset, via `resolveAPIKey`.
+sdk: `LoadConfigFile` reads YAML → `Validate` → `ToOptions` turns it into `sdk.Option`s; API keys come from the YAML only (the `resolveAPIKey` env fallback was removed in 0.3.1).
 
-> Honest note: the old article's "twelve sources / three-tier precedence" table cannot be verified line-by-line against the code, so it is not reproduced here; the exact env-var names are in `internal/ares_config/config.go`'s `LoadFromEnv` (listed in article 22).
+> Honest note: the old article's "twelve sources / three-tier precedence" table described the pre-0.3.1 world (including the env layer); since 0.3.1 the precedence is simply YAML < programmatic Options, with CLI flags winning on the serve side.
 
 ## Related Docs
 

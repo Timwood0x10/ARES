@@ -116,11 +116,9 @@ invalid LLM provider: foo, must be 'openai', 'ollama', 'openrouter', or 'anthrop
 
 MCP server 校验里，`stdio` 必须给 `command`、`sse` 必须给 `url`，否则启动即报错而非带病运行。
 
-### 环境变量层（LoadFromEnv）
+### 环境变量层（已于 0.3.1 移除）
 
-既有 YAML，也保留了环境变量覆盖（YAML 之上、程序化 Options 之下），已核实的变量名：
-
-`SERVER_HOST`、`SERVER_PORT`、`LLM_API_KEY`、`OPENROUTER_API_KEY`（备选，仅在 LLM_API_KEY 为空时生效）、`LLM_PROVIDER`、`LLM_BASE_URL`、`LLM_MODEL`；存储 `DB_HOST`/`DB_PORT`/`DB_USERNAME`/`DB_PASSWORD`/`DB_DATABASE`；安全 `ARES_JWT_SECRET`、`ARES_AUTH_ENABLED`。
+原 `LoadFromEnv` 覆盖层已删除：`ares.yaml` 是唯一配置入口，"在我机器上 export 能跑"与"签入的配置"之间不再可能存在行为分叉。原 env 旋钮（`SERVER_HOST`/`SERVER_PORT`、`LLM_*`、`DB_*`、`ARES_JWT_SECRET`/`ARES_AUTH_ENABLED`）全部归位到各自的 YAML 段；SDK 的 `OPENAI_API_KEY`/`ANTHROPIC_API_KEY`/`OPENROUTER_API_KEY` 兜底与 `WithConfigFromEnv` 一并移除。
 
 ---
 
@@ -217,7 +215,7 @@ func (c *ConfigFile) Validate() error
 func (c *ConfigFile) ToOptions() ([]Option, error)
 ```
 
-`ToOptions()` 把 provider 转成对应 `WithOpenAI`/`WithOllama`/`WithAnthropic`/`WithOpenRouter`，默认模型各不同（ollama→`llama3.2`、openai→`gpt-4o-mini`、anthropic→`claude-3-haiku`、openrouter→`openai/gpt-4o-mini`）；`llm.max_prompt_length` 由一条内联 Option 桥进 `cfg.llmCfg.MaxPromptLength`（旧版这里静默丢字段，长 Agent 跑到 8192 就挂——代码注释原话）；Database 给了 host 才 `WithPostgres`；memory enabled 才 `WithMemoryConfig`/`WithDistillation`/`WithRAG`，否则 `WithoutMemory()`；knowledge 有 chunk_size 才生效；evolution.enabled 才 `WithEvolution()`。API key 用 `resolveAPIKey(configKey, envVar)` 兜底环境变量。
+`ToOptions()` 把 provider 转成对应 `WithOpenAI`/`WithOllama`/`WithAnthropic`/`WithOpenRouter`，默认模型各不同（ollama→`llama3.2`、openai→`gpt-4o-mini`、anthropic→`claude-3-haiku`、openrouter→`openai/gpt-4o-mini`）；`llm.max_prompt_length` 由一条内联 Option 桥进 `cfg.llmCfg.MaxPromptLength`（旧版这里静默丢字段，长 Agent 跑到 8192 就挂——代码注释原话）；Database 给了 host 才 `WithPostgres`；memory enabled 才 `WithMemoryConfig`/`WithDistillation`/`WithRAG`，否则 `WithoutMemory()`；knowledge 有 chunk_size 才生效；evolution.enabled 才 `WithEvolution()`。API key 仅来自配置文件（`resolveAPIKey` 环境变量兜底已于 0.3.1 移除）。
 
 用户于是可以：
 

@@ -250,7 +250,7 @@ In other words, the third dimension — unless someone wires real consistency me
 `http.go` `Handler` registers roughly 27 routes: `/arena/leader/kill`; `/arena/agent/{id}/kill|pause|resume|slow|partition|tool-timeout|memory-corrupt|mcp-disconnect|llm-failure`; `/arena/node/{id}/remove`; `/arena/edge/remove`; `/arena/orchestrator/kill`; plus `stats/history/stream` (SSE) / `score/metrics`, the three survival endpoints, and flight timeline/diagnostics plus scenario run/validate.
 
 Arena exposes only destructive endpoints (kill leader, remove nodes, corrupt memory), so authentication defaults to **deny**:
-- If an API key is set (`--api-key` or `ARENA_API_KEY`), every request must carry the `X-API-Key` header (constant-time compare).
+- If an API key is set (`--api-key` or `security.arena_api_key` in ares.yaml), every request must carry the `X-API-Key` header (constant-time compare).
 - With no key and no explicit `--allow-anonymous`, `APIKeyAuthMiddleware` returns 401 for every request — the earlier article's "open the dashboard and click" no-auth flow is, in the real code, rejected by default. `--allow-anonymous` is for local development only, and the comment warns it must never be enabled for a network-reachable deployment.
 
 ---
