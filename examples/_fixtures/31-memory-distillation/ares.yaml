@@ -1,0 +1,13 @@
+# 31-memory-distillation configuration
+llm:
+  provider: ollama
+  model: llama3.2
+
+memory:
+  enabled: true
+  max_history: 20
+  enable_distillation: true
+  distillation_threshold: 3
+
+tools:
+  builtin: true
