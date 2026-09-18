@@ -165,10 +165,16 @@ type ScorerFunc func(agent *mutation.Strategy) float64
 // MultiObjectiveScorerFunc scores an agent across multiple dimensions.
 type MultiObjectiveScorerFunc func(agent *mutation.Strategy) (dims map[string]float64, aggregate float64)
 
+// NoopScorer is a pass-through scorer that returns the strategy's existing
+// Score unchanged. Use when scores are computed externally (e.g. by the task
+// runtime) and the GA only needs to preserve them through selection.
 func NoopScorer(agent *mutation.Strategy) float64 {
 	return agent.Score
 }
 
+// ConstantScorer returns a scorer that assigns the same fixed score to every
+// strategy. Intended for testing and for bootstrapping a population before a
+// real scorer is wired — never use in production evolution paths.
 func ConstantScorer(score float64) ScorerFunc {
 	return func(*mutation.Strategy) float64 { return score }
 }

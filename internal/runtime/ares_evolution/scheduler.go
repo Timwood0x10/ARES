@@ -873,8 +873,14 @@ func (s *EvolutionScheduler) Tick(ctx context.Context) {
 	// event-triggered cycle (lastRun only updates after success, so the
 	// minInterval throttle could not see it) — two concurrent evolution
 	// cycles — and the tick run was invisible to Shutdown's evolveEg wait.
+	//
+	// The errgroup's derived context is intentionally discarded: egCtx is
+	// already cancellable via egCancel (wired to s.evolveCancel above), and
+	// the goroutine below returns nil on error (logs instead), so the
+	// errgroup's cancel-on-first-error semantics would never fire. Using
+	// egCtx directly keeps the cancellation story in one place.
 	egCtx, egCancel := context.WithCancel(ctx)
-	eg, _ := errgroup.WithContext(egCtx)
+	eg, _ := errgroup.WithContext(egCtx) //nolint:lostcancel // egCancel is stored in s.evolveCancel
 
 	s.evolveMu.Lock()
 	if s.evolveCancel != nil {

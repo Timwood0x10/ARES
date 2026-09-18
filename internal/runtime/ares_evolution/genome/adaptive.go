@@ -82,12 +82,14 @@ func DefaultAdaptiveConfig() *AdaptiveConfig {
 	}
 }
 
-// computeBestScoreLocked returns the highest score in the current agents.
-// Caller must hold at least a read lock.
+// computeBestScoreLocked returns the highest score among EVALUATED agents.
+// Unevaluated agents (Score < 0) are excluded so a population of all-unevaluated
+// agents returns -1.0, which callers treat as "no data" rather than a real score.
+// Caller must hold at least a read lock on p.mu.
 func (p *Population) computeBestScoreLocked() float64 {
 	best := -1.0
 	for _, a := range p.Agents {
-		if a.Score > best {
+		if a.Score > best && IsScoreEvaluated(a.Score) {
 			best = a.Score
 		}
 	}
@@ -223,11 +225,10 @@ func (p *Population) measureNumericDiversityLocked() float64 {
 	return totalDist / float64(sampleCount)
 }
 
-// numericParamDistance computes normalized distance using only numeric parameters.
-// Returns the average normalized difference across all shared numeric keys [0, 1].
-func numericParamDistance(a, b *mutation.Strategy, keys []string, ranges map[string]float64) float64 {
-	var totalDist float64
-	var count int
+// numericOnlyDistances computes the per-dim normalized absolute differences
+// for shared numeric parameters. Used by both numericParamDistance (numeric
+// diversity) and paramDistance (numeric + categorical diversity).
+func numericOnlyDistances(a, b *mutation.Strategy, keys []string, ranges map[string]float64) (totalDist float64, count int) {
 	for _, k := range keys {
 		va, okA := a.Params[k]
 		vb, okB := b.Params[k]
@@ -246,6 +247,13 @@ func numericParamDistance(a, b *mutation.Strategy, keys []string, ranges map[str
 		totalDist += absFloat(fa-fb) / r
 		count++
 	}
+	return totalDist, count
+}
+
+// numericParamDistance computes normalized distance using only numeric parameters.
+// Returns the average normalized difference across all shared numeric keys [0, 1].
+func numericParamDistance(a, b *mutation.Strategy, keys []string, ranges map[string]float64) float64 {
+	totalDist, count := numericOnlyDistances(a, b, keys, ranges)
 	if count == 0 {
 		return 0.0
 	}
@@ -412,26 +420,7 @@ func computeParamRanges(agents []*mutation.Strategy, keys []string) map[string]f
 // paramDistance returns the normalized distance between two agents in shared
 // parameter space. Non-numeric or missing parameters are skipped.
 func paramDistance(a, b *mutation.Strategy, keys []string, ranges map[string]float64) float64 {
-	var totalDist float64
-	var count int
-	for _, k := range keys {
-		va, okA := a.Params[k]
-		vb, okB := b.Params[k]
-		if !okA || !okB {
-			continue
-		}
-		fa, okA := toFloat64(va)
-		fb, okB := toFloat64(vb)
-		if !okA || !okB {
-			continue
-		}
-		r := ranges[k]
-		if r < 1e-10 {
-			r = 1.0
-		}
-		totalDist += absFloat(fa-fb) / r
-		count++
-	}
+	totalDist, count := numericOnlyDistances(a, b, keys, ranges)
 
 	// Categorical distance for PromptTemplate: different template = max distance (1.0).
 	if a.PromptTemplate != b.PromptTemplate {

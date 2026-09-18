@@ -4,6 +4,7 @@ import (
 	"context"
 	"math"
 	"sort"
+	"sync"
 
 	"github.com/Timwood0x10/ares/internal/runtime/ares_evolution/mutation"
 )
@@ -37,16 +38,24 @@ var DefaultDimensionWeights = map[string]float64{
 	"latency":      0.15,
 }
 
+// paretoMixedWarnOnce ensures the mixed-strategy warning in ParetoDominance
+// fires at most once per process. ParetoFront calls ParetoDominance in an
+// O(n²) loop; without this guard a population of mixed strategies would emit
+// one log line per pair comparison.
+var paretoMixedWarnOnce sync.Once
+
 // ParetoDominance returns true if a Pareto-dominates b across all dimensions.
 // a dominates b iff a is strictly better in at least one dimension and
 // no worse in all others. Dimension direction (maximize/minimize) is respected.
 func ParetoDominance(a, b *mutation.Strategy) bool {
 	if a.DimensionScores == nil || b.DimensionScores == nil {
 		if (a.DimensionScores == nil) != (b.DimensionScores == nil) {
-			el.WarnContext(context.Background(), "ParetoDominance: mixed multi/single-objective strategies, falling back to Score",
-				"a_dim", a.DimensionScores != nil, "b_dim", b.DimensionScores != nil,
-				"a_score", a.Score, "b_score", b.Score,
-			)
+			paretoMixedWarnOnce.Do(func() {
+				el.WarnContext(context.Background(), "ParetoDominance: mixed multi/single-objective strategies, falling back to Score",
+					"a_dim", a.DimensionScores != nil, "b_dim", b.DimensionScores != nil,
+					"a_score", a.Score, "b_score", b.Score,
+				)
+			})
 		}
 		return a.Score > b.Score
 	}

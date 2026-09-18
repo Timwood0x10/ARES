@@ -162,10 +162,7 @@ func (e *DAGPatchExecutor) Apply(ctx context.Context, p patch.RuntimePatch) (*pa
 		// so every remove-node rollback silently corrupted the DAG.
 		// RemoveNode refuses nodes with dependents, so the step's own
 		// DependsOn fully describes the edges AddNode must rebuild.
-		var removed *Step
-		if cur, ok := dag.StepIndex()[p.Target]; ok && cur != nil {
-			removed = cloneStepForSnapshot(cur)
-		}
+		removed := dag.StepSnapshot(p.Target) // O(1) deep copy; nil when absent
 		if err := dag.RemoveNode(ctx, p.Target); err != nil {
 			return nil, fmt.Errorf("workflow.dag remove %q: %w", p.Target, err)
 		}
@@ -179,10 +176,7 @@ func (e *DAGPatchExecutor) Apply(ctx context.Context, p patch.RuntimePatch) (*pa
 		if err != nil {
 			return nil, fmt.Errorf("workflow.dag replace %q: %w", p.Target, err)
 		}
-		var oldStep *Step
-		if cur, ok := dag.StepIndex()[p.Target]; ok && cur != nil {
-			oldStep = cloneStepForSnapshot(cur)
-		}
+		oldStep := dag.StepSnapshot(p.Target) // O(1) deep copy
 		if err := dag.ReplaceNode(ctx, p.Target, step); err != nil {
 			return nil, fmt.Errorf("workflow.dag replace %q: %w", p.Target, err)
 		}
@@ -200,10 +194,7 @@ func (e *DAGPatchExecutor) Apply(ctx context.Context, p patch.RuntimePatch) (*pa
 		default:
 			return nil, fmt.Errorf("workflow.dag set-node-metadata %q: value %T is not a metadata map", p.Target, p.Value)
 		}
-		var old *Step
-		if cur, ok := dag.StepIndex()[p.Target]; ok && cur != nil {
-			old = cloneStepForSnapshot(cur)
-		}
+		old := dag.StepSnapshot(p.Target) // O(1) deep copy
 		if err := dag.SetNodeMetadata(p.Target, md); err != nil {
 			return nil, fmt.Errorf("workflow.dag set-node-metadata %q: %w", p.Target, err)
 		}

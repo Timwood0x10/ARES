@@ -32,8 +32,11 @@ type spatialIndex struct {
 const maxSpatialDims = 6
 
 // newSpatialIndex builds a spatial index over the scored agent population.
-// Returns nil when there are too few float parameters to benefit.
+// Returns nil when there are too few agents or float parameters to benefit.
 func newSpatialIndex(scoredIdx []int, scored []*mutation.Strategy, keys []string, ranges map[string]float64, cellSize float64) *spatialIndex {
+	if len(scored) == 0 || len(scoredIdx) == 0 {
+		return nil
+	}
 	// Collect float64 parameter keys (only these have a spatial ordering).
 	floatKeys := make([]string, 0, len(keys))
 	for _, k := range keys {
