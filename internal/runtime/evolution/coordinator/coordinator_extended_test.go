@@ -65,7 +65,15 @@ func TestCoordinatorEvaluateNoProposals(t *testing.T) {
 
 func TestCoordinatorSetDeployerNil(t *testing.T) {
 	ec := NewEvolutionCoordinator(DefaultPolicy(), patch.NewRegistry())
-	ec.SetDeployer(nil) // should not panic
+	// SetDeployer(nil) must not panic — the coordinator falls back to
+	// direct apply via the patch registry when no deployer is set.
+	ec.SetDeployer(nil)
+	// Verify the coordinator is still functional after nil deployer.
+	ec.Evaluate(context.Background()) // void method, verify no panic
+	history := ec.DecisionHistory()
+	if len(history) != 0 {
+		t.Errorf("DecisionHistory len = %d, want 0", len(history))
+	}
 }
 
 func TestCoordinatorApplyEmergencyNoExecutor(t *testing.T) {

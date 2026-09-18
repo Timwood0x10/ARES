@@ -2,7 +2,6 @@ package genome
 
 import (
 	"context"
-	"errors"
 	"testing"
 )
 
@@ -460,5 +459,3 @@ func TestMemoryGenomeMutateStructuredCleaningToggle(t *testing.T) {
 		t.Error("UseStructuredCleaning should be toggled back to false")
 	}
 }
-
-var _ = errors.New // ensure errors import is used
