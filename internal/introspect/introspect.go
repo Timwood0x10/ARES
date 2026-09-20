@@ -42,6 +42,10 @@ type Snapshot struct {
 	// winner) for the Scheduler page. Omitted when the
 	// source is nil.
 	Decisions []kernel.ScheduleDecision `json:"decisions,omitempty"`
+	// Memory is the memory-subsystem frame (session/task counts, engine
+	// armed, RAG posture). Omitted when the memory source is nil
+	// (memory disabled at assembly).
+	Memory *MemoryStatus `json:"memory,omitempty"`
 }
 
 // Sources abstract the three subsystems so tests can fake them
@@ -62,6 +66,9 @@ type Sources struct {
 	// Decisions reports the scheduling-decision trail. A nil Decisions source
 	// omits the field.
 	Decisions func() []kernel.ScheduleDecision
+	// Memory reports the memory-subsystem frame. A nil Memory source omits
+	// the field (the panel renders the disabled state).
+	Memory func() MemoryStatus
 }
 
 // Collector produces Snapshots from Sources.
@@ -101,6 +108,10 @@ func (c *Collector) Collect() Snapshot {
 	}
 	if c.src.Decisions != nil {
 		snap.Decisions = c.src.Decisions()
+	}
+	if c.src.Memory != nil {
+		ms := c.src.Memory()
+		snap.Memory = &ms
 	}
 	return snap
 }

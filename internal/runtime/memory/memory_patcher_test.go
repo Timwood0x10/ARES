@@ -87,3 +87,73 @@ func TestMemoryPatchExecutor_BadValueType_ReturnsError(t *testing.T) {
 		t.Fatal("expected error for non-map Value, got nil")
 	}
 }
+
+// TestMemoryPatchExecutor_SessionCapAndThresholdApplyAndRollback locks the
+// new planner keys: session_max_history and distillation_threshold mutate the
+// live config and the rollback restores the previous values — including zero
+// (component-default cap / ungated distiller), which the keys deliberately
+// accept so a rollback can clear them.
+func TestMemoryPatchExecutor_SessionCapAndThresholdApplyAndRollback(t *testing.T) {
+	store := NewMinimalMemoryManager()
+	ex := NewMemoryPatchExecutor(store)
+	ctx := context.Background()
+
+	prev := *store.GetConfig()
+
+	p := patch.RuntimePatch{
+		Type:   patch.PatchChangePlanner,
+		Target: "memory",
+		Value:  map[string]any{"session_max_history": 40, "distillation_threshold": 6},
+	}
+	rb, err := ex.Apply(ctx, p)
+	if err != nil {
+		t.Fatalf("Apply failed: %v", err)
+	}
+	cfg := store.GetConfig()
+	if cfg.SessionMaxHistory != 40 {
+		t.Errorf("SessionMaxHistory = %d, want 40", cfg.SessionMaxHistory)
+	}
+	if cfg.DistillationThreshold != 6 {
+		t.Errorf("DistillationThreshold = %d, want 6", cfg.DistillationThreshold)
+	}
+	if rb == nil {
+		t.Fatal("expected rollback patch, got nil")
+	}
+
+	if _, err := ex.Apply(ctx, *rb); err != nil {
+		t.Fatalf("rollback Apply failed: %v", err)
+	}
+	after := store.GetConfig()
+	if after.SessionMaxHistory != prev.SessionMaxHistory {
+		t.Errorf("after rollback SessionMaxHistory = %d, want %d",
+			after.SessionMaxHistory, prev.SessionMaxHistory)
+	}
+	if after.DistillationThreshold != prev.DistillationThreshold {
+		t.Errorf("after rollback DistillationThreshold = %d, want %d",
+			after.DistillationThreshold, prev.DistillationThreshold)
+	}
+}
+
+// TestMemoryPatchExecutor_NegativeNewKnobsRejected verifies the new planner
+// keys refuse negative inputs instead of writing them into the live config.
+func TestMemoryPatchExecutor_NegativeNewKnobsRejected(t *testing.T) {
+	store := NewMinimalMemoryManager()
+	ex := NewMemoryPatchExecutor(store)
+	ctx := context.Background()
+	prev := *store.GetConfig()
+
+	p := patch.RuntimePatch{
+		Type:   patch.PatchChangePlanner,
+		Target: "memory",
+		Value:  map[string]any{"session_max_history": -5, "distillation_threshold": -1},
+	}
+	if _, err := ex.Apply(ctx, p); err != nil {
+		t.Fatalf("Apply should ignore (not error on) out-of-range knob values: %v", err)
+	}
+	cfg := store.GetConfig()
+	if cfg.SessionMaxHistory != prev.SessionMaxHistory || cfg.DistillationThreshold != prev.DistillationThreshold {
+		t.Errorf("negative values must not mutate config: got %d/%d, want %d/%d",
+			cfg.SessionMaxHistory, cfg.DistillationThreshold,
+			prev.SessionMaxHistory, prev.DistillationThreshold)
+	}
+}

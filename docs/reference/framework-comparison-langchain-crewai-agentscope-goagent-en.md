@@ -75,7 +75,7 @@ Key components in production serve:
 - **kernelscheduler**: drain loop, capability-based candidate scoring, lease/epoch fencing, quantum execution
 - **aresrecovery**: crash recovery (lease expiry → requeue → replacement agent → checkpoint resume)
 - **agentipc**: peer-to-peer message bus for real agent collaboration
-- **introspect**: 6-page observability panel (Overview/Tasks/Agents/Scheduler/Execution/Events)
+- **introspect**: 7-page observability panel (Overview/Tasks/Agents/Scheduler/Execution/Memory/Events)
 
 The legacy Leader-Sub architecture (v0.2.x) has been removed. The current codebase has no `leader` package, no dispatcher/aggregator, and no dead-letter queue in production.
 

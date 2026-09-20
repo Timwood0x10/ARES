@@ -110,7 +110,7 @@ memory:
   rag_min_score: 0.4                # [0,1], validated when enable_rag
 ```
 
-> Honest note: `configs/ares.yaml` currently disables memory (`enabled: false`) and shows `distillation_threshold: 3`, `enable_rag: false`, `rag_top_k: 5`, `rag_min_score: 0.4` as examples.
+> Honest note: `configs/ares.yaml` enables memory (`enabled: true`, matching the leader-contract default-on in `config_defaults.go`) and shows `distillation_threshold: 3`, `enable_rag: false`, `rag_top_k: 5`, `rag_min_score: 0.4` as examples. Three independent gates: `enabled` governs session memory; distillation additionally needs `storage(postgres)` + `embedding`; RAG prompt injection additionally needs `enable_rag: true`.
 
 ---
 

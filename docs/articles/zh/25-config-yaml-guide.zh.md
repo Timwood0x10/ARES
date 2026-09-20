@@ -110,7 +110,7 @@ memory:
   rag_min_score: 0.4                # [0,1]，enable_rag 时校验
 ```
 
-> 诚实提醒：`configs/ares.yaml` 实样把记忆关掉了（`enabled: false`），并给出 `distillation_threshold: 3`、`enable_rag: false`、`rag_top_k: 5`、`rag_min_score: 0.4` 的示例。
+> 诚实提醒：`configs/ares.yaml` 实样开启记忆（`enabled: true`，与 `config_defaults.go` 的 leader contract default-on 一致），并给出 `distillation_threshold: 3`、`enable_rag: false`、`rag_top_k: 5`、`rag_min_score: 0.4` 的示例。注意三道独立门：`enabled` 管会话记忆；蒸馏还需 `storage(postgres)` + `embedding`；RAG 注入 prompt 还需 `enable_rag: true`。
 
 ---
 

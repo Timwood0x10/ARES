@@ -63,7 +63,12 @@ llm:
 # ── Memory / Distillation / RAG ──────────────────────────────
 memory:
   # enabled: enable the memory subsystem (session history + distillation + RAG)
-  enabled: false
+  # Default-on matches the leader contract (config_defaults.go: an unset field
+  # means enabled). The sample keeps it ON so `ares serve` carries cross-turn
+  # session memory out of the box. Distillation additionally needs
+  # storage(postgres) + embedding; RAG prompt injection additionally needs
+  # enable_rag: true — both are independent gates.
+  enabled: true
   # max_history: max conversation history messages to keep, 0 = component default
   # max_history: 50
   # max_sessions: max number of sessions, 0 = component default

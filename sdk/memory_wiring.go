@@ -93,7 +93,7 @@ type memoryWiring struct {
 //	*memoryWiring - mgr is always non-nil on success; embClient/expRepo may be nil.
 //	error         - wrapped error if the memory manager itself cannot be constructed.
 func wireMemory(ctx context.Context, cfg *config) (*memoryWiring, error) {
-	memCfg := buildMemoryConfig(cfg.memCfg)
+	memCfg := buildMemoryConfig(cfg.memCfg, cfg.distillCfg.Threshold)
 
 	if !cfg.distillCfg.Enabled {
 		mgr, err := memory.NewMemoryManager(memCfg)
@@ -167,8 +167,9 @@ func wireMemory(ctx context.Context, cfg *config) (*memoryWiring, error) {
 // memory.MemoryConfig. It starts from DefaultMemoryConfig so all
 // storage/TTL/vector defaults are preserved, then overrides the user-facing
 // knobs. Zero values in memoryCfg mean "use default" — they do NOT clobber
-// the defaults.
-func buildMemoryConfig(cfg memoryCfg) *memory.MemoryConfig {
+// the defaults. The distillation round gate rides the same translation so
+// WithDistillation(threshold) reaches the manager's internal distiller.
+func buildMemoryConfig(cfg memoryCfg, distillThreshold int) *memory.MemoryConfig {
 	mc := memory.DefaultMemoryConfig()
 	mc.Enabled = true
 	if cfg.MaxHistory > 0 {
@@ -176,6 +177,19 @@ func buildMemoryConfig(cfg memoryCfg) *memory.MemoryConfig {
 	}
 	if cfg.MaxSessions > 0 {
 		mc.MaxSessions = cfg.MaxSessions
+	}
+	if cfg.SessionMaxHistory > 0 {
+		mc.SessionMaxHistory = cfg.SessionMaxHistory
+	}
+	// Store-cap floor (mirrors wireMemory): a positive session cap below the
+	// read-side window would silently truncate BuildContext under the
+	// configured max_history. The constructors enforce the same clamp; doing
+	// it here keeps the stored config truthful for Status/patches.
+	if mc.SessionMaxHistory > 0 && mc.SessionMaxHistory < mc.MaxHistory {
+		mc.SessionMaxHistory = mc.MaxHistory
+	}
+	if distillThreshold > 0 {
+		mc.DistillationThreshold = distillThreshold
 	}
 	mc.EnableRAG = cfg.EnableRAG
 	if cfg.RAGTopK > 0 {

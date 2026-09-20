@@ -35,23 +35,26 @@ import (
 // field names, what callers write (cfg.Memory.X) — NOT type names. Adding an
 // entry requires a reason comment.
 var knownDead = map[string]string{
-	"Tools.Defaults":            "C4 backlog",
-	"Tools.Agents":              "C4 backlog",
-	"Memory.SessionMemory":      "C4 backlog (subtree)",
-	"Memory.UserProfile":        "C4 backlog (subtree)",
-	"Memory.TaskDistillation":   "C4 backlog (subtree)",
-	"Memory.EnableDistillation": "read only via MemoryConfig.DistillationEnabled() (tri-state accessor)",
-	"Workflow.AutoReload":       "C4 backlog",
-	"Workflow.DefinitionPath":   "C4 backlog",
-	"Workflow.ReloadInterval":   "C4 backlog",
-	"Validation":                "C4 backlog (subtree): validated + defaulted, no runtime consumer",
-	"Validation.CustomSchema":   "C4 backlog",
-	"Output":                    "C4 backlog (subtree): CLI formatting never wired to a renderer",
-	"Prompts.ProfileExtraction": "C4 backlog",
-	"Prompts.StyleAnalysis":     "C4 backlog",
-	"Prompts.Recommendation":    "consumer retired with the ReAct executor (M4-D); L2 cognition prompts come from the plan graph",
-	"Storage.PGVector":          "C4 backlog (subtree)",
-	"Embedding.RedisAddr":       "C4 backlog",
+	"Tools.Defaults": "C4 backlog",
+	"Tools.Agents":   "C4 backlog",
+	// SessionMemory.MaxHistory is LIVE — wireMemory consumes it
+	// (internal/ares_bootstrap/bootstrap.go). Only the Enabled leaf stays
+	// dead; keep the exemption leaf-scoped so the G2 gate watches MaxHistory.
+	"Memory.SessionMemory.Enabled": "no consumer reads session.Enabled; wiring gates on the top-level memory.enabled",
+	"Memory.UserProfile":           "C4 backlog (subtree)",
+	"Memory.TaskDistillation":      "C4 backlog (subtree)",
+	"Memory.EnableDistillation":    "read only via MemoryConfig.DistillationEnabled() (tri-state accessor)",
+	"Workflow.AutoReload":          "C4 backlog",
+	"Workflow.DefinitionPath":      "C4 backlog",
+	"Workflow.ReloadInterval":      "C4 backlog",
+	"Validation":                   "C4 backlog (subtree): validated + defaulted, no runtime consumer",
+	"Validation.CustomSchema":      "C4 backlog",
+	"Output":                       "C4 backlog (subtree): CLI formatting never wired to a renderer",
+	"Prompts.ProfileExtraction":    "C4 backlog",
+	"Prompts.StyleAnalysis":        "C4 backlog",
+	"Prompts.Recommendation":       "consumer retired with the ReAct executor (M4-D); L2 cognition prompts come from the plan graph",
+	"Storage.PGVector":             "C4 backlog (subtree)",
+	"Embedding.RedisAddr":          "C4 backlog",
 }
 
 // TestG2ConfigContract is the G2 gate: every non-whitelisted config leaf has
@@ -176,7 +179,8 @@ func TestG2ConfigContract(t *testing.T) {
 
 // whitelisted reports whether the access path (no leading dot) is exempt:
 // either directly in knownDead or because a whitelisted ANCESTOR subtree
-// covers it ("Memory.SessionMemory" exempts "Memory.SessionMemory.MaxHistory").
+// covers it ("Memory.UserProfile" still exempts every leaf under it;
+// SessionMemory is deliberately leaf-scoped — see knownDead).
 func whitelisted(path string) bool {
 	for p := path; p != ""; {
 		if _, ok := knownDead[p]; ok {

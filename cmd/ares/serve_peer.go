@@ -20,9 +20,52 @@ import (
 	"github.com/Timwood0x10/ares/internal/fabric/task/workflow/engine"
 	"github.com/Timwood0x10/ares/internal/introspect"
 	"github.com/Timwood0x10/ares/internal/runtime"
+	memory "github.com/Timwood0x10/ares/internal/runtime/memory"
 	"github.com/Timwood0x10/ares/internal/runtime/protocol/ahp"
 	core_tools "github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
+
+// memoryRuntimeStatser is the optional capability of a MemoryManager to
+// report a live status frame. Only *memoryManager implements it (via
+// memory.RuntimeStatus); a nil manager or a config-only fallback yields a
+// nil source, and the panel omits the Memory section.
+type memoryRuntimeStatser interface {
+	RuntimeStatus() memory.RuntimeStatus
+}
+
+// memoryPanelSource adapts the runtime memory manager to the introspect
+// panel's Memory source. Returns nil when memory is disabled/unbuilt or the
+// manager does not expose RuntimeStatus — a nil source omits Snapshot.Memory
+// and the panel renders the disabled state.
+func memoryPanelSource(mgr memory.MemoryManager) func() introspect.MemoryStatus {
+	if mgr == nil {
+		return nil
+	}
+	statser, ok := mgr.(memoryRuntimeStatser)
+	if !ok {
+		return nil
+	}
+	return func() introspect.MemoryStatus {
+		s := statser.RuntimeStatus()
+		return introspect.MemoryStatus{
+			Wired:                 true,
+			Sessions:              s.Sessions,
+			Tasks:                 s.Tasks,
+			DistillationEngine:    s.DistillationEngineArmed,
+			Retrievers:            s.Retrievers,
+			Skills:                s.Skills,
+			MaxHistory:            s.MaxHistory,
+			SessionMaxHistory:     s.SessionMaxHistory,
+			DistillationThreshold: s.DistillationThreshold,
+			MaxSessions:           s.MaxSessions,
+			EnableRAG:             s.EnableRAG,
+			RAGTopK:               s.RAGTopK,
+			RAGMinScore:           s.RAGMinScore,
+			Storage:               s.Storage,
+			Started:               s.Started,
+		}
+	}
+}
 
 // createAndServeAgents builds and registers the flat peer-agent population with
 // the runtime manager. This is the ONLY production serve path (the leader is
@@ -253,6 +296,7 @@ func wireIntrospectPanel(
 			// reporter yields an empty graph. Wire a producer (e.g. the
 			// spawn/collaboration IPC path) before enabling the panel tab.
 			Collab: collabReporter.Snapshot,
+			Memory: memoryPanelSource(comp.Memory),
 		})
 		peerKernel.intro = introspect.NewHandler(store).WithEventStore(comp.EventStore).
 			// The panel snapshot also carries the System Runtime

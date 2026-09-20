@@ -62,12 +62,25 @@ type ConfigFile struct {
 	} `yaml:"evolution"`
 }
 
+// SessionFileConfig carries session store window knobs for the memory
+// subsystem. Named (not an anonymous struct) so programmatic ConfigFile
+// construction — tests, embedding hosts — can build it without spelling an
+// inline type. Mirrors ares_config.SessionConfig's MaxHistory leaf.
+type SessionFileConfig struct {
+	// MaxHistory bounds messages retained per session in the store
+	// (0 = component default). The runtime clamps it up to the read-side
+	// memory.max_history so the store never undercuts the context window.
+	MaxHistory int `yaml:"max_history"`
+}
+
 // MemoryFileConfig carries all memory subsystem knobs. Fields left at their
 // zero value cause the sdk to fall back to the component default.
 type MemoryFileConfig struct {
 	Enabled     bool `yaml:"enabled"`
 	MaxHistory  int  `yaml:"max_history"`
 	MaxSessions int  `yaml:"max_sessions"`
+	// Session tunes the session store window (see SessionFileConfig).
+	Session SessionFileConfig `yaml:"session"`
 	// EnableDistillation tri-state: nil defaults to true,
 	// mirroring ares_config.MemoryConfig so SDK yaml and serve yaml agree.
 	EnableDistillation    *bool `yaml:"enable_distillation"`
@@ -245,6 +258,9 @@ func (c *ConfigFile) validateMemory() error {
 	if c.Memory.MaxSessions < 0 {
 		return fmt.Errorf("memory.max_sessions %d: %w", c.Memory.MaxSessions, ErrInvalidRange)
 	}
+	if c.Memory.Session.MaxHistory < 0 {
+		return fmt.Errorf("memory.session.max_history %d: %w", c.Memory.Session.MaxHistory, ErrInvalidRange)
+	}
 	// DistillationThreshold 0 means "unset": the sdk falls back to the
 	// component default at apply time. Negative is invalid.
 	if c.Memory.DistillationThreshold < 0 {
@@ -394,6 +410,9 @@ func (c *ConfigFile) ToOptions() ([]Option, error) {
 	// Memory. Each unset field falls back to the component default.
 	if c.Memory.Enabled {
 		opts = append(opts, WithMemoryConfig(c.Memory.MaxHistory, c.Memory.MaxSessions))
+		if c.Memory.Session.MaxHistory > 0 {
+			opts = append(opts, WithSessionMaxHistory(c.Memory.Session.MaxHistory))
+		}
 		if c.Memory.DistillationEnabled() {
 			// DistillationThreshold 0 means "ungated": fire on every event,
 			// matching every downstream component's contract. We pass it

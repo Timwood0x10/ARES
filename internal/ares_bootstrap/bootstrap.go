@@ -322,6 +322,33 @@ func wireMemory(cfg *ares_config.Config, eventStore ares_events.EventStore) (are
 		return nil, nil
 	}
 	memCfg := ares_memory.DefaultMemoryConfig()
+	// Closed-loop history window: cfg.Memory.MaxHistory (YAML max_history,
+	// default 10 via setDefaults) is the serve-side knob. DefaultMemoryConfig
+	// seeds the same 10, so only an explicit non-zero value needs copying —
+	// zero means "component default", matching the SDK's buildMemoryConfig.
+	if cfg.Memory.MaxHistory > 0 {
+		memCfg.MaxHistory = cfg.Memory.MaxHistory
+	}
+	// Session store window: YAML memory.session.max_history (default 50)
+	// bounds messages retained per session; 0 keeps the component default.
+	if cfg.Memory.SessionMemory.MaxHistory > 0 {
+		memCfg.SessionMaxHistory = cfg.Memory.SessionMemory.MaxHistory
+	}
+	// Store-cap floor: the session store must retain at least the read-side
+	// window, otherwise BuildContext is silently truncated below the
+	// configured max_history (session.go keeps the component default above
+	// every read window for the same reason). Clamping here keeps the stored
+	// config truthful; the constructors enforce the same floor for callers
+	// that build a MemoryConfig directly.
+	if memCfg.SessionMaxHistory > 0 && memCfg.SessionMaxHistory < memCfg.MaxHistory {
+		memCfg.SessionMaxHistory = memCfg.MaxHistory
+	}
+	// Round gate for the internal distiller: YAML memory.distillation_threshold
+	// (setDefaults fills 3 when distillation is enabled); 0 keeps the
+	// distiller's ungated default.
+	if cfg.Memory.DistillationThreshold > 0 {
+		memCfg.DistillationThreshold = cfg.Memory.DistillationThreshold
+	}
 	if cfg.Memory.EnableRAG {
 		memCfg.EnableRAG = true
 		if cfg.Memory.RAGTopK > 0 {

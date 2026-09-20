@@ -49,6 +49,10 @@ func WithMemoryConfig(maxHistory, maxSessions int) Option {
 	return sdk.WithMemoryConfig(maxHistory, maxSessions)
 }
 
+// WithSessionMaxHistory sets the per-session stored-message cap (0 = default;
+// clamped up to the read-side context window at runtime).
+func WithSessionMaxHistory(n int) Option { return sdk.WithSessionMaxHistory(n) }
+
 // WithDistillation enables memory distillation at the given threshold.
 func WithDistillation(threshold int) Option { return sdk.WithDistillation(threshold) }
 

@@ -114,11 +114,20 @@ func (m *SessionMemory) Reconfigure(maxSize int, ttl time.Duration) {
 	}
 }
 
+// WithMaxMessages sets the per-session stored-message cap (0 or negative
+// restores the default). Returns the receiver for chaining.
+//
+// The write takes m.mu: construction-time chaining is uncontended, and the
+// runtime path (memoryManager.ApplyLiveConfig pushing a patched cap) runs
+// concurrently with AddMessage/GetMessages, which read maxMessages under the
+// same lock — an unlocked write there is a data race.
 func (m *SessionMemory) WithMaxMessages(n int) *SessionMemory {
 	if n <= 0 {
 		n = defaultMaxSessionMessages
 	}
+	m.mu.Lock()
 	m.maxMessages = n
+	m.mu.Unlock()
 	return m
 }
 

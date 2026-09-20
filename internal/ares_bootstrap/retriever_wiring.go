@@ -8,11 +8,13 @@ import (
 	"fmt"
 
 	aresconfig "github.com/Timwood0x10/ares/internal/ares_config"
+	apiembed "github.com/Timwood0x10/ares/internal/embedding"
 	"github.com/Timwood0x10/ares/internal/evidence"
 	"github.com/Timwood0x10/ares/internal/knowledge"
 	"github.com/Timwood0x10/ares/internal/knowledge/adapter"
 	knowledgeruntime "github.com/Timwood0x10/ares/internal/knowledge/runtime"
 	memctx "github.com/Timwood0x10/ares/internal/runtime/memory/context"
+	"github.com/Timwood0x10/ares/internal/runtime/memory/distillation"
 	memembed "github.com/Timwood0x10/ares/internal/runtime/memory/embedding"
 	"github.com/Timwood0x10/ares/internal/runtime/memory/experienceadapters"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/embedding"
@@ -27,6 +29,16 @@ import (
 // type-assert at wiring time instead of widening the interface.
 type retrieverSetter interface {
 	SetRetrievers(retrievers []memctx.ContextRetriever)
+}
+
+// distillationEngineSetter is the optional capability of a MemoryManager to
+// accept the distillation engine after construction. Bootstrap builds memory
+// (assembleCore) before the embedding client and experience repo exist
+// (assembleExperience), so the serve path injects the engine here — without
+// it, memory_search / StoreDistilledTask fail with
+// ErrDistillationEngineNotInitialized on every call.
+type distillationEngineSetter interface {
+	SetDistillationEngine(embedder apiembed.EmbeddingService, expRepo distillation.ExperienceRepository) error
 }
 
 // wireRetrievers constructs the MemoryRetriever and KnowledgeRetriever from
@@ -79,6 +91,21 @@ func wireRetrievers(
 	// experience repository (to search). Skipped silently when either is
 	// nil — the distillation path may be disabled in minimal configs.
 	if embClient != nil && expRepo != nil {
+		// Inject the distillation engine first: the memory manager was built
+		// by NewMemoryManager (session/task memory only) before these deps
+		// existed. Without this injection memory_search and
+		// StoreDistilledTask fail on every call. Non-fatal: a manager that
+		// already has an engine (SDK path) rejects re-injection and keeps
+		// working.
+		if setter, ok := mem.(distillationEngineSetter); ok {
+			distillRepo := experienceadapters.NewDistillationRepo(expRepo, defaultDistillTenant)
+			if err := setter.SetDistillationEngine(embClient, distillRepo); err != nil {
+				log.Warn("bootstrap: memory distillation engine injection failed", "error", err)
+			} else {
+				log.Info("bootstrap: memory distillation engine wired (memory_search + StoreDistilledTask)",
+					"tenant", defaultDistillTenant)
+			}
+		}
 		minScore := cfg.Memory.RAGMinScore
 		if minScore <= 0 {
 			minScore = memctx.DefaultMinScore

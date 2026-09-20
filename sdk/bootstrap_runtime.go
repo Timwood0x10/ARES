@@ -65,6 +65,19 @@ func buildBootstrapConfig(cfg *config) *ares_config.Config {
 	if cfg.memCfg.MaxHistory > 0 {
 		out.Memory.MaxHistory = cfg.memCfg.MaxHistory
 	}
+	// Session store window: carry WithSessionMaxHistory / YAML
+	// memory.session.max_history through the Bootstrap path so wireMemory's
+	// runtime config sees the same cap the SDK fallback wiring applies.
+	// Setting only MaxHistory leaves SessionConfig's other fields zero.
+	if cfg.memCfg.SessionMaxHistory > 0 {
+		out.Memory.SessionMemory.MaxHistory = cfg.memCfg.SessionMaxHistory
+	}
+	// Distillation round gate: carry WithDistillation(threshold) through the
+	// Bootstrap path so wireMemory's runtime config sees the same value the
+	// SDK fallback wiring applies. 0 means "component default".
+	if cfg.distillCfg.Enabled && cfg.distillCfg.Threshold > 0 {
+		out.Memory.DistillationThreshold = cfg.distillCfg.Threshold
+	}
 	if cfg.dbCfg.Host != "" {
 		out.Storage = ares_config.StorageConfig{
 			Enabled:  true,

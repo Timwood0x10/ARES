@@ -94,6 +94,10 @@ type memoryCfg struct {
 	Enabled     bool
 	MaxHistory  int // 0 → component default
 	MaxSessions int // 0 → component default
+	// SessionMaxHistory bounds messages retained per session in the session
+	// store (0 → component default). Distinct from MaxHistory, the read-side
+	// context window; the runtime clamps the store cap up to that window.
+	SessionMaxHistory int
 	// EnableRAG enables retrieval-augmented generation; RAGTopK and RAGMinScore
 	// tune retrieval when EnableRAG is true.
 	EnableRAG   bool
@@ -315,6 +319,24 @@ func WithMemoryConfig(maxHistory, maxSessions int) Option {
 		c.memCfg.Enabled = true
 		c.memCfg.MaxHistory = maxHistory
 		c.memCfg.MaxSessions = maxSessions
+		return nil
+	}
+}
+
+// WithSessionMaxHistory sets the per-session stored-message cap. Zero falls
+// back to the component default; the runtime clamps the cap up to the
+// read-side MaxHistory so the store always retains at least the configured
+// context window. Mirrors ares_config memory.session.max_history.
+//
+// Args:
+//
+//	n - max messages retained per session in the store; 0 → default.
+func WithSessionMaxHistory(n int) Option {
+	return func(c *config) error {
+		if n < 0 {
+			return fmt.Errorf("session max history %d: %w", n, ErrInvalidRange)
+		}
+		c.memCfg.SessionMaxHistory = n
 		return nil
 	}
 }

@@ -75,7 +75,7 @@
 - **kernelscheduler**：drain 循环、能力候选评分、租约/epoch 隔离、量子执行
 - **aresrecovery**：崩溃恢复（租约过期 → 重新入队 → 替代 agent → checkpoint 续跑）
 - **agentipc**：对等消息总线，真实 agent 协作
-- **introspect**：6 页观测面板（Overview/Tasks/Agents/Scheduler/Execution/Events）
+- **introspect**：7 页观测面板（Overview/Tasks/Agents/Scheduler/Execution/Memory/Events）
 
 遗留的 Leader-Sub 架构（v0.2.x）已删除。当前代码没有 `leader` 包、没有 dispatcher/aggregator、生产路径没有死信队列。
 

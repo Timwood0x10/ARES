@@ -48,6 +48,77 @@ func TestValidate_NegativeDistillationThresholdRejects(t *testing.T) {
 	}
 }
 
+func TestValidate_NegativeSessionMaxHistoryRejects(t *testing.T) {
+	cfg := &ConfigFile{
+		Memory: MemoryFileConfig{
+			Enabled: true,
+			Session: SessionFileConfig{MaxHistory: -1},
+		},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error for negative memory.session.max_history")
+	}
+}
+
+func TestLoadConfigFile_SessionMaxHistorySlot(t *testing.T) {
+	content := `
+llm:
+  provider: ollama
+memory:
+  enabled: true
+  max_history: 100
+  session:
+    max_history: 60
+`
+	path, cleanup := tmpConfigFile(t, content)
+	defer cleanup()
+
+	cfg, err := LoadConfigFile(path)
+	if err != nil {
+		t.Fatalf("LoadConfigFile error: %v", err)
+	}
+	if cfg.Memory.Session.MaxHistory != 60 {
+		t.Errorf("session.max_history = %d, want 60", cfg.Memory.Session.MaxHistory)
+	}
+
+	opts, optErr := cfg.ToOptions()
+	if optErr != nil {
+		t.Fatalf("ToOptions error: %v", optErr)
+	}
+	// newTestConfig seeds llmCfg etc.; a bare &config{} panics on provider
+	// options that write c.llmCfg without a nil check.
+	applied := newTestConfig()
+	for _, opt := range opts {
+		if err := opt(applied); err != nil {
+			t.Fatalf("apply option: %v", err)
+		}
+	}
+	if applied.memCfg.SessionMaxHistory != 60 {
+		t.Errorf("memCfg.SessionMaxHistory = %d, want 60 after ToOptions", applied.memCfg.SessionMaxHistory)
+	}
+	if applied.memCfg.MaxHistory != 100 {
+		t.Errorf("memCfg.MaxHistory = %d, want 100", applied.memCfg.MaxHistory)
+	}
+}
+
+func TestWithSessionMaxHistory_NegativeRejects(t *testing.T) {
+	err := WithSessionMaxHistory(-1)(&config{})
+	if err == nil {
+		t.Fatal("expected error for negative session max history")
+	}
+}
+
+func TestBuildMemoryConfig_ClampsSessionCapToReadWindow(t *testing.T) {
+	mc := buildMemoryConfig(memoryCfg{
+		Enabled:           true,
+		MaxHistory:        100,
+		SessionMaxHistory: 50,
+	}, 0)
+	if mc.SessionMaxHistory != 100 {
+		t.Errorf("SessionMaxHistory = %d, want clamped-up 100", mc.SessionMaxHistory)
+	}
+}
+
 func TestValidate_ThresholdZeroFallsBackOK(t *testing.T) {
 	cfg := &ConfigFile{
 		Memory: MemoryFileConfig{

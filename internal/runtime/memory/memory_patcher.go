@@ -118,7 +118,8 @@ func (e *MemoryPatchExecutor) Snapshot(_ context.Context) (any, error) {
 }
 
 // Apply patches the memory configuration. Supported patch types:
-//   - PatchChangePlanner — change max_history or max_tasks
+//   - PatchChangePlanner — change max_history, max_tasks, max_sessions,
+//     session_max_history or distillation_threshold
 //   - PatchChangeBudget  — change max_distilled_tasks or session_ttl
 //   - PatchChangeReducer — change clean_options
 //
@@ -171,6 +172,19 @@ func (e *MemoryPatchExecutor) Apply(ctx context.Context, p patch.RuntimePatch) (
 		if s, ok := patchInt(vals["max_sessions"]); ok && s > 0 {
 			rollback["max_sessions"] = prev.MaxSessions
 			cfg.MaxSessions = s
+		}
+		// session_max_history / distillation_threshold accept >= 0 so a
+		// rollback can restore the zero value (component-default store cap /
+		// ungated distiller). Negative inputs are rejected by the guard.
+		// ApplyLiveConfig pushes both to the live structures; the store cap
+		// is clamped up to the read window there.
+		if sh, ok := patchInt(vals["session_max_history"]); ok && sh >= 0 {
+			rollback["session_max_history"] = prev.SessionMaxHistory
+			cfg.SessionMaxHistory = sh
+		}
+		if dt, ok := patchInt(vals["distillation_threshold"]); ok && dt >= 0 {
+			rollback["distillation_threshold"] = prev.DistillationThreshold
+			cfg.DistillationThreshold = dt
 		}
 		return &patch.RuntimePatch{
 			Type:   p.Type,
