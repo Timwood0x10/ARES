@@ -242,8 +242,11 @@ type ToolsConfig struct {
 	// commands are ever probed or executed. Formerly the ARES_NATIVE_TOOLS
 	// comma-separated env var.
 	NativeAllowlist []string `yaml:"native_allowlist"`
-	// FileSandboxDir roots the file tool's path-traversal sandbox. Empty
-	// (default) roots it at the process working directory. Formerly the
+	// FileSandboxDir roots the file tool's path-traversal sandbox — the
+	// directory agents may read/write via file_tools. Empty (default)
+	// falls back to a process-PRIVATE temp dir (not the working
+	// directory): an agent served from a repo cannot touch that repo until
+	// this value points at the intended workspace. Formerly the
 	// ARES_FILE_TOOLS_ALLOWED_DIR / ARES_WORKSPACE_DIR env vars.
 	FileSandboxDir string `yaml:"file_sandbox_dir"`
 }

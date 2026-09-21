@@ -128,7 +128,8 @@ func (t *FileTools) isPathAllowed(targetPath string) (string, error) {
 		return "", fmt.Errorf("compute relative path from %q to %q: %w", t.allowedDir, resolvedTarget, err)
 	}
 	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("access denied: path %s is outside allowed directory %s", targetPath, t.allowedDir)
+		return "", fmt.Errorf("access denied: path %s is outside allowed directory %s (set tools.file_sandbox_dir in ares.yaml to the intended workspace)",
+			targetPath, t.allowedDir)
 	}
 	return resolvedTarget, nil
 }

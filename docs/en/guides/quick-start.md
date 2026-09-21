@@ -124,6 +124,7 @@ memory:
 ## Common issues
 
 - **LLM call fails**: check the `llm:` section (provider/base_url/model/api_key); Ollama needs a local `ollama serve` with the model pulled
+- **file_tools access denied**: with `tools.file_sandbox_dir` unset the sandbox falls back to a process-private temp dir — agents cannot touch the served repo/workspace. Set it in ares.yaml to the directory agents should work in (e.g. the repo root)
 - **POST /api/tasks 401**: the write gate is deny-by-default — send `Authorization: Bearer <security.api_key>` (falls back to `llm.api_key` when unset; or configure JWT). With both empty (e.g. the default ollama config) set `security.api_key` in ares.yaml first
 - **GET /api/tasks/{id} 401**: once any credential layer is configured the read gate requires it too
 - **Task never terminal**: read `state` via GET; the `error` field carries the failure cause. `capability` is audit-only (execution is always normalized to `ares/plan`) and unrelated to `agents.peers` capabilities — do not chase that match

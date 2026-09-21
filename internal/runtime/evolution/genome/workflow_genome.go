@@ -198,6 +198,12 @@ func (g *WorkflowGenome) mutateInsertNode() {
 	if g.dag.NodeCount() >= g.config.MaxNodes {
 		return
 	}
+	// Empty pool = no candidate agent type: the operator no-ops instead of
+	// panicking on rand.Intn(0) (defensive: wiring seeds a pool, but a
+	// struct-literal config can still omit one).
+	if len(g.config.AgentPool) == 0 {
+		return
+	}
 	agentType := g.config.AgentPool[rand.Intn(len(g.config.AgentPool))]
 	stepID := fmt.Sprintf("wf-mut-%d", g.dag.Version()+1)
 
@@ -252,7 +258,7 @@ func (g *WorkflowGenome) mutateRemoveNode() {
 
 func (g *WorkflowGenome) mutateReplaceNode() {
 	steps := g.dag.Steps()
-	if len(steps) == 0 {
+	if len(steps) == 0 || len(g.config.AgentPool) == 0 {
 		return
 	}
 	oldStep := steps[rand.Intn(len(steps))]

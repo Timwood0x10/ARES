@@ -117,6 +117,7 @@ memory:
 ## 常见问题
 
 - **LLM 调用失败**：检查 ares.yaml `llm:` 段（provider/base_url/model/api_key）；Ollama 需本机 `ollama serve` 且模型已 pull
+- **file_tools 报 access denied**：`tools.file_sandbox_dir` 未设置时沙箱回退到进程私有临时目录（agent 碰不到服务仓库/工作区）。在 ares.yaml 里把它设为 agent 应工作的目录（如仓库根目录）
 - **POST /api/tasks 401**：write 门 deny-by-default——请求需带 `Authorization: Bearer <security.api_key>`（未设置时回落 `llm.api_key`；或配置 JWT）。两者皆空（如 ollama 默认配置）时必须先在 ares.yaml 设置 `security.api_key`
 - **GET /api/tasks/{id} 401**：配置了凭证层后读接口也必须带凭证
 - **任务一直非终态**：`GET /api/tasks/{id}` 看 `state`；`error` 字段在失败时携带原因。`capability` 是审计性字段（执行侧恒规范化到 `ares/plan`），与 `agents.peers` 声明的 capabilities 无关，不需要对照排查

@@ -235,6 +235,52 @@ func TestShadowVerifyGate(t *testing.T) {
 		assert.True(t, pass)
 		assert.InDelta(t, 1.0, score, 0.0001)
 	})
+
+	// GA-soak fix: decisive < MinSamples (thin evidence, e.g. cold-start
+	// replay windows collapsing to ties) must SKIP the pre-deployment gate
+	// when the rollback net is armed — the documented decision table allows
+	// skipping PRE-verification only when POST-verification exists. Without
+	// armed rollback the gate stays fail-closed.
+	t.Run("insufficient decisive samples skips when rollback armed", func(t *testing.T) {
+		se := NewShadowEvaluator(ShadowEvaluationConfig{Enabled: true, MinSamples: 3, MinWinRate: 0.55})
+		se.RecordResult(0.5, 0.9) // one decisive win — decisive=1 < MinSamples=3
+		lc := &StrategyLifecycle{shadow: se, cfg: LifecycleConfig{RollbackArmed: true}}
+		pass, _, reason := shadowVerifyGate{lc}.Check(context.Background(), &mutation.Strategy{}, nil)
+		assert.True(t, pass, "rollback-armed thin evidence must skip, not reject")
+		assert.Contains(t, reason, "skip")
+		assert.Contains(t, reason, "rollback")
+		assert.Contains(t, lc.shadowGateSkipReason, "skip",
+			"the snapshot-visible skip reason must be recorded")
+	})
+
+	t.Run("insufficient decisive samples fails closed when rollback disarmed", func(t *testing.T) {
+		se := NewShadowEvaluator(ShadowEvaluationConfig{Enabled: true, MinSamples: 3, MinWinRate: 0.55})
+		se.RecordResult(0.5, 0.9) // decisive=1 < 3
+		lc := &StrategyLifecycle{shadow: se}
+		pass, _, reason := shadowVerifyGate{lc}.Check(context.Background(), &mutation.Strategy{}, nil)
+		assert.False(t, pass, "without a rollback net thin evidence stays fail-closed")
+		assert.Contains(t, reason, "below threshold")
+	})
+
+	t.Run("all ties skip when rollback armed", func(t *testing.T) {
+		se := NewShadowEvaluator(ShadowEvaluationConfig{Enabled: true, MinSamples: 2, MinWinRate: 0.55})
+		se.RecordResult(0.5, 0.5)
+		se.RecordResult(0.5, 0.5)
+		lc := &StrategyLifecycle{shadow: se, cfg: LifecycleConfig{RollbackArmed: true}}
+		pass, _, reason := shadowVerifyGate{lc}.Check(context.Background(), &mutation.Strategy{}, nil)
+		assert.True(t, pass, "rollback-armed all-ties evidence must skip")
+		assert.Contains(t, reason, "skip")
+	})
+
+	t.Run("win rate below threshold rejects even when rollback armed", func(t *testing.T) {
+		se := NewShadowEvaluator(ShadowEvaluationConfig{Enabled: true, MinSamples: 2, MinWinRate: 0.9})
+		se.RecordResult(0.9, 0.1) // shadow loses
+		se.RecordResult(0.9, 0.1) // shadow loses — decisive=2 meets MinSamples
+		lc := &StrategyLifecycle{shadow: se, cfg: LifecycleConfig{RollbackArmed: true}}
+		pass, _, reason := shadowVerifyGate{lc}.Check(context.Background(), &mutation.Strategy{}, nil)
+		assert.False(t, pass, "real evidence that the candidate loses must reject regardless of rollback")
+		assert.Contains(t, reason, "below threshold")
+	})
 }
 
 // --- shadow gate registration wiring ---

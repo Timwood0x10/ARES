@@ -540,7 +540,7 @@ Guardrails 那行（`:151-156` 注释）是段自白：**此前 `gaCfg.Guardrail
 
 **⑤ Scorer 与 G2 姿态** — `wireScorerAndShadowGate`（`:169`）。要点是**G2 闸的姿态必须在 `NewWiredEvolutionSystem` 之前定下来**（`:203-207` 注释），否则事后反注册。
 
-不变量（`:205-207`）：**跳过部署前验证，只允许在部署后验证已布防时**；两者皆无则 G2 保持 fail-closed。
+不变量（`:205-207`）：**跳过部署前验证，只允许在部署后验证已布防时**；两者皆无则 G2 保持 fail-closed。运行期同理（GA-soak 修复）：shadow 闸已注册但 decisive 比较数 < `shadow.min_samples`（冷启动平局/薄证据）且 rollback 已武装时，闸对该次决策 **skip**（快照 `shadow_gate_skip_reason` 可见）；rollback 未武装则维持 fail-closed 拒绝。
 
 `hasScorer := gaCfg.Scorer != nil || gaCfg.DeterministicScorerEnabled`（`:217`）。`:199-201` 这段解开了一个死锁：LLM scoring 关闭时置 `DeterministicScorerEnabled = true`，让 G2 闸保持注册，**仅凭执行归因证据就产出 shadow 对比**，一次 LLM 调用都不需要——注释称之为打破"zero-token ⇒ no G2"。
 
@@ -2041,7 +2041,7 @@ g, err := c.sessions.GetSession(sessionID)
 depth := g.PlanDepth()
 if depth >= c.maxDepth {
  c.forcedAnswers.Add(1)
- return c.growAnswerNode(ctx, g, task, "max plan depth reached", nil)
+ return c.growAnswerNode(ctx, g, task, "", nil) // content-less: synthesis/gap-body answers; guard text never becomes the answer
 }
 
 prompt, err := c.assembleContext(ctx, task, g) // 从前驱路径组装上下文

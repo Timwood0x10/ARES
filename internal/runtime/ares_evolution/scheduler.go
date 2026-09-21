@@ -197,8 +197,12 @@ const degradationThreshold = 0.15
 const minScoreCountForReliability = 20
 
 // periodicEvolutionScoreThreshold is the score count threshold that triggers
-// periodic exploration evolution even without detected degradation.
-const periodicEvolutionScoreThreshold = 100
+// periodic exploration evolution even without detected degradation. It MUST
+// stay below scoreWindowSize: RecordScore evicts the oldest score once the
+// window is full, so the observable count is capped at scoreWindowSize and a
+// threshold above the cap made the periodic path unreachable dead config
+// (the GA soak probe caught it: count=100 could never be observed).
+const periodicEvolutionScoreThreshold = 40
 
 // EvolutionScheduler triggers evolution cycles based on agent lifecycle
 // events. It subscribes to the shared EventStore (filtering on
@@ -576,19 +580,27 @@ func (s *EvolutionScheduler) shouldEvolve(ctx context.Context, data CallbackData
 			return false
 		}
 
-		if avg > 0 {
-			drop := (avg - recent) / avg
-			if drop >= degradationThreshold {
-				log.InfoContext(ctx, "[Evolution] Score degradation detected (idle)",
-					"overall_avg", avg,
-					"recent_avg", recent,
-					"drop_pct", drop)
-				return true
-			}
+		// All-failure window: avg == 0 means every scored task failed —
+		// the strongest degradation signal there is. Pre-fix this fell
+		// through to the periodic check (unreachable, see the threshold
+		// const) and the scheduler NEVER evolved while the fleet was
+		// broken, which is exactly when exploration matters most.
+		if avg <= 0 {
+			log.InfoContext(ctx, "[Evolution] All-failure score window (idle)",
+				"score_count", scoreCount)
+			return true
+		}
+
+		if drop := (avg - recent) / avg; drop >= degradationThreshold {
+			log.InfoContext(ctx, "[Evolution] Score degradation detected (idle)",
+				"overall_avg", avg,
+				"recent_avg", recent,
+				"drop_pct", drop)
+			return true
 		}
 
 		if scoreCount >= periodicEvolutionScoreThreshold {
-			log.DebugContext(ctx, "[Evolution] Periodic evolution triggered",
+			log.InfoContext(ctx, "[Evolution] Periodic evolution triggered",
 				"score_count", scoreCount)
 			return true
 		}
@@ -891,6 +903,19 @@ func (s *EvolutionScheduler) Tick(ctx context.Context) {
 	s.evolveMu.Unlock()
 
 	eg.Go(func() error {
+		// Per-run recover: errgroup never recovers panics, so a panic in
+		// adapter.Run (genome mutation, diff patching, coordinator apply)
+		// would kill the whole serve process — GA soak 2026-09-21 lost the
+		// process to rand.Intn(0) inside WorkflowGenome.mutateInsertNode.
+		// Recover → structured log → return; lastRun stays stale so the
+		// NEXT tick retries the cycle (the restart is the recovery
+		// mechanism — a repeating panic is a defect to find, not absorb).
+		defer func() {
+			if r := recover(); r != nil {
+				log.ErrorContext(egCtx, "[Evolution] panic in Tick-triggered evolution run; recovered, next tick retries",
+					"panic", r)
+			}
+		}()
 		if err := adapter.Run(egCtx); err != nil {
 			log.WarnContext(egCtx, "[Evolution] Tick-triggered evolution failed", "error", err)
 			return nil

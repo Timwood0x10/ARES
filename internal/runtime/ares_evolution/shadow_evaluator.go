@@ -142,7 +142,20 @@ type ShadowEvaluator struct {
 	// callers can inspect whether the comparison window is repetition rather
 	// than independent evidence, instead of that fact living only in a log line.
 	deterministic bool
-	mu            sync.RWMutex
+	// evidenceTiered is the DEDICATED budget-gated scorer shadow evidence
+	// draws run through (GA-soak fix): population fitness scoring keeps its
+	// own TieredScorer/Budget, so gate sampling is never starved by
+	// population scoring exhausting the shared generation budget. Nil when
+	// no LLM scorer is wired (zero-LLM posture uses the replay scorer).
+	evidenceTiered evidenceBudgetResetter
+	mu             sync.RWMutex
+}
+
+// evidenceBudgetResetter is the slice of scoring.TieredScorer the evaluator
+// needs: a fresh dedicated budget per Prime call. Declared at the consumer
+// so the evaluator file does not import the scoring package for one method.
+type evidenceBudgetResetter interface {
+	ResetForGeneration()
 }
 
 // NewShadowEvaluator creates a ShadowEvaluator for safe strategy comparison.
@@ -408,6 +421,8 @@ func (e *ShadowEvaluator) ShadowStrategy() *mutation.Strategy {
 //
 // Args:
 //   - scorer: scoring function (use nil to clear). Signature: func(ctx, *Strategy) float64.
+//
+// SetShadowScorer sets the scorer used to produce comparison evidence.
 func (e *ShadowEvaluator) SetShadowScorer(scorer func(context.Context, *mutation.Strategy) float64) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -424,6 +439,45 @@ func (e *ShadowEvaluator) HasIndependentScorer() bool {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	return e.shadowScorer != nil
+}
+
+// MinSamples returns the configured decisive-comparison floor the shadow
+// gate judges against (the wiring layer's ShadowEvaluationConfig value,
+// with the constructor's default applied when unset).
+func (e *ShadowEvaluator) MinSamples() int {
+	if e == nil {
+		return 0
+	}
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.minSamples
+}
+
+// SetEvidenceTiered attaches the dedicated budget-gated evidence scorer so
+// ResetEvidenceBudget can refresh its per-Prime budget. Wiring-time only.
+func (e *ShadowEvaluator) SetEvidenceTiered(t evidenceBudgetResetter) {
+	if e == nil {
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.evidenceTiered = t
+}
+
+// ResetEvidenceBudget refreshes the dedicated shadow-evidence LLM budget.
+// Called at the start of each ShadowSampler.Prime so one candidate's gate
+// sampling cannot consume the next candidate's evidence budget (population
+// scoring keeps its own ResetForGeneration at the Run entry point).
+func (e *ShadowEvaluator) ResetEvidenceBudget() {
+	if e == nil {
+		return
+	}
+	e.mu.RLock()
+	t := e.evidenceTiered
+	e.mu.RUnlock()
+	if t != nil {
+		t.ResetForGeneration()
+	}
 }
 
 // Evaluate scores both active and shadow strategies using the independent

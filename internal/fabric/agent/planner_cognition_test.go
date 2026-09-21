@@ -215,6 +215,12 @@ func TestPlannerCognition_GrowsTwoPlanRoundsWithToolNodes(t *testing.T) {
 	chatClient.mu.Unlock()
 }
 
+// plannerDepthGuardLiteral is the historical guard text the depth guard used
+// to stamp into forced answer nodes. Kept as a test constant so the
+// contract "guard text never becomes the answer" pins the exact string
+// (goconst: shared by the assertion pairs below).
+const plannerDepthGuardLiteral = "max plan depth reached"
+
 // TestPlannerCognition_MaxDepthForcesAnswer verifies the growth-depth guard:
 // when the plan depth reaches the max, the planner grows an answer
 // node instead of another tool round.
@@ -280,6 +286,21 @@ func TestPlannerCognition_MaxDepthForcesAnswer(t *testing.T) {
 	waitForTaskExists(t, fabric, answerID, 2*time.Second)
 	require.Equal(t, uint64(1), planner.(*plannerCognition).ForcedAnswers(),
 		"exactly one quantum hit the depth guard (M4-B2 canary metric)")
+
+	// External-result contract (REVIEW-2026-09-21 P2): the depth guard
+	// enforces TERMINATION only — it must not stamp its guard literal into
+	// the answer node's content. Content-less nodes route to M4.2 synthesis
+	// (or the honest gap body); the guard string masquerading as the answer
+	// reached external clients as COMPLETED result="max plan depth reached".
+	ansTask, err := fabric.Task(answerID)
+	require.NoError(t, err)
+	dc, decErr := taskfabric.DecodeCheckpoint(ansTask.Checkpoint)
+	require.NoError(t, decErr)
+	got, _ := dc.Payload["arg.content"].(string)
+	require.NotEqual(t, plannerDepthGuardLiteral, got,
+		"depth guard must not stamp its literal into the answer node content")
+	require.Equal(t, "", got,
+		"depth-guard answer node must be content-less so synthesis/gap-body applies")
 }
 
 // TestReaper_HarvestsTerminalTasks verifies the reaper: terminal tasks

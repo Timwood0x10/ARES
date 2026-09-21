@@ -253,11 +253,18 @@ func (c *plannerCognition) ExecuteStep(ctx context.Context, task *models.Task) (
 	depth := g.PlanDepth()
 	if depth >= c.maxDepth {
 		// Growth-depth upper bound reached: force an answer node so the
-		// session terminates instead of growing unbounded.
+		// session terminates instead of growing unbounded. The guard
+		// enforces TERMINATION only — the answer node is grown content-LESS
+		// on purpose: answerCognition then runs M4.2 synthesis over the
+		// accumulated predecessor/tool history (same bounded view the
+		// planner itself has), falling back to the honest gap body when
+		// synthesis is unavailable. Stamping the guard literal as content
+		// made it the session answer — external clients saw COMPLETED
+		// result="max plan depth reached" (REVIEW-2026-09-21 P2).
 		c.forcedAnswers.Add(1)
 		c.logger.Warn("planner: max plan depth reached, forcing answer",
 			"session", sessionID, "depth", depth, "max", c.maxDepth)
-		return c.growAnswerNode(ctx, g, task, "max plan depth reached", nil)
+		return c.growAnswerNode(ctx, g, task, "", nil)
 	}
 
 	// Assemble the LLM context from the predecessor path.
@@ -811,6 +818,11 @@ func (c *plannerCognition) l1Priors() []string {
 // path — no LLM call happened, so there is no usage to report); its token
 // usage rides the answer node's task result metadata into the checkpoint
 // envelope (the fitness cost channel, M4).
+//
+// content is the final-turn answer text the planner's LLM produced. Empty
+// means "no stamped answer" — the depth-guard path deliberately grows the
+// node content-less so answerCognition synthesizes from history (or emits
+// the gap body); guard/debug literals must never ride this parameter.
 //
 // The predecessor is the current plan node when it exists in the graph
 // (subsequent quanta), or the root node when it doesn't (the first plan

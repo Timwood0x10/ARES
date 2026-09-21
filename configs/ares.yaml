@@ -195,6 +195,11 @@ evolution:
   #   disarms rollback AND re-arms the G2 shadow gate fail-closed (see shadow
   #   below) — with neither pre- nor post-deployment verification, refusing
   #   promotion is the only correct behavior.
+  #   RUNTIME MIRROR (GA-soak fix): when the shadow gate IS registered but
+  #   decisive comparisons fall below shadow.min_samples (cold-start ties /
+  #   thin evidence), the gate SKIPS that decision instead of rejecting when
+  #   rollback is armed — the post-deployment watch net is the verification.
+  #   Disarmed rollback keeps the fail-closed reject.
   # rollback:
   #   enabled: true
   #   degradation_threshold: 0.15
@@ -376,6 +381,12 @@ kernel:
 tools:
   # builtin: load built-in tools (calculator, web_search, file, etc.)
   builtin: true
+  # file_sandbox_dir: workspace root the file_tools sandbox allows agents to
+  # read/write. Empty (default) falls back to a PROCESS-PRIVATE temp dir —
+  # agents then cannot touch the served repo or any project data, and every
+  # file_tools call fails with "access denied ... outside allowed directory".
+  # Set this to the directory agents should work in (e.g. the repo root).
+  # file_sandbox_dir: /path/to/workspace
   # mcp: list of MCP server commands to connect via stdio. Each command is
   #   started as a subprocess and its tools are automatically registered
   # mcp:

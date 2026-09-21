@@ -209,6 +209,73 @@ func (ts *TieredScorer) tryLLMScore(ctx context.Context, s *mutation.Strategy, h
 	return score, true
 }
 
+// ScoreEvidence evaluates a strategy for SHADOW COMPARISON evidence,
+// deliberately bypassing the per-generation score cache.
+//
+// The cache exists so population fitness scoring pays for each candidate
+// once per generation. Shadow comparisons are a different consumer: the
+// sampler scores the candidate/active pair minSamples times, each draw
+// against a different replay window, and needs INDEPENDENT evidence. A
+// cache hit returns the first draw's score for every later window, so
+// MinSamples is satisfied by repetition and the win rate collapses to 0 or
+// 1 — the comparisons become meaningless even when the underlying scorer is
+// non-deterministic. Budget accounting still applies: uncached LLM draws
+// consume MaxLLMCallsPerGeneration exactly like cached ones.
+//
+// Cache stats (cacheHits) are NOT credited here — an evidence draw that
+// skips the cache by design is not a cache hit.
+func (ts *TieredScorer) ScoreEvidence(ctx context.Context, s *mutation.Strategy) (float64, Tier, error) {
+	hash, err := StrategyHash(s)
+	if err != nil {
+		return 0, 0, fmt.Errorf("tiered scorer hash: %w", err)
+	}
+
+	if ts.llm != nil && ts.budget.TryRecordLLMCall() {
+		score, scored := ts.tryLLMScoreUncached(ctx, s, hash)
+		if scored {
+			return score, TierLLM, nil
+		}
+	}
+
+	score := ts.heuristic(s)
+	ts.heuristicCalls.Add(1)
+	ts.totalScored.Add(1)
+	return score, TierHeuristic, nil
+}
+
+// tryLLMScoreUncached is tryLLMScore without the cache.Put side effect —
+// the evidence path records the draw for budget/stats but must not poison
+// later windows' comparisons with a single cached value.
+func (ts *TieredScorer) tryLLMScoreUncached(ctx context.Context, s *mutation.Strategy, hash uint64) (float64, bool) {
+	var score float64
+	var success bool
+
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Error("tiered_scorer: LLM scorer panicked",
+					"hash", hash, "panic", r)
+				ts.budget.RecordFallback()
+				ts.fallbacks.Add(1)
+				success = false
+			}
+		}()
+
+		score = ts.llm(s)
+		success = true
+	}()
+
+	if !success {
+		return 0, false
+	}
+
+	ts.llmCalls.Add(1)
+	ts.totalScored.Add(1)
+	log.Debug("tiered_scorer: LLM scored (evidence, uncached)",
+		"hash", hash, "score", score)
+	return score, true
+}
+
 // Stats returns scoring statistics since creation or last ResetStats.
 //
 // Returns:

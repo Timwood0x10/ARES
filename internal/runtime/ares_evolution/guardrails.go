@@ -345,8 +345,18 @@ func (g *EvolutionGuardrails) preEvolveCheckLocked(ctx context.Context, currentB
 		return result
 	}
 
-	// Check 1: Unevaluated population guardrail
-	if totalPop > 0 {
+	// Check 1: Unevaluated population guardrail.
+	//
+	// Cold-start exemption: at generation 0 the bootstrap population has
+	// never been scored — the first evolution cycle IS what scores it
+	// (candidates receive fitness from the GA's own scorer during Run).
+	// The majority-unevaluated guard exists to protect an ESTABLISHED
+	// fitness view from judging on half-evaluated generations, not to
+	// deadlock the bootstrap: pre-fix, generation 0 reported unevaluated
+	// 19/20 on every tick, the guard blocked every cycle, and no cycle
+	// could ever evaluate the population — generation stayed 0 forever
+	// (GA soak 2026-09-21).
+	if totalPop > 0 && generation > 0 {
 		unevaluatedRatio := float64(unevaluatedCount) / float64(totalPop)
 		if unevaluatedRatio > 0.5 {
 			event := GuardrailEvent{

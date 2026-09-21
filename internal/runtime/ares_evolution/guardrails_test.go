@@ -108,6 +108,31 @@ func TestPreEvolveCheck_MajorityUnevaluated(t *testing.T) {
 	assert.Equal(t, 1, result.Events[0].Generation)
 }
 
+// TestPreEvolveCheck_ColdStartUnevaluatedExempt locks the GA-soak fix: at
+// generation 0 the bootstrap population is unevaluated BY DEFINITION — the
+// first evolution cycle is what scores it. The majority-unevaluated guard
+// must not block that cycle (pre-fix it blocked every tick forever:
+// unevaluated 19/20, generation stuck at 0). Established generations
+// (>=1) keep the guard (TestPreEvolveCheck_MajorityUnevaluated).
+func TestPreEvolveCheck_ColdStartUnevaluatedExempt(t *testing.T) {
+	defer discardLogs()()
+	g, err := NewEvolutionGuardrails(
+		WithBaselineScore(80.0),
+		WithMaxStagnantGenerations(5),
+	)
+	require.NoError(t, err)
+
+	ctx := context.Background()
+	result := g.PreEvolveCheck(ctx, 75.0, 0, 20, 19)
+
+	assert.False(t, result.ShouldStop,
+		"generation 0 with an unevaluated bootstrap population must NOT be blocked")
+	for _, ev := range result.Events {
+		assert.NotEqual(t, "unevaluated_population", ev.Rule,
+			"cold-start exemption must suppress the unevaluated_population rule")
+	}
+}
+
 func TestPreEvolveCheck_StagnationExceeded(t *testing.T) {
 	defer discardLogs()()
 	g, _ := NewEvolutionGuardrails(

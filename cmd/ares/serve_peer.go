@@ -16,7 +16,6 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_bootstrap"
 	"github.com/Timwood0x10/ares/internal/ares_config"
 	"github.com/Timwood0x10/ares/internal/aresrecovery"
-	"github.com/Timwood0x10/ares/internal/fabric/planprojection"
 	"github.com/Timwood0x10/ares/internal/fabric/task/workflow/engine"
 	"github.com/Timwood0x10/ares/internal/introspect"
 	"github.com/Timwood0x10/ares/internal/runtime"
@@ -128,8 +127,18 @@ func createAndServeAgents(
 }
 
 // wireLiveDAGAndCompile injects the configured agent population as the live
-// workflow topology and projects it into the task fabric through the shared
-// compile coordinator.
+// workflow topology for the evolution system and the runtime manager.
+//
+// The agent-population DAG is TOPOLOGY, not work: projecting it into the
+// task fabric compiled one READY task per peer with Capability = the peer's
+// yaml capability (e.g. "worker"), which no L2 executor advertises — the
+// scheduler then retried that task forever ("no capable candidate", one
+// retry every few seconds). Structure patches stay observable where they
+// actually act: the runtime manager's AgentDAG registry and the evolution
+// executors (UpdateLiveDAG → SetGraph/SetDAG/SetGraph). The compile
+// coordinator remains the projection path for REAL session/plan graphs,
+// which carry L2 capabilities and session envelopes; the lifecycle's
+// compile-info provider therefore counts real compiles only.
 func wireLiveDAGAndCompile(
 	ctx context.Context,
 	cfg *ares_config.Config,
@@ -149,50 +158,26 @@ func wireLiveDAGAndCompile(
 		case dagErr == nil:
 			mgr.RegisterAgentDAG(runtime.AgentDAGLiveKey, liveDAG)
 			if err := comp.NewEvolution.UpdateLiveDAG(liveDAG); err != nil {
-				log.Warn("serve: live DAG injection failed (evolution keeps placeholder)", "err", err)
+				log.WarnContext(ctx, "serve: live DAG injection failed (evolution keeps placeholder)", "err", err)
 			} else {
-				log.Info("serve: live agent DAG injected into evolution executors (nodes)", "count", len(liveDAG.Steps()))
+				log.InfoContext(ctx, "serve: live agent DAG injected into evolution executors (nodes)", "count", len(liveDAG.Steps()))
 			}
 
-			// Wire the compile coordinator so DAG mutations
-			// are projected into PlanSteps and compiled into the task
-			// fabric — the single projection path closes the "two
-			// graphs" gap. The coordinator subscribes to GraphEvents
-			// so structural patches (Insert/Remove/AddEdge) trigger
-			// recompilation without restart.
-			if peerKernel != nil && peerKernel.fabric != nil {
-				// Reuse the coordinator the shared L2 execution core already
-				// built (agentruntime.NewExecution). Constructing a second one
-				// here would split per-session graph subscriptions onto a
-				// different coordinator than the one Sessions holds.
-				if peerKernel.compileCoord == nil {
-					peerKernel.compileCoord = planprojection.NewCompileCoordinator(
-						peerKernel.fabric, comp.EventStore,
-					)
-				}
-				if _, err := peerKernel.compileCoord.CompileDAG(ctx, liveDAG); err != nil {
-					log.Warn("serve: initial DAG compile failed", "err", err)
-				} else {
-					log.Info("serve: live DAG compiled into task fabric")
-				}
-				peerKernel.compileCoord.SubscribeGraphEvents(ctx, liveDAG)
-
-				// Wire the compile coordinator into the strategy
-				// lifecycle so /api/evolution/lifecycle carries the
-				// attribution triplet (generation, gates, compile_id).
-				// The CompileCoordinator satisfies the
-				// evolution.CompileInfoProvider interface directly (it
-				// has CompileID/DAGVersion/CompileCount methods).
-				if comp.NewEvolution != nil && comp.NewEvolution.Lifecycle != nil {
-					comp.NewEvolution.Lifecycle.SetCompileInfoProvider(
-						peerKernel.compileCoord,
-					)
-				}
+			// Lifecycle attribution (/api/evolution/lifecycle generation /
+			// gates / compile_id) reads the shared L2 compile coordinator —
+			// the one Sessions already compiles session graphs through. The
+			// agent topology is deliberately NOT compiled into the task
+			// fabric (see the function comment).
+			if peerKernel != nil && peerKernel.compileCoord != nil &&
+				comp.NewEvolution.Lifecycle != nil {
+				comp.NewEvolution.Lifecycle.SetCompileInfoProvider(
+					peerKernel.compileCoord,
+				)
 			}
 		case errors.Is(dagErr, errNoLiveAgentDAG):
-			log.Info("serve: no peers configured; evolution keeps placeholder DAG")
+			log.InfoContext(ctx, "serve: no peers configured; evolution keeps placeholder DAG")
 		default:
-			log.Warn("serve: live agent DAG build failed (evolution keeps placeholder)", "err", dagErr)
+			log.WarnContext(ctx, "serve: live agent DAG build failed (evolution keeps placeholder)", "err", dagErr)
 		}
 	}
 }
