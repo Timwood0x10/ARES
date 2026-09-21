@@ -165,7 +165,7 @@ func TestRestoreFromStoreKeepsCascadeProvenance(t *testing.T) {
 	e1, err := f1.Acquire("a", "agent-a", time.Minute)
 	require.NoError(t, err)
 	require.NoError(t, f1.Start("a", "agent-a", e1))
-	require.NoError(t, f1.Fail("a", "agent-a", e1))
+	require.NoError(t, f1.Fail("a", "agent-a", e1, nil))
 
 	f2 := NewFabric().WithEventStore(store)
 	require.NoError(t, f2.RestoreFromStore(context.Background()))

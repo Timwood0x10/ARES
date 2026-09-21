@@ -5,6 +5,7 @@ package ares_config
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -87,6 +88,15 @@ func (c *Config) validateTasks() error {
 func (c *Config) validateServer() error {
 	if c.Server.Port < 1 || c.Server.Port > 65535 {
 		return fmt.Errorf("invalid server port: %d, must be between 1 and 65535", c.Server.Port)
+	}
+	// setDefaults fills an empty value with "ares/plan" before Validate runs
+	// on the production load path; an explicitly set whitespace-only value
+	// must not silently become an audit-log capability of blank spaces. The
+	// value itself is audit-only — execution normalizes to the single L2
+	// capability at the Submitter. Empty here is legal: unit tests Validate
+	// partial configs without defaults, and the load path backfills.
+	if c.Server.DefaultCapability != "" && strings.TrimSpace(c.Server.DefaultCapability) == "" {
+		return fmt.Errorf("invalid server.default_capability: must not be blank")
 	}
 	return nil
 }

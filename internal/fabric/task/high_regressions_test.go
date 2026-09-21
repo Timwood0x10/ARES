@@ -264,7 +264,7 @@ func TestReaperStillHarvestsUnreferencedTerminalTasks(t *testing.T) {
 	epoch, err := f.Acquire("sess/s2/b", "agent-b", time.Minute)
 	require.NoError(t, err)
 	require.NoError(t, f.Start("sess/s2/b", "agent-b", epoch))
-	require.NoError(t, f.Fail("sess/s2/b", "agent-b", epoch))
+	require.NoError(t, f.Fail("sess/s2/b", "agent-b", epoch, nil))
 
 	reaper := NewReaper(f, "sess/s2/", time.Nanosecond)
 	if n := reaper.Sweep(); n != 2 {

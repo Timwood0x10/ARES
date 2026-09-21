@@ -152,6 +152,13 @@ route registry:
 - **`server.default_capability` is audit-only**: the Submitter normalizes
   every submission to the single L2 capability (`ares/plan`); the yaml value
   never routes tasks to a different agent population.
+- **Result channel**: `GET /api/tasks/{id}` / `POST ?wait=` surface the
+  session answer as `result` on the L2 path (the fabric task's terminal
+  answer node), and the failure cause as `error` on FAILED — the quantum
+  step error persisted into the checkpoint envelope (`last_error`), falling
+  back to cascade provenance (`dependency <id> failed`) or a failed session
+  answer node when no cause was persisted. The full checkpoint envelope
+  (user profile, strategy attribution, raw payload) stays internal.
 
 Locked by `cmd/ares/agent_routes_external_auth_test.go`,
 `cmd/ares/checkauth_failclosed_test.go`, and

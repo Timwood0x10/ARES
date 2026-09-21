@@ -13,12 +13,15 @@
 //		result, _ := agent.Run(ctx, "your task")
 //
 //	Face 2 — remote (ares serve, for non-Go callers / other hosts):
-//		ares serve                           # boots the same kernel
+//		ares init myproj && cd myproj && ares serve
+//		# ares init generates security.api_key into ares.yaml — required:
+//		# with no credential layer the write gate answers 401 (loopback too)
 //		curl -X POST localhost:8080/api/tasks \
-//		  -H "Authorization: Bearer <security.api_key, fallback llm.api_key>" \
+//		  -H "Authorization: Bearer <security.api_key from ares.yaml>" \
 //		  -d '{"query":"your task"}'        # capability defaults from yaml
-//		curl localhost:8080/api/tasks/<task_id>   # poll status/result
-//		# POST ?wait=60s blocks until terminal (cap 300s), else 202 + poll
+//		curl localhost:8080/api/tasks/<task_id>   # result = session answer
+//		# POST ?wait=60s blocks until the result resolves (cap 300s), else
+//		# 202 + poll (timeout body carries the current state)
 //
 //	Or one command, same yaml, human output, zero flags:
 //		ares run -c ares.yaml "your task"

@@ -48,18 +48,17 @@ func TestAskAgent_IgnoresLLMSuppliedFromField(t *testing.T) {
 
 // TestAskAgent_EmptyCallerIDPropagatesEmpty pins the degraded provenance
 // contract: an execution path without a stamped CallerID sends an empty
-// from — never a model- or payload-supplied substitute.
+// from — never a model- or payload-supplied substitute. Payload contents
+// ride along opaquely (a "from" key inside the payload stays payload data
+// and never promotes into the bus-level From field).
 func TestAskAgent_EmptyCallerIDPropagatesEmpty(t *testing.T) {
 	var gotFrom string
-	sentinel := "payload-supplied"
+	var gotPayload map[string]any
 	kernel := NewKernel(nil, nil, nil, nil,
 		WithAskAgent(func(_ context.Context, from, _, _ string, payload any) error {
 			gotFrom = from
-			if m, ok := payload.(map[string]any); ok {
-				if v, ok := m["from"].(string); ok {
-					sentinel = v
-				}
-			}
+			m, _ := payload.(map[string]any)
+			gotPayload = m
 			return nil
 		}))
 
@@ -74,7 +73,7 @@ func TestAskAgent_EmptyCallerIDPropagatesEmpty(t *testing.T) {
 	if gotFrom != "" {
 		t.Fatalf("from = %q, want empty when CallerID is unstamped", gotFrom)
 	}
-	// Payload contents ride along opaquely — the point is they never
-	// promote into the bus-level From field.
-	_ = sentinel
+	if gotPayload["from"] != "evil" {
+		t.Fatalf("payload[from] = %v, want opaque pass-through of \"evil\"", gotPayload["from"])
+	}
 }

@@ -388,7 +388,7 @@ func TestRetryPolicyAllowsOneRetry(t *testing.T) {
 	if err := f.Start("t-retry", "agent-a", epoch); err != nil {
 		t.Fatalf("start 1: %v", err)
 	}
-	if err := f.Fail("t-retry", "agent-a", epoch); err != nil {
+	if err := f.Fail("t-retry", "agent-a", epoch, nil); err != nil {
 		t.Fatalf("fail 1: %v", err)
 	}
 	tk, _ = f.Task("t-retry")
@@ -403,7 +403,7 @@ func TestRetryPolicyAllowsOneRetry(t *testing.T) {
 	if err := f.Start("t-retry", "agent-a", epoch); err != nil {
 		t.Fatalf("start 2: %v", err)
 	}
-	if err := f.Fail("t-retry", "agent-a", epoch); err != nil {
+	if err := f.Fail("t-retry", "agent-a", epoch, nil); err != nil {
 		t.Fatalf("fail 2: %v", err)
 	}
 	tk, _ = f.Task("t-retry")

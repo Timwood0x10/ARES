@@ -615,7 +615,7 @@ if serveConfigPath != "" {
 
 ### 5.2 ~~`createLLMAdapterWithFallback`~~ — 已移除（0.3.1 / independent-review F-07）
 
-旧版在此构造 `internal/llm/output` 的 `LLMAdapter` 并穿针引线传入 `createAndServeAgents`/`createPeerAgents`，但函数体从未消费它——它宣称的"运行时 fallback 链"从未真正执行。0.3.1 删除了这条死装配，`cmd/ares/llm_adapter.go`（含 `ErrNoLLMAdapter`）随之移除。`internal/llm/output` 包本体保留（仍有 `evolution` 侧的 Parse 消费者与测试），登记为 0.4 删除候选。
+旧版在此构造 `internal/llm/output` 的 `LLMAdapter` 并穿针引线传入 `createAndServeAgents`/`createPeerAgents`，但函数体从未消费它——它宣称的"运行时 fallback 链"从未真正执行。0.3.1 删除了这条死装配，`cmd/ares/llm_adapter.go`（含 `ErrNoLLMAdapter`）随之移除。`internal/llm/output` 包本体于 0.4 周期整包删除（全仓零生产/测试外消费者，G1 可达性门禁核验）——历史描述仅存于 `CHANGELOG.md` 与 `docs/reviews/`。
 
 运行期的 provider 降级只剩一条链：**`FailoverClient`**（见 5.3）。
 

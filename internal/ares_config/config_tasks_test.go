@@ -45,3 +45,24 @@ func TestValidateTasksWaitTimeout(t *testing.T) {
 		t.Fatal("non-positive wait_timeout must be rejected")
 	}
 }
+
+// TestValidateServerDefaultCapability pins the plan §2.2 validation:
+// an explicitly whitespace-only server.default_capability is rejected; empty
+// is legal (setDefaults backfills "ares/plan" on the production load path)
+// and any non-blank value passes (the value itself is audit-only).
+func TestValidateServerDefaultCapability(t *testing.T) {
+	blank := &Config{Server: ServerConfig{Port: 8080, DefaultCapability: "   "}}
+	if err := blank.validateServer(); err == nil {
+		t.Fatal("whitespace-only default_capability must be rejected")
+	}
+
+	empty := &Config{Server: ServerConfig{Port: 8080}}
+	if err := empty.validateServer(); err != nil {
+		t.Fatalf("empty default_capability must pass (setDefaults fills it): %v", err)
+	}
+
+	ok := &Config{Server: ServerConfig{Port: 8080, DefaultCapability: "ares/plan"}}
+	if err := ok.validateServer(); err != nil {
+		t.Fatalf("valid default_capability rejected: %v", err)
+	}
+}

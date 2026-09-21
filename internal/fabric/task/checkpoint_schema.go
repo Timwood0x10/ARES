@@ -120,6 +120,16 @@ type CheckpointEnvelope struct {
 	// deployment): consumers fall back to their documented default tenant,
 	// never to another tenant's scope.
 	TenantID string `json:"tenant_id,omitempty"`
+	// LastError is the terminal failure cause stamped by Fabric.Fail when a
+	// quantum's step error exhausts the retry budget (checkpointWithCause).
+	// It exists so the external task view (GET /api/tasks/{id}) can surface
+	// WHY a task failed instead of only that it failed. Empty on every
+	// non-terminal task and on failures without a recorded cause (agent
+	// death, cascades — those name provenance via Task.FailedDependency).
+	// Stamped only on the terminal FAILED transition: a requeued task keeps
+	// its prior checkpoint untouched, and a later success re-wraps a fresh
+	// envelope that drops this field.
+	LastError string `json:"last_error,omitempty"`
 }
 
 // DecodedCheckpoint is the result of DecodeCheckpoint: the envelope's fields
@@ -149,6 +159,9 @@ type DecodedCheckpoint struct {
 	// TenantID is the tenant scope of this task ("" when absent or when the
 	// envelope predates schema v5).
 	TenantID string
+	// LastError is the terminal failure cause ("" when absent — see the
+	// envelope field for stamping semantics).
+	LastError string
 	// SchemaVersion is the envelope's version (0 when no checkpoint).
 	SchemaVersion int
 }
@@ -189,6 +202,7 @@ func DecodeCheckpoint(cp any) (DecodedCheckpoint, error) {
 			InputTokens:      env.InputTokens,
 			OutputTokens:     env.OutputTokens,
 			TenantID:         env.TenantID,
+			LastError:        env.LastError,
 			SchemaVersion:    env.SchemaVersion,
 		}, nil
 	}
@@ -230,6 +244,12 @@ func DecodeCheckpoint(cp any) (DecodedCheckpoint, error) {
 			}
 			dc.InputTokens = restoreInt(m, restoreKeyInputTokens)
 			dc.OutputTokens = restoreInt(m, restoreKeyOutputTokens)
+			if tid, ok := m[restoreKeyTenantID].(string); ok {
+				dc.TenantID = tid
+			}
+			if le, ok := m[restoreKeyLastError].(string); ok {
+				dc.LastError = le
+			}
 			return dc, nil
 		}
 		// A plain map without schema_version: treat as a raw step checkpoint.
@@ -267,7 +287,25 @@ func EncodeCheckpoint(dc DecodedCheckpoint) *CheckpointEnvelope {
 		InputTokens:      dc.InputTokens,
 		OutputTokens:     dc.OutputTokens,
 		TenantID:         dc.TenantID,
+		LastError:        dc.LastError,
 	}
+}
+
+// checkpointWithCause returns a checkpoint envelope carrying the failure
+// cause in LastError while preserving every other envelope field. A nil
+// cause returns the checkpoint unchanged (failures with no recorded error,
+// e.g. operator Fail calls); an undecodable checkpoint degrades to a fresh
+// envelope holding only the cause rather than losing the failure text.
+func checkpointWithCause(cp any, cause error) any {
+	if cause == nil {
+		return cp
+	}
+	dc, err := DecodeCheckpoint(cp)
+	if err != nil {
+		return EncodeCheckpoint(DecodedCheckpoint{LastError: cause.Error()})
+	}
+	dc.LastError = cause.Error()
+	return EncodeCheckpoint(dc)
 }
 
 // strategyIDFromCheckpoint extracts the submission-time strategy attribution

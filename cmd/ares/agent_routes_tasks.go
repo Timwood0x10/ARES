@@ -248,17 +248,31 @@ func (h *actionHandler) handleSubmitTask(w http.ResponseWriter, r *http.Request,
 		// server-side — the same failure mode the graph handler documents.
 		// Slack covers response encoding.
 		extendWriteDeadline(w, waitDur+time.Minute)
-		if t, ok := waitForTaskTerminal(r.Context(), h.kernel, taskID, waitDur); ok {
+		// The wait covers the full external result channel — terminal state
+		// AND the session answer where one exists — not just the plan task's
+		// own completion. Expiry degrades to the async contract: submission
+		// never fails because a wait expired, and a readable task still
+		// reports its current state so the client can resume polling GET.
+		if t, resolved := waitForTaskResult(r.Context(), h.kernel, taskID, waitDur); resolved {
 			w.WriteHeader(http.StatusOK)
-			writeJSON(w, taskStatusFromTask(t))
+			writeJSON(w, h.taskStatusFromTask(t))
+			return
+		} else if t != nil {
+			w.WriteHeader(http.StatusAccepted)
+			writeJSON(w, map[string]any{
+				taskViewFieldTaskID: taskID,
+				"status":            taskStatusSubmitted,
+				taskViewFieldState:  string(t.State),
+				"message":           "task accepted by the peer runtime; result not resolved within wait",
+			})
 			return
 		}
 	}
 	w.WriteHeader(http.StatusAccepted)
 	writeJSON(w, map[string]any{
-		"task_id": taskID,
-		"status":  taskStatusSubmitted,
-		"message": "task accepted by the peer runtime",
+		taskViewFieldTaskID: taskID,
+		"status":            taskStatusSubmitted,
+		"message":           "task accepted by the peer runtime",
 	})
 }
 

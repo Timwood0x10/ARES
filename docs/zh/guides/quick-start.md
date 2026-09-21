@@ -61,14 +61,16 @@ curl -sS -X POST localhost:8080/api/tasks \
   -d '{"query":"What is Go concurrency?"}'
 # → 202 {"task_id":"...","status":"submitted"}
 
-# 读结果：TaskView 精简字段 + result
+# 读结果：TaskView 精简字段 + result（L2 路径下 result 为会话答案；
+# FAILED 时 error 字段携带失败原因）
 curl -sS -H "Authorization: Bearer <同上>" localhost:8080/api/tasks/<task_id>
 
-# 可选同步等待：?wait=<dur> 阻塞到终态（硬顶 300s；空值取 tasks.wait_timeout，默认 60s）；
-# 超时仍 202，提交不失败
+# 可选同步等待：?wait=<dur> 阻塞到结果通道解析（终态 + 会话答案可得；
+# 硬顶 300s；空值取 tasks.wait_timeout，默认 60s）；超时仍 202 并携带当前
+# state，提交不失败
 ```
 
-HTTP 层是内部 submitter 的薄适配——**没有任何调度逻辑活在 HTTP 里**。HTTP 门禁凭证优先 `security.api_key`（专用控制面凭据），未设置时回落 `llm.api_key`（兼容旧行为）。
+HTTP 层是内部 submitter 的薄适配——**没有任何调度逻辑活在 HTTP 里**。HTTP 门禁凭证优先 `security.api_key`（专用控制面凭据），未设置时回落 `llm.api_key`（兼容旧行为）。**两者皆空时 write 门 401（deny-by-default，loopback 也拒绝）**——例如 ollama 这类不需要 `llm.api_key` 的 provider，必须先设置 `security.api_key` 才能 POST；`ares init` 会在模板里生成一个。
 
 ### 一条命令（同样只读 ares.yaml，human 输出，零配置 flag）
 
@@ -103,20 +105,21 @@ tasks:
   # （Go duration；硬顶 300s；run 未设置时保持自身默认 120s）
   wait_timeout: 60s
 security:
-  # 专用 HTTP 控制面凭证（优先于 llm.api_key；空则回落旧行为）
+  # 专用 HTTP 控制面凭证（优先于 llm.api_key；两者皆空时 write 门 401）。
+  # ares init 生成的模板会带一个随机值
   api_key: ""
 memory:
   enabled: true   # 样例默认开；蒸馏需 storage+embedding，RAG 另需 enable_rag
 ```
 
-`ares init` 会生成可用的 ares.yaml 模板；`ares doctor` / `ares status` 可自检装配状态。
+`ares init` 会生成可用的 ares.yaml 模板（含随机 `security.api_key`）；`ares doctor` / `ares status` 可自检装配状态。
 
 ## 常见问题
 
 - **LLM 调用失败**：检查 ares.yaml `llm:` 段（provider/base_url/model/api_key）；Ollama 需本机 `ollama serve` 且模型已 pull
-- **POST /api/tasks 401**：write 门 deny-by-default——请求需带 `Authorization: Bearer <llm.api_key>`（或配置 JWT）
+- **POST /api/tasks 401**：write 门 deny-by-default——请求需带 `Authorization: Bearer <security.api_key>`（未设置时回落 `llm.api_key`；或配置 JWT）。两者皆空（如 ollama 默认配置）时必须先在 ares.yaml 设置 `security.api_key`
 - **GET /api/tasks/{id} 401**：配置了凭证层后读接口也必须带凭证
-- **任务一直非终态**：`GET /api/tasks/{id}` 看 state；确认 capability 与 `agents.peers` 声明的 capabilities 匹配（默认 `ares/plan` 走 L2 路径）
+- **任务一直非终态**：`GET /api/tasks/{id}` 看 `state`；`error` 字段在失败时携带原因。`capability` 是审计性字段（执行侧恒规范化到 `ares/plan`），与 `agents.peers` 声明的 capabilities 无关，不需要对照排查
 
 ## 下一步
 

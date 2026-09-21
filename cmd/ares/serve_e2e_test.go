@@ -278,35 +278,36 @@ func TestServeProductionE2E(t *testing.T) {
 
 	env := bootServeE2E(t, ctx)
 
-	// Wait for the peer runtime to come up: leader-OFF registration + kernel
-	// scheduler evidence. These appear shortly after boot.
+	// Wait for the peer runtime to come up: no-leader peer registration +
+	// kernel scheduler evidence. These appear shortly after boot.
 	evidence := []string{
-		"serve: Leader OFF mode",
+		"peer agents registered, Kernel scheduler started (no leader)",
 		"kernel scheduler:",
-		"kernel: live flip to policy=taskfabric",
 	}
 	seen := env.waitBootEvidence(t, ctx, evidence)
 
 	// Submit a task over HTTP (POST /api/tasks) — the peer-runtime user entry.
-	submitErr := submitTaskViaHTTP(env.port, env.bearer, "coder", "fix the bug")
+	// The payload carries the canonical input key (taskPayloadInput) so the
+	// L2 planner can assemble context; a task_desc-only submission fails
+	// planner cognition with "payload has no string input". The prompt is
+	// deliberately answer-sized: this test proves serve WIRING (boot +
+	// submit + terminal through GET), not answer quality — an open-ended
+	// prompt makes the real LLM planner grow a large graph that can outlive
+	// the e2e budget without indicating a wiring defect.
+	taskID, submitErr := submitTaskViaHTTP(env.port, env.bearer, "coder", "reply with the single word pong")
 	if submitErr != nil {
 		t.Fatalf("submit task over HTTP: %v", submitErr)
 	}
 
-	// The scheduler must show execution activity after the submission. The
-	// peer path has no "task N completed" leader log; instead we wait for the
-	// scheduler to attempt execution (its "kernel scheduler:" activity) — the
-	// task itself requires the real LLM and completes asynchronously.
-	sawSchedulerActivity := false
-	activityDeadline := time.Now().Add(60 * time.Second)
-	for time.Now().Before(activityDeadline) {
-		data, _ := os.ReadFile(env.logPath)
-		if strings.Contains(string(data), "kernel scheduler: execute") ||
-			strings.Contains(string(data), "no capable candidate") {
-			sawSchedulerActivity = true
-			break
-		}
-		time.Sleep(2 * time.Second)
+	// Execution proof: the submitted task must reach a terminal state
+	// readable through GET /api/tasks/{id}. A success-path scheduler quantum
+	// logs nothing at Info level (only failures hit "kernel scheduler:
+	// execute task failed"), so log grepping cannot observe a healthy drain —
+	// the external read surface can, and polling it to terminal IS the
+	// execution proof.
+	view := pollExternalTask(t, env.port, env.bearer, taskID, 120*time.Second)
+	if view.State != string(taskfabric.StateCompleted) && view.State != string(taskfabric.StateFailed) {
+		t.Errorf("submitted task state = %q, want terminal", view.State)
 	}
 
 	logText, _ := os.ReadFile(env.logPath)
@@ -317,10 +318,8 @@ func TestServeProductionE2E(t *testing.T) {
 			t.Errorf("missing scheduling evidence %q in serve log", e)
 		}
 	}
-	if !sawSchedulerActivity {
-		t.Errorf("no scheduler activity observed after HTTP task submission")
-	}
-	t.Logf("serve production E2E OK: peer runtime up, task submitted, scheduler evidence present")
+	t.Logf("serve production E2E OK: peer runtime up, task %s terminal (state=%s), boot evidence present",
+		taskID, view.State)
 }
 
 // TestExternalSimpleQueryE2E is the stranger-view golden path: with only a
@@ -340,7 +339,7 @@ func TestExternalSimpleQueryE2E(t *testing.T) {
 
 	env := bootServeE2E(t, ctx)
 	evidence := []string{
-		"serve: Leader OFF mode",
+		"peer agents registered, Kernel scheduler started (no leader)",
 		"kernel scheduler:",
 	}
 	seen := env.waitBootEvidence(t, ctx, evidence)
@@ -361,8 +360,20 @@ func TestExternalSimpleQueryE2E(t *testing.T) {
 	if view.Capability == "" {
 		t.Error("terminal view must carry a capability")
 	}
-	t.Logf("external golden path OK: task=%s state=%s quantum=%d capability=%s",
-		view.TaskID, view.State, view.Quantum, view.Capability)
+	// P1 contract: a COMPLETED external task must surface a non-empty
+	// result channel (the session answer, or the step-checkpoint fallback).
+	// An LLM failure still terminates FAILED and stays acceptable here —
+	// response-quality checks belong to deployments with known good
+	// credentials — but when the scheduler reports success the external
+	// view must carry something back, or the one-interface promise is unmet.
+	if view.State == string(taskfabric.StateCompleted) && view.Result == nil {
+		t.Errorf("COMPLETED external task must carry a result, got nil (view: %+v)", view)
+	}
+	if view.State == string(taskfabric.StateFailed) && view.Error == "" && view.Result == nil {
+		t.Logf("FAILED external task carries neither error nor result (cause may be unpersisted agent death): %+v", view)
+	}
+	t.Logf("external golden path OK: task=%s state=%s quantum=%d capability=%s result=%v error=%q",
+		view.TaskID, view.State, view.Quantum, view.Capability, view.Result, view.Error)
 }
 
 // postExternalQuery submits the minimal external body {"query": "..."} — no
@@ -413,6 +424,7 @@ func pollExternalTask(t *testing.T, port int, bearer, taskID string, wait time.D
 	t.Helper()
 	client := &http.Client{Timeout: 5 * time.Second}
 	deadline := time.Now().Add(wait)
+	var last taskStatusResponse
 	for time.Now().Before(deadline) {
 		req, err := http.NewRequest(http.MethodGet,
 			fmt.Sprintf("http://localhost:%d/api/tasks/%s", port, taskID), nil)
@@ -436,34 +448,52 @@ func pollExternalTask(t *testing.T, port int, bearer, taskID string, wait time.D
 		if view.State == string(taskfabric.StateCompleted) || view.State == string(taskfabric.StateFailed) {
 			return view
 		}
+		last = view
 		time.Sleep(2 * time.Second)
 	}
-	t.Fatalf("task %s did not reach a terminal state within %s", taskID, wait)
+	t.Fatalf("task %s did not reach a terminal state within %s (last state=%q) — see serve log for planner/scheduler errors",
+		taskID, wait, last.State)
 	return taskStatusResponse{}
 }
 
 // submitTaskViaHTTP POSTs an explicit-capability task to the serve
-// /api/tasks endpoint using the given port and bearer.
-func submitTaskViaHTTP(port int, bearer, capability, input string) error {
+// /api/tasks endpoint using the given port and bearer. The payload carries
+// BOTH canonical prompt keys: payload["input"] (the L2 planner's prompt
+// source — a submission without it makes planner cognition fail with "payload
+// has no string input") and payload["task_desc"] (the documented envelope
+// slot).
+func submitTaskViaHTTP(port int, bearer, capability, input string) (string, error) {
 	body, _ := json.Marshal(map[string]any{
 		"capability": capability,
-		"payload":    map[string]any{"task_desc": input},
+		"payload": map[string]any{
+			taskPayloadInput: input,
+			taskPayloadDesc:  input,
+		},
 	})
 	req, err := http.NewRequest(http.MethodPost,
 		fmt.Sprintf("http://localhost:%d/api/tasks", port), bytes.NewReader(body))
 	if err != nil {
-		return err
+		return "", err
 	}
 	req.Header.Set("Authorization", "Bearer "+bearer)
 	req.Header.Set("Content-Type", "application/json")
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusAccepted {
-		return fmt.Errorf("POST /api/tasks: status %d", resp.StatusCode)
+		return "", fmt.Errorf("POST /api/tasks: status %d", resp.StatusCode)
 	}
-	return nil
+	var accepted struct {
+		TaskID string `json:"task_id"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&accepted); err != nil {
+		return "", fmt.Errorf("decode submit response: %w", err)
+	}
+	if accepted.TaskID == "" {
+		return "", fmt.Errorf("submit response missing task_id")
+	}
+	return accepted.TaskID, nil
 }

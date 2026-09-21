@@ -42,7 +42,10 @@ server:
 #   # POST /api/tasks, GET /api/tasks/{id}, /api/tools/call, ...). When set
 #   # it takes precedence over llm.api_key so the LLM provider credential no
 #   # longer doubles as the HTTP gate token. Empty (default) falls back to
-#   # llm.api_key — the pre-decoupling behavior, kept for compatibility.
+#   # llm.api_key; with BOTH empty the write gate answers 401 even on
+#   # loopback (deny-by-default) — providers without an llm.api_key (e.g.
+#   # ollama) must set this before serving. `ares init` generates a random
+#   # value into the project template.
 #   api_key: ""
 #   # auth_enabled: mount the JWT layer (deny-by-default when jwt_secret is
 #   # empty — misconfig is safer than open).

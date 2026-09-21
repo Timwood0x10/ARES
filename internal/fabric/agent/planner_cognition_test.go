@@ -363,7 +363,7 @@ func createTask(t *testing.T, f *taskfabric.Fabric, id, capability string, state
 		if state == taskfabric.StateCompleted {
 			require.NoError(t, f.Complete(id, "reaper-test", epoch))
 		} else {
-			require.NoError(t, f.Fail(id, "reaper-test", epoch))
+			require.NoError(t, f.Fail(id, "reaper-test", epoch, nil))
 			got, _ := f.Task(id)
 			require.Equal(t, taskfabric.StateFailed, got.State,
 				"task must settle FAILED after exhausting retry budget")

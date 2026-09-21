@@ -150,7 +150,7 @@ func TestL2SessionAnswerFailed(t *testing.T) {
 		if err := fabric.Start(id, "agt", epoch); err != nil {
 			t.Fatalf("Start %s: %v", id, err)
 		}
-		if err := fabric.Fail(id, "agt", epoch); err != nil {
+		if err := fabric.Fail(id, "agt", epoch, nil); err != nil {
 			t.Fatalf("Fail %s: %v", id, err)
 		}
 	}

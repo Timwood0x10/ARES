@@ -1,8 +1,8 @@
 # ares 架构拆解 (XX)：LLM 客户端层——Client、Failover 与多 Provider 抽象（0.3.x）
 
-第 V 篇（工具系统）讲的是工具怎么被调用。但*谁*在调用 LLM？那是 `internal/llm/` 层。它其实是**两个包**：`internal/llm`（`Client`、`FailoverClient`，含测试约 5.4k 行）和 `internal/llm/output`（每个 provider 的 adapter 与响应解析，含测试约 5.8k 行）。合起来让 ares 能跟 OpenAI、Ollama、OpenRouter、Anthropic 对话，而不必关心是谁在回答。
+第 V 篇（工具系统）讲的是工具怎么被调用。但*谁*在调用 LLM？那是 `internal/llm/` 层——如今是**单个包**（`Client`、`FailoverClient`，含测试约 5.4k 行），让 ares 能跟 OpenAI、Ollama、OpenRouter、Anthropic 对话，而不必关心是谁在回答。
 
-> 诚实校正：旧文写成"两个包共 5,799 行"。实际 `wc -l`（含 `_test.go`）是 `internal/llm` 约 5,400 行、`internal/llm/output` 约 5,791 行，两包合计约 1.1 万行。
+> **0.4 删除记录**：ReAct 时代的姊妹包 `internal/llm/output`（per-provider adapter 与响应解析，含测试约 5.8k 行）自 0.3.1 起**生产零调用**（independent-review F-07），已整包删除。运行期 provider 降级只剩 `internal/llm` 的 `FailoverClient` 一条链；工具调用的消息/工具类型存活在 `internal/llmcore`（`ToolCall`、`LLMMessage` 等），由 `internal/llm/chat.go` 按 provider 归一化。被删包的历史描述仅保留在 `CHANGELOG.md` 与 `docs/reviews/`。
 
 ---
 
@@ -132,60 +132,6 @@ ch, err := client.GenerateStream(attemptCtx, prompt)
 
 ---
 
-## DeepSeek `ReasoningContent`
-
-DeepSeek thinking-mode 响应里有个独立的 `reasoning_content` 字段，和 `content` 分开。ares 早期的解析直接丢掉了它。
-
-> 位置校正：旧文写的是在 `internal/llmcore/llm.go` 的 `Message`/`AssistantMsg` 上。**不准确**——这个字段存活在 `internal/llm/output` 包里：`output/openai.go` 的 `Message`（带 `reasoning_content` JSON tag）解析后，通过 `parseToolCallsFromResponse` 灌进 `output/toolcall.go` 的 `AssistantMsg.ReasoningContent`，再用 `AssistantMsg.toMap()` 原样写回请求（多轮工具调用时思考链能往返）：
-
-```go
-// internal/llm/output/toolcall.go
-type AssistantMsg struct {
-    Role             string              `json:"role"`
-    Content          string              `json:"content,omitempty"`
-    ReasoningContent string              `json:"reasoning_content,omitempty"` // DeepSeek thinking trace
-    ToolCalls        []AssistantToolCall `json:"tool_calls,omitempty"`
-}
-
-func (m *AssistantMsg) toMap() map[string]interface{} {
-    msg := map[string]interface{}{keyRole: m.Role, keyContent: m.Content}
-    if m.ReasoningContent != "" {
-        msg["reasoning_content"] = m.ReasoningContent
-    }
-    // ...
-    return msg
-}
-```
-
-**坦诚反思**：这是 provider 专属特性泄漏进核心结构。你可能会问"干净的设计不该是 `ProviderMetadata map[string]any` 吗？"——有类型的 `ReasoningContent` 字段更容易用和文档化。我们选了务实而非纯粹。
-
----
-
-## Output adapter：是 Factory，不是 switch（0.3.1 起生产零调用）
-
-> **0.3.1 现状（independent-review F-07）**：`internal/llm/output` 已经**没有生产调用方**。serve 原先的 `createLLMAdapterWithFallback` 把 adapter 穿针引线传进 peer 装配，但从未被消费——该死装配已删除，运行期 LLM 降级只走 `internal/llm` 的 `FailoverClient` 一条链。本节描述的 Factory 仍是包内真实设计，但整包登记为 **0.4 删除候选**。
-
-生产代码里并没有 `NewAdapter(provider) + switch`。它是个**注册式 Factory**（`output/factory.go`）。适配器按 provider 名注册进 `Factory.adapters`，`Create`/`CreateAdapter` 取出，未知 provider 返回 `ErrUnsupportedProvider`。还支持 `RegisterProvider` 在外部挂自定义 adapter：
-
-```go
-// internal/llm/output/factory.go
-type Factory struct{ adapters map[string]func(*Config) LLMAdapter }
-
-func NewFactory() *Factory { /* 注册 openai / ollama / openrouter */ }
-
-func (f *Factory) Create(provider string, config *Config) (LLMAdapter, error)
-func CreateAdapter(provider string, config *Config) (LLMAdapter, error)
-func RegisterProvider(provider string, factory func(*Config) LLMAdapter)
-```
-
-三个内置 adapter——`NewOpenAIAdapter`、`NewOllamaAdapter`、`NewOpenRouterAdapter`——都实现 `LLMAdapter` 接口（`Generate` / `GenerateWithParams` / `GenerateStructured` / `GenerateStream` / `GetModel`）。`OpenRouterAdapter` 与 OpenAI 兼容复用大部分逻辑；**没有独立的 Anthropic adapter**（Anthropic 的 `Chat`/流式由 `internal/llm` 的 `chatAnthropic`/`streamAnthropic` 直接处理）。
-
-每个 provider 响应格式不同，解析后都归一化到统一类型；`parser.go` 负责把 LLM 文本折成结构化结果（`ParseRecommendResult`/`ParseJSON`/`ParseArray`…，带 markdown 围栏剥离、括号配平、JSON 修复 `fixJSONString`）。Ollama 的 `Generate` 走 `/api/generate` 的 `/response` 字段，OpenAI 走 `/chat/completions` 的 `choices[].message.content`。
-
-**坦诚反思**：Anthropic 用和 OpenAI 不同的消息/工具格式。曾经有人在 adapter 层想把一切归一到 OpenAI 格式，简单场景能用，工具调用上崩了——最后是每个 adapter 各管各的格式、`parser.go` 做最终归一化。记住一句话：**适配器负责协议差异，parser 负责输出差异。**
-
----
-
 ## Chat 路由与工具调用
 
 `Chat(ctx, messages []*core.LLMMessage, tools []core.Tool, params map[string]any)` 是工具调用路径（`params` 是 evolution 策略下发的温度/tokens/top_k 覆盖）。按 provider 分派到不同端点：
@@ -210,7 +156,7 @@ if baseURL == "" {
 req, _ := http.NewRequestWithContext(ctx, "POST", baseURL+"/api/chat", bytes.NewBuffer(jsonBody))
 ```
 
-响应里的 `message.tool_calls` 会归一化成 `core.ToolCall`。`internal/llm/output/toolcall.go` 定义了一组工具调用输出类型：`ToolCall`、`ToolResult`、`ToolChoice`（`auto`/`none`/`required`）、`ToolCallResponse`、`ToolCapable` 接口（`GenerateWithTools` / `SendToolResult`）。
+响应里的 `message.tool_calls` 会归一化成 `llmcore.ToolCall`（`internal/llmcore/llm.go`）——工具调用的共享消息/工具类型（`ToolCall`、`LLMMessage`、`Tool`、`GenerateResponse`），每个 provider 的 `chatXxx` 路径都写入这套类型。
 
 ---
 

@@ -96,7 +96,7 @@ func (f *Fabric) RunQuantum(taskID, agentID string, epoch uint64, step QuantumSt
 			}
 			return stepErr
 		}
-		if failErr := f.Fail(taskID, agentID, epoch); failErr != nil {
+		if failErr := f.Fail(taskID, agentID, epoch, stepErr); failErr != nil {
 			return errors.Join(stepErr, failErr)
 		}
 		return stepErr

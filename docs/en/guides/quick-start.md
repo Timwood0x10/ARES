@@ -62,15 +62,18 @@ curl -sS -X POST localhost:8080/api/tasks \
   -d '{"query":"What is Go concurrency?"}'
 # → 202 {"task_id":"...","status":"submitted"}
 
-# read the result: TaskView slim fields + result
+# read the result: TaskView slim fields + result (the session answer on the
+# L2 path; the error field carries the failure cause on FAILED)
 curl -sS -H "Authorization: Bearer <same>" localhost:8080/api/tasks/<task_id>
 
-# optional sync wait: ?wait=<dur> blocks until terminal (hard cap 300s;
+# optional sync wait: ?wait=<dur> blocks until the result channel resolves
+# (terminal state AND the session answer where one exists; hard cap 300s;
 # empty value uses tasks.wait_timeout, default 60s); on timeout the
-# response stays 202 — submission never fails on wait expiry
+# response stays 202 and carries the current state — submission never fails
+# on wait expiry
 ```
 
-The HTTP layer is a thin adapter over the internal submitter — **no scheduling logic lives there**. The HTTP gate credential prefers the dedicated `security.api_key`; when unset it falls back to `llm.api_key` (legacy behavior).
+The HTTP layer is a thin adapter over the internal submitter — **no scheduling logic lives there**. The HTTP gate credential prefers the dedicated `security.api_key`; when unset it falls back to `llm.api_key` (legacy behavior). **With neither set the write gate answers 401 (deny-by-default, loopback included)** — providers that need no `llm.api_key` (e.g. ollama) must set `security.api_key` first; `ares init` generates one into the template.
 
 ### One command (same yaml, human output, zero config flags)
 
@@ -107,22 +110,23 @@ tasks:
   # unset default of 120s)
   wait_timeout: 60s
 security:
-  # dedicated HTTP control-plane credential (preferred over llm.api_key;
-  # empty falls back to the legacy behavior)
+  # dedicated HTTP control-plane credential (preferred over llm.api_key).
+  # With BOTH empty the write gate answers 401; ares init generates a
+  # random value into the template
   api_key: ""
 memory:
   enabled: true   # sample default on; distillation needs storage+embedding,
                   # RAG prompt injection additionally needs enable_rag
 ```
 
-`ares init` generates a working ares.yaml template; `ares doctor` / `ares status` report the assembled runtime.
+`ares init` generates a working ares.yaml template (including a random `security.api_key`); `ares doctor` / `ares status` report the assembled runtime.
 
 ## Common issues
 
 - **LLM call fails**: check the `llm:` section (provider/base_url/model/api_key); Ollama needs a local `ollama serve` with the model pulled
-- **POST /api/tasks 401**: the write gate is deny-by-default — send `Authorization: Bearer <llm.api_key>` (or configure JWT)
+- **POST /api/tasks 401**: the write gate is deny-by-default — send `Authorization: Bearer <security.api_key>` (falls back to `llm.api_key` when unset; or configure JWT). With both empty (e.g. the default ollama config) set `security.api_key` in ares.yaml first
 - **GET /api/tasks/{id} 401**: once any credential layer is configured the read gate requires it too
-- **Task never terminal**: read `state` via GET; confirm the capability matches the `agents.peers` capabilities (the default `ares/plan` takes the L2 path)
+- **Task never terminal**: read `state` via GET; the `error` field carries the failure cause. `capability` is audit-only (execution is always normalized to `ares/plan`) and unrelated to `agents.peers` capabilities — do not chase that match
 
 ## Next steps
 

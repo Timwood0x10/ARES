@@ -35,6 +35,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -297,11 +299,31 @@ func main() {
 }
 `
 
-	// ares.yaml config template.
-	aresYaml := `# ARES project configuration
+	// ares.yaml config template. security.api_key is generated per project:
+	// the serve write gate is deny-by-default, and providers without an
+	// api_key (e.g. ollama) leave the llm.api_key fallback empty — without
+	// a dedicated security.api_key every POST /api/tasks answers 401, even
+	// on loopback.
+	apiKey, keyErr := generateServeAPIKey()
+	if keyErr != nil {
+		return keyErr
+	}
+	aresYaml := fmt.Sprintf(`# ARES project configuration — the single config entry point (no config flags)
 llm:
   provider: ollama    # openai | anthropic | openrouter
   model: llama3.2
+
+server:
+  # default_capability is audit-only: execution normalizes every submission
+  # to the single L2 capability (ares/plan) at the Submitter.
+  default_capability: ares/plan
+
+security:
+  # Dedicated HTTP control-plane credential for ares serve (POST /api/tasks,
+  # GET /api/tasks/{id}). Required when llm.api_key is empty (e.g. ollama):
+  # the write gate is deny-by-default without a credential layer. Present it
+  # as "Authorization: Bearer <api_key>". Keep ares.yaml out of VCS.
+  api_key: %s
 
 memory:
   enabled: true
@@ -314,7 +336,7 @@ reflection:
 
 evolution:
   enabled: false
-`
+`, apiKey)
 
 	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(goMod), 0644); err != nil {
 		return fmt.Errorf("write go.mod: %w", err)
@@ -322,14 +344,30 @@ evolution:
 	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte(mainGo), 0644); err != nil {
 		return fmt.Errorf("write main.go: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "ares.yaml"), []byte(aresYaml), 0644); err != nil {
+	// ares.yaml carries security.api_key — owner-only mode, matching the
+	// "keep ares.yaml out of VCS / protected" guidance the template itself
+	// states (a world-readable control-plane credential undercuts it).
+	if err := os.WriteFile(filepath.Join(dir, "ares.yaml"), []byte(aresYaml), 0600); err != nil {
 		return fmt.Errorf("write ares.yaml: %w", err)
 	}
 
 	fmt.Printf("✅ Created ARES project in %s\n", dir)
 	fmt.Println("   Files: go.mod, main.go, ares.yaml")
+	fmt.Println("   ares.yaml carries a generated security.api_key — use it as the")
+	fmt.Println("   Authorization bearer for ares serve HTTP calls; keep the file out of VCS.")
 	fmt.Println("   Run:   cd", dir, "&& go run .")
 	return nil
+}
+
+// generateServeAPIKey mints the per-project HTTP control-plane credential
+// written into the ares init template (security.api_key). Random 192-bit
+// hex: long enough that the bearer cannot be guessed, short enough to copy.
+func generateServeAPIKey() (string, error) {
+	buf := make([]byte, 24)
+	if _, err := rand.Read(buf); err != nil {
+		return "", fmt.Errorf("generate security.api_key: %w", err)
+	}
+	return hex.EncodeToString(buf), nil
 }
 
 // findAresRoot walks up from the current directory looking for go.mod

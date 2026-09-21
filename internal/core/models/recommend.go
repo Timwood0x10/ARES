@@ -34,10 +34,10 @@ type RecommendItem struct {
 	URL      string  `json:"url"`
 	ImageURL string  `json:"image_url"`
 	// AgentPreferences carries the user's style tags. The JSON tag is
-	// deliberately "style" (the LLM output schema key, see
-	// llm/output/schema.go keyStyle); note the validator's normalized map
-	// re-serializes the same field as "agent_preferences" — a known naming
-	// divergence kept for schema compatibility.
+	// deliberately "style" (the LLM output schema key — historical name
+	// from the retired output-adapter layer); note the validator's
+	// normalized map re-serializes the same field as "agent_preferences" —
+	// a known naming divergence kept for schema compatibility.
 	// TODO(tech-debt): unify the serialization name across the schema, the
 	// struct tag, and the validator map.
 	AgentPreferences []StyleTag     `json:"style"`

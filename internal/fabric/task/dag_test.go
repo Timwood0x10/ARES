@@ -114,7 +114,7 @@ func TestFailCascadesToDependents(t *testing.T) {
 	if err := f.Start("a", "agent-x", epoch); err != nil {
 		t.Fatalf("Start a: %v", err)
 	}
-	if err := f.Fail("a", "agent-x", epoch); err != nil {
+	if err := f.Fail("a", "agent-x", epoch, nil); err != nil {
 		t.Fatalf("Fail a: %v", err)
 	}
 
@@ -171,7 +171,7 @@ func TestFailRetryRequeueDoesNotCascade(t *testing.T) {
 	if err := f.Start("a", "agent-x", epoch); err != nil {
 		t.Fatalf("Start a: %v", err)
 	}
-	if err := f.Fail("a", "agent-x", epoch); err != nil {
+	if err := f.Fail("a", "agent-x", epoch, nil); err != nil {
 		t.Fatalf("Fail a: %v", err)
 	}
 	if a, _ := f.Task("a"); a.State != StateReady {
@@ -199,7 +199,7 @@ func TestCascadeEmitsFailedEventsPerDependent(t *testing.T) {
 	if err := f.Start("a", "agent-x", epoch); err != nil {
 		t.Fatalf("Start a: %v", err)
 	}
-	if err := f.Fail("a", "agent-x", epoch); err != nil {
+	if err := f.Fail("a", "agent-x", epoch, nil); err != nil {
 		t.Fatalf("Fail a: %v", err)
 	}
 	var failedB bool
