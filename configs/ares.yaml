@@ -20,6 +20,34 @@ server:
   # (or set introspect.token below) to keep the read side closed.
   # host: 127.0.0.1
   # port: 8080
+  # default_capability: capability POST /api/tasks uses when a submission
+  # omits one — the external one-interface entry ({"query": "..."}).
+  # NOTE: AUDIT-ONLY default. Execution normalizes every submission to the
+  # single L2 capability (ares/plan) at the Submitter; this value appears in
+  # audit logs and the pre-normalization path, it does NOT route tasks to a
+  # different peer.
+  # default_capability: ares/plan
+
+# ── External task surface ───────────────────────────────────
+# tasks:
+#   # wait_timeout: default sync-wait when POST /api/tasks carries `?wait=`
+#   # with no explicit value, AND the ares run context timeout when set
+#   # (Go duration; hard cap 300s on both surfaces; ares run keeps its own
+#   # larger unset default of 120s).
+#   wait_timeout: 60s
+
+# ── Security ────────────────────────────────────────────────
+# security:
+#   # api_key: DEDICATED HTTP control-plane credential (bearer for
+#   # POST /api/tasks, GET /api/tasks/{id}, /api/tools/call, ...). When set
+#   # it takes precedence over llm.api_key so the LLM provider credential no
+#   # longer doubles as the HTTP gate token. Empty (default) falls back to
+#   # llm.api_key — the pre-decoupling behavior, kept for compatibility.
+#   api_key: ""
+#   # auth_enabled: mount the JWT layer (deny-by-default when jwt_secret is
+#   # empty — misconfig is safer than open).
+#   # auth_enabled: false
+#   # jwt_secret: ""
 
 # ── Introspection read side ──────────────────────────────────
 # The /introspect panel, its JSON feed (/api/v1/introspect/*), the cost
@@ -29,8 +57,8 @@ introspect:
   # side is open, protected only by the loopback default bind (server.host
   # 127.0.0.1) — startup logs a Warn describing that posture. Non-empty:
   # non-loopback clients must send "Authorization: Bearer <token>";
-  # loopback clients stay open. Composes with security.auth_enabled and
-  # ARES_API_KEY (any one credential passes).
+  # loopback clients stay open. Composes with security.auth_enabled — a
+  # valid read-permission JWT or the control-plane api_key also passes.
   # token: change-me-panels-are-read-only
 
 # ── LLM provider ─────────────────────────────────────────────

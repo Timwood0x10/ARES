@@ -54,10 +54,32 @@ func (c *Config) Validate() error {
 		return err
 	}
 
+	if err := c.validateTasks(); err != nil {
+		return err
+	}
+
 	if c.Storage.EventsRetentionDays < 0 {
 		return fmt.Errorf("invalid events retention days: %d, must be >= 0 (0 = keep forever)", c.Storage.EventsRetentionDays)
 	}
 
+	return nil
+}
+
+// validateTasks validates the external task-submission surface config.
+// tasks.wait_timeout must parse as a positive Go duration when set; the
+// 300s hard cap is enforced at the handler (a larger configured default is
+// clamped, not rejected).
+func (c *Config) validateTasks() error {
+	if c.Tasks.WaitTimeout == "" {
+		return nil
+	}
+	d, err := time.ParseDuration(c.Tasks.WaitTimeout)
+	if err != nil {
+		return fmt.Errorf("invalid tasks.wait_timeout %q: %w", c.Tasks.WaitTimeout, err)
+	}
+	if d <= 0 {
+		return fmt.Errorf("invalid tasks.wait_timeout %q: must be positive", c.Tasks.WaitTimeout)
+	}
 	return nil
 }
 

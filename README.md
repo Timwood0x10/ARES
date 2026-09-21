@@ -60,8 +60,33 @@ Install the CLI:
 ```bash
 go install github.com/Timwood0x10/ares/cmd/ares@latest
 ares doctor
-ares run -c ares.yaml "What is Go?"
+ares run -c ares.yaml "What is Go?"     # one command, human output, zero config flags
 ```
+
+**One interface, two faces — all configuration lives in `ares.yaml`** (the single config entry point; there are no config flags). The same kernel (scheduler / DAG / GA / memory) is reachable in-process (above) or over HTTP when you run `ares serve` for non-Go callers:
+
+```bash
+ares serve &   # boots the full AgentOS kernel from ares.yaml
+
+# submit — the external one-interface entry: {"query": "..."} is enough
+curl -sS -X POST localhost:8080/api/tasks \
+  -H "Authorization: Bearer $ARES_HTTP_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"analyze yesterday'"'"'s incidents"}'
+# → 202 {"task_id":"...","status":"submitted"}
+# bearer = security.api_key from ares.yaml (dedicated HTTP credential);
+# when unset it falls back to llm.api_key (legacy behavior)
+# capability defaults to server.default_capability — NOTE: audit-only, the
+# Submitter normalizes execution to the single L2 capability ares/plan
+
+# read the result — GET /api/tasks/{task_id} (TaskView slim fields + result)
+curl -sS -H "Authorization: Bearer $ARES_HTTP_KEY" localhost:8080/api/tasks/<task_id>
+
+# optional: POST /api/tasks?wait=<dur> blocks until terminal (hard cap 300s,
+# empty value uses tasks.wait_timeout, default 60s); timeout still answers 202
+```
+
+> The HTTP layer is a thin adapter over the internal submitter — no scheduling logic lives there. `server.default_capability` and `tasks.wait_timeout` are set in ares.yaml like everything else.
 
 Or assemble from a YAML config in code — one option loads everything:
 

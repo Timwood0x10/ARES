@@ -52,6 +52,7 @@ const (
 // Config holds all configuration for the server.
 type Config struct {
 	Server     ServerConfig     `yaml:"server"`
+	Tasks      TasksConfig      `yaml:"tasks"`
 	LLM        LLMConfig        `yaml:"llm"`
 	Agents     AgentsConfig     `yaml:"agents"`
 	Tools      ToolsConfig      `yaml:"tools"`

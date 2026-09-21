@@ -356,6 +356,29 @@ func findAresRoot() string {
 
 // ── run ────────────────────────────────────────────────────────
 
+// runWaitDefault is the per-surface CLI default for a full agent.Run turn:
+// a complete LLM turn typically needs more than one HTTP request wait, so
+// `ares run` keeps a larger unset default than serve's 60s ?wait= default.
+const runWaitDefault = 120 * time.Second
+
+// resolveRunWait returns the sync-wait budget for `ares run`: tasks.wait_timeout
+// from ares.yaml when set (capped at taskWaitMaxDuration — the same 300s
+// ceiling serve enforces on POST /api/tasks?wait=), else runWaitDefault.
+// Unparseable/non-positive yaml values fall back to the default (validateTasksWait
+// reports the typo separately). Configuration travels only through ares.yaml.
+func resolveRunWait(cfg *sdk.ConfigFile) time.Duration {
+	wait := runWaitDefault
+	if cfg != nil && cfg.Tasks.WaitTimeout != "" {
+		if d, err := time.ParseDuration(cfg.Tasks.WaitTimeout); err == nil && d > 0 {
+			wait = d
+		}
+	}
+	if wait > taskWaitMaxDuration {
+		wait = taskWaitMaxDuration
+	}
+	return wait
+}
+
 func runRun(cmd *cobra.Command, _ []string) error {
 	configPath, _ := cmd.Flags().GetString("config")
 
@@ -383,7 +406,9 @@ func runRun(cmd *cobra.Command, _ []string) error {
 	}
 	opts = append(opts, sdk.WithTrace(true))
 
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	// Sync-wait budget for the whole agent.Run turn comes from ares.yaml via
+	// resolveRunWait — no config flags exist (zero-flag rule).
+	ctx, cancel := context.WithTimeout(context.Background(), resolveRunWait(cfg))
 	defer cancel()
 
 	rt := sdk.NewRuntime(opts...)

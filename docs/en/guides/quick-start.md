@@ -1,313 +1,132 @@
-# Quick Start Guide
+# Quick Start
 
-This guide helps you run your first ARES example within 10 minutes.
+Run the ARES "one interface" golden path in 10 minutes.
+
+**All configuration lives in `ares.yaml`** — the single config entry point (LLM, memory, kernel, external-surface defaults are all in that one file). There are no config flags.
 
 ## Prerequisites
 
-### Required Components
+- **Go 1.26+**: `go version`
+- **LLM backend** (one of, configured in the `llm:` section of ares.yaml):
+  - Ollama: `ollama pull llama3.2` (the yaml defaults target this provider/model)
+  - Cloud API: fill `llm.provider` / `llm.api_key` / `llm.model` in ares.yaml
+- **PostgreSQL + pgvector** (optional): only needed for persistence / distillation / vector retrieval
 
-- **Go 1.26+**
-  ```bash
-  go version  # Check version
-  ```
+```bash
+git clone https://github.com/Timwood0x10/ares
+cd ares
+go mod download
+```
 
-- **PostgreSQL 15+ with pgvector** (optional, for persistence)
-  ```bash
-  # Quick start with Docker:
-  ./scripts/docker/restart.sh
-  ```
+## Golden path: one interface, two faces, one kernel
 
-- **LLM API Key** (optional, for AI features)
-  ```bash
-  export OPENROUTER_API_KEY="your-api-key"
-  ```
+Scheduling (kernel / MutableDAG / GA / memory) sits hidden behind the interface — callers never learn it.
 
-## Quick Start with Bootstrap
-
-The fastest way to start using ARES is through the bootstrap API:
+### Face 1 — in-process (Go programs, zero HTTP)
 
 ```go
 package main
 
 import (
-    "context"
-    "fmt"
-    "log"
+	"context"
+	"fmt"
 
-    "github.com/Timwood0x10/ares/api/bootstrap"
+	"github.com/Timwood0x10/ares/api"
 )
 
 func main() {
-    ctx := context.Background()
+	rt := api.MustNew() // reads ./ares.yaml; wires LLM/memory/evolution kernel
+	defer rt.Close()
 
-    // Create ARES instance with all modules wired.
-    ares, err := bootstrap.New(ctx, bootstrap.DefaultConfig())
-    if err != nil {
-        log.Fatal(err)
-    }
-    defer ares.Stop()
-
-    // Start runtime.
-    if err := ares.Start(ctx); err != nil {
-        log.Fatal(err)
-    }
-    fmt.Println("ARES started!")
-
-    // Use the modules:
-    // ares.Runtime  — agent lifecycle
-    // ares.Memory   — memory management
-    // ares.Evolution — genetic algorithm
-    // ares.Arena    — chaos engineering
+	agent := rt.NewAgent("assistant", api.WithInstruction("You are helpful."))
+	result, err := agent.Run(context.Background(), "What is Go concurrency?")
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(result.Output)
 }
 ```
 
-## Run Examples
+### Face 2 — serve HTTP (non-Go callers / remote hosts)
 
 ```bash
-# Quick start (bootstrap API)
-go run examples/quickstart/main.go
+ares serve &   # boots the full AgentOS kernel from ares.yaml
 
-# Graph workflow demos
-go run examples/graph_demo/basic/basic_example.go
-go run examples/graph_demo/conditional/conditional_example.go
-go run examples/graph_demo/scheduler/scheduler_example.go
+# submit: the external minimal body {"query": "..."} — capability defaults
+# to server.default_capability from ares.yaml. NOTE: that default is
+# AUDIT-ONLY — the Submitter normalizes execution to the single L2
+# capability (ares/plan); it does not route to a different peer.
+curl -sS -X POST localhost:8080/api/tasks \
+  -H "Authorization: Bearer <security.api_key or llm.api_key fallback>" \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"What is Go concurrency?"}'
+# → 202 {"task_id":"...","status":"submitted"}
 
-# Advanced patterns
-go run examples/advanced/mutable_dag/main.go
-go run examples/advanced/dynamic_executor/main.go
-go run examples/advanced/leader_failover/main.go
+# read the result: TaskView slim fields + result
+curl -sS -H "Authorization: Bearer <same>" localhost:8080/api/tasks/<task_id>
 
-# Multi-agent collaboration
-go run examples/travel/main.go
-
-# Chaos engineering
-go run examples/mcp-dashboard/main.go
-  ollama pull llama3.2
-  ```
-
-### Optional Components
-
-- **Docker** (for quick PostgreSQL setup)
-- **Redis** (for distributed caching, optional)
-
-## Installation Steps
-
-### 1. Clone the Project
-
-```bash
-git clone https://github.com/yourusername/go-agent.git
-cd go-agent
+# optional sync wait: ?wait=<dur> blocks until terminal (hard cap 300s;
+# empty value uses tasks.wait_timeout, default 60s); on timeout the
+# response stays 202 — submission never fails on wait expiry
 ```
 
-### 2. Install Dependencies
+The HTTP layer is a thin adapter over the internal submitter — **no scheduling logic lives there**. The HTTP gate credential prefers the dedicated `security.api_key`; when unset it falls back to `llm.api_key` (legacy behavior).
+
+### One command (same yaml, human output, zero config flags)
 
 ```bash
-go mod download
+ares run -c ares.yaml "What is Go concurrency?"
 ```
 
-### 3. Configure Database
+## Run examples
 
-#### Option 1: Use Local PostgreSQL
+Examples live under `examples/_fixtures/`:
 
 ```bash
-# Create database
-createdb ARES
+# golden-path example (in-process api/ + the HTTP contract in its header)
+go run examples/_fixtures/01-quickstart/main.go
 
-# Start PostgreSQL
-pg_ctl start
-
-# Install pgvector extension
-psql -d ARES -c "CREATE EXTENSION vector;"
+# other examples run by numbered directory, e.g.:
+go run examples/_fixtures/03-dag-workflow/main.go
+go run examples/_fixtures/31-memory-distillation/main.go
 ```
 
-#### Option 2: Use Docker (Recommended)
+`make quickstart` runs 01-quickstart equivalently.
 
-```bash
-# Start PostgreSQL + pgvector
-docker run -d \
-  --name ares-db \
-  -e POSTGRES_PASSWORD=postgres \
-  -e POSTGRES_DB=ARES \
-  -p 5433:5432 \
-  pgvector/pgvector:pg15
-
-# Wait for database startup
-sleep 5
-
-# Verify connection
-docker exec -it ares-db psql -U postgres -d ARES -c "SELECT version();"
-```
-
-### 4. Configure Example
-
-Edit `examples/knowledge-base/config.yaml`:
-
-**Code Location**: `examples/knowledge-base/config.yaml`
+## External-surface sections in ares.yaml
 
 ```yaml
-database:
-  host: localhost
-  port: 5433  # Default is 5433 when using Docker
-  user: postgres
-  password: postgres
-  database: ARES
-
-embedding_service_url: http://localhost:11434
-embedding_model: nomic-embed-text
-
-llm:
-  provider: openrouter
-  api_key: your-api-key  # Configure your API key
-  base_url: https://openrouter.ai/api/v1
-  model: meta-llama/llama-3.1-8b-instruct
-
+server:
+  # capability used by POST /api/tasks when the request omits one
+  # (default ares/plan) — AUDIT-ONLY: execution is always normalized to
+  # the L2 capability; this value does not route to other peers
+  default_capability: ares/plan
+tasks:
+  # default sync-wait for POST /api/tasks?wait= AND the ares run context
+  # timeout when set (Go duration; hard cap 300s; run keeps its own larger
+  # unset default of 120s)
+  wait_timeout: 60s
+security:
+  # dedicated HTTP control-plane credential (preferred over llm.api_key;
+  # empty falls back to the legacy behavior)
+  api_key: ""
 memory:
-  enabled: true
-  enable_distillation: true
-  distillation_threshold: 3
+  enabled: true   # sample default on; distillation needs storage+embedding,
+                  # RAG prompt injection additionally needs enable_rag
 ```
 
-### 5. Import Knowledge Base
+`ares init` generates a working ares.yaml template; `ares doctor` / `ares status` report the assembled runtime.
 
-```bash
-cd examples/knowledge-base
+## Common issues
 
-# Import sample document
-go run main.go --save README.md
-```
+- **LLM call fails**: check the `llm:` section (provider/base_url/model/api_key); Ollama needs a local `ollama serve` with the model pulled
+- **POST /api/tasks 401**: the write gate is deny-by-default — send `Authorization: Bearer <llm.api_key>` (or configure JWT)
+- **GET /api/tasks/{id} 401**: once any credential layer is configured the read gate requires it too
+- **Task never terminal**: read `state` via GET; confirm the capability matches the `agents.peers` capabilities (the default `ares/plan` takes the L2 path)
 
-**Code Location**: `examples/knowledge-base/main.go:325-350` (ImportDocuments function)
+## Next steps
 
-Expected output:
-```
-Importing document: README.md
-Document split into 5 chunks
-Successfully imported 5/5 chunks
-Document imported successfully. Document ID: xxx
-```
-
-## Running Examples
-
-### Knowledge Base Q&A
-
-```bash
-cd examples/knowledge-base
-go run main.go --chat
-```
-
-**Code Location**: `examples/knowledge-base/main.go:370-400` (StartChat function)
-
-Expected output:
-```
-Chat mode. Enter your questions (type 'exit' to quit):
-LLM enabled - Using RAG (Retrieval + Generation) mode
-Memory enabled - Conversation history and distillation supported
-Session created: session_xxx
-
-You: what is go-agent?
-```
-
-### Travel Planning
-
-```bash
-cd examples/travel
-go run main.go
-```
-
-**Code Location**: `examples/travel/main.go:30-120` (main function)
-
-## Verify Installation
-
-### Check Database Connection
-
-```bash
-# Connect to database
-psql -h localhost -p 5433 -U postgres -d ARES
-
-# List tables
-\dt
-
-# You should see these tables:
-# - knowledge_chunks_1024
-# - distilled_memories
-# - conversations
-# - task_results
-```
-
-**Code Location**: `internal/storage/postgres/migrate.go:50-100` (Database migration)
-
-### Check Vector Search
-
-```bash
-# In knowledge-base example
-cd examples/knowledge-base
-go run main.go --list
-```
-
-**Code Location**: `examples/knowledge-base/main.go:410-430` (ListDocuments function)
-
-Expected output:
-```
-Documents:
-- ID: xxx, Source: README.md, Chunks: 5
-```
-
-## Common Issues
-
-### Q: go mod download fails?
-
-**A**: Use Go proxy:
-```bash
-export GOPROXY=https://goproxy.cn,direct
-go mod download
-```
-
-### Q: PostgreSQL connection fails?
-
-**A**: Check the following:
-1. Is PostgreSQL running?
-2. Is the port correct (Docker default is 5433)?
-3. Are username and password correct?
-4. Is pgvector extension installed?
-
-**Code Location**: `internal/storage/postgres/pool.go:35-50` (Connection pool initialization)
-
-### Q: Ollama connection fails?
-
-**A**: Check if Ollama is running:
-```bash
-# Check Ollama status
-ollama list
-
-# Test model
-ollama run llama3.2 "hello"
-```
-
-**Code Location**: `internal/llm/client.go:80-100` (LLM client)
-
-### Q: LLM call timeout?
-
-**A**: Check timeout configuration in config, increase timeout:
-```yaml
-llm:
-  timeout: 120  # Increase to 120 seconds
-```
-
-**Code Location**: `internal/llm/client.go:120-140` (Timeout configuration)
-
-## Next Steps
-
-- Read [Architecture Documentation](../../../ARCHITECTURE.md) to understand system design
-- Read [Integration Guide](../development/integration-guide.md) to learn how to integrate into existing projects
-- Check [Example Code](../../../examples/) to learn more usage
-
-## Get Help
-
-- Check [FAQ](faq.md)
-- Submit [Issue](https://github.com/Timwood0x10/ares/issues)
-
----
-
-**Last Updated**: 2026-03-23  
-**Version**: v1.0.0  
-**Code Base**: Based on actual go-agent code analysis
+- Architecture overview: [ARCHITECTURE.md](../../../ARCHITECTURE.md)
+- Full config reference: [config.yaml guide (EN)](../../articles/en/25-config-yaml-guide.en.md) / [中文](../../articles/zh/25-config-yaml-guide.zh.md)
+- Integration guide: [integration-guide.md](../development/integration-guide.md)
+- FAQ: [faq.md](faq.md)

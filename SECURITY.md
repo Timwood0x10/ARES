@@ -110,3 +110,49 @@ under any tenant id. A genuine multi-tenant deployment MUST bind the tenant
 at the authentication layer (derive it from the JWT principal server-side)
 instead of trusting the request body — and the two knowledge-side gaps above
 must be closed before the isolation is end to end.
+
+### IPC sender provenance
+
+Agent-to-agent collaboration (`ask_agent` → the `agentipc` bus) follows the
+same Kernel-stamped provenance contract as `Task.Origin` and tenancy:
+
+- The `ask_agent` tool arguments carry **no `from` field** (`To`/`Topic`/
+  `Payload` only — `internal/agentsyscall/syscall.go`). The binder never
+  decodes a sender identity from model output.
+- The Kernel stamps `from := kctx.CallerID(ctx)` at the syscall boundary, so
+  the bus always sees the executing agent's identity, never a
+  model-supplied one. A `{"from": "..."}` key smuggled into the tool-args
+  map is ignored.
+- Direct in-process `agentipc.Bus.Send(ctx, from, ...)` callers pass `from`
+  as a library parameter — that surface trusts its Go callers by
+  construction (an in-process caller can already do anything in-process).
+  The LLM-reachable boundary is the syscall above, and it is closed.
+
+Locked by `internal/agentsyscall/syscall_from_provenance_test.go`.
+
+### External task surface auth posture
+
+`POST /api/tasks` and `GET /api/tasks/{task_id}` ride the control-plane
+route registry:
+
+- **Credential precedence**: `security.api_key` (dedicated HTTP
+  control-plane credential, redacted in `Config.Redacted()`) when set; empty
+  falls back to `llm.api_key` — the pre-decoupling behavior, kept so
+  existing deployments keep working. New deployments SHOULD set
+  `security.api_key` so leaking the LLM provider credential no longer hands
+  over the HTTP control plane.
+- **Write gate** (`POST /api/tasks`): deny-by-default. With no credential
+  layer configured every submission is rejected with 401 — loopback
+  included. A read-only (agent-role) JWT earns 403, not submission.
+- **Read gate** (`GET /api/tasks/{task_id}`): once ANY credential layer is
+  configured (JWT / api key / introspect token) it is required on every
+  client, loopback included. With no layer configured only direct loopback
+  passes (the documented local-dev posture); non-loopback clients get 401
+  and proxied-loopback headers are not trusted.
+- **`server.default_capability` is audit-only**: the Submitter normalizes
+  every submission to the single L2 capability (`ares/plan`); the yaml value
+  never routes tasks to a different agent population.
+
+Locked by `cmd/ares/agent_routes_external_auth_test.go`,
+`cmd/ares/checkauth_failclosed_test.go`, and
+`internal/agentsyscall/syscall_from_provenance_test.go`.

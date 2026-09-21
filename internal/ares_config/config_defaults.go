@@ -16,6 +16,13 @@ const (
 	// a hosts-file remap could point off-loopback).
 	defaultServerHost  = "127.0.0.1"
 	defaultLLMProvider = "ollama"
+	// DefaultCapabilityDefault is the capability POST /api/tasks uses when a
+	// submission omits one: "ares/plan" is the single L2 submission
+	// capability the Submitter normalizes every plan-path task to.
+	DefaultCapabilityDefault = "ares/plan"
+	// defaultTaskWaitTimeout is the sync-wait applied when POST /api/tasks
+	// carries `?wait=` with no explicit duration.
+	defaultTaskWaitTimeout = "60s"
 	// defaultLLMModel must name a model the default provider (Ollama) can
 	// actually serve, and must match the SDK's default (sdk.defaultModel) so a
 	// zero-config serve and a zero-config SDK run behave the same. The previous
@@ -145,6 +152,12 @@ func (c *Config) setDefaults() {
 	}
 	if c.Server.Port == 0 {
 		c.Server.Port = 8080
+	}
+	if c.Server.DefaultCapability == "" {
+		c.Server.DefaultCapability = DefaultCapabilityDefault
+	}
+	if c.Tasks.WaitTimeout == "" {
+		c.Tasks.WaitTimeout = defaultTaskWaitTimeout
 	}
 	if c.LLM.Provider == "" {
 		c.LLM.Provider = defaultLLMProvider

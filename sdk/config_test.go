@@ -557,3 +557,46 @@ func TestWithRAG(t *testing.T) {
 
 // boolPtr is a test helper for tri-state *bool config fields.
 func boolPtr(b bool) *bool { return &b }
+
+// TestValidateTasksWait locks the sdk-side tasks.wait_timeout contract:
+// empty is fine (surface defaults apply), unparseable/non-positive are
+// rejected through Validate.
+func TestValidateTasksWait(t *testing.T) {
+	ok := &ConfigFile{Tasks: TasksFileConfig{WaitTimeout: "90s"}}
+	if err := ok.Validate(); err != nil {
+		t.Fatalf("valid tasks.wait_timeout rejected: %v", err)
+	}
+	empty := &ConfigFile{}
+	if err := empty.validateTasksWait(); err != nil {
+		t.Fatalf("empty tasks.wait_timeout must pass: %v", err)
+	}
+	bad := &ConfigFile{Tasks: TasksFileConfig{WaitTimeout: "soon"}}
+	if err := bad.validateTasksWait(); err == nil {
+		t.Fatal("unparseable tasks.wait_timeout must be rejected")
+	}
+	neg := &ConfigFile{Tasks: TasksFileConfig{WaitTimeout: "-5s"}}
+	if err := neg.validateTasksWait(); err == nil {
+		t.Fatal("non-positive tasks.wait_timeout must be rejected")
+	}
+}
+
+// TestConfigFileTasksYamlRoundtrip pins that the tasks section actually
+// parses from ares.yaml through the sdk loader (it used to be dropped
+// silently — no field existed).
+func TestConfigFileTasksYamlRoundtrip(t *testing.T) {
+	content := `
+llm:
+  provider: ollama
+tasks:
+  wait_timeout: 75s
+`
+	path, cleanup := tmpConfigFile(t, content)
+	defer cleanup()
+	cfg, err := LoadConfigFile(path)
+	if err != nil {
+		t.Fatalf("LoadConfigFile: %v", err)
+	}
+	if cfg.Tasks.WaitTimeout != "75s" {
+		t.Fatalf("Tasks.WaitTimeout = %q, want 75s", cfg.Tasks.WaitTimeout)
+	}
+}

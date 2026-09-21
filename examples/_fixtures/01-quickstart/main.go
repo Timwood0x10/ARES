@@ -1,32 +1,47 @@
-// Quickstart — the simplest end-to-end example with ARES.
+// Quickstart — the golden path: one interface, the whole AgentOS kernel.
 //
 // Purpose:
 //
-//	Show the minimal flow: load YAML config, create a Runtime, register one
-//	custom tool, create an Agent, and run a single conversational turn.
+//	Show the minimal external flow. ARES has two faces sharing ONE execution
+//	kernel (scheduler / MutableDAG / GA / memory all invisible behind it),
+//	and ALL configuration comes from ares.yaml — the single config entry
+//	point; there are no config flags.
+//
+//	Face 1 — in-process (this example, zero HTTP):
+//		rt := api.MustNew()                  // reads ./ares.yaml
+//		agent := rt.NewAgent("assistant", api.WithInstruction("..."))
+//		result, _ := agent.Run(ctx, "your task")
+//
+//	Face 2 — remote (ares serve, for non-Go callers / other hosts):
+//		ares serve                           # boots the same kernel
+//		curl -X POST localhost:8080/api/tasks \
+//		  -H "Authorization: Bearer <security.api_key, fallback llm.api_key>" \
+//		  -d '{"query":"your task"}'        # capability defaults from yaml
+//		curl localhost:8080/api/tasks/<task_id>   # poll status/result
+//		# POST ?wait=60s blocks until terminal (cap 300s), else 202 + poll
+//
+//	Or one command, same yaml, human output, zero flags:
+//		ares run -c ares.yaml "your task"
 //
 // Learning objectives (what this example teaches you):
-//   - How to load ares.yaml and convert it into Runtime options.
-//   - How to create a Runtime (which auto-wires LLM, memory, distillation,
-//     AKG, and evolution) and close it when done.
-//   - How to register a custom tool via the Runtime's ToolRegistry.
-//   - How to create an Agent with a system instruction and call Run().
+//   - ares.yaml is the ONLY config entry point (LLM, memory, kernel, defaults).
+//   - api.MustNew / api.NewRuntime assemble the full kernel from that one file.
+//   - Custom tools register in-process via rt.ToolRegistry().
+//   - agent.Run executes one L2 session through the SAME scheduler serve uses.
 //
 // Core APIs used (with package paths):
 //   - ares.LoadConfigFile             — github.com/Timwood0x10/ares/api
 //   - (*cfg.ConfigFile).ToOptions()  — github.com/Timwood0x10/ares/api
 //   - ares.NewRuntime                 — github.com/Timwood0x10/ares/api
 //   - rt.ToolRegistry().Register     — github.com/Timwood0x10/ares/api
-//   - rt.NewAgent                    — github.com/Timwood0x10/ares/api
-//   - ares.WithInstruction            — github.com/Timwood0x10/ares/api
-//   - agent.Run                      — github.com/Timwood0x10/ares/api
-//   - ares.ToolFunc                 — github.com/Timwood0x10/ares/api
+//   - rt.NewAgent / ares.WithInstruction / agent.Run — github.com/Timwood0x10/ares/api
+//   - ares.ToolFunc                  — github.com/Timwood0x10/ares/api
 //
 // Run:
 //
 //	go run examples/_fixtures/01-quickstart/main.go
 //
-// Expected output (when an LLM backend is configured):
+// Expected output (when an LLM backend is configured in ares.yaml):
 //
 //	✅ <the assistant's text answer, e.g. "result of 15*23 + 100 = 445">
 //	   tools: 1 calls | tokens: <n> | took: <duration>
@@ -34,8 +49,8 @@
 // If no API key / Ollama is available the run will fail with an LLM error.
 //
 // Try editing ares.yaml to toggle memory.enable_distillation,
-// knowledge.enabled or evolution.enabled and see the behaviour change.
-// You can also change the instruction string or the tool's description.
+// server.default_capability or evolution.enabled and see the behaviour
+// change — every knob lives in that one file.
 package main
 
 import (

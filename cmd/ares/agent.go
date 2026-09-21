@@ -88,6 +88,15 @@ type actionHandler struct {
 	// POST /api/tasks (submitPeerTask); nil on the legacy leader path makes
 	// that endpoint report 503 "peer runtime not active".
 	kernel *kernelHandle
+	// defaultCapability is the capability POST /api/tasks uses when a
+	// submission omits one (server.default_capability in ares.yaml; an empty
+	// value falls back to the L2 plan capability). Config-sourced only —
+	// there is no CLI-flag config path.
+	defaultCapability string
+	// taskWaitDefault is the sync-wait applied when POST /api/tasks carries
+	// `?wait=` with no explicit duration (tasks.wait_timeout in ares.yaml;
+	// zero falls back to 60s). Capped at taskWaitMaxDuration either way.
+	taskWaitDefault time.Duration
 	// chaosStopToken guards the chaos emergency-stop endpoint: requests must
 	// carry a matching X-Chaos-Token header. Empty disables the endpoint.
 	chaosStopToken string
@@ -453,6 +462,9 @@ var actionRoutes = []routeSpec{
 	{Method: "POST", Path: "/api/tasks", Auth: authWrite,
 		Desc:    "peer task submission (submitPeerTask)",
 		Handler: (*actionHandler).routeSubmitTask},
+	{Method: "GET", Path: "/api/tasks/{task_id}", Auth: authRead,
+		Desc:    "peer task status/result read (TaskView slim fields)",
+		Handler: (*actionHandler).routeGetTask},
 	{Method: "POST", Path: "/api/graphs", Auth: authWrite,
 		Desc:    "collaboration graph submission (DAG)",
 		Handler: (*actionHandler).routeSubmitGraph},

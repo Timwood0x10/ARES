@@ -158,3 +158,18 @@ func TestHTTPSubmitTaskNoPeerKernel(t *testing.T) {
 		t.Fatalf("status = %d, want 503", rec.Code)
 	}
 }
+
+// TestHTTPSubmitTaskPartialKernelReports503 verifies the readiness contract:
+// a kernel handle whose fabric/submitter are not wired is the same "not a
+// peer runtime" state as a nil kernel — 503, not a 500 submission fault.
+// Request validation still takes precedence (§3.6): the missing-capability
+// 400 above fires even on this unwired kernel.
+func TestHTTPSubmitTaskPartialKernelReports503(t *testing.T) {
+	h := &actionHandler{kernel: &kernelHandle{}, apiKey: "test-key"}
+	body, _ := json.Marshal(map[string]any{"query": "valid but unwired"})
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, authorizedTasksRequest(t, body))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", rec.Code)
+	}
+}

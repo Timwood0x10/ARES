@@ -80,6 +80,47 @@ func TestLongPollHandlerWithoutExtensionIsTruncated(t *testing.T) {
 	}
 }
 
+// TestSubmitTaskWaitSurvivesServerWriteTimeout pins the sync-wait write
+// deadline extension on POST /api/tasks.
+//
+// Regression: the serve http.Server sets WriteTimeout to 15s, but ?wait=
+// (default tasks.wait_timeout 60s, cap 300s) holds the response open far
+// past it. Go's WriteDeadline starts when the request headers are read, so
+// without extendWriteDeadline the connection dies mid-wait and the caller
+// gets a bare EOF with no task_id while the already-submitted task keeps
+// running server-side. The no-scheduler kernel keeps the task non-terminal
+// so the handler serves the full wait and degrades to 202.
+func TestSubmitTaskWaitSurvivesServerWriteTimeout(t *testing.T) {
+	kernel := buildNoSchedulerKernel(t)
+	h := &actionHandler{kernel: kernel, apiKey: "test-key", taskWaitDefault: taskWaitDefaultDuration}
+
+	// A server whose WriteTimeout is far SHORTER than the handler's wait —
+	// the exact production shape (15s vs up to 300s), scaled down.
+	srv := httptest.NewUnstartedServer(h)
+	srv.Config.WriteTimeout = 100 * time.Millisecond
+	srv.Start()
+	defer srv.Close()
+
+	req, err := http.NewRequest(http.MethodPost,
+		srv.URL+"/api/tasks?wait=500ms", strings.NewReader(`{"query":"never finishes"}`))
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer test-key")
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v — the server write timeout cut off the sync-wait "+
+			"because the handler never extended its write deadline", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202 (wait must expire into the async acceptance, not a cut connection)",
+			resp.StatusCode)
+	}
+}
+
 // TestSubmitTaskTenantRidesToEnvelope pins the HTTP → envelope tenant chain:
 // a top-level tenant_id on POST /api/tasks is injected into the payload and
 // reaches the created task's checkpoint envelope (the submitter's extraction

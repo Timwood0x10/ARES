@@ -15,9 +15,103 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Timwood0x10/ares/internal/ares_config"
 	"github.com/Timwood0x10/ares/internal/ares_security"
 	"github.com/Timwood0x10/ares/internal/fabric/task"
 )
+
+// External task-surface constants (goconst shield + single source of truth).
+const (
+	// taskPayloadInput keys the L2 prompt source: agentfabric cognition reads
+	// task.Payload["input"] as the user prompt.
+	taskPayloadInput = "input"
+	// taskPayloadDesc keys the documented envelope task-description slot
+	// (checkpoint_schema.go: Payload carries "incl. task_desc").
+	taskPayloadDesc = "task_desc"
+	// taskWaitDefaultDuration is the sync-wait when ?wait= has no value and
+	// tasks.wait_timeout is unset/zero in ares.yaml.
+	taskWaitDefaultDuration = 60 * time.Second
+	// taskWaitMaxDuration is the hard per-request cap on any sync-wait,
+	// explicit or configured (user decision: wait 上限 300s).
+	taskWaitMaxDuration = 300 * time.Second
+	// taskStatusSubmitted is the async acceptance status body key/value set.
+	taskStatusSubmitted = "submitted"
+)
+
+// resolveServeAPIKey returns the HTTP control-plane credential from
+// ares.yaml: security.api_key takes precedence; empty falls back to
+// llm.api_key (pre-decoupling behavior). Empty result means the write gate
+// denies every request (deny-by-default).
+func resolveServeAPIKey(cfg *ares_config.Config) string {
+	if cfg == nil {
+		return ""
+	}
+	if cfg.Security.APIKey != "" {
+		return cfg.Security.APIKey
+	}
+	return cfg.LLM.APIKey
+}
+
+// resolveDefaultCapability returns the capability POST /api/tasks uses when a
+// submission omits one: server.default_capability from ares.yaml, falling
+// back to the L2 plan capability when unset.
+func resolveDefaultCapability(cfg *ares_config.Config) string {
+	if cfg != nil && cfg.Server.DefaultCapability != "" {
+		return cfg.Server.DefaultCapability
+	}
+	return planCapability
+}
+
+// resolveTaskWaitDefault returns tasks.wait_timeout from ares.yaml as a
+// duration, clamped to taskWaitMaxDuration. Unset/unparseable/non-positive
+// values fall back to taskWaitDefaultDuration — a config typo must not break
+// submission (validateTasks reports the typo separately).
+func resolveTaskWaitDefault(cfg *ares_config.Config) time.Duration {
+	d := taskWaitDefaultDuration
+	if cfg != nil {
+		if parsed, err := time.ParseDuration(cfg.Tasks.WaitTimeout); err == nil && parsed > 0 {
+			d = parsed
+		}
+	}
+	if d > taskWaitMaxDuration {
+		d = taskWaitMaxDuration
+	}
+	return d
+}
+
+// parseTaskWaitParam interprets the POST /api/tasks wait query parameter.
+// Presence is detected from the raw query map (Get cannot distinguish an
+// absent key from `?wait=`). Contract:
+//   - absent        → (0, false, nil): plain async submission
+//   - present empty → (def, true, nil): configured/default sync-wait
+//   - present dur   → (dur, true, nil), dur must be positive and ≤ cap
+//   - invalid       → error: caller responds 400 BEFORE submitting
+func parseTaskWaitParam(values []string, present bool, def time.Duration) (time.Duration, bool, error) {
+	if !present {
+		return 0, false, nil
+	}
+	if def <= 0 {
+		def = taskWaitDefaultDuration
+	}
+	raw := ""
+	if len(values) > 0 {
+		raw = values[0]
+	}
+	if raw == "" {
+		return def, true, nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, false, fmt.Errorf("invalid wait %q: %w", raw, err)
+	}
+	if d <= 0 {
+		return 0, false, fmt.Errorf("wait must be positive, got %s", d)
+	}
+	if d > taskWaitMaxDuration {
+		return 0, false, fmt.Errorf("wait %s exceeds the %s cap", d, taskWaitMaxDuration)
+	}
+	return d, true, nil
+}
 
 // routeSubmitTask submits a task to the peer runtime (POST /api/tasks).
 func (h *actionHandler) routeSubmitTask(w http.ResponseWriter, r *http.Request, princ *ares_security.Principal) {
@@ -34,9 +128,17 @@ func (h *actionHandler) routeSubmitGraph(w http.ResponseWriter, r *http.Request,
 // submitTaskRequest is the POST /api/tasks payload. capability selects the
 // peer agent that can handle the task (matches its declared capabilities);
 // payload carries opaque user data (task_desc, profile fields, ...).
+// The external minimal body is {"query": "..."}: query folds into the
+// payload (input + task_desc) and capability defaults from ares.yaml
+// (server.default_capability).
 type submitTaskRequest struct {
 	Capability string         `json:"capability"`
 	Payload    map[string]any `json:"payload"`
+	// Query is the external one-interface entry: the user's task text. When
+	// set it is folded into payload["input"] (the L2 prompt source) and
+	// payload["task_desc"] (the documented envelope slot) unless the caller
+	// already provided those keys explicitly.
+	Query string `json:"query,omitempty"`
 	// TenantID optionally scopes the submission to one tenant: it rides the
 	// task's checkpoint envelope so execution (and every knowledge recall the
 	// task triggers) resolves this tenant instead of the process default.
@@ -49,10 +151,15 @@ type submitTaskRequest struct {
 
 // handleSubmitTask submits a task to the peer runtime through the kernel
 // (submitPeerTask) and returns the assigned task id. The submission is
-// asynchronous: the scheduler drains the fabric and executes the task; the
-// response only confirms acceptance. A nil peer kernel reports 503 so
-// callers can distinguish "not a peer runtime" from a real submission
-// failure.
+// asynchronous by default: the scheduler drains the fabric and executes the
+// task; the 202 response only confirms acceptance. With ?wait= the handler
+// polls to a terminal state and returns the task view (200), degrading to
+// 202 on timeout — submission never fails because a wait expired. A nil
+// peer kernel reports 503 so callers can distinguish "not a peer runtime"
+// from a real submission failure; a partially wired kernel (fabric or
+// submitter not connected — the same state submitPeerTask rejects) also
+// reports 503, but only AFTER request validation so the §3.6 guard order
+// (400 before any kernel interaction) keeps precedence.
 func (h *actionHandler) handleSubmitTask(w http.ResponseWriter, r *http.Request, princ *ares_security.Principal) {
 	w.Header().Set("Content-Type", "application/json")
 	if h.kernel == nil {
@@ -69,10 +176,41 @@ func (h *actionHandler) handleSubmitTask(w http.ResponseWriter, r *http.Request,
 		writeJSON(w, map[string]any{"error": err.Error()})
 		return
 	}
-	if req.Capability == "" {
+	// Guard order (code_rules_v2 §3.6): validate everything before touching
+	// the kernel — an invalid ?wait must never leave a submitted task behind.
+	query := strings.TrimSpace(req.Query)
+	if req.Capability == "" && query == "" {
 		w.WriteHeader(http.StatusBadRequest)
-		writeJSON(w, map[string]any{"error": "capability is required"})
+		writeJSON(w, map[string]any{"error": "query or capability is required"})
 		return
+	}
+	rawQuery := r.URL.Query()
+	_, waitPresent := rawQuery["wait"]
+	waitDur, waitRequested, waitErr := parseTaskWaitParam(rawQuery["wait"], waitPresent, h.taskWaitDefault)
+	if waitErr != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		writeJSON(w, map[string]any{"error": waitErr.Error()})
+		return
+	}
+	capability := req.Capability
+	if capability == "" {
+		capability = h.defaultCapability
+		if capability == "" {
+			capability = planCapability
+		}
+	}
+	if query != "" {
+		if req.Payload == nil {
+			req.Payload = map[string]any{}
+		}
+		// Fold the external query into the canonical payload keys; explicit
+		// caller-provided values always win.
+		if _, exists := req.Payload[taskPayloadInput]; !exists {
+			req.Payload[taskPayloadInput] = query
+		}
+		if _, exists := req.Payload[taskPayloadDesc]; !exists {
+			req.Payload[taskPayloadDesc] = query
+		}
 	}
 	if req.TenantID != "" {
 		if req.Payload == nil {
@@ -82,18 +220,44 @@ func (h *actionHandler) handleSubmitTask(w http.ResponseWriter, r *http.Request,
 		// every submission path shares) and stamps it onto the envelope.
 		req.Payload["tenant_id"] = req.TenantID
 	}
-	taskID, err := submitPeerTask(r.Context(), h.kernel, req.Capability, req.Payload)
+	// A partially wired kernel is the same "not a peer runtime" state
+	// submitPeerTask rejects — report 503 (not a 500 submission fault), and
+	// only now: the validation guards above keep precedence (§3.6).
+	if h.kernel.fabric == nil || h.kernel.submitter == nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		writeJSON(w, map[string]any{
+			"error":  "peer runtime not active",
+			"status": "error",
+		})
+		return
+	}
+	taskID, err := submitPeerTask(r.Context(), h.kernel, capability, req.Payload)
 	if err != nil {
-		h.auditAction(r, "submit_task", req.Capability, princ, false)
+		h.auditAction(r, "submit_task", capability, princ, false)
 		w.WriteHeader(http.StatusInternalServerError)
 		writeJSON(w, map[string]any{"error": err.Error(), "status": "error"})
 		return
 	}
-	h.auditAction(r, "submit_task", req.Capability, princ, true)
+	h.auditAction(r, "submit_task", capability, princ, true)
+	if waitRequested {
+		// The server's WriteTimeout starts at request-header time (15s on
+		// the serve control plane), but ?wait= holds this response open far
+		// past it (default 60s, cap 300s). Without this extension the
+		// connection dies mid-wait: the caller gets a bare EOF with no
+		// task_id while the already-submitted task keeps running
+		// server-side — the same failure mode the graph handler documents.
+		// Slack covers response encoding.
+		extendWriteDeadline(w, waitDur+time.Minute)
+		if t, ok := waitForTaskTerminal(r.Context(), h.kernel, taskID, waitDur); ok {
+			w.WriteHeader(http.StatusOK)
+			writeJSON(w, taskStatusFromTask(t))
+			return
+		}
+	}
 	w.WriteHeader(http.StatusAccepted)
 	writeJSON(w, map[string]any{
 		"task_id": taskID,
-		"status":  "submitted",
+		"status":  taskStatusSubmitted,
 		"message": "task accepted by the peer runtime",
 	})
 }
