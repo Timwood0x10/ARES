@@ -93,10 +93,10 @@ func (h *actionHandler) terminalViewFields(t *taskfabric.Task, dc taskfabric.Dec
 		return result, derivedTaskError(t, errText)
 	}
 	if t.State == taskfabric.StateCompleted {
-		if answer, ok := completedSessionAnswer(h.kernel, dc.SessionID); ok {
+		if answer, ok := agentruntime.SessionAnswer(h.kernel.fabric, dc.SessionID); ok {
 			return answer, ""
 		}
-		if sessionAnswerFailed(h.kernel.fabric, dc.SessionID) {
+		if agentruntime.SessionAnswerFailed(h.kernel.fabric, dc.SessionID) {
 			return result, "session answer task failed"
 		}
 		// A stall-resolved COMPLETED task with no answer is a dead session
@@ -109,7 +109,7 @@ func (h *actionHandler) terminalViewFields(t *taskfabric.Task, dc taskfabric.Dec
 		}
 		return result, ""
 	}
-	if t.State == taskfabric.StateFailed && errText == "" && sessionAnswerFailed(h.kernel.fabric, dc.SessionID) {
+	if t.State == taskfabric.StateFailed && errText == "" && agentruntime.SessionAnswerFailed(h.kernel.fabric, dc.SessionID) {
 		errText = "session answer task failed"
 	}
 	return result, derivedTaskError(t, errText)
@@ -122,28 +122,6 @@ func derivedTaskError(t *taskfabric.Task, errText string) string {
 		return errText
 	}
 	return "dependency " + t.FailedDependency + " failed"
-}
-
-// sessionAnswerFailed reports whether any answer task of the session is
-// terminally FAILED — the session's sole exit is closed, so the external
-// view surfaces that instead of an empty result. Mirrors the sdk wait loop's
-// fast-failure check (sdk/l2_submit.go l2SessionAnswerFailed): the
-// sess/<sid>/ boundary match keeps sibling sessions from shadowing each
-// other.
-func sessionAnswerFailed(f *taskfabric.Fabric, sessionID string) bool {
-	if f == nil || sessionID == "" {
-		return false
-	}
-	prefix := "sess/" + sessionID + "/"
-	for _, id := range f.IDs() {
-		if !strings.HasPrefix(id, prefix) || !strings.Contains(id, "/answer#") {
-			continue
-		}
-		if tk, err := f.Task(id); err == nil && tk.State == taskfabric.StateFailed {
-			return true
-		}
-	}
-	return false
 }
 
 // waitForTaskResult polls the fabric until the task's external result
@@ -200,10 +178,10 @@ func resultResolved(kernel *kernelHandle, t *taskfabric.Task, taskID string, sta
 		if err != nil || dc.SessionID == "" {
 			return true
 		}
-		if _, ok := completedSessionAnswer(kernel, dc.SessionID); ok {
+		if _, ok := agentruntime.SessionAnswer(kernel.fabric, dc.SessionID); ok {
 			return true
 		}
-		if sessionAnswerFailed(kernel.fabric, dc.SessionID) {
+		if agentruntime.SessionAnswerFailed(kernel.fabric, dc.SessionID) {
 			return true
 		}
 		return stalls.Stalled(kernel.fabric, dc.SessionID, taskID)

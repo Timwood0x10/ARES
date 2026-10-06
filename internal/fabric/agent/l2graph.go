@@ -473,6 +473,13 @@ func executingAgentID(payload map[string]any) string {
 // e.g. AddToolNode(ctx, id, "answer", map[string]any{"content": ...}, dep).
 const answerContentKey = "content"
 
+// answerTruncatedKey is the arg stamped on an answer node grown by the
+// planner's depth guard: it marks the session's final answer as truncated
+// (the plan hit the growth-depth upper bound and the answer was forced).
+// answerCognition copies it into the terminal result metadata so external
+// callers can distinguish "completed" from "hit the depth bound".
+const answerTruncatedKey = "truncated"
+
 // unansweredBody is the body emitted when a terminal answer node carries no
 // supplied content. It states the absence instead of reading like a result:
 // nothing has summarized anything, and a success-sounding constant here would
@@ -535,7 +542,9 @@ var _ Cognition = (*answerCognition)(nil)
 
 // ExecuteStep completes the terminal node with the answer content supplied
 // on the node; a content-less node completes with the synthesized answer
-// when synthesis is wired, else with the explicit gap body.
+// when synthesis is wired, else with the explicit gap body. A node stamped
+// with the depth-guard truncation marker carries it into the terminal
+// result metadata so external callers can detect the truncation.
 func (c *answerCognition) ExecuteStep(ctx context.Context, task *models.Task) (*StepOutcome, error) {
 	body, ok := argsFromPayload(task.Payload)[answerContentKey].(string)
 	if !ok || strings.TrimSpace(body) == "" {
@@ -547,6 +556,12 @@ func (c *answerCognition) ExecuteStep(ctx context.Context, task *models.Task) (*
 	}
 	result := models.NewTaskResult(task.TaskID, task.AgentType)
 	result.SetSuccess([]*models.RecommendItem{{ItemID: task.TaskID, Content: body}}, "answer node terminated session")
+	if truncated, ok := argsFromPayload(task.Payload)[answerTruncatedKey].(bool); ok && truncated {
+		if result.Metadata == nil {
+			result.Metadata = make(map[string]any)
+		}
+		result.Metadata[answerTruncatedKey] = true
+	}
 	if c.sessions != nil && strings.TrimSpace(task.SessionID) != "" {
 		// The session ends here: drop the graph handle and stop the
 		// incremental-compile subscription so no new nodes can grow into

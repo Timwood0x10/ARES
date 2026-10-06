@@ -455,6 +455,11 @@ type pgSubscription struct {
 	cursor    time.Time
 	cursorID  string
 	delivered map[string]bool // event ids already sent on ch (bounded)
+
+	// lastBatch records the events delivered in the most recent pollOnce
+	// call, so the poll loop can emit latency diagnostics (A6). Empty
+	// when the last poll returned no new events.
+	lastBatch []*Event
 }
 
 const maxDeliveredIDs = 8192
@@ -490,6 +495,13 @@ func (s *PostgresEventStore) queryEventPage(
 
 // pollEvents periodically queries for new events matching the filter and sends them to ch.
 // The goroutine exits when ctx is cancelled.
+//
+// A6 (0.3.2): the 1-second poll interval adds up to 1s of latency to every
+// event notification (vs. memory store's synchronous fan-out). The log.Warn
+// below surfaces events whose created_at → delivery latency exceeds the poll
+// interval, so an operator comparing dev (memory) vs prod (PG) latency can
+// attribute the gap. Switching to LISTEN/NOTIFY (pgx WaitForNotification)
+// would eliminate this latency while keeping pollOnce as a fallback.
 func (s *PostgresEventStore) pollEvents(
 	ctx context.Context,
 	filter EventFilter,
@@ -518,6 +530,19 @@ func (s *PostgresEventStore) pollEvents(
 			if err := pollOnce(ctx, sub, s.queryEventPage); err != nil {
 				log.Error("event subscription poll failed", "error", err)
 				continue
+			}
+			// A6: surface delivery latency for events that waited longer
+			// than the poll interval. This is a diagnostic, not an error —
+			// the poll architecture makes this expected by design.
+			for _, ev := range sub.lastBatch {
+				latency := time.Since(ev.Timestamp)
+				if latency > time.Second {
+					log.Warn("pg event store: notification latency exceeds poll interval",
+						"event_type", ev.Type,
+						"event_id", ev.ID,
+						"latency_ms", latency.Milliseconds())
+					break // one warning per poll cycle is enough
+				}
 			}
 		}
 	}
@@ -549,6 +574,9 @@ func pollOnce(
 	}
 
 	sub.markDelivered(batch)
+
+	// A6: record the batch for latency diagnostics in the poll loop.
+	sub.lastBatch = batch
 
 	if nextTS, nextID, ok := nextPollCursor(events); ok {
 		sub.cursor = nextTS

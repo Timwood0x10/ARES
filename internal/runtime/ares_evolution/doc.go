@@ -17,4 +17,18 @@
 // trust-root-boundary test in evolutiontest (TestCandidatePipelineNotInProductionImportGraph)
 // keeps it that way, and any future production promotion through v2 MUST
 // route through this package's gates (see ARCHITECTURE.md high-risk #3).
+//
+// UNGATED PATCH PATH (A1-c, 0.3.2): the Coordinator's patch path
+// (GenomePopulationAdapter.submitToCoordinator → Coordinator.Evaluate →
+// PatchExecutor.Apply) is NOT gated by the StrategyLifecycle chain. The
+// Coordinator applies diff patches with its own fitness threshold
+// (ApplyFitnessThreshold=70, scale 0-100) and does NOT read G1/G2/G3
+// results. This is an explicit design decision: the patch path carries
+// structural topology mutations (DAG edges, knowledge config, recovery
+// policy) that operate at a different abstraction level than strategy
+// promotion. The boundary is enforced by test
+// (TestCoordinatorPatchPathNotGatedByLifecycle) and documented here so
+// the trust-root declaration above is not misread as covering the patch
+// path. A future change that gates the patch path through StrategyLifecycle
+// MUST update this declaration and remove the test.
 package evolution

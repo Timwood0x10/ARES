@@ -543,6 +543,53 @@ func TestCoordinator_Bug_DropOnRetryExhaustionIsObservable(t *testing.T) {
 
 // ── Additional mock executors ───────────────
 
+// TestCoordinator_B5_BaselineFitnessInGrayZoneIsDropped pins the B5 contract:
+// a GA patch with no FitnessGenome backing gets fitness=50 (baseline 0.5 × 100),
+// which lands in the [30,70) gray zone → DecisionDelay → retry exhaustion →
+// DecisionDrop. The drop must be observable in DecisionHistory (not a silent
+// disappearance). This test documents the current behavior so a future change
+// to the baseline or threshold is visible.
+func TestCoordinator_B5_BaselineFitnessInGrayZoneIsDropped(t *testing.T) {
+	patchReg := patch.NewRegistry()
+	exec := &recordingExecutor{}
+	require.NoError(t, patchReg.Register("baseline", exec))
+
+	coord := NewEvolutionCoordinator(PolicyGenome{
+		AutoApplyThreshold:    8,
+		MaxPatchesPerMinute:   100, // disable rate-limit
+		MinFitnessThreshold:   30.0,
+		ApplyFitnessThreshold: 70.0,
+	}, patchReg)
+	coord.Submit(PatchProposal{
+		Patch:    patch.RuntimePatch{Type: patch.PatchInsertNode, Target: "baseline"},
+		Source:   SourceGA,
+		Priority: 5,
+		Fitness:  50.0, // baseline 0.5 × 100 → gray zone [30,70)
+	})
+
+	// Evaluate enough times to exhaust maxProposalRetries.
+	for i := 0; i <= maxProposalRetries; i++ {
+		coord.Evaluate(context.Background())
+	}
+
+	var lastDecision Decision
+	drops := 0
+	for _, d := range coord.DecisionHistory() {
+		if d.Decision == DecisionDrop {
+			drops++
+		}
+		lastDecision = d.Decision
+	}
+	assert.GreaterOrEqual(t, drops, 1,
+		"baseline fitness in gray zone must be observable as DecisionDrop (not silent)")
+	assert.Equal(t, DecisionDrop, lastDecision,
+		"final decision must be Drop — the gray zone must not silently disappear")
+	assert.Len(t, exec.applied, 0,
+		"a gray-zone proposal must never be auto-applied")
+}
+
+// ── Additional mock executors ───────────────
+
 // failingExecutor always returns an error from Apply. Used to verify that
 // ApplyError is propagated onto the PatchDecision (not just PatchHistory).
 type failingExecutor struct{}

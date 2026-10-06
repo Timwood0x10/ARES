@@ -206,4 +206,22 @@ func TestScoreHybrid(t *testing.T) {
 			}
 		}
 	})
+
+	t.Run("dimension_mismatch_vector_score_zeroed", func(t *testing.T) {
+		// B2: a rep whose vector dimension differs from the query vector must
+		// score 0 on the vector path and fall back to lexical — not silently
+		// return 0 from CosineSimilarity with no signal.
+		mismatchReps := map[string]*Representation{
+			"a": {ID: "ra", ObjectID: "a", Model: "mismatch", Vector: []float32{1, 0, 0, 0}}, // dim 4 vs query dim 3
+		}
+		results := ScoreHybrid(objs, mismatchReps, queryVec, "redis caching")
+		if len(results) != 2 {
+			t.Fatalf("expected 2 results, got %d", len(results))
+		}
+		for _, r := range results {
+			if math.Abs(r.VectorScore) > 1e-9 {
+				t.Errorf("object %s VectorScore = %v, want 0 (dimension mismatch)", r.Object.ID, r.VectorScore)
+			}
+		}
+	})
 }

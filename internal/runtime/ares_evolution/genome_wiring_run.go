@@ -472,6 +472,20 @@ func countUnevaluated(agents []*mutation.Strategy) int {
 	return n
 }
 
+// scaleUpFitnessToCoordinator converts a [0,1] FitnessGenome score to the
+// [0,100] scale the Coordinator uses (C3, 0.3.2). This is the single scale
+// conversion point: Strategy.Score and fitness_aggregator both operate in
+// [0,1], while PolicyGenome.ApplyFitnessThreshold and MinFitnessThreshold
+// operate in [0,100]. Clamping to 100 prevents a >1 fitness from inflating
+// past the Coordinator's ceiling.
+func scaleUpFitnessToCoordinator(fitness float64) float64 {
+	scaled := fitness * 100.0
+	if scaled > 100.0 {
+		return 100.0
+	}
+	return scaled
+}
+
 // submitToCoordinator generates diff patches from all registered genomes and
 // submits them to the coordinator for decision and deployment. Each patch is
 // attributed to the best-evolved strategy so the coordinator can measure it
@@ -510,12 +524,13 @@ func (a *GenomePopulationAdapter) submitToCoordinator(ctx context.Context) {
 	if fitnessCount > 0 {
 		fitness = fitnessSum / float64(fitnessCount)
 	}
-	// Coordinator thresholds are 0-100 (see DefaultPolicy: ApplyFitnessThreshold=70,
-	// MinFitnessThreshold=30). FitnessGenome scores are [0,1], so scale up.
-	fitness *= 100.0
-	if fitness > 100.0 {
-		fitness = 100.0
-	}
+	// C3 (0.3.2): fitness scale conversion. FitnessGenome scores are [0,1]
+	// (Strategy.Score scale). Coordinator thresholds are [0,100]
+	// (PolicyGenome.ApplyFitnessThreshold=70, MinFitnessThreshold=30).
+	// The scaleUpFitnessToCoordinator function is the SINGLE place this
+	// conversion happens — anyone adding a new [0,1] fitness source must
+	// route through it, not inline another *100.
+	fitness = scaleUpFitnessToCoordinator(fitness)
 
 	for _, p := range patches {
 		a.coordinator.Submit(coordinator.PatchProposal{

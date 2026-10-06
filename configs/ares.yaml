@@ -195,6 +195,13 @@ evolution:
   #   disarms rollback AND re-arms the G2 shadow gate fail-closed (see shadow
   #   below) — with neither pre- nor post-deployment verification, refusing
   #   promotion is the only correct behavior.
+  #   ⚠️ COUPLING (B4, 0.3.2): `enabled: false` affects TWO safety mechanisms:
+  #     1. Disarms the post-deployment automatic rollback watch.
+  #     2. Re-arms G2 shadow gate to fail-closed (thin-evidence rejects instead
+  #        of skipping). This is MORE strict on G2, but removes the rollback
+  #        safety net entirely. A strategy that passes G2 will promote without
+  #        any post-deployment verification. Operators disabling rollback for
+  #        debugging must understand this trade-off.
   #   RUNTIME MIRROR (GA-soak fix): when the shadow gate IS registered but
   #   decisive comparisons fall below shadow.min_samples (cold-start ties /
   #   thin evidence), the gate SKIPS that decision instead of rejecting when

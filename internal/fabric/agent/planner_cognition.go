@@ -264,7 +264,12 @@ func (c *plannerCognition) ExecuteStep(ctx context.Context, task *models.Task) (
 		c.forcedAnswers.Add(1)
 		c.logger.Warn("planner: max plan depth reached, forcing answer",
 			"session", sessionID, "depth", depth, "max", c.maxDepth)
-		return c.growAnswerNode(ctx, g, task, "", nil)
+		// The truncation fact rides the answer node so the terminal result
+		// metadata carries it (answerTruncatedKey) — external clients must
+		// be able to distinguish "completed" from "hit the depth bound".
+		return c.growAnswerNode(ctx, g, task, "", nil, map[string]any{
+			answerTruncatedKey: true,
+		})
 	}
 
 	// Assemble the LLM context from the predecessor path.
@@ -326,7 +331,7 @@ func (c *plannerCognition) ExecuteStep(ctx context.Context, task *models.Task) (
 
 	// No tool calls: the LLM gave a final answer. Grow an answer node.
 	if len(resp.ToolCalls) == 0 {
-		return c.growAnswerNode(ctx, g, task, resp.Content, resp)
+		return c.growAnswerNode(ctx, g, task, resp.Content, resp, nil)
 	}
 
 	// Tool calls: grow tool nodes + a new plan node depending on them.
@@ -338,7 +343,7 @@ func (c *plannerCognition) ExecuteStep(ctx context.Context, task *models.Task) (
 		// All tool calls were skipped by L1 constraints (enabled=false
 		// or budget exhausted). Force an answer so the session terminates
 		// instead of looping on a planner that can never grow a tool.
-		return c.growAnswerNode(ctx, g, task, resp.Content, resp)
+		return c.growAnswerNode(ctx, g, task, resp.Content, resp, nil)
 	}
 
 	result := models.NewTaskResult(task.TaskID, task.AgentType)
@@ -701,6 +706,19 @@ func (c *plannerCognition) growToolNodes(
 		}
 		// Chain sequential tools within the same round: the next tool
 		// depends on this one (data flow).
+		//
+		// A5 (0.3.2): this serial chaining is an INTENTIONAL design choice,
+		// not an architectural limitation. The DAG supports fan-out
+		// (depsCompletedLocked checks all dependencies; ReadyTasks returns
+		// every ready task at once — see TestFabricFanoutReadyTasks).
+		// PlanStep.DependsOn is []string and ProjectStep copies it as-is,
+		// so multi-predecessor topologies are reachable. The planner chains
+		// serially because LLM tool-call ordering typically carries data
+		// flow (tool B reads tool A's output), and the planner has no
+		// signal to distinguish "order matters" from "order is arbitrary".
+		// A5-c (reusing the GA's PatchAddEdge to restructure topology at
+		// runtime) is the lowest-risk path to parallel expression —
+		// changing the变异算子 is safer than changing the planner.
 		prev = nodeID
 		grown++
 	}
@@ -824,6 +842,10 @@ func (c *plannerCognition) l1Priors() []string {
 // node content-less so answerCognition synthesizes from history (or emits
 // the gap body); guard/debug literals must never ride this parameter.
 //
+// extra carries additional args stamped onto the answer node (merged into
+// the AddToolNode args map). The depth-guard path uses it to mark the
+// session's final answer as truncated; nil elsewhere.
+//
 // The predecessor is the current plan node when it exists in the graph
 // (subsequent quanta), or the root node when it doesn't (the first plan
 // quantum). When the plan node IS in the graph, its predecessor (the last
@@ -834,6 +856,7 @@ func (c *plannerCognition) growAnswerNode(
 	task *models.Task,
 	content string,
 	resp *llmcore.GenerateResponse,
+	extra map[string]any,
 ) (*StepOutcome, error) {
 	// The answer node is the terminal of the SAME round the quantum would
 	// have grown, so its ID comes from the stable round derivation — never
@@ -856,6 +879,9 @@ func (c *plannerCognition) growAnswerNode(
 		args := map[string]any{
 			"content":       content,
 			planMetadataKey: task.SessionID,
+		}
+		for k, v := range extra {
+			args[k] = v
 		}
 		if task.TenantID != "" {
 			args[tenantMetadataKey] = task.TenantID

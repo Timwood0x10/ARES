@@ -9,6 +9,15 @@ import (
 // syscall, not an orchestration API). The Kernel validates quota / capability
 // / resource / policy, then creates the Agent + (optionally) a Task + the
 // parent-child provenance link.
+//
+// E3 (0.3.2, security boundary): SpawnSpec has NO tool allowlist field.
+// A spawned agent inherits ALL registered tools — tool availability is
+// process-level (planner_cognition.go isToolEnabled reads the L1 graph,
+// not per-agent). This is a known gap: an LLM with spawn_agent can create
+// an agent with full tool access. A future ResourceSpec with
+// ToolAllowlist is planned for 0.3.3 (interface change, deferred).
+// ValidateToolSet (guardrails.go) is a GA-side candidate validator, NOT
+// a runtime per-agent isolation — do not conflate the two.
 type SpawnSpec struct {
 	// Identity is the requested agent id; "" means the Fabric assigns one.
 	Identity string

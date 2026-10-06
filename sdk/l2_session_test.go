@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Timwood0x10/ares/internal/agentruntime"
 	taskfabric "github.com/Timwood0x10/ares/internal/fabric/task"
 	llmcore "github.com/Timwood0x10/ares/internal/llmcore"
 )
@@ -156,14 +157,14 @@ func TestL2SessionAnswerFailed(t *testing.T) {
 	}
 
 	mkAnswer("sess/s1/d1/t#s/answer#0", true)
-	if !l2SessionAnswerFailed(fabric, "s1") {
+	if !agentruntime.SessionAnswerFailed(fabric, "s1") {
 		t.Fatal("a terminally FAILED answer must close the session")
 	}
-	if l2SessionAnswerFailed(fabric, "s10") {
+	if agentruntime.SessionAnswerFailed(fabric, "s10") {
 		t.Fatal("the prefix match must not leak across sibling sessions")
 	}
 	mkAnswer("sess/s2/d1/t#s/answer#0", false)
-	if l2SessionAnswerFailed(fabric, "s2") {
+	if agentruntime.SessionAnswerFailed(fabric, "s2") {
 		t.Fatal("a non-terminal answer must not close the session")
 	}
 }

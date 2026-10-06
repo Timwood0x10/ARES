@@ -1,6 +1,6 @@
 # ARES 架构总图（模块 · 数据流 · 真实任务全程）
 
-> 当前代码的完整模块地图。每条结论带 `file:line` 锚点，可直接跳源码核对。
+> 当前代码的完整模块地图。锚点使用 `包名/文件名.go` + 符号名（而非行号），可直接 grep 定位、抗重构。
 > 审查证据见 `docs/reviews/`。一次请求从入口到完成的逐步走读见 `docs/reference/serve-walkthrough.md`。
 
 ---
@@ -15,13 +15,13 @@ ARES 是 **Agent 操作系统**：Agent 不是被编排的工作流节点，而�
 | 一张图：`MutableDAG` 是全仓唯一任务图载体 | `fabric/task/workflow/engine/mutable_dag.go:34` |
 | 一条主线：L2 router 是唯一生产执行路径，serve 与 SDK 共用执行核 | `internal/agentruntime/`（第5.2节） |
 | 无领导者调度："B 完成→C 就绪"由织物状态机推导 | `fabric/task/dag.go` |
-| 执行量子可恢复 | `fabric/task/quantum.go:58` `RunQuantum` |
-| Epoch fencing：过期持有者不能驱动已易主任务 | `fabric/task/fabric.go:290` `Acquire` / `:712` `ownerLocked` |
-| 协作式抢占，只在量子边界 | `fabric/task/fabric.go:613` `Preempt` |
-| 规划者不执行工具，只生长图 | `fabric/agent/planner_cognition.go:801` |
-| syscall 调用者身份来自 kernel ctx，绝不信任 LLM 参数 | `agentsyscall/syscall.go`；`fabric/agent/l2graph.go:420` 盖章 |
+| 执行量子可恢复 | `fabric/task/quantum.go` `RunQuantum` |
+| Epoch fencing：过期持有者不能驱动已易主任务 | `fabric/task/fabric_lifecycle.go` `Acquire` / `fabric.go` `ownerLocked` |
+| 协作式抢占，只在量子边界 | `fabric/task/fabric.go` `Preempt` |
+| 规划者不执行工具，只生长图 | `fabric/agent/planner_cognition.go` `plannerCognition` |
+| syscall 调用者身份来自 kernel ctx，绝不信任 LLM 参数 | `agentsyscall/syscall.go`；`fabric/agent/l2graph.go` `stampCallerIdentity` |
 | 接口定义在消费者侧 | 全仓惯例 |
-| Agent 可弃，Task 持久 | `fabric/agent/lifecycle.go:69` + `internal/aresrecovery/` |
+| Agent 可弃，Task 持久 | `fabric/agent/lifecycle.go` `SpawnSpec` + `internal/aresrecovery/` |
 | fabric 核心不得 import runtime | `fabric/task/architecture_test.go:63` |
 
 **两个"runtime"不要混淆**（`kernel/component.go:5-8` 明确区分）：
