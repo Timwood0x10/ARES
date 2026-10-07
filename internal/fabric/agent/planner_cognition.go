@@ -718,7 +718,7 @@ func (c *plannerCognition) growToolNodes(
 		// signal to distinguish "order matters" from "order is arbitrary".
 		// A5-c (reusing the GA's PatchAddEdge to restructure topology at
 		// runtime) is the lowest-risk path to parallel expression —
-		// changing the变异算子 is safer than changing the planner.
+		// changing the mutation operator is safer than changing the planner.
 		prev = nodeID
 		grown++
 	}

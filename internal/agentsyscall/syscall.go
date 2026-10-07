@@ -111,6 +111,15 @@ type RegisterExecutorFn func(agentID string, executor Executor)
 // CollaborationObserver, reusing the already-closed OBSERVE half.
 // Declared as a function (not an interface) so this package stays decoupled
 // from agentipc/aresrecovery; the function is set at the consumer.
+//
+// TODO(tech-debt): E2 (0.3.2) tried to make ask_agent return the target's
+// answer. agentipc Bus.Send runs the target's IPC handler INLINE in the
+// caller's goroutine, and that handler drives a full L2 session — so a
+// synchronous send blocks the asking quantum, while the scheduler drain that
+// would schedule the target's task is itself blocked waiting on that quantum.
+// That is a self-deadlock, so ask_agent stays fire-and-forget until an answer
+// round-trip exists that does not block the asking quantum (see the C1 finding
+// in plan/review/CODE_REVIEW_2026-10-06.md).
 type AskAgentFn func(ctx context.Context, from, to, topic string, payload any) error
 
 // Kernel is the ensemble of fabric-level subsystems the syscalls operate on.
@@ -460,7 +469,8 @@ type AskAgentArgs struct {
 // AskAgentResult is the return value of the ask_agent tool.
 type AskAgentResult struct {
 	// Accepted reports that the request was handed to the collaboration
-	// primitive (a fire-and-forget send — acceptance is not an answer).
+	// primitive. It is a fire-and-forget receipt: acceptance is NOT an answer,
+	// and the caller must not read it as one.
 	Accepted bool `json:"accepted"`
 }
 
@@ -473,17 +483,21 @@ type AskAgentResult struct {
 //   - a non-empty target is required;
 //   - the primitive MUST be wired (fail-loud); a nil primitive would make the
 //     tool a silent no-op, which is exactly the open-loop the plan removes.
+//
+// The send is fire-and-forget: ask_agent returns as soon as the request is
+// delivered, not when the target answers (see AskAgentFn for why a synchronous
+// answer round-trip would self-deadlock).
 func (k *Kernel) AskAgent(ctx context.Context, a AskAgentArgs) (*AskAgentResult, error) {
 	if a.To == "" {
 		return nil, errors.New("agentsyscall: ask_agent requires a target agent")
 	}
-	if fn := k.askAgentFn(); fn == nil {
+	fn := k.askAgentFn()
+	if fn == nil {
 		return nil, errors.New("agentsyscall: ask_agent not wired (no collaboration IPC) — the agent cannot ask until serve injects it")
-	} else {
-		from := kctx.CallerID(ctx)
-		if err := fn(ctx, from, a.To, a.Topic, askAgentPayload(ctx, a.Payload)); err != nil {
-			return nil, fmt.Errorf("agentsyscall: ask_agent to %s failed: %w", a.To, err)
-		}
+	}
+	from := kctx.CallerID(ctx)
+	if err := fn(ctx, from, a.To, a.Topic, askAgentPayload(ctx, a.Payload)); err != nil {
+		return nil, fmt.Errorf("agentsyscall: ask_agent to %s failed: %w", a.To, err)
 	}
 	return &AskAgentResult{Accepted: true}, nil
 }

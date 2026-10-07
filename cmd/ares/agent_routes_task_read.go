@@ -134,10 +134,10 @@ func derivedTaskError(t *taskfabric.Task, errText string) string {
 //     degrades to the async 202 contract carrying the current state
 //   - (nil, false)  — task never readable; plain 202 acceptance
 //
-// Polling uses a ticker (never a bare Sleep) so the context cancellation
-// path is prompt. The stall detector supplies sustained evidence so the
-// async answer-node compile gap is not mistaken for session death (same
-// consecutive-poll contract as the sdk submit wait loop).
+// E6 (0.3.2): the per-poll resolution invariant (answer scan first, then
+// stall verdict) is now delegated to agentruntime.TaskResolved — the shared
+// primitive — instead of the local resultResolved copy. Poll cadence (200ms
+// for the 202-degrade budget) and the wait deadline stay here.
 func waitForTaskResult(ctx context.Context, kernel *kernelHandle, taskID string, wait time.Duration) (*taskfabric.Task, bool) {
 	if kernel == nil || kernel.fabric == nil || taskID == "" {
 		return nil, false
@@ -151,7 +151,7 @@ func waitForTaskResult(ctx context.Context, kernel *kernelHandle, taskID string,
 	for {
 		if t, err := kernel.fabric.Task(taskID); err == nil {
 			last = t
-			if resultResolved(kernel, t, taskID, stalls) {
+			if resolved, _ := agentruntime.TaskResolved(kernel.fabric, t, stalls); resolved {
 				return t, true
 			}
 		}
@@ -165,30 +165,9 @@ func waitForTaskResult(ctx context.Context, kernel *kernelHandle, taskID string,
 	}
 }
 
-// resultResolved reports whether the external result channel for this task
-// has fully resolved. Order mirrors the sdk wait contract: the answer scan
-// runs FIRST, then the stall verdict, so a just-landed answer wins over a
-// stall declared in the same poll.
-func resultResolved(kernel *kernelHandle, t *taskfabric.Task, taskID string, stalls *agentruntime.StallDetector) bool {
-	switch t.State {
-	case taskfabric.StateFailed:
-		return true
-	case taskfabric.StateCompleted:
-		dc, err := taskfabric.DecodeCheckpoint(t.Checkpoint)
-		if err != nil || dc.SessionID == "" {
-			return true
-		}
-		if _, ok := agentruntime.SessionAnswer(kernel.fabric, dc.SessionID); ok {
-			return true
-		}
-		if agentruntime.SessionAnswerFailed(kernel.fabric, dc.SessionID) {
-			return true
-		}
-		return stalls.Stalled(kernel.fabric, dc.SessionID, taskID)
-	default:
-		return false
-	}
-}
+// resultResolved is retired (E6): the per-poll resolution invariant
+// (answer scan first, then stall verdict) now lives in
+// agentruntime.TaskResolved. The local copy is removed to prevent drift.
 
 // routeGetTask serves GET /api/tasks/{task_id}: the external result-read
 // path for tasks submitted through POST /api/tasks. Read-only; auth level is

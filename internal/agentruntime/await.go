@@ -56,10 +56,22 @@ type StalledError struct {
 	FailedTasks []FailedTask
 }
 
-// FailedTask names one FAILED session task and why it failed.
+// FailedTask names one FAILED session task and why it failed (E5
+// diagnostics): the caller can distinguish "agent not good enough"
+// (capability-level failure) from "graph topology wrong" (dependency
+// cascade), and correlate which round the failure happened in.
 type FailedTask struct {
 	// TaskID is the fabric task ID ("sess/<sid>/dN/tool#M" or the plan root).
 	TaskID string
+	// Capability is the required capability of the failed task — lets the
+	// caller see WHICH tool/capability failed, not just the task ID.
+	Capability string
+	// Quantum is the 1-based execution round in which the task failed:
+	// RunQuantum counts the quantum BEFORE running the step, so a failure on
+	// the task's first quantum reports 1. Zero means the task never entered a
+	// quantum — it was failed by a dependency cascade, not by its own
+	// execution (see FailedDependency).
+	Quantum int
 	// Cause is the persisted terminal failure cause; empty when the task
 	// failed without a recorded reason (agent death, cascade provenance —
 	// see Task.FailedDependency).
@@ -156,6 +168,55 @@ func SessionAnswerContent(tk *taskfabric.Task) (string, error) {
 		return "", fmt.Errorf("answer items unreadable, got %T", raw)
 	}
 	return items[0].Content, nil
+}
+
+// TaskResolved reports whether a fabric task's external result channel has
+// fully resolved — the shared invariant the serve read path
+// (waitForTaskResult) and the SDK wait loop both need. It is the single
+// implementation of the "answer scan first, then stall verdict" ordering
+// that resultResolved used to duplicate.
+//
+// Returns (resolved, sessionID): resolved=true means the task's result is
+// readable right now; sessionID is non-empty when the task is session-scoped
+// (the caller may need it for answer extraction).
+//
+// stalls is REQUIRED for session-scoped tasks: a completed session task that
+// is neither answered nor answer-failed falls through to the stall detector,
+// so passing nil is a programming error (fail-loud — it would otherwise
+// silently disable stall detection and let the caller spin to its deadline).
+func TaskResolved(fabric *taskfabric.Fabric, t *taskfabric.Task, stalls *StallDetector) (resolved bool, sessionID string) {
+	if fabric == nil || t == nil {
+		return false, ""
+	}
+	switch t.State {
+	case taskfabric.StateFailed:
+		// A FAILED result is readable. Decode the checkpoint anyway so a
+		// session-scoped failure still yields its sessionID — that is exactly
+		// when the caller needs it (to read the failure diagnostics).
+		if dc, err := taskfabric.DecodeCheckpoint(t.Checkpoint); err == nil {
+			return true, dc.SessionID
+		}
+		return true, ""
+	case taskfabric.StateCompleted:
+		dc, err := taskfabric.DecodeCheckpoint(t.Checkpoint)
+		if err != nil || dc.SessionID == "" {
+			return true, ""
+		}
+		// Answer scan runs FIRST (a just-landed answer wins over a stall
+		// declared in the same poll).
+		if _, ok := SessionAnswer(fabric, dc.SessionID); ok {
+			return true, dc.SessionID
+		}
+		if SessionAnswerFailed(fabric, dc.SessionID) {
+			return true, dc.SessionID
+		}
+		if stalls.Stalled(fabric, dc.SessionID, t.ID) {
+			return true, dc.SessionID
+		}
+		return false, dc.SessionID
+	default:
+		return false, ""
+	}
 }
 
 // AwaitResult is the terminal outcome of a session wait: the answer body
@@ -283,7 +344,12 @@ func sessionFailedTasks(fabric *taskfabric.Fabric, sessionID string) []FailedTas
 		if err != nil || tk.State != taskfabric.StateFailed {
 			continue
 		}
-		ft := FailedTask{TaskID: id, FailedDependency: tk.FailedDependency}
+		ft := FailedTask{
+			TaskID:           id,
+			Capability:       tk.Capability,
+			Quantum:          tk.Quantum,
+			FailedDependency: tk.FailedDependency,
+		}
 		if dc, err := taskfabric.DecodeCheckpoint(tk.Checkpoint); err == nil {
 			ft.Cause = dc.LastError
 		}
