@@ -87,10 +87,10 @@ func TestGenomeWiringView_Stats(t *testing.T) {
 	require.Equal(t, 1, hist[0].Generation)
 }
 
-// TestGenomeWiringView_Stats_SingleSnapshot pins M3 (0.3.2): Stats() must read
+// TestGenomeWiringView_Stats_SingleSnapshot verifies Stats() reads
 // generation, scores and the stagnation counter from ONE Population.Stats
 // call, so the returned fields can never be torn across a concurrent evolve.
-// Before the fix, StagnantGens was read via a second lock acquisition.
+// StagnantGens used to be read via a second lock acquisition.
 func TestGenomeWiringView_Stats_SingleSnapshot(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

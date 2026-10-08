@@ -13,6 +13,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/agents/base"
 	"github.com/Timwood0x10/ares/internal/agents/peer"
 	"github.com/Timwood0x10/ares/internal/agents/sub"
+	"github.com/Timwood0x10/ares/internal/agentsyscall"
 	"github.com/Timwood0x10/ares/internal/ares_bootstrap"
 	"github.com/Timwood0x10/ares/internal/ares_config"
 	"github.com/Timwood0x10/ares/internal/aresrecovery"
@@ -23,6 +24,13 @@ import (
 	"github.com/Timwood0x10/ares/internal/runtime/protocol/ahp"
 	core_tools "github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
+
+// ErrAskAgentNoReply is returned when ask_agent completes without receiving
+// a reply — either the request timed out or the registry has no reply path.
+//
+// Deprecated: use agentsyscall.ErrAskAgentNoReply instead. This var is retained
+// for the default (non-evolution) branch which still returns it directly.
+var ErrAskAgentNoReply = agentsyscall.ErrAskAgentNoReply
 
 // memoryRuntimeStatser is the optional capability of a MemoryManager to
 // report a live status frame. Only *memoryManager implements it (via
@@ -393,48 +401,52 @@ func setupPeerRegistry(
 			bridge.ipc.Bus().WithCollaborationObserver(rec)
 			log.Info("serve: collaboration feedback channel armed (evolution reads collaboration receipts)")
 		}
-		// Wire ask_agent to ipc.Send. The syscall Kernel is built
-		// in peer_mode before the bridge exists, so the collaboration primitive
-		// is injected here once the bridge is ready. Reusing ipc.Send means the
-		// ask_agent attempt lands in the SAME "collaboration" feedback source as
-		// bridge-routed collaboration — no new observation point (reuse
-		// existing components unless none exists).
+		// Wire ask_agent to ipc.Request (C-1 fix: background launch). The
+		// syscall Kernel is built in peer_mode before the bridge exists, so
+		// the collaboration primitive is injected here once the bridge is
+		// ready.
+		//
+		// DEADLOCK FIX (C-1): Bus.Request MUST NOT be called inside the
+		// asking quantum's goroutine. The asking quantum runs inside drain's
+		// goroutine pool (drain → wg.Wait → execute → RunQuantum →
+		// toolCognition.ExecuteStep → binder.CallTool → AskAgent → fn).
+		// The target's handler (executeAskViaSession) submits a plan task
+		// into the SAME fabric and waits for its answer — but that task can
+		// only progress when drain advances, and drain is blocked in
+		// wg.Wait() waiting for the asking quantum to return. Result: full
+		// service deadlock.
+		//
+		// Fix: launch Bus.Request in a managed background goroutine
+		// (runBackground, per code rules §4.1 — no bare goroutines), return
+		// ErrAskAgentYielding immediately. The asking quantum completes
+		// without blocking, drain's wg.Wait() unblocks, and the scheduler is
+		// free to drain the target's tasks.
+		//
+		// The reply is currently fire-and-forget: it is logged but NOT
+		// written back to the asker. The LLM receives Status="pending".
 		if kernel != nil && kernel.syscalls != nil {
-			ipc := bridge.ipc
-			// dispatchCtx is the serve-lifetime context: the detached ask_agent
-			// work is parented to it (and bounded by collabTimeout) so shutdown
-			// aborts in-flight collaboration instead of leaking it to exit.
-			dispatchCtx := ctx
-			kernel.syscalls.SetAskAgent(func(_ context.Context, from, to, topic string, payload any) error {
-				// Fire-and-forget per the syscall contract ("acceptance is not
-				// an answer"): ipc.Send runs the collaboration handler
-				// SYNCHRONOUSLY, and that handler drives a full L2 session
-				// (executeAskViaSession, up to collabTimeout) whose reply the
-				// syscall discards. Blocking the caller's quantum on a result
-				// nobody reads would stall scheduling, so run the send on a
-				// detached context and return acceptance immediately. The
-				// session releases itself on completion/timeout; any left by a
-				// cancelled serve ctx are swept by the existing reaper/idle-TTL
-				// loops.
-				//
-				// runBackground (not a bare goroutine, per code rules 4.1):
-				// the managed path adds a panic boundary around Send itself —
-				// safeInvokeHandler only recovers HANDLER panics — and joins
-				// the work at shutdown.
-				runBackground(dispatchCtx, comp, "ask-agent-dispatch", func(bgCtx context.Context) error {
-					asyncCtx, cancel := context.WithTimeout(bgCtx, collabTimeout)
+			ipc := bridge.ipc.Bus()
+			kernel.syscalls.SetAskAgent(func(ctx context.Context, from, to, topic string, payload any) (any, error) {
+				// Derive a context detached from the quantum's lifecycle so the
+				// background request survives the quantum completing.
+				reqCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), askAgentTimeout)
+				runBackground(reqCtx, comp, "ask-agent-reply", func(ctx context.Context) error {
 					defer cancel()
-					if err := ipc.Send(asyncCtx, from, to, topic, payload); err != nil {
-						log.Warn("serve: ask_agent detached delivery failed",
-							"from", from, "to", to, "topic", topic, "error", err)
+					reply, err := ipc.Request(ctx, from, to, topic, payload, askAgentTimeout)
+					if err != nil {
+						log.Warn("ask_agent: background request failed", "from", from, "to", to, "topic", topic, "error", err)
+						return nil // nil = clean exit (GoBackground swallows non-nil as a restartable error)
 					}
-					// Never propagate: one failed collaboration must not
-					// cancel the shared background group.
+					if reply == nil {
+						log.Warn("ask_agent: background request returned no reply", "from", from, "to", to, "topic", topic)
+						return nil
+					}
+					log.Info("ask_agent: background reply received", "from", from, "to", to, "topic", topic)
 					return nil
 				})
-				return nil
+				return nil, agentsyscall.ErrAskAgentYielding
 			})
-			log.Info("serve: ask_agent syscall wired to evolution-aware IPC (collaboration path)", "count", len(reg.IDs()))
+			log.Info("serve: ask_agent syscall wired to evolution-aware IPC (background launch, no drain deadlock)", "count", len(reg.IDs()))
 		}
 		log.Info("peer registry wired through evolution-aware IPC: agents registered", "count", len(reg.IDs()))
 	default:
@@ -451,7 +463,7 @@ func setupPeerRegistry(
 			// sender (no production agent exposes SendMessage), so Send fails
 			// immediately with "not registered" — a fast, useful diagnostic
 			// the LLM should see, not a blocking wait to detach.
-			kernel.syscalls.SetAskAgent(func(ctx context.Context, from, to, topic string, payload any) error {
+			kernel.syscalls.SetAskAgent(func(ctx context.Context, from, to, topic string, payload any) (any, error) {
 				body := map[string]any{"topic": topic}
 				if m, ok := payload.(map[string]any); ok {
 					body["payload"] = m
@@ -459,7 +471,10 @@ func setupPeerRegistry(
 					body["payload"] = payload
 				}
 				msg := ahp.NewTaskMessage(from, to, "", "", body)
-				return plainReg.Send(ctx, to, msg)
+				if err := plainReg.Send(ctx, to, msg); err != nil {
+					return nil, err
+				}
+				return nil, ErrAskAgentNoReply // plain registry has no reply path
 			})
 			log.Info("serve: ask_agent syscall wired to plain peer registry (agents)", "count", len(reg.IDs()))
 		}

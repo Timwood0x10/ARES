@@ -329,7 +329,12 @@ type routerCognition struct {
 	// NewRouterCognitionWithPlanner. Nil = no synthesis (tests, degraded
 	// wiring): the answer body emits the gap body.
 	synthesis *answerSynthesizer
-	logger    *slog.Logger
+	// agentFabric is the shared agent fabric, extracted from the planner
+	// (when available) so the tool executor can enforce per-agent
+	// ToolAllowlist at execution time. Nil = no enforcement
+	// (backward compatible, tests).
+	agentFabric *Fabric
+	logger      *slog.Logger
 }
 
 var _ Cognition = (*routerCognition)(nil)
@@ -365,6 +370,7 @@ func NewRouterCognitionWithPlanner(binder ToolBinder, planner Cognition, session
 			chat:     pc.chat,
 			assemble: pc.assembleAnswerMessages,
 		}
+		r.agentFabric = pc.agentFabric
 	}
 	return r
 }
@@ -380,7 +386,7 @@ func (r *routerCognition) ExecuteStep(ctx context.Context, task *models.Task) (*
 		if strings.TrimSpace(tool) == "" || r.binder == nil {
 			return nil, fmt.Errorf("agentfabric: tool node %q has no binder", name)
 		}
-		return (&toolCognition{tool: tool, binder: r.binder, logger: r.logger}).ExecuteStep(ctx, task)
+		return (&toolCognition{tool: tool, binder: r.binder, agentFabric: r.agentFabric, logger: r.logger}).ExecuteStep(ctx, task)
 	case name == answerAgentType:
 		return (&answerCognition{
 			logger:    r.logger,
@@ -429,9 +435,10 @@ func (c *rootCognition) ExecuteStep(_ context.Context, task *models.Task) (*Step
 // quantum. It is stateless — all inputs ride the task — so one instance can
 // drive many tool nodes.
 type toolCognition struct {
-	tool   string
-	binder ToolBinder
-	logger *slog.Logger
+	tool        string
+	binder      ToolBinder
+	agentFabric *Fabric // optional: for per-agent ToolAllowlist enforcement (E3)
+	logger      *slog.Logger
 }
 
 var _ Cognition = (*toolCognition)(nil)
@@ -451,6 +458,23 @@ func (c *toolCognition) ExecuteStep(ctx context.Context, task *models.Task) (*St
 	// serves every agent, so the id rides the quantum-scoped executingAgentKey
 	// on the task payload (executor.go withExecutingAgent).
 	ctx = kctx.WithCallerID(ctx, executingAgentID(task.Payload))
+
+	// Enforce the per-agent ToolAllowlist at execution time. The planner
+	// already checks at growth time, but a tool node grown before the
+	// allowlist was set — or a graph where the allowlist changed between
+	// growth and execution — must not slip through. This is the
+	// execution-time guardrail.
+	if c.agentFabric != nil {
+		agentID := executingAgentID(task.Payload)
+		if agentID != "" {
+			if agent, err := c.agentFabric.Get(agentID); err == nil {
+				if !agent.IsToolAllowed(c.tool) {
+					return nil, fmt.Errorf("agentfabric: tool %q blocked by per-agent allowlist for agent %q", c.tool, agentID)
+				}
+			}
+		}
+	}
+
 	res, err := c.binder.CallTool(ctx, c.tool, argsFromPayload(task.Payload))
 	if err != nil {
 		return nil, fmt.Errorf("agentfabric: tool %q call: %w", c.tool, err)

@@ -229,7 +229,7 @@ func completeSimple(f *Fabric, t *testing.T, id string) error {
 	return f.Complete(id, "agent-x", epoch)
 }
 
-// TestFabricFanoutReadyTasks (A5, 0.3.2): the DAG supports fan-out — one
+// TestFabricFanoutReadyTasks: the DAG supports fan-out — one
 // parent with three children that all become READY simultaneously after the
 // parent completes. depsCompletedLocked checks ALL dependencies, and
 // ReadyTasks returns every READY task whose deps are done, with no "one at a

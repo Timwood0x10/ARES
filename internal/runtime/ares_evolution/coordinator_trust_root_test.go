@@ -1,6 +1,6 @@
 package evolution_test
 
-// A1-c (0.3.2): the Coordinator patch path
+// The Coordinator patch path
 // (GenomePopulationAdapter.submitToCoordinator → Coordinator.Evaluate →
 // PatchExecutor.Apply) is explicitly NOT gated by StrategyLifecycle's gate
 // chain. This test pins the declaration in doc.go so the trust-root boundary

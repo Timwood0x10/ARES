@@ -37,7 +37,7 @@ func (d *Distiller) ResetMetrics() {
 // SubscribeAndDistill subscribes to an EventStore and automatically
 // distills memories from incoming ares_events.
 //
-// Deprecated (A2, 0.3.2): this method has ZERO production callers — the
+// Deprecated: this method has ZERO production callers — the
 // production memory pipeline drives distillation through
 // ares_bootstrap/bootstrap_steps.go's Subscribe-based parallel
 // implementation. The DistillationThreshold config field is still read

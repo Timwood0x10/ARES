@@ -473,7 +473,7 @@ func countUnevaluated(agents []*mutation.Strategy) int {
 }
 
 // scaleUpFitnessToCoordinator converts a [0,1] FitnessGenome score to the
-// [0,100] scale the Coordinator uses (C3, 0.3.2). This is the single scale
+// [0,100] scale the Coordinator uses. This is the single scale
 // conversion point: Strategy.Score and fitness_aggregator both operate in
 // [0,1], while PolicyGenome.ApplyFitnessThreshold and MinFitnessThreshold
 // operate in [0,100]. Clamping to 100 prevents a >1 fitness from inflating
@@ -505,6 +505,13 @@ func (a *GenomePopulationAdapter) submitToCoordinator(ctx context.Context) {
 	// an average fitness score. When no genome provides a fitness score, use
 	// a baseline of 0.5 so patches pass through the coordinator's fitness gate
 	// rather than bypassing it entirely (which Fitness=0 does).
+	//
+	// 0.5 scales to 50, which lands in the [30,70) delay bucket —
+	// patches await operator review, they are not auto-applied. A genome
+	// without a FitnessGenome can therefore never self-apply. If auto-apply
+	// for unscored genomes is desired, implement FitnessGenome on the adapter
+	// rather than raising the baseline — the latter would let ALL unscored
+	// patches bypass human review.
 	var fitnessSum float64
 	var fitnessCount int
 	for _, name := range a.genomeReg.List() {
@@ -524,7 +531,7 @@ func (a *GenomePopulationAdapter) submitToCoordinator(ctx context.Context) {
 	if fitnessCount > 0 {
 		fitness = fitnessSum / float64(fitnessCount)
 	}
-	// C3 (0.3.2): fitness scale conversion. FitnessGenome scores are [0,1]
+	// Fitness scale conversion. FitnessGenome scores are [0,1]
 	// (Strategy.Score scale). Coordinator thresholds are [0,100]
 	// (PolicyGenome.ApplyFitnessThreshold=70, MinFitnessThreshold=30).
 	// The scaleUpFitnessToCoordinator function is the SINGLE place this

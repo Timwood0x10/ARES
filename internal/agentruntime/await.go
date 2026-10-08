@@ -44,10 +44,11 @@ const DefaultAwaitWait = 10 * time.Minute
 // it; StalledError carries the failure diagnostics (E5).
 var ErrSessionStalled = errors.New("session stalled — all tasks terminal, no answer")
 
-// StalledError is the diagnostic-bearing stall failure (E5): it lets the
+// StalledError is the diagnostic-bearing stall failure: it lets the
 // caller distinguish "no answer AND failed session tasks" from "no answer
 // AND everything completed" — the precondition for any future automatic
-// retry/re-plan/re-agent decision, which 0.3.2 deliberately does NOT make.
+// retry/re-plan/re-agent decision, which the current design deliberately
+// does not make.
 type StalledError struct {
 	// SessionID is the stalled session.
 	SessionID string

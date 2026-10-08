@@ -18,7 +18,7 @@
 // keeps it that way, and any future production promotion through v2 MUST
 // route through this package's gates (see ARCHITECTURE.md high-risk #3).
 //
-// UNGATED PATCH PATH (A1-c, 0.3.2): the Coordinator's patch path
+// UNGATED PATCH PATH: the Coordinator's patch path
 // (GenomePopulationAdapter.submitToCoordinator → Coordinator.Evaluate →
 // PatchExecutor.Apply) is NOT gated by the StrategyLifecycle chain. The
 // Coordinator applies diff patches with its own fitness threshold

@@ -10,14 +10,13 @@ import (
 // / resource / policy, then creates the Agent + (optionally) a Task + the
 // parent-child provenance link.
 //
-// E3 (0.3.2, security boundary): SpawnSpec has NO tool allowlist field.
-// A spawned agent inherits ALL registered tools — tool availability is
-// process-level (planner_cognition.go isToolEnabled reads the L1 graph,
-// not per-agent). This is a known gap: an LLM with spawn_agent can create
-// an agent with full tool access. A future ResourceSpec with
-// ToolAllowlist is planned for 0.3.3 (interface change, deferred).
-// ValidateToolSet (guardrails.go) is a GA-side candidate validator, NOT
-// a runtime per-agent isolation — do not conflate the two.
+// ToolAllowlist narrows the spawned agent's tool set. When non-empty, the
+// agent can only use tools whose names appear in the list — the planner's
+// isToolEnabled checks Agent.IsToolAllowed before growing a tool node, and the
+// executor checks it again before calling the tool. When empty or nil, the
+// agent inherits every registered tool (backward compatible).
+// ValidateToolSet (guardrails.go) is a GA-side candidate validator, NOT a
+// runtime per-agent isolation — do not conflate the two.
 type SpawnSpec struct {
 	// Identity is the requested agent id; "" means the Fabric assigns one.
 	Identity string
@@ -52,6 +51,12 @@ type SpawnSpec struct {
 	// CognitiveState.Context so the agent starts with relevant distilled
 	// experience instead of a blank slate. Nil = no prior (zero-value usable).
 	ExperiencePrior any
+	// ToolAllowlist narrows the tools available to the spawned agent. When
+	// nil or empty, the agent inherits every registered tool (backward
+	// compatible). When non-empty, only listed tool names are permitted —
+	// the planner checks Agent.IsToolAllowed before growing a tool node, and
+	// the executor checks it again before calling the tool.
+	ToolAllowlist []string
 }
 
 // Spawn is the Kernel syscall that creates a new Agent (spawn
@@ -144,6 +149,15 @@ func (f *Fabric) Spawn(ctx context.Context, spec SpawnSpec) (*Agent, error) {
 		gov.deadline = f.now().Add(spec.Governance.Deadline)
 	}
 	a.governance = gov
+	// Install the per-agent tool allowlist. An empty list means the agent
+	// inherits every registered tool (backward compatible); a non-empty one
+	// permits only the listed tools.
+	if len(spec.ToolAllowlist) > 0 {
+		a.toolAllowlist = make(map[string]bool, len(spec.ToolAllowlist))
+		for _, t := range spec.ToolAllowlist {
+			a.toolAllowlist[t] = true
+		}
+	}
 	f.agents[id] = a
 	f.allocateLocked(claim)
 	if spec.ParentID != "" {

@@ -16,9 +16,9 @@ func TestAskAgent_IgnoresLLMSuppliedFromField(t *testing.T) {
 	var gotFrom, gotTo string
 	binder := &stubBinder{}
 	kernel := NewKernel(nil, nil, nil, nil,
-		WithAskAgent(func(_ context.Context, from, to, _ string, _ any) error {
+		WithAskAgent(func(_ context.Context, from, to, _ string, _ any) (any, error) {
 			gotFrom, gotTo = from, to
-			return nil
+			return nil, nil
 		}))
 	BindTools(binder, kernel)
 
@@ -55,11 +55,11 @@ func TestAskAgent_EmptyCallerIDPropagatesEmpty(t *testing.T) {
 	var gotFrom string
 	var gotPayload map[string]any
 	kernel := NewKernel(nil, nil, nil, nil,
-		WithAskAgent(func(_ context.Context, from, _, _ string, payload any) error {
+		WithAskAgent(func(_ context.Context, from, _, _ string, payload any) (any, error) {
 			gotFrom = from
 			m, _ := payload.(map[string]any)
 			gotPayload = m
-			return nil
+			return nil, nil
 		}))
 
 	_, err := kernel.AskAgent(context.Background(), AskAgentArgs{

@@ -679,11 +679,10 @@ func (p *Population) ScoreAgents(scorer func(*mutation.Strategy) float64) {
 // ParetoFrontStrategy returns the current Pareto-optimal strategies (deep clones).
 // Returns nil if multi-objective tracking is not enabled (no DimensionScores set).
 //
-// Deprecated (C1, 0.3.2): this entry API has ZERO production callers. The
+// Deprecated: this entry API has ZERO production callers. The
 // NSGA-II selection path uses ParetoFront/ParetoRank/CrowdingDistance
 // internally (selection.go), but this top-level strategy is not wired.
-// Marked experimental: either wire it into the production GA loop or
-// remove it in 0.3.3.
+// Experimental: wire it into the production GA loop or remove it.
 func (p *Population) ParetoFrontStrategy() []*mutation.Strategy {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
@@ -702,11 +701,11 @@ func (p *Population) ParetoFrontStrategy() []*mutation.Strategy {
 // ScoreAgentsMulti scores all agents using a multi-objective scorer.
 // Sets both DimensionScores and Score (aggregate) on each agent.
 //
-// Deprecated (C1, 0.3.2): this entry API has ZERO production callers. The
+// Deprecated: this entry API has ZERO production callers. The
 // multi-objective engine (NSGA-II selection) is functional and used
 // internally by the selection path, but this top-level scoring entry
-// point is not wired into any production loop. Marked experimental:
-// either wire it or remove it in 0.3.3.
+// point is not wired into any production loop. Experimental: wire it or
+// remove it.
 //
 // The scorer runs OUTSIDE the lock, mirroring ScoreAgents: a multi-objective
 // scorer may be an LLM/network call that blocks for seconds, and running it

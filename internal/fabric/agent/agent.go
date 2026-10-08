@@ -65,6 +65,10 @@ type Agent struct {
 	// governance is the budget state (see governance.go). Nil when the
 	// agent was spawned without budgets.
 	governance *governanceState
+	// toolAllowlist is the per-agent tool restriction set. Nil = inherit all
+	// registered tools (backward compatible). Non-nil = only tools whose
+	// names are in this set are allowed. Guarded by mu.
+	toolAllowlist map[string]bool
 }
 
 // CognitiveStateSchemaVersion is the current CognitiveState schema version.
@@ -116,6 +120,20 @@ var ErrAgentNotSuspended = errors.New("agentfabric: agent not suspended")
 // ErrAgentNotExecutable is returned when ExecuteStep is called on an agent
 // that was spawned without a CognitionFactory (execution capability not injected).
 var ErrAgentNotExecutable = errors.New("agentfabric: agent not executable")
+
+// IsToolAllowed reports whether the given tool is permitted for this agent.
+// It returns true (permissive) when no allowlist is set — the agent inherits
+// every registered tool. When a non-nil allowlist is set, only tools whose
+// names are in the set pass. Thread-safe; reads the allowlist under the
+// agent lock.
+func (a *Agent) IsToolAllowed(toolName string) bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if a.toolAllowlist == nil {
+		return true
+	}
+	return a.toolAllowlist[toolName]
+}
 
 // Executable reports whether the agent has an execution body injected
 // (execution capability injected). An agent spawned without a CognitionFactory is managed

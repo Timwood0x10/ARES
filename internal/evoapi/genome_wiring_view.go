@@ -1,15 +1,15 @@
 // Package evoapi provides the legacy evolution API.
 //
-// This file implements A3 (0.3.2): aligning the public API surface with the
-// production evolution path. The genome_wiring observation surface (fitness
-// curves, population stats, generation active state) is exposed here as a
-// read-only view so external callers can observe the REAL evolution path — not
-// just the legacy DreamCycle subsystem.
+// This file aligns the public API surface with the production evolution
+// path. The genome_wiring observation surface (fitness curves, population
+// stats, generation active state) is exposed here as a read-only view so
+// external callers can observe the REAL evolution path — not just the legacy
+// DreamCycle subsystem.
 //
 // TODO(tech-debt): coordinator patch decisions are NOT exposed here — the
 // adapter does not surface its coordinator. They are logged structurally by
-// logCoordinatorDecision in genome_wiring_run.go; a read-only accessor is a
-// 0.3.3 target.
+// logCoordinatorDecision in genome_wiring_run.go; a read-only accessor is
+// future work.
 package evoapi
 
 import (
@@ -32,9 +32,9 @@ type GenerationStats struct {
 }
 
 // GenomeWiringView is the read-only observation surface for the production
-// genome_wiring evolution path (A3, 0.3.2). It exposes the population stats
-// (fitness curve) and the generation-active state without allowing mutations —
-// the production path's write side stays internal.
+// genome_wiring evolution path. It exposes the population stats (fitness
+// curve) and the generation-active state without allowing mutations — the
+// production path's write side stays internal.
 //
 // Construct via NewGenomeWiringView with a *GenomePopulationAdapter from
 // internal/runtime/ares_evolution. The adapter must be non-nil.
@@ -71,7 +71,7 @@ func (v *GenomeWiringView) CurrentGeneration() int {
 // All fields come from a single Population.Stats call, which snapshots the
 // generation, scores and stagnation counter under one read lock. Reading
 // StagnantGenerations separately would tear the snapshot across a concurrent
-// evolve (M3, 0.3.2).
+// evolve.
 func (v *GenomeWiringView) Stats() *GenerationStats {
 	pop := v.adapter.Population()
 	if pop == nil {

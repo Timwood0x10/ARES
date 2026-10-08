@@ -1,6 +1,6 @@
 package evolution_test
 
-// A2 legacy boundary (0.3.2): the v1 DreamCycle orchestrator is dead on the
+// the v1 DreamCycle orchestrator is dead on the
 // production path — nothing invokes DreamCycle.Run. Production drives evolution
 // through GenomePopulationAdapter.Run (see the DreamCycle type doc, and
 // ares_bootstrap/bootstrap_evolution.go which hard-codes EnableDreamCycle=false).

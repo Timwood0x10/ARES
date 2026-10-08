@@ -451,6 +451,14 @@ type graphEdgeSpec struct {
 // deadline (LLM-backed peers make an unbounded wait dangerous).
 const collabTimeout = 10 * time.Minute
 
+// askAgentTimeout bounds a single ask_agent collaboration request. This is
+// intentionally short (seconds, not minutes) because the ask_agent quantum
+// yields immediately (C-1 fix: background launch) — this timeout only bounds
+// the BACKGROUND goroutine waiting for the target agent's reply. A 30s budget
+// is generous for an LLM-backed peer to produce an answer; anything longer
+// amplifies the cost of a stuck or unresponsive target.
+const askAgentTimeout = 30 * time.Second
+
 // Error taxonomy — the handler maps each class to a distinct HTTP status so
 // callers can tell a mistake from a fault from a partial result:
 //

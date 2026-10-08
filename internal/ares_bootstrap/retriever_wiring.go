@@ -158,7 +158,7 @@ func wireRetrievers(
 				modelName = akgModelName(embClient)
 			}
 			kr, err = adapter.NewKnowledgeRetrieverWithStore(ctx, knowRt, knowStore, modelName, minScore)
-			// B3 (0.3.2): do NOT hard-code WithNamespace(defaultDistillTenant)
+			// do NOT hard-code WithNamespace(defaultDistillTenant)
 			// here — the retriever resolves namespace per-request via the
 			// three-level priority (explicit > tenantctx > store default),
 			// matching StoreProvider.namespaceFor semantics. Hard-coding

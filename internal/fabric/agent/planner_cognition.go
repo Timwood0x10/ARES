@@ -661,6 +661,14 @@ func (c *plannerCognition) growToolNodes(
 				"tool", toolName, "session", sessionID)
 			continue
 		}
+		// Per-agent tool allowlist check. The executing agent's identity rides the
+		// task payload; when an allowlist is set, only listed tools are
+		// permitted.
+		if !c.isToolAllowedForAgent(toolName, task) {
+			c.logger.Warn("planner: tool blocked by per-agent allowlist; skipping",
+				"tool", toolName, "session", sessionID)
+			continue
+		}
 		if !c.toolBudgetRemaining(g, toolName) {
 			c.logger.Warn("planner: tool budget exhausted by L1 constraint; skipping",
 				"tool", toolName, "session", sessionID)
@@ -704,21 +712,22 @@ func (c *plannerCognition) growToolNodes(
 		if err := g.AddToolNode(ctx, nodeID, toolName, metadata, prev); err != nil {
 			return grown, fmt.Errorf("add tool node %s: %w", nodeID, err)
 		}
-		// Chain sequential tools within the same round: the next tool
-		// depends on this one (data flow).
+		// Chain sequential tools within the same round: the next tool depends on
+		// this one (data flow).
 		//
-		// A5 (0.3.2): this serial chaining is an INTENTIONAL design choice,
-		// not an architectural limitation. The DAG supports fan-out
-		// (depsCompletedLocked checks all dependencies; ReadyTasks returns
-		// every ready task at once — see TestFabricFanoutReadyTasks).
+		// This serial chaining is an intentional design choice, not an
+		// architectural limitation. The DAG supports fan-out:
+		// depsCompletedLocked checks every dependency, and ReadyTasks
+		// returns all ready tasks at once (see TestFabricFanoutReadyTasks).
 		// PlanStep.DependsOn is []string and ProjectStep copies it as-is,
-		// so multi-predecessor topologies are reachable. The planner chains
-		// serially because LLM tool-call ordering typically carries data
-		// flow (tool B reads tool A's output), and the planner has no
-		// signal to distinguish "order matters" from "order is arbitrary".
-		// A5-c (reusing the GA's PatchAddEdge to restructure topology at
-		// runtime) is the lowest-risk path to parallel expression —
-		// changing the mutation operator is safer than changing the planner.
+		// so multi-predecessor topologies are reachable.
+		//
+		// The planner chains serially because LLM tool-call ordering
+		// typically carries data flow (tool B reads tool A's output), and
+		// the planner has no signal to distinguish "order matters" from
+		// "order is arbitrary". Restructuring the topology at runtime via
+		// the GA's PatchAddEdge — changing the mutation operator — is a
+		// lower-risk path to parallel expression than changing the planner.
 		prev = nodeID
 		grown++
 	}
@@ -768,6 +777,26 @@ func (c *plannerCognition) isToolEnabled(toolName string) bool {
 		return true
 	}
 	return val != "false"
+}
+
+// isToolAllowedForAgent checks the per-agent tool allowlist.
+// Returns true (permissive) when no agent fabric is wired, the task carries
+// no executing-agent stamp, or the agent has no allowlist set (nil = inherit
+// all). Returns false only when the agent has a non-nil allowlist that does
+// not contain the tool name.
+func (c *plannerCognition) isToolAllowedForAgent(toolName string, task *models.Task) bool {
+	if c.agentFabric == nil {
+		return true
+	}
+	agentID, _ := task.Payload[executingAgentKey].(string)
+	if agentID == "" {
+		return true
+	}
+	agent, err := c.agentFabric.Get(agentID)
+	if err != nil {
+		return true // agent gone = permissive (don't block on a race)
+	}
+	return agent.IsToolAllowed(toolName)
 }
 
 // toolBudgetRemaining checks whether the L2 graph still has budget for one

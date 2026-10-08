@@ -1,6 +1,6 @@
 package runtime
 
-// A4 (0.3.2): exhaustive state-combination test for managedAgent's four
+// Exhaustive state-combination test for managedAgent's four
 // boolean flags. The state machine has 2^4 = 16 combinations; this test
 // documents the legal ones and asserts the invariants each must satisfy.
 //

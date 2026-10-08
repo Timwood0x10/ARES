@@ -758,7 +758,7 @@ func (s *EvolutionScheduler) LastRunTime() time.Time {
 // The scheduler keeps the reference (and exposes it via DreamCycle()) but does
 // NOT delegate execution to it: the tick path always runs the population
 // adapter. In the production shape the attached orchestrator is the legacy v1
-// DreamCycle, whose Run() is never invoked (A2, 0.3.2) — see the DreamCycle
+// DreamCycle, whose Run() is never invoked — see the DreamCycle
 // type doc.
 //
 // Args:

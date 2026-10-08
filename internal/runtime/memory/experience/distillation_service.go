@@ -174,7 +174,7 @@ func (s *DistillationService) Distill(ctx context.Context, task *TaskResult) (*E
 			// Fall back to a synchronous embed+update so the row does not stay
 			// without a vector until the reconciler picks it up.
 			if backfillErr := s.backfillEmbedding(ctx, exp, extracted.Problem); backfillErr != nil {
-				// D1 (0.3.2): enqueue + sync embed both failed — the row is
+				// Enqueue + sync embed both failed — the row is
 				// persisted but will have embedding IS NULL. This is a
 				// permanent gap if the reconciler is also not running.
 				// Elevate to Error so it is not silently swallowed; the

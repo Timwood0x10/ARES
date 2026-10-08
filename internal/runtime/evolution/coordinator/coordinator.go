@@ -131,6 +131,14 @@ type PolicyGenome struct {
 //     is worth trusting. Patches in [30, 70) land in the delay bucket for
 //     operator review. Setting this to 100.0 disables GA auto-apply.
 //
+// A patch whose fitness is constant in the [30,70) delay bucket
+// will exhaust maxProposalRetries and be dropped — the delay bucket is NOT a
+// holding area, it is a finite retry loop. A genome with no FitnessGenome
+// scores a constant 50 (baseline 0.5 × 100), so it will always cycle
+// delay→drop. This is by design (human review is the intended path for
+// unscored patches), but operators should be aware that unscored patches
+// never auto-apply.
+//
 // Callers that need a different gate (e.g. stricter for production, looser
 // for canary) construct a PolicyGenome explicitly instead of using DefaultPolicy.
 func DefaultPolicy() PolicyGenome {
@@ -170,6 +178,7 @@ type EvolutionCoordinator struct {
 	patchHistory []PatchResult   // apply results
 	patchReg     *patch.Registry // registry for applying patches
 	deployer     PatchDeployer   // optional safe-promotion pipeline (nil = direct apply)
+	applyGate    ApplyGate       // optional pre-apply gate (nil = no gate, backward compatible)
 
 	// maxDecisions / maxPatchHistory cap the two append-only history slices:
 	// Evaluate runs on the bootstrap 15-minute ticker for the process
@@ -249,6 +258,41 @@ func (ec *EvolutionCoordinator) SetDeployer(d PatchDeployer) {
 	ec.mu.Lock()
 	defer ec.mu.Unlock()
 	ec.deployer = d
+}
+
+// ApplyGate is an optional pre-apply safety gateWhen set,
+// Evaluate calls Check BEFORE applying a patch that passed decide(). If
+// Check returns false the decision is downgraded to DecisionDelay and the
+// patch is re-queued for later review. This lets the StrategyLifecycle
+// (or any external gate) veto an auto-apply that the Coordinator's own
+// policy would have allowed — e.g. a GA patch whose fitness is high but
+// whose shadow comparison evidence is insufficient.
+//
+// PRODUCTION WIRING STATUS: SetApplyGate is NOT called from any production
+// assembly path today — the only callers are tests. The gate mechanism is
+// implemented and tested, but until a serve-layer wiring connects it to a
+// StrategyLifecycle-backed adapter, the Coordinator's Apply path remains
+// ungated by StrategyLifecycle (though the Coordinator's own fitness
+// threshold still applies). This is consistent with B5's characterization:
+// the delay bucket (fitness [30,70)) still routes to operator review, and
+// the gate only triggers on the ≥70 Apply branch — but that branch is not
+// externally gated until SetApplyGate is wired in production.
+//
+// The interface lives in the coordinator package (consumer-side) so the
+// coordinator never imports the evolution package, avoiding a cycle.
+type ApplyGate interface {
+	// Check returns true if the patch may be applied now. reason is a
+	// human-readable explanation for the decision (logged on reject).
+	Check(ctx context.Context, p patch.RuntimePatch) (ok bool, reason string)
+}
+
+// SetApplyGate installs an optional pre-apply gate. When set, Evaluate
+// consults it before every DecisionApply. Nil clears it (backward
+// compatible: no gate = apply directly, as before).
+func (ec *EvolutionCoordinator) SetApplyGate(g ApplyGate) {
+	ec.mu.Lock()
+	defer ec.mu.Unlock()
+	ec.applyGate = g
 }
 
 // Policy returns a snapshot of the current Coordinator policy. Callers (e.g.
@@ -427,6 +471,44 @@ func (ec *EvolutionCoordinator) Evaluate(ctx context.Context) {
 		var applyErr error
 		switch decision {
 		case DecisionApply:
+			// Consult the pre-apply gate before touching the
+			// runtime. When the gate rejects, downgrade to DecisionDelay so
+			// the patch is re-queued — the gate may pass on a later review
+			// (e.g. shadow evidence accumulated since). When no gate is set
+			// the behaviour is unchanged (apply directly).
+			ec.mu.RLock()
+			gate := ec.applyGate
+			ec.mu.RUnlock()
+			if gate != nil {
+				ok, gateReason := gate.Check(ctx, proposal.Patch)
+				if !ok {
+					decision = DecisionDelay
+					reason = fmt.Sprintf("apply gate rejected: %s", gateReason)
+					proposal.RetryCount++
+					// Enforce the retry budget on gate-rejected proposals too:
+					// without this, a high-fitness proposal (which bypasses
+					// the delay bucket's retry check in decide()) combined
+					// with a persistently-rejecting gate would loop forever.
+					if proposal.RetryCount > maxProposalRetries {
+						decision = DecisionDrop
+						reason = fmt.Sprintf("apply gate rejected (retry budget exhausted): %s", gateReason)
+					} else {
+						ec.mu.Lock()
+						ec.proposals = append(ec.proposals, proposal)
+						ec.mu.Unlock()
+					}
+					ec.mu.Lock()
+					ec.appendDecision(PatchDecision{
+						Proposal:   proposal,
+						Decision:   decision,
+						Reason:     reason,
+						ApplyError: nil,
+					})
+					ec.mu.Unlock()
+					continue
+				}
+			}
+
 			// Apply the patch. When a deployer is installed and enabled,
 			// promote through the safe-deployment pipeline (staging → live);
 			// otherwise apply directly to preserve prior behavior.

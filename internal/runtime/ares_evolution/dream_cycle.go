@@ -181,7 +181,7 @@ func WithDreamCycleConfig(cfg DreamCycleConfig) DreamCycleOption {
 // Mutator -> Arena Regression -> Genealogy recording.
 // In GA mode, it uses genome.Population for full genetic algorithm cycles.
 //
-// Legacy (A2, 0.3.2): this is the v1 GA/ES orchestrator. Production hard-codes
+// This is the v1 GA/ES orchestrator. Production hard-codes
 // EnableDreamCycle=false (ares_bootstrap/bootstrap_evolution.go) and drives
 // evolution through GenomePopulationAdapter.Run instead; nothing invokes
 // DreamCycle.Run on the production path. The type is retained only because it
@@ -190,12 +190,16 @@ func WithDreamCycleConfig(cfg DreamCycleConfig) DreamCycleOption {
 // routing it through the StrategyLifecycle gate chain — see
 // TestDreamCycleRunNotInvokedInProduction for the enforced boundary.
 type DreamCycle struct {
-	scheduler       *EvolutionScheduler
-	mutator         MutatorInterface
-	tester          TesterInterface
-	genealogy       GenealogyRecorder
-	strategyStore   StrategyStore
-	guardrails      *EvolutionGuardrails
+	scheduler     *EvolutionScheduler
+	mutator       MutatorInterface
+	tester        TesterInterface
+	genealogy     GenealogyRecorder
+	strategyStore StrategyStore
+	guardrails    *EvolutionGuardrails
+	// Deprecated: shadowEvaluator is set by genome_wiring_system.go but
+	// never read after the shadow evaluation branch was physically removed
+	// from deployWinnerRetained because WithDreamCycleShadowEvaluator
+	// is a public option and removing it would break callers. Do NOT add new reads.
 	shadowEvaluator *ShadowEvaluator
 	stateManager    *ActiveStrategyManager
 	metrics         MetricsRecorder
@@ -283,7 +287,7 @@ func NewDreamCycle(
 //
 // This is the main orchestration method that coordinates all evolution components.
 //
-// Legacy (A2, 0.3.2): not reachable from the production path — the scheduler
+// Legacy: not reachable from the production path — the scheduler
 // runs GenomePopulationAdapter.Run, never this method. Kept for the public API
 // surface; see the DreamCycle type doc.
 //
@@ -387,6 +391,12 @@ func WithDreamCycleGuardrails(guardrails *EvolutionGuardrails) DreamCycleOption 
 // Returns:
 //
 //	DreamCycleOption - the option function.
+//
+// WithDreamCycleShadowEvaluator attaches a shadow evaluator.
+//
+// Deprecated: the shadow evaluation branch in deployWinner was physically
+// removedThe field is set but never read. Retained for API
+// compatibility — do not call in new code.
 func WithDreamCycleShadowEvaluator(se *ShadowEvaluator) DreamCycleOption {
 	return func(dc *DreamCycle) error {
 		dc.shadowEvaluator = se

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
 	apperrors "github.com/Timwood0x10/ares/internal/errors"
@@ -78,6 +79,26 @@ func (s *PostgresEventStore) ensureEventsTable(ctx context.Context) error {
 		`CREATE UNIQUE INDEX IF NOT EXISTS uq_events_stream_version ON events(stream_id, version)`,
 		`CREATE INDEX IF NOT EXISTS idx_events_type ON events(type)`,
 		`CREATE INDEX IF NOT EXISTS idx_events_created ON events(created_at)`,
+		// a trigger that fires pg_notify on every INSERT. This
+		// lets Subscribe use LISTEN for near-real-time push instead of
+		// 1-second polling. The payload is empty — the subscriber re-queries
+		// to fetch the actual rows, so the notify is just a wake-up signal.
+		// DROP + CREATE keeps the trigger idempotent across schema refreshes.
+		//
+		// ORDER MATTERS: DROP TRIGGER must come before DROP FUNCTION because
+		// PG enforces a dependency (trigger → function). Dropping the function
+		// first fails with "cannot drop function ... because other objects
+		// depend on it" on any restart after the initial creation.
+		`DROP TRIGGER IF EXISTS events_notify_insert ON events`,
+		`DROP FUNCTION IF EXISTS notify_event_insert()`,
+		`CREATE OR REPLACE FUNCTION notify_event_insert() RETURNS trigger AS $$
+			BEGIN
+				PERFORM pg_notify('events_channel', '');
+				RETURN NEW;
+			END;
+		$$ LANGUAGE plpgsql`,
+		`CREATE TRIGGER events_notify_insert AFTER INSERT ON events
+			FOR EACH STATEMENT EXECUTE FUNCTION notify_event_insert()`,
 	}
 	for i, stmt := range stmts {
 		if _, err := s.pool.Exec(ctx, stmt); err != nil {
@@ -253,7 +274,10 @@ func (s *PostgresEventStore) ReadAll(
 }
 
 // Subscribe returns a channel that receives events matching the filter.
-// Polling interval is 1 second. The channel is closed when ctx is cancelled.
+//Subscribe uses PG LISTEN/NOTIFY for near-real-time push and
+// falls back to a 10-second polling ticker as a safety net (catches events
+// that arrived during a LISTEN reconnection gap or when the trigger is
+// unavailable). The channel is closed when ctx is cancelled.
 func (s *PostgresEventStore) Subscribe(
 	ctx context.Context,
 	filter EventFilter,
@@ -264,7 +288,7 @@ func (s *PostgresEventStore) Subscribe(
 
 	ch := make(chan *Event, 64) // Match memory store buffer to absorb bursts and avoid blocking the poller.
 
-	go s.pollEvents(ctx, filter, ch)
+	go s.subscribeLoop(ctx, filter, ch)
 
 	return ch, nil
 }
@@ -493,24 +517,18 @@ func (s *PostgresEventStore) queryEventPage(
 	return s.queryEvents(ctx, query, args...)
 }
 
-// pollEvents periodically queries for new events matching the filter and sends them to ch.
-// The goroutine exits when ctx is cancelled.
-//
-// A6 (0.3.2): the 1-second poll interval adds up to 1s of latency to every
-// event notification (vs. memory store's synchronous fan-out). The log.Warn
-// below surfaces events whose created_at → delivery latency exceeds the poll
-// interval, so an operator comparing dev (memory) vs prod (PG) latency can
-// attribute the gap. Switching to LISTEN/NOTIFY (pgx WaitForNotification)
-// would eliminate this latency while keeping pollOnce as a fallback.
-func (s *PostgresEventStore) pollEvents(
+// subscribeLoop runs the hybrid LISTEN + poll-fallback event delivery
+// loopIt starts a dedicated LISTEN goroutine on a separate
+// connection and a slow (10s) polling ticker. When LISTEN delivers a
+// notification, the loop immediately runs pollOnce — cutting latency from
+// ~1s to milliseconds. The 10s ticker catches any events that slip through
+// (LISTEN reconnection gap, trigger disabled, etc.).
+func (s *PostgresEventStore) subscribeLoop(
 	ctx context.Context,
 	filter EventFilter,
 	ch chan<- *Event,
 ) {
 	defer close(ch)
-
-	ticker := time.NewTicker(1 * time.Second)
-	defer ticker.Stop()
 
 	sub := &pgSubscription{
 		filter:    filter,
@@ -522,28 +540,108 @@ func (s *PostgresEventStore) pollEvents(
 		sub.cursor = time.Now()
 	}
 
+	// Immediate poll on startup so events written before Subscribe are
+	// delivered without waiting for the first ticker or LISTEN.
+	if err := pollOnce(ctx, sub, s.queryEventPage); err != nil {
+		log.Error("event subscription initial poll failed", "error", err)
+	}
+
+	// notifyCh receives a signal when LISTEN gets a notification.
+	// CONNECTION NOTE: each Subscribe call opens one dedicated PG connection
+	// for LISTEN (held until ctx cancels). In high-subscriber deployments this
+	// can consume multiple connections from the pool — ensure MaxOpenConns
+	// has headroom, or consider a shared LISTEN broadcaster (future work).
+	notifyCh := make(chan struct{}, 1)
+	go s.listenEvents(ctx, notifyCh)
+
+	// A6: the poll fallback interval is 10s (was 1s pre-LISTEN). LISTEN
+	// handles the common case in milliseconds; the ticker only catches
+	// gaps.
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
+		case <-notifyCh:
+			// LISTEN fired: drain immediately.
 			if err := pollOnce(ctx, sub, s.queryEventPage); err != nil {
-				log.Error("event subscription poll failed", "error", err)
-				continue
+				log.Error("event subscription poll after LISTEN failed", "error", err)
 			}
-			// A6: surface delivery latency for events that waited longer
-			// than the poll interval. This is a diagnostic, not an error —
-			// the poll architecture makes this expected by design.
-			for _, ev := range sub.lastBatch {
-				latency := time.Since(ev.Timestamp)
-				if latency > time.Second {
-					log.Warn("pg event store: notification latency exceeds poll interval",
-						"event_type", ev.Type,
-						"event_id", ev.ID,
-						"latency_ms", latency.Milliseconds())
-					break // one warning per poll cycle is enough
-				}
+		case <-ticker.C:
+			// Fallback poll.
+			if err := pollOnce(ctx, sub, s.queryEventPage); err != nil {
+				log.Error("event subscription fallback poll failed", "error", err)
 			}
+		}
+	}
+}
+
+// listenEvents opens a dedicated PG connection and runs LISTEN on the
+// events_channel. When a notification arrives, it signals notifyCh (non-blocking).
+// The goroutine exits when ctx is cancelled. If the connection cannot be
+// established or is lost, it logs and returns — the polling ticker in
+// subscribeLoop remains as the fallback.
+//
+// RECOVER BOUNDARY (code rules §4.2): the goroutine has a recover so a panic
+// in conn.Raw / WaitForNotification does not kill the process — the poll
+// fallback in subscribeLoop remains active.
+// listenEvents holds one dedicated PG connection for LISTEN and blocks in
+// WaitForNotification until the wake-up channel fires or ctx is cancelled.
+//
+// CONNECTION COST: the connection is held for the subscriber's whole lifetime,
+// so N concurrent Subscribe calls hold N connections in addition to the poll
+// path's. Size MaxOpenConns with headroom for this, or LISTEN silently fails
+// to acquire and the subscriber degrades to poll-only (logged as a warning).
+// Giving LISTEN its own small pool is the cleaner fix, deferred for now.
+func (s *PostgresEventStore) listenEvents(ctx context.Context, notifyCh chan<- struct{}) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Error("pg event store: LISTEN goroutine panicked, falling back to poll-only", "panic", r)
+		}
+	}()
+	conn, err := s.pool.Get(ctx)
+	if err != nil {
+		log.Warn("pg event store: LISTEN connection failed, falling back to poll-only", "error", err)
+		return
+	}
+	defer s.pool.Release(conn)
+
+	if _, err := conn.ExecContext(ctx, `LISTEN events_channel`); err != nil {
+		log.Warn("pg event store: LISTEN failed, falling back to poll-only", "error", err)
+		return
+	}
+
+	// Access the underlying pgx connection via conn.Raw to call
+	// WaitForNotification, which is not exposed through database/sql.
+	for {
+		var notifyErr error
+		if rawErr := conn.Raw(func(driverConn any) error {
+			// The driverConn is *stdlib.Conn which has .Conn() returning *pgx.Conn
+			pc, ok := driverConn.(interface {
+				Conn() *pgx.Conn
+			})
+			if !ok {
+				return fmt.Errorf("pg event store: underlying connection does not expose pgx.Conn (type: %T)", driverConn)
+			}
+			_, notifyErr = pc.Conn().WaitForNotification(ctx)
+			return nil
+		}); rawErr != nil {
+			log.Warn("pg event store: LISTEN raw conn access failed, falling back to poll-only", "error", rawErr)
+			return
+		}
+		if notifyErr != nil {
+			if ctx.Err() != nil {
+				return // context cancelled — clean exit
+			}
+			log.Warn("pg event store: LISTEN WaitForNotification error, falling back to poll-only", "error", notifyErr)
+			return
+		}
+		// Signal the subscribe loop (non-blocking — it's already polling)
+		select {
+		case notifyCh <- struct{}{}:
+		default:
 		}
 	}
 }

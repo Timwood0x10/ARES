@@ -134,7 +134,7 @@ func derivedTaskError(t *taskfabric.Task, errText string) string {
 //     degrades to the async 202 contract carrying the current state
 //   - (nil, false)  — task never readable; plain 202 acceptance
 //
-// E6 (0.3.2): the per-poll resolution invariant (answer scan first, then
+// the per-poll resolution invariant (answer scan first, then
 // stall verdict) is now delegated to agentruntime.TaskResolved — the shared
 // primitive — instead of the local resultResolved copy. Poll cadence (200ms
 // for the 202-degrade budget) and the wait deadline stay here.

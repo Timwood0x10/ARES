@@ -195,78 +195,12 @@ func (dc *DreamCycle) deployWinner(
 		}
 	}
 
-	// Shadow evaluation before deployment.
-	if dc.shadowEvaluator != nil {
-		mtnWinner := winnerToMutationStrategy(winner)
-		if mtnWinner == nil {
-			slog.ErrorContext(ctx, "[DreamCycle] winnerToMutationStrategy returned nil, skipping shadow")
-			return nil
-		}
-		parentMutation := parent
-		dc.shadowEvaluator.SetActiveStrategy(&parentMutation)
-		dc.shadowEvaluator.StartShadow(mtnWinner)
-
-		if dc.shadowEvaluator.HasIndependentScorer() {
-			dc.shadowEvaluator.Evaluate(ctx)
-		} else {
-			dc.shadowEvaluator.RecordResult(parent.Score, winner.scoreImprovement+parent.Score)
-		}
-
-		shouldDeploy, report := dc.shadowEvaluator.ShouldDeployLoose()
-		// Keep the shadow win-rate gauge current on every comparison
-		// batch so /metrics reflects the live shadow gate state instead of a
-		// permanently zero gauge.
-		if dc.metrics != nil && report != nil {
-			dc.metrics.SetEvolutionShadowWinRate(report.WinRate)
-		}
-		// LOOSE contract (DreamCycle defers on insufficient data;
-		// the lifecycle shadow gate uses the STRICT ShouldDeploy): StartShadow
-		// resets the results, so the first call here carries a single
-		// comparison (total < MinSamples), and a strict reading would veto
-		// every early deployment. ShouldDeployLoose therefore returns
-		// shouldDeploy=true with an "insufficient samples" report when it
-		// cannot judge yet — surface that explicitly, and only block
-		// deployment when enough samples actually show the shadow strategy
-		// underperforming.
-		//
-		// The insufficiency bar is RAW comparisons (decisive + ties).
-		// TotalComparisons alone is decisive-only since B-3, so an all-tie
-		// wall would read as 0 < MinSamples and flip to "proceed" — the
-		// opposite of the pre-B-3 rejection it replaced. Counting ties in the
-		// sample-size check keeps "not enough data → defer" separate from
-		// "enough data, all ties → reject" (the latter is ShouldDeployLoose's
-		// total==0 rejection).
-		insufficient := report == nil || report.TotalComparisons+report.TieCount < dc.shadowEvaluator.minSamples
-		switch {
-		case insufficient:
-			reason := "insufficient samples, proceeding with deployment"
-			if report != nil && report.Recommendation != "" {
-				reason = report.Recommendation
-			}
-			slog.InfoContext(ctx, "[DreamCycle] Shadow evaluation cannot conclude, proceeding",
-				"candidate_id", winner.strategy.ID,
-				"active_id", parent.ID,
-				"reason", reason)
-			if dc.metrics != nil {
-				dc.metrics.RecordEvolutionShadow("insufficient-samples")
-			}
-		case !shouldDeploy:
-			slog.InfoContext(ctx, "[DreamCycle] Shadow evaluation rejects deployment",
-				"candidate_id", winner.strategy.ID,
-				"active_id", parent.ID,
-				"win_rate", report.WinRate,
-				"threshold", dc.shadowEvaluator.minWinRate,
-				"reason", report.Recommendation)
-			if dc.metrics != nil {
-				dc.metrics.RecordEvolutionShadow("rejected")
-			}
-			return nil
-		default:
-			if dc.metrics != nil {
-				dc.metrics.RecordEvolutionShadow("promoted")
-			}
-		}
-	}
+	// The shadow evaluation branch has been physically removed.
+	// Shadow evaluation is now exclusively handled by the StrategyLifecycle's
+	// shadowVerifyGate (lifecycle.go), which runs fail-closed with the
+	// ShadowEvaluator's accumulated comparisons. The DreamCycle shadow path
+	// was dead code in production (EnableDreamCycle=false by default) and
+	// its LOOSE contract conflicted with the lifecycle's STRICT contract.
 
 	// Deploy via ActiveStrategyManager.
 	if dc.stateManager != nil {
