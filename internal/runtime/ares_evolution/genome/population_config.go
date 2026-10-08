@@ -150,13 +150,17 @@ func DefaultPopulationConfig() PopulationConfig {
 }
 
 // PopulationStats holds statistical information about a population's state.
+// All fields are captured under a single read lock (see Population.Stats), so
+// the snapshot is internally consistent: StagnantGens always belongs to the
+// same Generation as the score fields.
 type PopulationStats struct {
-	Generation int
-	Size       int
-	BestScore  float64
-	AvgScore   float64
-	WorstScore float64
-	Diversity  DiversityReport
+	Generation   int
+	Size         int
+	BestScore    float64
+	AvgScore     float64
+	WorstScore   float64
+	Diversity    DiversityReport
+	StagnantGens int
 }
 
 // ScorerFunc is a function that assigns a fitness score to a strategy.

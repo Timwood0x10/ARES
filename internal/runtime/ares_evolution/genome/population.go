@@ -951,8 +951,9 @@ func (p *Population) Stats() *PopulationStats {
 	defer p.mu.RUnlock()
 
 	stats := &PopulationStats{
-		Generation: p.Generation,
-		Size:       len(p.Agents),
+		Generation:   p.Generation,
+		Size:         len(p.Agents),
+		StagnantGens: p.stagnantGens,
 	}
 
 	if len(p.Agents) == 0 {

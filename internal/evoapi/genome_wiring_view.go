@@ -67,6 +67,11 @@ func (v *GenomeWiringView) CurrentGeneration() int {
 
 // Stats returns the current population statistics — the latest fitness curve
 // data point. Returns nil if the population is unavailable.
+//
+// All fields come from a single Population.Stats call, which snapshots the
+// generation, scores and stagnation counter under one read lock. Reading
+// StagnantGenerations separately would tear the snapshot across a concurrent
+// evolve (M3, 0.3.2).
 func (v *GenomeWiringView) Stats() *GenerationStats {
 	pop := v.adapter.Population()
 	if pop == nil {
@@ -83,7 +88,7 @@ func (v *GenomeWiringView) Stats() *GenerationStats {
 		AvgScore:     ps.AvgScore,
 		WorstScore:   ps.WorstScore,
 		Diversity:    ps.Diversity.Overall,
-		StagnantGens: pop.StagnantGenerations(),
+		StagnantGens: ps.StagnantGens,
 	}
 }
 

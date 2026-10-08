@@ -83,7 +83,7 @@ flowchart TD
         EVAL["eval/<br/>evaluator.go:14 · llm_judge.go:89<br/>process_verifier.go:28<br/>result_verifier.go:34<br/>types.go TestCase:60 · report.go:182"]
         MEM["memory/<br/>manager.go:20 · pipeline.go:97<br/>context/ · distillation/ · embedding/<br/>experience/ · experienceadapters/<br/>push/ · report/"]
         ARENA["arena/<br/>scenario.go:14 · injector.go:48<br/>service.go:28 · regression.go:108<br/>survival.go:72 · score.go:37<br/>http.go:90"]
-        AEVO["runtime/ares_evolution/ GA v1<br/>dream_cycle.go:186 · adapter.go<br/>genome/ population:28 selection:42<br/>crossover:55 multi_objective<br/>mutation/ mutator.go:23<br/>guided_mutator · llm_hint_provider<br/>scoring/ · experience/ · promotion/<br/>gate_eval.go · fitness_aggregator.go"]
+        AEVO["runtime/ares_evolution/ GA v1<br/>dream_cycle.go:186 · adapter.go<br/>genome/ population:28 selection:42<br/>crossover:55 multi_objective<br/>mutation 见下方算子表<br/>guided_mutator · llm_hint_provider<br/>scoring/ · experience/ · promotion/<br/>gate_eval.go · fitness_aggregator.go"]
         EVO2["evolution/ v2<br/>candidate.go · candidate_pipeline.go<br/>gate3_orchestrator.go<br/>coordinator/ · deployment/<br/>diff/ · genome/ · patch/"]
     end
 
@@ -123,7 +123,7 @@ flowchart TD
 
     subgraph L9["知识 AKG internal/knowledge BETA"]
         KO["object.go · relation.go<br/>relation_extract.go · hybrid.go:72<br/>pipeline.go:77 Pipeline · quality.go · dedup.go"]
-        KRT["runtime/runtime.go:22<br/>New:47 · Execute:123<br/>link:312 · reduce:351 · patcher.go"]
+        KRT["internal/runtime/runtime.go:22<br/>New:47 · Execute:123<br/>link:312 · reduce:351 · patcher.go"]
         KPL["planner/ · provider/ 6 源<br/>vector postgres store<br/>code memory evolution"]
         KLN["linker/ 4 种<br/>architecture decision<br/>timeline similarity"]
         KCP["compiler/ compiler.go:50"]
@@ -275,11 +275,11 @@ POST /api/tasks
 
 | # | 位置 | 做什么 |
 |---|---|---|
-| 1 | `cmd/ares/agent.go:378` 路由表 | `POST /api/tasks` → `authWrite` 鉴权 |
+| 1 | `cmd/ares/agent.go:462` 路由表 | `POST /api/tasks` → `authWrite` 鉴权 |
 | 2 | `ares_security/middleware.go:92` `Verify` | `VerifyJWT`（`jwt.go:81`）解出 `Principal{Subject,Role}`；空 secret 直接 503（`middleware.go:110`） |
-| 3 | `rbac.go:68` `AllowRole` | operator/admin 才有 `PermWrite`；chaos 类另需 `PermAdmin`（`agent_routes_chaos.go:35`） |
-| 4 | `agent_routes_tasks.go:48` `handleSubmitTask` | 解 JSON；`capability` 为空 → 400；`h.kernel == nil` → 503（非 peer 运行时） |
-| 5 | `agent_kernel.go:660` `submitPeerTask` | 薄胶水，转发给 `kernel.submitter` |
+| 3 | `agent_routes_chaos.go:35` 权限判定 | operator/admin 才有 `PermWrite`；chaos 类另需 `PermAdmin`（rbac 已内联，无独立 `rbac.go`） |
+| 4 | `agent_routes_tasks.go:163` `handleSubmitTask` | 解 JSON；`capability` 为空 → 400；`h.kernel == nil` → 503（非 peer 运行时） |
+| 5 | `agent_kernel.go:184` `submitPeerTask` | 薄胶水，转发给 `kernel.submitter` |
 
 ### 阶段 B：准入 + 建任务（4 步）
 
@@ -501,7 +501,7 @@ apitools           ← sdk/cmd 面：Registry tools.go:91 · NewRegistry:99 自�
 对象层   object.go · relation.go · relation_extract.go · hybrid.go:72 ScoreHybrid
 管线层   pipeline.go:77 KnowledgePipeline：Normalizer:14 → EntityMatcher:24
          → Validator:42 → Summarizer:65，全部接口注入；Process:136 · ProcessStream:300
-运行时   runtime/runtime.go:22 KnowledgeRuntime：New:47 · Execute:123（planner 规划源
+运行时   internal/runtime/runtime.go:22 KnowledgeRuntime：New:47 · Execute:123（planner 规划源
          → provider 取图 → pipeline 加工 → link:312 抽关系 → reduce:351 按 TokenBudget 裁剪）
 规划     planner/ KnowledgePlanner:43 · SourceDiscovery:80 · QueryPlanner:90
 提供者   provider/ GraphProvider:15，6 实现：vector postgres store code memory evolution
@@ -525,7 +525,7 @@ apitools           ← sdk/cmd 面：Registry tools.go:91 · NewRegistry:99 自�
 | 种群 | `genome/population.go:28` · `NewPopulation:103` · `Evolve:197` · `EvolveSteadyState:224` · `Best:790` · `ParetoFrontStrategy:665` |
 | 选择 | `genome/selection.go:19` · `TournamentSelection:42` · `Select:160` · `WithTournamentSize:95` |
 | 交叉 | `genome/crossover.go:55` · `New:106` · `CrossoverType:39` · `WithPromptMode:170` |
-| 变异 | `mutation/mutator.go:23` · `Mutate:109` · `WithMutationProbs:44` · `mutateParameter:265` · `mutateSwap:315` · `mutateInversion:336` |
+| 变异 | `internal/runtime/ares_evolution/mutation/mutator.go:23` · `Mutate:109` · `WithMutationProbs:44` · `mutateParameter:265` · `mutateSwap:315` · `mutateInversion:336` |
 | 引导变异 | `mutation/guided_mutator.go` + `llm_hint_provider.go` + `adaptive_distribution.go` |
 | 多目标 | `genome/multi_objective.go` `ParetoFrontStrategy:665` |
 | 护栏 | `genome/population_guard.go` · `scoring/` · `fitness_aggregator.go` · `gate_eval.go` |
@@ -569,7 +569,7 @@ Scenario scenario.go:14 → RunScenarioReport:117 → Service service.go:28
 ### 5.14 恢复（`internal/aresrecovery/`）
 
 ```
-kernel.go:975 recovery loop
+cmd/ares/kernel_loop.go:275  runKernelRecoveryLoop   ← 生产入口（事件驱动）
   → RequeueExpiredLeases:171        扫过期 lease → READY
   → RecoverTaskCheckpoint:200       读 checkpoint 派生新 epoch
   → RevivableSnapshot:353           有快照？
@@ -578,7 +578,10 @@ kernel.go:975 recovery loop
   → Acquire(task, replacement, epoch)   epoch fencing 挡住过期持有者
 ```
 
-`Recovery:21` · `New:92` · `RestartPolicy:68`（默认 `:80`，指数退避）· `RecoverFromAgentDeath:375`（整段封装）· `RestartCount:344`
+`Recovery:92` · `New:92` · `RestartPolicy:80`（默认，指数退避）· `RecoverFromAgentDeath:375`（**仅 chaos/测试**）· `RestartCount:344`
+
+> **生产 vs 测试的两条恢复路径**：`runKernelRecoveryLoop`（`cmd/ares/kernel_loop.go:275`，装配点 `peer_assembly.go:633`）是生产路径，走 `taskfabric.DecodeCheckpoint` + scheduler `Schedule`/`Acquire`。
+> 而 `RecoverFromAgentDeath`（`recovery.go:375`）自带一套 acquire 实现，**仅供 chaos 模拟与 sandbox 测试**（`chaos.go:90` `VerifyRecovery` 是其唯一生产侧引用者）——其文档注释明确写着 *"It must not be wired into the production serve path"*。
 其余：`deterministic_scorer.go` · `global_tracer.go` · `evolution_{attribution,execution_feedback,feedback,ipc,population,quota,spawner,tracer}.go` · `score_writer.go`
 
 ### 5.15 LLM 栈

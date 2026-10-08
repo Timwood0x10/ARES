@@ -34,6 +34,9 @@ jobs:
       - name: Convergence freeze check
         run: bash scripts/check_convergence_freeze.sh
 
+      - name: Documentation anchor drift check
+        run: bash scripts/check_doc_anchors.sh
+
       - name: Vet
         run: go vet ./...
 

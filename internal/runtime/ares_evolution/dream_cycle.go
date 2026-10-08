@@ -180,6 +180,15 @@ func WithDreamCycleConfig(cfg DreamCycleConfig) DreamCycleOption {
 // It connects: Callback trigger -> Flight->Exp Adapter -> Scheduler ->
 // Mutator -> Arena Regression -> Genealogy recording.
 // In GA mode, it uses genome.Population for full genetic algorithm cycles.
+//
+// Legacy (A2, 0.3.2): this is the v1 GA/ES orchestrator. Production hard-codes
+// EnableDreamCycle=false (ares_bootstrap/bootstrap_evolution.go) and drives
+// evolution through GenomePopulationAdapter.Run instead; nothing invokes
+// DreamCycle.Run on the production path. The type is retained only because it
+// is re-exported as public API (api -> sdk -> ares_evolution) and referenced by
+// examples. Do NOT wire Run() back into the scheduler tick without first
+// routing it through the StrategyLifecycle gate chain — see
+// TestDreamCycleRunNotInvokedInProduction for the enforced boundary.
 type DreamCycle struct {
 	scheduler       *EvolutionScheduler
 	mutator         MutatorInterface
@@ -273,6 +282,10 @@ func NewDreamCycle(
 // In GA mode: score population → evolve (selection/crossover/mutation) → deploy best.
 //
 // This is the main orchestration method that coordinates all evolution components.
+//
+// Legacy (A2, 0.3.2): not reachable from the production path — the scheduler
+// runs GenomePopulationAdapter.Run, never this method. Kept for the public API
+// surface; see the DreamCycle type doc.
 //
 // Args:
 //
