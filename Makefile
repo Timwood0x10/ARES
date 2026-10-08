@@ -205,7 +205,7 @@ test-core:
 # Other modules — check total coverage across tools packages
 test-tools:
 	@echo "Running tools module tests with coverage..."
-	@go test -cover -coverprofile=coverage.out ./internal/llm/... ./internal/fabric/task/workflow/... ./internal/ares_memory/... ./internal/ares_shutdown/... ./internal/ares_ratelimit/... ./internal/tools/... ./internal/storage/... ./internal/agents/...
+	@go test -cover -coverprofile=coverage.out ./internal/llm/... ./internal/fabric/task/workflow/... ./internal/runtime/memory/... ./internal/ares_shutdown/... ./internal/ares_ratelimit/... ./internal/tools/... ./internal/storage/... ./internal/agents/...
 	@echo ""
 	@echo "--- Per-package coverage ---"
 	@go tool cover -func=coverage.out | grep "total:" || true
@@ -276,7 +276,7 @@ benchmark:
 	@echo "Running benchmarks..."
 	@echo ""
 	@echo "=== Evaluation Framework Benchmarks ==="
-	@go test -bench=. -benchmem ./internal/eval/...
+	@go test -bench=. -benchmem ./internal/runtime/eval/...
 	@echo ""
 	@echo "=== Plugin System Benchmarks ==="
 	@go test -bench=. -benchmem ./internal/tools/resources/core/...
@@ -288,11 +288,11 @@ benchmark:
 
 benchmark-quick:
 	@echo "Running quick benchmarks (1s each)..."
-	@go test -bench=. -benchtime=1s ./internal/eval/... ./internal/tools/resources/core/...
+	@go test -bench=. -benchtime=1s ./internal/runtime/eval/... ./internal/tools/resources/core/...
 
 benchmark-profile:
 	@echo "Running benchmarks with CPU profile..."
-	@go test -bench=. -cpuprofile=cpu.prof ./internal/eval/...
+	@go test -bench=. -cpuprofile=cpu.prof ./internal/runtime/eval/...
 	@go tool pprof -top cpu.prof
 
 benchmark-save:
@@ -306,7 +306,7 @@ benchmark-save:
 	@echo "---" >> benchmarks/benchmark_report.md
 	@echo "" >> benchmarks/benchmark_report.md
 	@echo "## Evaluation Framework Benchmarks" >> benchmarks/benchmark_report.md
-	@go test -bench=. -benchmem ./internal/eval/... >> benchmarks/benchmark_report.md 2>&1
+	@go test -bench=. -benchmem ./internal/runtime/eval/... >> benchmarks/benchmark_report.md 2>&1
 	@echo "" >> benchmarks/benchmark_report.md
 	@echo "✅ Benchmark results saved to benchmarks/benchmark_report.md"
 
@@ -362,7 +362,7 @@ demo-down:
 demo-test:
 	@echo "Running integration tests against demo services..."
 	@TEST_POSTGRES_DSN="postgres://postgres:postgres@localhost:5433/ARES_test?sslmode=disable" \
-		go test -v -count=1 -timeout=180s ./internal/integration/... ./internal/events/... 2>&1 | \
+		go test -v -count=1 -timeout=180s ./tests/integration/... ./internal/ares_events/... 2>&1 | \
 		grep -E "^(=== RUN|--- |ok |FAIL|--- FAIL|PASS|SKIP)"
 	@echo ""
 	@echo "✅ Integration tests completed"

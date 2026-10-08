@@ -7,20 +7,18 @@ set -euo pipefail
 
 # Packages allowed to be unreachable (experimental / SDK-only / offline tools).
 WHITELIST=(
-  "internal/ares_integration"     # pure test package
   "internal/knowledge/provider/postgres" # examples-only (D6 verified)
   "internal/knowledge/retriever"        # 0 imports (D6 verified)
   "internal/knowledge/service"          # examples-only (D6 verified)
   "internal/knowledge/workflow"         # examples-only (D6 verified)
   "internal/fabric"                    # parent package (doc.go only); sub-packages are reachable
   "internal/runtime/protocol"          # parent package (doc.go only); skills/mcp/ahp sub-packages are reachable
-  # The four *api packages below were the "real" implementations behind the
+  # The *api packages below were the "real" implementations behind the
   # api/ forwarding layer removed 2026-09-11. Their only consumers are now
   # examples/_fixtures demos, so they are unreachable from cmd/ares, sdk,
   # services. Whitelisting follows the same examples-only precedent as
   # knowledge/service above. Residual naming debt: the "api" suffix no
   # longer means "public API surface".
-  "internal/discoveryapi"              # consumed only by examples/_internal (custom-store, external-tools, mcp-registry, discovery)
   "internal/evoapi"                    # consumed only by examples/_internal (10-ga-full-evolution, 22-evolution-blocks)
   "internal/evoapi/genome"             # consumed only by examples/_internal (pulled in by evoapi)
   "internal/evoapi/mutation"           # consumed only by examples/_internal (pulled in by evoapi + 10-ga-full-evolution)

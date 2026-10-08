@@ -15,10 +15,10 @@ import (
 )
 
 // depthChat is a scripted ChatClient that returns one tool call per round
-// for the first (depth-1) rounds, then a text answer on round (depth).
-// It is the A5 benchmark harness: it drives the planner through a
-// configurable number of quanta so the benchmark can measure end-to-end
-// latency as a function of quantum count.
+// for the first (depth) rounds, then a text answer on round (depth+1). It is
+// the benchmark harness: it drives the planner through a configurable number
+// of quanta so the benchmark can measure end-to-end latency as a function of
+// quantum count.
 type depthChat struct {
 	mu    sync.Mutex
 	calls int
@@ -120,7 +120,14 @@ func BenchmarkPlanner_QuantumCountVsLatency(b *testing.B) {
 					// quantum can read its output. The tool is grown at
 					// depth (round+1) — see stableRound in planner_cognition.
 					toolID := SessionNodeID(sessionID, round+1, "grep", 0)
+					b.StopTimer()
+					// Node existence is an observation, not measured work:
+					// the node is created synchronously by the plan step
+					// above, so this returns on its first check — but keep
+					// the (pathological) polling out of the timed window so
+					// the reported overhead never includes scheduler sleeps.
 					waitForTaskExistsBench(b, fabric, toolID, 2*time.Second)
+					b.StartTimer()
 					driveTaskToCompletedBench(b, ctx, fabric, toolID, "echo(grep,data)")
 				}
 

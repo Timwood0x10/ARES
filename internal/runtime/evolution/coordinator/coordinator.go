@@ -260,7 +260,7 @@ func (ec *EvolutionCoordinator) SetDeployer(d PatchDeployer) {
 	ec.deployer = d
 }
 
-// ApplyGate is an optional pre-apply safety gateWhen set,
+// ApplyGate is an optional pre-apply safety gate. When set,
 // Evaluate calls Check BEFORE applying a patch that passed decide(). If
 // Check returns false the decision is downgraded to DecisionDelay and the
 // patch is re-queued for later review. This lets the StrategyLifecycle

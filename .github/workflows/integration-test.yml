@@ -9,9 +9,9 @@ on:
         default: 'false'
         type: boolean
   pull_request:
-    branches: [main, master, develop]
+    branches: [main, master, dev]
   push:
-    branches: [main, master, develop]
+    branches: [main, master, dev]
 
 jobs:
   integration-test:

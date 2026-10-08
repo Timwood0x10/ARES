@@ -371,6 +371,13 @@ func NewRouterCognitionWithPlanner(binder ToolBinder, planner Cognition, session
 			assemble: pc.assembleAnswerMessages,
 		}
 		r.agentFabric = pc.agentFabric
+		if r.agentFabric == nil && r.logger != nil {
+			// Degraded wiring: without the planner's shared agent fabric the
+			// execution-time ToolAllowlist guard cannot resolve the executing
+			// agent, so a restricted agent would run unrestricted. Surface it
+			// once at construction instead of failing open silently.
+			r.logger.Warn("agentfabric: router built without the planner's agent fabric — per-agent ToolAllowlist enforcement is disabled at execution time")
+		}
 	}
 	return r
 }

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/Timwood0x10/ares/internal/core/models"
 	"github.com/Timwood0x10/ares/internal/fabric/agent"
@@ -157,6 +158,19 @@ type Kernel struct {
 	// replaces it at runtime via SetAskAgent while every LLM tool call reads
 	// it lock-free — a plain field would be a data race.
 	askAgent atomic.Pointer[AskAgentFn]
+	// askMu guards recentAsks. Duplicate suppression is the enforcement that
+	// keeps a fire-and-forget ask_agent from becoming a retry amplifier: the
+	// reply is never written back to the asker (C-1), so a model re-asking
+	// the same question every quantum would spawn a fresh target-side session
+	// and a fresh background request each time, with no chance of ever
+	// succeeding.
+	askMu sync.Mutex
+	// recentAsks holds fingerprints of ask_agent requests whose reply is
+	// still pending, keyed to the time they were launched. Entries expire
+	// after askDedupeWindow — a best-effort approximation of "still in
+	// flight", because the Kernel only observes the LAUNCH, never the
+	// background request's completion.
+	recentAsks map[string]time.Time
 	// loopCtx is the lifetime context for plan loops started via the
 	// create_plan loop option. A syscall Kernel is a long-lived managed
 	// object (it backs every agent's tool binder for the whole serve
@@ -508,7 +522,72 @@ type AskAgentResult struct {
 	// Answer is the target agent's reply payload. nil when the request is
 	// pending (Status="pending") or the target has no reply path.
 	// Callers MUST check Status before relying on Answer.
+	//
+	// NOTE: the serve wiring never produces an answer today — its AskAgentFn
+	// either yields (Status="pending") or reports that the target has no
+	// reply path (Status="no-reply"), because the background reply is logged
+	// but not written back (see AskAgentFn; C-1-a is the follow-up).
+	// Status="delivered" with a non-nil Answer is reachable only for
+	// in-process/SDK callers that inject their own AskAgentFn.
 	Answer any `json:"answer,omitempty"`
+	// Duplicate reports that this ask was suppressed because an identical
+	// request (same caller, target, topic and payload) was launched less
+	// than askDedupeWindow ago and is still pending. No new collaboration
+	// session was created for it — the caller should wait for the
+	// outstanding answer instead of re-asking.
+	Duplicate bool `json:"duplicate,omitempty"`
+}
+
+// askDedupeWindow approximates "the previous identical ask is still in
+// flight". It mirrors the serve-side askAgentTimeout (30s): the Kernel learns
+// only that a request was LAUNCHED (ErrAskAgentYielding), never that the
+// background request finished, so a fixed window is the only signal available.
+const askDedupeWindow = 30 * time.Second
+
+// maxRecentAsks bounds the dedupe map. An agent could otherwise mint
+// unbounded distinct fingerprints within one window.
+const maxRecentAsks = 1024
+
+// askFingerprint identifies one collaboration request for dedupe purposes.
+// fmt prints maps with sorted keys, so the fingerprint is stable across runs
+// (the payload carries the Kernel-stamped tenant, so two tenants are never
+// conflated).
+func askFingerprint(from, to, topic string, payload any) string {
+	return from + "\x00" + to + "\x00" + topic + "\x00" + fmt.Sprintf("%v", payload)
+}
+
+// pendingAskExists reports whether an identical ask was launched within
+// askDedupeWindow.
+func (k *Kernel) pendingAskExists(key string) bool {
+	k.askMu.Lock()
+	defer k.askMu.Unlock()
+	at, ok := k.recentAsks[key]
+	if !ok {
+		return false
+	}
+	return time.Since(at) < askDedupeWindow
+}
+
+// rememberPendingAsk records a launched (yielded) ask so an identical repeat
+// within askDedupeWindow is suppressed. Expired entries are pruned here, and
+// the map fails OPEN on overflow (dedupe stops suppressing) rather than
+// blocking the caller.
+func (k *Kernel) rememberPendingAsk(key string) {
+	k.askMu.Lock()
+	defer k.askMu.Unlock()
+	if k.recentAsks == nil {
+		k.recentAsks = make(map[string]time.Time, 64)
+	}
+	now := time.Now()
+	for prev, at := range k.recentAsks {
+		if now.Sub(at) >= askDedupeWindow {
+			delete(k.recentAsks, prev)
+		}
+	}
+	if len(k.recentAsks) >= maxRecentAsks {
+		k.recentAsks = make(map[string]time.Time, 64)
+	}
+	k.recentAsks[key] = now
 }
 
 // AskAgent is the Kernel syscall behind the ask_agent tool.
@@ -541,12 +620,22 @@ func (k *Kernel) AskAgent(ctx context.Context, a AskAgentArgs) (*AskAgentResult,
 		return nil, errors.New("agentsyscall: ask_agent not wired (no collaboration IPC) — the agent cannot ask until serve injects it")
 	}
 	from := kctx.CallerID(ctx)
-	answer, err := fn(ctx, from, a.To, a.Topic, askAgentPayload(ctx, a.Payload))
+	payload := askAgentPayload(ctx, a.Payload)
+	key := askFingerprint(from, a.To, a.Topic, payload)
+	// Duplicate suppression: the reply is never written back (C-1), so an
+	// identical ask repeated while the previous one is pending can only ever
+	// spawn another target-side session for an answer nobody will read.
+	// Suppress it and say so explicitly instead of amplifying the retry.
+	if k.pendingAskExists(key) {
+		return &AskAgentResult{Accepted: true, Status: "pending", Duplicate: true}, nil
+	}
+	answer, err := fn(ctx, from, a.To, a.Topic, payload)
 	if err != nil {
 		if errors.Is(err, ErrAskAgentYielding) {
 			// Background request launched; the quantum completes without
 			// blocking drain. The reply is logged but NOT written back —
 			// the LLM receives Status="pending" and should re-check.
+			k.rememberPendingAsk(key)
 			return &AskAgentResult{Accepted: true, Status: "pending"}, nil
 		}
 		if errors.Is(err, ErrAskAgentNoReply) {
@@ -637,7 +726,8 @@ func BindTools(binder ToolBinder, kernel *Kernel) {
 		}
 		return kernel.CreateTask(ctx, ct)
 	})
-	// the whole-DAG planning entry. See plan.go. JSON round-trip keeps
+	// create_plan is the whole-DAG planning entry. See plan.go. JSON
+	// round-trip keeps
 	// the parse strict: type mismatches surface as errors instead of silently
 	// dropping fields (e.g. a string "3" for priority).
 	binder.BindTool(AskAgentTool, func(ctx context.Context, args map[string]any) (any, error) {
@@ -734,7 +824,7 @@ func ToolSchemas() []ToolSchema {
 		},
 		{
 			Name:        AskAgentTool,
-			Description: "Ask a specific target agent a question on a topic. The request is delivered asynchronously: the tool returns immediately with status 'pending' (answer not yet available) or 'no-reply' (target has no reply path). The target's answer is NOT available in the response — this is a fire-and-forget delivery, not a synchronous round-trip. Use this when you know WHICH agent to ask, rather than spawning a new one (spawn_agent) or decomposing into tasks (create_task).",
+			Description: "Ask a specific target agent a question on a topic. The request is delivered asynchronously: the tool returns immediately with status 'pending' (answer not yet available) or 'no-reply' (target has no reply path). The target's answer is NOT available in the response — this is a fire-and-forget delivery, not a synchronous round-trip. Do NOT re-ask the same question while a previous ask is pending: identical asks (same target, topic and payload) are suppressed and report duplicate=true until the pending one expires. Use this when you know WHICH agent to ask, rather than spawning a new one (spawn_agent) or decomposing into tasks (create_task).",
 			Parameters: map[string]any{
 				paramType: paramTypeObject,
 				paramProperties: map[string]any{

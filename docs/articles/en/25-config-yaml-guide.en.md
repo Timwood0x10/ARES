@@ -217,7 +217,8 @@ tools:
   #   - npx @modelcontextprotocol/server-filesystem ./data
 
 reflection:
-  enabled: false              # agent self-reflection toggle
+  enabled: false              # NOT IMPLEMENTED: the SDK rejects enabled: true;
+                              # `ares serve` ignores the key (no server-side field)
 ```
 
 Serve-side extras: `kernel.policy`/`lease_ttl`/`resources`/`max_restarts`/various interval + timeout fields; each `agents.sub` entry `{id, type, category, triggers, model, provider, dependencies, role, priority, max_tool_rounds, ...}`.

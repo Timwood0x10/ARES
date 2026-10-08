@@ -340,20 +340,26 @@ func (k *kernelHandle) componentPresent(name string) bool {
 // errgroup (same recover guarantees, no component marking).
 //
 // The fn receives the effective loop context: the orchestrator's managed
-// root context on the adopted path, the caller's ctx on the fallback path.
-// comp must be non-nil (every serve-path caller holds the Bootstrap
-// container); a nil comp skips the loop loudly instead of leaking an
-// unmanaged goroutine.
-func runBackground(ctx context.Context, comp *ares_bootstrap.Components, name string, fn func(ctx context.Context) error) {
+// root context on the adopted path (the caller's ctx is deliberately NOT
+// propagated — that errgroup owns the process lifetime), the caller's ctx on
+// the fallback path. comp must be non-nil (every serve-path caller holds the
+// Bootstrap container); a nil comp skips the loop loudly instead of leaking
+// an unmanaged goroutine.
+//
+// The bool return reports whether the loop was actually started. Callers
+// that must not misreport success (ask_agent saying "pending" for a request
+// that never launched) check it and fail loud; the long-lived loops ignore
+// it, where a shutdown-time skip is the expected path.
+func runBackground(ctx context.Context, comp *ares_bootstrap.Components, name string, fn func(ctx context.Context) error) bool {
 	if comp == nil {
 		log.Info("serve: background loop skipped (no component container)", "name", name)
-		return
+		return false
 	}
 	if comp.SystemRuntime != nil {
-		comp.SystemRuntime.GoBackground(name, fn)
-		return
+		return comp.SystemRuntime.GoBackground(name, fn)
 	}
 	comp.GoBackground(ctx, name, fn)
+	return true
 }
 
 // CapabilityExecutor is the scheduler's executor contract, aliased from the

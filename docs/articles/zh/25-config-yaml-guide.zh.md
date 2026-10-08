@@ -217,7 +217,8 @@ tools:
   #   - npx @modelcontextprotocol/server-filesystem ./data
 
 reflection:
-  enabled: false              # agent 自我反思开关
+  enabled: false              # 未实现：SDK 侧 enabled: true 会直接报错；
+                              # serve 侧无对应字段，该键被忽略
 ```
 
 serve 侧额外：`kernel.policy`/`lease_ttl`/`resources`/`max_restarts`/各类 interval 与 timeout；`agents.sub` 每个条目 `{id, type, category, triggers, model, provider, dependencies, role, priority, max_tool_rounds, ...}`。

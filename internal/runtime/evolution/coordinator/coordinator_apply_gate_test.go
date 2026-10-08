@@ -10,7 +10,8 @@ import (
 	"github.com/Timwood0x10/ares/internal/runtime/evolution/patch"
 )
 
-// mockApplyGate is a test-only ApplyGate whose pass/reason are可控.
+// mockApplyGate is a test-only ApplyGate whose verdict and reason are fixed
+// by the test.
 type mockApplyGate struct {
 	pass   bool
 	reason string
@@ -83,6 +84,51 @@ func TestCoordinator_ApplyGate_PassesAndApplies(t *testing.T) {
 	require.Len(t, decisions, 1)
 	assert.Equal(t, DecisionApply, decisions[0].Decision)
 	assert.Len(t, exec.applied, 1, "patch should be applied when gate passes")
+}
+
+// TestCoordinator_ApplyGate_ExhaustsRetryBudget pins the retry budget on the
+// gate-rejection path: a high-fitness proposal (whose fitness bypasses the
+// delay bucket's own retry check inside decide()) combined with a
+// persistently rejecting gate must still be DROPPED once maxProposalRetries
+// is exhausted — never re-queued forever.
+func TestCoordinator_ApplyGate_ExhaustsRetryBudget(t *testing.T) {
+	patchReg := patch.NewRegistry()
+	exec := &recordingExecutor{}
+	require.NoError(t, patchReg.Register("gate-loop", exec))
+
+	coord := NewEvolutionCoordinator(PolicyGenome{
+		AutoApplyThreshold:    8,
+		MaxPatchesPerMinute:   100,
+		MinFitnessThreshold:   30.0,
+		ApplyFitnessThreshold: 60.0,
+	}, patchReg)
+	coord.SetApplyGate(&mockApplyGate{pass: false, reason: "shadow evidence insufficient"})
+
+	coord.Submit(PatchProposal{
+		Patch:    patch.RuntimePatch{Type: patch.PatchInsertNode, Target: "gate-loop"},
+		Source:   SourceGA,
+		Priority: 5,
+		Fitness:  80.0, // >= 60 → decide() returns Apply, gate then rejects
+	})
+
+	// Each Evaluate re-queues the rejected proposal and bumps RetryCount;
+	// the loop gives the coordinator more rounds than the budget allows and
+	// stops as soon as the drop is observed.
+	var last Decision
+	for i := 0; i <= maxProposalRetries+1; i++ {
+		coord.Evaluate(context.Background())
+		decisions := coord.DecisionHistory()
+		last = decisions[len(decisions)-1].Decision
+		if last == DecisionDrop {
+			break
+		}
+	}
+	assert.Equal(t, DecisionDrop, last,
+		"a persistently gate-rejected proposal must be dropped after maxProposalRetries")
+	assert.Equal(t, 0, coord.PendingCount(),
+		"a dropped proposal must not stay in the queue")
+	assert.Len(t, exec.applied, 0,
+		"the gate rejected every round, so nothing may be applied")
 }
 
 // TestCoordinator_ApplyGate_NilGateBackwardCompatible verifies that no gate

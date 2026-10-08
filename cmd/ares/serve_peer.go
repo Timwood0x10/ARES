@@ -428,9 +428,14 @@ func setupPeerRegistry(
 			ipc := bridge.ipc.Bus()
 			kernel.syscalls.SetAskAgent(func(ctx context.Context, from, to, topic string, payload any) (any, error) {
 				// Derive a context detached from the quantum's lifecycle so the
-				// background request survives the quantum completing.
+				// background request survives the quantum completing. NOTE: on
+				// the SystemRuntime path runBackground runs fn on the
+				// orchestrator's process root context instead (a ctx handed to
+				// a different errgroup is not propagated), so the 30s bound is
+				// carried explicitly by the askAgentTimeout argument below
+				// rather than relying on reqCtx alone.
 				reqCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), askAgentTimeout)
-				runBackground(reqCtx, comp, "ask-agent-reply", func(ctx context.Context) error {
+				launched := runBackground(reqCtx, comp, "ask-agent-reply", func(ctx context.Context) error {
 					defer cancel()
 					reply, err := ipc.Request(ctx, from, to, topic, payload, askAgentTimeout)
 					if err != nil {
@@ -444,6 +449,13 @@ func setupPeerRegistry(
 					log.Info("ask_agent: background reply received", "from", from, "to", to, "topic", topic)
 					return nil
 				})
+				if !launched {
+					// Nothing was started (runtime shutting down). Report the
+					// failure instead of answering "pending" for a request
+					// that will never be made.
+					cancel()
+					return nil, errors.New("ask_agent: background launch refused (runtime shutting down)")
+				}
 				return nil, agentsyscall.ErrAskAgentYielding
 			})
 			log.Info("serve: ask_agent syscall wired to evolution-aware IPC (background launch, no drain deadlock)", "count", len(reg.IDs()))

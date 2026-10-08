@@ -784,6 +784,13 @@ func (c *plannerCognition) isToolEnabled(toolName string) bool {
 // no executing-agent stamp, or the agent has no allowlist set (nil = inherit
 // all). Returns false only when the agent has a non-nil allowlist that does
 // not contain the tool name.
+//
+// ASYMMETRY WITH THE EXECUTION GUARD: growth-time rejection SKIPS the tool
+// node — the quantum continues with the remaining tool calls and the model
+// sees only a warn log — while execution-time rejection FAILS the task
+// (l2graph toolCognition.ExecuteStep). Growth can therefore silently drop a
+// tool the model asked for; the execution guard is the backstop for nodes
+// that already existed when the allowlist was set (or was tightened).
 func (c *plannerCognition) isToolAllowedForAgent(toolName string, task *models.Task) bool {
 	if c.agentFabric == nil {
 		return true

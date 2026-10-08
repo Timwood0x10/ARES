@@ -79,8 +79,8 @@ func (s *PostgresEventStore) ensureEventsTable(ctx context.Context) error {
 		`CREATE UNIQUE INDEX IF NOT EXISTS uq_events_stream_version ON events(stream_id, version)`,
 		`CREATE INDEX IF NOT EXISTS idx_events_type ON events(type)`,
 		`CREATE INDEX IF NOT EXISTS idx_events_created ON events(created_at)`,
-		// a trigger that fires pg_notify on every INSERT. This
-		// lets Subscribe use LISTEN for near-real-time push instead of
+		// The events_notify_insert trigger fires pg_notify on every INSERT,
+		// which lets Subscribe use LISTEN for near-real-time push instead of
 		// 1-second polling. The payload is empty — the subscriber re-queries
 		// to fetch the actual rows, so the notify is just a wake-up signal.
 		// DROP + CREATE keeps the trigger idempotent across schema refreshes.
@@ -274,7 +274,7 @@ func (s *PostgresEventStore) ReadAll(
 }
 
 // Subscribe returns a channel that receives events matching the filter.
-//Subscribe uses PG LISTEN/NOTIFY for near-real-time push and
+// Subscribe uses PG LISTEN/NOTIFY for near-real-time push and
 // falls back to a 10-second polling ticker as a safety net (catches events
 // that arrived during a LISTEN reconnection gap or when the trigger is
 // unavailable). The channel is closed when ctx is cancelled.
@@ -517,8 +517,8 @@ func (s *PostgresEventStore) queryEventPage(
 	return s.queryEvents(ctx, query, args...)
 }
 
-// subscribeLoop runs the hybrid LISTEN + poll-fallback event delivery
-// loopIt starts a dedicated LISTEN goroutine on a separate
+// subscribeLoop runs the hybrid LISTEN + poll-fallback event delivery loop.
+// It starts a dedicated LISTEN goroutine on a separate
 // connection and a slow (10s) polling ticker. When LISTEN delivers a
 // notification, the loop immediately runs pollOnce — cutting latency from
 // ~1s to milliseconds. The 10s ticker catches any events that slip through

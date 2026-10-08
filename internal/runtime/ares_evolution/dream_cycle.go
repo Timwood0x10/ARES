@@ -395,7 +395,7 @@ func WithDreamCycleGuardrails(guardrails *EvolutionGuardrails) DreamCycleOption 
 // WithDreamCycleShadowEvaluator attaches a shadow evaluator.
 //
 // Deprecated: the shadow evaluation branch in deployWinner was physically
-// removedThe field is set but never read. Retained for API
+// removed. The field is set but never read. Retained for API
 // compatibility — do not call in new code.
 func WithDreamCycleShadowEvaluator(se *ShadowEvaluator) DreamCycleOption {
 	return func(dc *DreamCycle) error {

@@ -401,20 +401,34 @@ tools:
   #   - uvx mcp-server-git
 
 # ── Reflection (agent self-assessment) ───────────────────────
+# NOT IMPLEMENTED — declared-unsupported with a fail-loud contract:
+#   - the SDK config path parses this key and REJECTS `enabled: true`
+#     ("the sdk has no reflection implementation");
+#   - `ares serve` has no server-side field for it, so the key is ignored
+#     there (YAML unmarshalling is non-strict).
+# Only `enabled: false` (the zero value) is valid today. It stays in the
+# sample so the rejection is discoverable instead of a silent no-op.
 reflection:
-  # enabled: when true, the agent reflects on its own outputs
   enabled: false
 
-# ── Database (knowledge store backend) ───────────────────────
-database:
-  # host: PostgreSQL host address
-  # host: localhost
-  # port: 5432
-  # user: postgres
-  # password: REPLACE_WITH_YOUR_PASSWORD
-  # database: ares
-  # ssl_mode: disable | require | verify-full
-  # ssl_mode: disable
+# ── Storage / PostgreSQL (knowledge store backend) ───────────
+# Database settings live under `storage.*` (internal/ares_config
+# StorageConfig) and are only read there. A TOP-LEVEL `database:` key is NOT
+# read by either config loader — unmarshalling is non-strict, so it would be
+# silently ignored. Configure the keys below instead.
+# storage:
+#   enabled: true
+#   type: postgres               # postgres | sqlite
+#   host: localhost
+#   port: 5432
+#   username: postgres
+#   # password: REPLACE_WITH_YOUR_PASSWORD
+#   database: ares
+#   # ssl_mode: disable | require | verify-full
+#   pgvector:
+#     enabled: false
+#     dimension: 1536
+#   # events_retention_days: 0   # 0 = keep forever (see StorageConfig docs)
 
 # ── Embedding service (required for distillation + RAG) ──────
 embedding:

@@ -282,6 +282,12 @@ func (e *ShadowEvaluator) ShouldDeploy() (bool, *ShadowReport) {
 // raw comparisons the verdict is identical to ShouldDeploy on the DECISIVE
 // subset.
 //
+// Deprecated: the DreamCycle shadow-deployment branch that consumed this
+// contract was physically removed — shadow verification now runs through
+// StrategyLifecycle's shadowVerifyGate, which uses the STRICT ShouldDeploy.
+// This method has no production caller left (only its own tests); it is
+// retained for API compatibility. Do not add new callers.
+//
 // Tie semantics: an exact tie (activeScore == shadowScore) carries no
 // information about which strategy is better. It is neither a win nor a
 // sample — it is excluded from TotalComparisons, so a run of cold-start
