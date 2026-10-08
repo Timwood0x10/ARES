@@ -28,7 +28,7 @@
 //   - patch.Registry with GraphPatchExecutor / RecoveryPatchExecutor /
 //     KnowledgePatchExecutor (internal/evolution/patch + workflow/graph +
 //     knowledge/runtime)
-//   - coordinator.NewEvolutionCoordinator (internal/evolution/coordinator)
+//   - coordinator.NewUngatedPatcher (internal/evolution/coordinator)
 //
 // Run:
 //
@@ -180,7 +180,7 @@ func main() {
 	// ── Step 6: Create the coordinator ──
 	// The coordinator evaluates submitted proposals against its policy and
 	// applies approved ones through the matching executor.
-	coord := coordinator.NewEvolutionCoordinator(coordinator.DefaultPolicy(), patchReg)
+	coord := coordinator.NewUngatedPatcher(coordinator.DefaultPolicy(), patchReg)
 
 	// ── Step 7: Take snapshots of every genome ──
 	// Snapshots capture each subsystem's current state; the old snapshot is

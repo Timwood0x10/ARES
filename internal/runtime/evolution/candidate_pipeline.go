@@ -37,7 +37,7 @@ type CandidatePipeline struct {
 	store        *CandidateStore
 	profileStore *ProfileStore
 	registry     *patch.Registry
-	coordinator  *coordinator.EvolutionCoordinator
+	coordinator  *coordinator.UngatedPatcher
 	deployer     *deployment.DeploymentPipeline
 	executor     *ProfileExecutor
 	priority     int
@@ -79,7 +79,7 @@ func NewCandidatePipeline(
 	store *CandidateStore,
 	profileStore *ProfileStore,
 	registry *patch.Registry,
-	coord *coordinator.EvolutionCoordinator,
+	coord *coordinator.UngatedPatcher,
 	dep *deployment.DeploymentPipeline,
 ) *CandidatePipeline {
 	p := &CandidatePipeline{
@@ -106,7 +106,7 @@ func NewCandidatePipelineWithOptions(
 	store *CandidateStore,
 	profileStore *ProfileStore,
 	registry *patch.Registry,
-	coord *coordinator.EvolutionCoordinator,
+	coord *coordinator.UngatedPatcher,
 	dep *deployment.DeploymentPipeline,
 	opts ...CandidatePipelineOption,
 ) *CandidatePipeline {

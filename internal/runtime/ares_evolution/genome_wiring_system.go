@@ -44,9 +44,9 @@ type WiredEvolutionSystem struct {
 
 	// Diff Engine + Coordinator for graph structure evolution.
 	// When set, each generation's mutation is diffed and patches submitted.
-	DiffReg     *diff.Registry                    `json:"-"`
-	Coordinator *coordinator.EvolutionCoordinator `json:"-"`
-	GenomeReg   *evogenome.Registry               `json:"-"`
+	DiffReg     *diff.Registry              `json:"-"`
+	Coordinator *coordinator.UngatedPatcher `json:"-"`
+	GenomeReg   *evogenome.Registry         `json:"-"`
 
 	// AfterGeneration is called after each idle evolution generation with
 	// the generation index and the system. When non-nil, it receives the

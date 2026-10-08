@@ -19,7 +19,7 @@
 // Core APIs (with package paths):
 //   - evolution.NewCandidatePipelineWithOptions + WithReleaseRegressionCheck
 //     (internal/evolution)
-//   - coordinator.NewEvolutionCoordinator (internal/evolution/coordinator)
+//   - coordinator.NewUngatedPatcher (internal/evolution/coordinator)
 //   - patch.NewRegistry (internal/evolution/patch)
 //   - (*CandidatePipeline).Release
 //
@@ -99,7 +99,7 @@ func runReleaseClosedLoop(ctx context.Context, client *llm.Client) {
 		evolution.WithRegressionCheck(gate3),
 	)
 	registry := patch.NewRegistry()
-	coord := coordinator.NewEvolutionCoordinator(coordinator.DefaultPolicy(), registry)
+	coord := coordinator.NewUngatedPatcher(coordinator.DefaultPolicy(), registry)
 	pipeline := evolution.NewCandidatePipelineWithOptions(
 		candStore, profileStore, registry, coord, nil,
 		evolution.WithReleaseRegressionCheck(gate3),

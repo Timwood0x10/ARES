@@ -29,7 +29,7 @@ func TestCoordinator_ApplyGate_RejectsAndDelays(t *testing.T) {
 	exec := &recordingExecutor{}
 	require.NoError(t, patchReg.Register("gate-test", exec))
 
-	coord := NewEvolutionCoordinator(PolicyGenome{
+	coord := NewUngatedPatcher(PolicyGenome{
 		AutoApplyThreshold:    8,
 		MaxPatchesPerMinute:   100,
 		MinFitnessThreshold:   30.0,
@@ -63,7 +63,7 @@ func TestCoordinator_ApplyGate_PassesAndApplies(t *testing.T) {
 	exec := &recordingExecutor{}
 	require.NoError(t, patchReg.Register("gate-ok", exec))
 
-	coord := NewEvolutionCoordinator(PolicyGenome{
+	coord := NewUngatedPatcher(PolicyGenome{
 		AutoApplyThreshold:    8,
 		MaxPatchesPerMinute:   100,
 		MinFitnessThreshold:   30.0,
@@ -96,7 +96,7 @@ func TestCoordinator_ApplyGate_ExhaustsRetryBudget(t *testing.T) {
 	exec := &recordingExecutor{}
 	require.NoError(t, patchReg.Register("gate-loop", exec))
 
-	coord := NewEvolutionCoordinator(PolicyGenome{
+	coord := NewUngatedPatcher(PolicyGenome{
 		AutoApplyThreshold:    8,
 		MaxPatchesPerMinute:   100,
 		MinFitnessThreshold:   30.0,
@@ -138,7 +138,7 @@ func TestCoordinator_ApplyGate_NilGateBackwardCompatible(t *testing.T) {
 	exec := &recordingExecutor{}
 	require.NoError(t, patchReg.Register("no-gate", exec))
 
-	coord := NewEvolutionCoordinator(DefaultPolicy(), patchReg)
+	coord := NewUngatedPatcher(DefaultPolicy(), patchReg)
 	// No SetApplyGate call — applyGate is nil.
 
 	coord.Submit(PatchProposal{

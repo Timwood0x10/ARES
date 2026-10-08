@@ -89,8 +89,9 @@ curl -sS -H "Authorization: Bearer <security.api_key from ares.yaml>" \
   localhost:8080/api/tasks/<task_id>
 
 # optional: POST /api/tasks?wait=<dur> blocks until the result resolves
-# (hard cap 300s; empty value uses tasks.wait_timeout, default 60s);
-# timeout still answers 202 with the current state
+# (empty value uses tasks.wait_timeout, default 60s; an explicit value over
+# the 300s cap is REJECTED with 400, a configured default over it is clamped;
+# expiry still answers 202 with the current state)
 ```
 
 > The HTTP layer is a thin adapter over the internal submitter — no scheduling logic lives there. `server.default_capability` and `tasks.wait_timeout` are set in ares.yaml like everything else.

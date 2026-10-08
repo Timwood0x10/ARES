@@ -20,8 +20,8 @@
 //		  -H "Authorization: Bearer <security.api_key from ares.yaml>" \
 //		  -d '{"query":"your task"}'        # capability defaults from yaml
 //		curl localhost:8080/api/tasks/<task_id>   # result = session answer
-//		# POST ?wait=60s blocks until the result resolves (cap 300s), else
-//		# 202 + poll (timeout body carries the current state)
+//		# POST ?wait=60s blocks until the result resolves (explicit values
+//		# over 300s are rejected with 400), else 202 + poll
 //
 //	Or one command, same yaml, human output, zero flags:
 //		ares run -c ares.yaml "your task"

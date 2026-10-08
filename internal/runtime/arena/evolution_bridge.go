@@ -15,11 +15,11 @@ import (
 // The Coordinator treats Chaos as one of 7 equal PatchSources. No special
 // privileges; the same DecisionPolicy applies to all sources.
 type EvolutionBridge struct {
-	coordinator *coordinator.EvolutionCoordinator
+	coordinator *coordinator.UngatedPatcher
 }
 
 // NewEvolutionBridge creates a bridge between arena and the evolution Coordinator.
-func NewEvolutionBridge(coord *coordinator.EvolutionCoordinator) *EvolutionBridge {
+func NewEvolutionBridge(coord *coordinator.UngatedPatcher) *EvolutionBridge {
 	if coord == nil {
 		log.Warn("NewEvolutionBridge: nil coordinator, evolution bridge disabled")
 	}

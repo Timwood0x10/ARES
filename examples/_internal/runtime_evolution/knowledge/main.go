@@ -23,7 +23,7 @@
 //     (internal/evolution/genome)
 //   - diff.NewKnowledgeDiffer (internal/evolution/diff)
 //   - knowledgeruntime.NewKnowledgePatchExecutor (internal/knowledge/runtime)
-//   - coordinator.NewEvolutionCoordinator / Submit / Evaluate / PatchHistory
+//   - coordinator.NewUngatedPatcher / Submit / Evaluate / PatchHistory
 //     (internal/evolution/coordinator)
 //
 // Run:
@@ -177,7 +177,7 @@ func main() {
 	// Patches are submitted as SourceAKF proposals (knowledge-driven config
 	// drift) and evaluated by the coordinator's policy; approved ones are
 	// applied via KnowledgePatchExecutor.
-	coord := coordinator.NewEvolutionCoordinator(coordinator.DefaultPolicy(), patchReg)
+	coord := coordinator.NewUngatedPatcher(coordinator.DefaultPolicy(), patchReg)
 	for _, p := range patches {
 		coord.Submit(coordinator.PatchProposal{
 			Patch:    p,

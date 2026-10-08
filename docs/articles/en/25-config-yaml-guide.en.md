@@ -170,6 +170,10 @@ evolution:
   #             watch_interval: "30s", min_active_duration: "90s", outcome_weight, dimension_eval_weight,
   #             workflow_weight, scheduler_weight, recovery_weight, blacklist_generations: 3 }
   # rollback: { enabled: true, degradation_threshold: 0.15, window_size: 5, min_samples: 3 }
+  #   ⚠️ COUPLING (B4): `enabled: false` disarms TWO safety nets at once — the
+  #   post-deployment rollback watch AND the G2 shadow gate's thin-evidence skip
+  #   path (that gate then fails closed instead of skipping). Disabling rollback
+  #   is not a local change; see the annotated sample in configs/ares.yaml.
   # shadow: { min_samples: 20, min_win_rate: 0.55, replay_window_span: "10m", replay_query_limit: 200 }
   # shadow_execution: { enabled: false, sample_size: 3 }
   # channel_feedback: { collab_enabled: false, collab_weight: 0.0, tool_enabled: false, tool_weight: 0.0 }

@@ -159,18 +159,30 @@ type PatchResult struct {
 	Error     error
 }
 
-// EvolutionCoordinator collects PatchProposals from all sources and decides
+// UngatedPatcher collects PatchProposals from all sources and decides
 // whether to apply, defer, or reject each patch.
 //
-// Coordinator does NOT know:
+// THE NAME IS THE GUARD (A1-c): no production assembly path installs an
+// ApplyGate (see SetApplyGate), so this type's Apply step is NOT under the
+// StrategyLifecycle trust root — the gate chain (G1/G2/G3 + arena regression)
+// grades STRATEGY promotion and never sees these structural patches. Naming it
+// "Ungated" keeps that boundary visible at every call site and declaration
+// instead of relying on a reader remembering the footnote in doc.go. If the
+// patch path is ever wired through the gates (A1-a), rename it back.
+//
+// See internal/runtime/ares_evolution/doc.go (UNGATED PATCH PATH) for the
+// boundary declaration and TestCoordinatorPatchPathNotGatedByLifecycle for the
+// test that keeps the two in lockstep.
+//
+// UngatedPatcher does NOT know:
 //   - How patches are generated (GA? Chaos? LLM? Human?)
 //   - What a Genome is
 //   - How Mutation or Crossover works
 //
-// Coordinator ONLY knows:
+// UngatedPatcher ONLY knows:
 //   - A patch has been proposed
 //   - Should I apply it now, delay it, or reject it?
-type EvolutionCoordinator struct {
+type UngatedPatcher struct {
 	mu           sync.RWMutex
 	policy       PolicyGenome    // decision strategy (evolvable)
 	proposals    []PatchProposal // pending proposals
@@ -202,9 +214,9 @@ type HealingAttempt struct {
 	Timestamp time.Time `json:"timestamp"`
 }
 
-// NewEvolutionCoordinator creates a new EvolutionCoordinator.
-func NewEvolutionCoordinator(policy PolicyGenome, patchReg *patch.Registry) *EvolutionCoordinator {
-	return &EvolutionCoordinator{
+// NewUngatedPatcher creates a new UngatedPatcher.
+func NewUngatedPatcher(policy PolicyGenome, patchReg *patch.Registry) *UngatedPatcher {
+	return &UngatedPatcher{
 		policy:          policy,
 		patchReg:        patchReg,
 		healingAttempts: make(map[string]int),
@@ -223,7 +235,7 @@ const (
 
 // appendDecision records a decision, trimming the oldest entries when over
 // the cap (caller must hold ec.mu).
-func (ec *EvolutionCoordinator) appendDecision(d PatchDecision) {
+func (ec *UngatedPatcher) appendDecision(d PatchDecision) {
 	ec.decisions = append(ec.decisions, d)
 	if len(ec.decisions) > ec.maxDecisions {
 		ec.decisions = ec.decisions[len(ec.decisions)-ec.maxDecisions:]
@@ -232,7 +244,7 @@ func (ec *EvolutionCoordinator) appendDecision(d PatchDecision) {
 
 // appendPatchResult records an apply result with the same trimming contract
 // as appendDecision (caller must hold ec.mu).
-func (ec *EvolutionCoordinator) appendPatchResult(r PatchResult) {
+func (ec *UngatedPatcher) appendPatchResult(r PatchResult) {
 	ec.patchHistory = append(ec.patchHistory, r)
 	if len(ec.patchHistory) > ec.maxPatchHistory {
 		ec.patchHistory = ec.patchHistory[len(ec.patchHistory)-ec.maxPatchHistory:]
@@ -254,7 +266,7 @@ type PatchDeployer interface {
 // SetDeployer installs an optional safe-promotion pipeline. When set and
 // enabled, accepted patches are promoted through it instead of applied
 // directly. Safe to call once during wiring; nil clears it.
-func (ec *EvolutionCoordinator) SetDeployer(d PatchDeployer) {
+func (ec *UngatedPatcher) SetDeployer(d PatchDeployer) {
 	ec.mu.Lock()
 	defer ec.mu.Unlock()
 	ec.deployer = d
@@ -289,7 +301,7 @@ type ApplyGate interface {
 // SetApplyGate installs an optional pre-apply gate. When set, Evaluate
 // consults it before every DecisionApply. Nil clears it (backward
 // compatible: no gate = apply directly, as before).
-func (ec *EvolutionCoordinator) SetApplyGate(g ApplyGate) {
+func (ec *UngatedPatcher) SetApplyGate(g ApplyGate) {
 	ec.mu.Lock()
 	defer ec.mu.Unlock()
 	ec.applyGate = g
@@ -298,7 +310,7 @@ func (ec *EvolutionCoordinator) SetApplyGate(g ApplyGate) {
 // Policy returns a snapshot of the current Coordinator policy. Callers (e.g.
 // the GA adapter) use this to log the threshold values that produced a
 // decision so a drop or reject is observable with its gating context.
-func (ec *EvolutionCoordinator) Policy() PolicyGenome {
+func (ec *UngatedPatcher) Policy() PolicyGenome {
 	ec.mu.RLock()
 	defer ec.mu.RUnlock()
 	return ec.policy
@@ -307,7 +319,7 @@ func (ec *EvolutionCoordinator) Policy() PolicyGenome {
 // ApplyEmergency applies a patch immediately, bypassing the decision process.
 // Used for self-healing scenarios where a critical fault needs instant response.
 // Returns the patch result or an error if the patch cannot be applied.
-func (ec *EvolutionCoordinator) ApplyEmergency(ctx context.Context, patch patch.RuntimePatch) error {
+func (ec *UngatedPatcher) ApplyEmergency(ctx context.Context, patch patch.RuntimePatch) error {
 	// Snapshot the registry under the lock, then release it before Apply
 	// (executor I/O / user callback) so concurrent Submit/Evaluate/Policy
 	// calls are not blocked for the full apply duration.
@@ -342,21 +354,21 @@ func (ec *EvolutionCoordinator) ApplyEmergency(ctx context.Context, patch patch.
 }
 
 // Submit receives a patch proposal from any source.
-func (ec *EvolutionCoordinator) Submit(proposal PatchProposal) {
+func (ec *UngatedPatcher) Submit(proposal PatchProposal) {
 	ec.mu.Lock()
 	defer ec.mu.Unlock()
 	ec.proposals = append(ec.proposals, proposal)
 }
 
 // PendingCount returns the number of pending proposals.
-func (ec *EvolutionCoordinator) PendingCount() int {
+func (ec *UngatedPatcher) PendingCount() int {
 	ec.mu.RLock()
 	defer ec.mu.RUnlock()
 	return len(ec.proposals)
 }
 
 // DecisionHistory returns all decisions made so far.
-func (ec *EvolutionCoordinator) DecisionHistory() []PatchDecision {
+func (ec *UngatedPatcher) DecisionHistory() []PatchDecision {
 	ec.mu.RLock()
 	defer ec.mu.RUnlock()
 	decisions := make([]PatchDecision, len(ec.decisions))
@@ -365,7 +377,7 @@ func (ec *EvolutionCoordinator) DecisionHistory() []PatchDecision {
 }
 
 // PatchHistory returns all patch application results.
-func (ec *EvolutionCoordinator) PatchHistory() []PatchResult {
+func (ec *UngatedPatcher) PatchHistory() []PatchResult {
 	ec.mu.RLock()
 	defer ec.mu.RUnlock()
 	results := make([]PatchResult, len(ec.patchHistory))
@@ -377,7 +389,7 @@ func (ec *EvolutionCoordinator) PatchHistory() []PatchResult {
 // the Coordinator should proceed, false if disabled or max retries exceeded.
 // Once exceeded, the refusal is sticky: subsequent calls for the same target
 // return false without appending another record, so healingResults is bounded.
-func (ec *EvolutionCoordinator) NotifySelfHealingAttempt(target string, patchType string) bool {
+func (ec *UngatedPatcher) NotifySelfHealingAttempt(target string, patchType string) bool {
 	ec.mu.Lock()
 	defer ec.mu.Unlock()
 
@@ -412,7 +424,7 @@ func (ec *EvolutionCoordinator) NotifySelfHealingAttempt(target string, patchTyp
 // recorded with an explicit "outcome recorded without attempt" marker so
 // the misuse is observable in SelfHealingHistory rather than silently
 // emitting Attempt: 0.
-func (ec *EvolutionCoordinator) NotifySelfHealingOutcome(target string, patchType string, success bool, errMsg string) {
+func (ec *UngatedPatcher) NotifySelfHealingOutcome(target string, patchType string, success bool, errMsg string) {
 	ec.mu.Lock()
 	defer ec.mu.Unlock()
 
@@ -440,7 +452,7 @@ func (ec *EvolutionCoordinator) NotifySelfHealingOutcome(target string, patchTyp
 }
 
 // SelfHealingHistory returns all self-healing attempts for observability.
-func (ec *EvolutionCoordinator) SelfHealingHistory() []HealingAttempt {
+func (ec *UngatedPatcher) SelfHealingHistory() []HealingAttempt {
 	ec.mu.RLock()
 	defer ec.mu.RUnlock()
 	out := make([]HealingAttempt, len(ec.healingResults))
@@ -457,7 +469,7 @@ func (ec *EvolutionCoordinator) SelfHealingHistory() []HealingAttempt {
 //     ApplyError (when the executor fails) is captured on the decision
 //     rather than only in PatchHistory. This makes apply failures observable
 //     to callers that read DecisionHistory.
-func (ec *EvolutionCoordinator) Evaluate(ctx context.Context) {
+func (ec *UngatedPatcher) Evaluate(ctx context.Context) {
 	ec.mu.Lock()
 	pending := ec.proposals
 	ec.proposals = nil
@@ -569,7 +581,7 @@ func (ec *EvolutionCoordinator) Evaluate(ctx context.Context) {
 // DecisionHistory. Decisions that would NOT delay (Apply/Reject) ignore
 // retry count: a proposal that finally qualifies for apply after rate-limit
 // clears must still be applied, not dropped.
-func (ec *EvolutionCoordinator) decide(proposal PatchProposal) Decision {
+func (ec *UngatedPatcher) decide(proposal PatchProposal) Decision {
 	ec.mu.RLock()
 	policy := ec.policy
 	ec.mu.RUnlock()
@@ -613,7 +625,7 @@ func (ec *EvolutionCoordinator) decide(proposal PatchProposal) Decision {
 }
 
 // countRecentPatches counts patch applications within the given duration.
-func (ec *EvolutionCoordinator) countRecentPatches(d time.Duration) int {
+func (ec *UngatedPatcher) countRecentPatches(d time.Duration) int {
 	ec.mu.RLock()
 	defer ec.mu.RUnlock()
 

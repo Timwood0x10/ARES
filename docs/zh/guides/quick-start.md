@@ -66,8 +66,8 @@ curl -sS -X POST localhost:8080/api/tasks \
 curl -sS -H "Authorization: Bearer <同上>" localhost:8080/api/tasks/<task_id>
 
 # 可选同步等待：?wait=<dur> 阻塞到结果通道解析（终态 + 会话答案可得；
-# 硬顶 300s；空值取 tasks.wait_timeout，默认 60s）；超时仍 202 并携带当前
-# state，提交不失败
+# 显式值须 ≤300s，超限直接 400 拒绝；空值取 tasks.wait_timeout，默认 60s）；
+# 超时仍 202 并携带当前 state，提交不失败
 ```
 
 HTTP 层是内部 submitter 的薄适配——**没有任何调度逻辑活在 HTTP 里**。HTTP 门禁凭证优先 `security.api_key`（专用控制面凭据），未设置时回落 `llm.api_key`（兼容旧行为）。**两者皆空时 write 门 401（deny-by-default，loopback 也拒绝）**——例如 ollama 这类不需要 `llm.api_key` 的 provider，必须先设置 `security.api_key` 才能 POST；`ares init` 会在模板里生成一个。
@@ -102,7 +102,7 @@ server:
   default_capability: ares/plan
 tasks:
   # POST ?wait= 无值时的默认同步等待，也作用于 ares run 的 ctx 超时
-  # （Go duration；硬顶 300s；run 未设置时保持自身默认 120s）
+  # （Go duration；超过 300s 截断为 300s（非拒绝）；run 未设置时保持自身默认 120s）
   wait_timeout: 60s
 security:
   # 专用 HTTP 控制面凭证（优先于 llm.api_key；两者皆空时 write 门 401）。

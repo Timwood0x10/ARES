@@ -48,14 +48,14 @@ func TestDefaultPolicyValues(t *testing.T) {
 }
 
 func TestNewCoordinatorConstructs(t *testing.T) {
-	ec := NewEvolutionCoordinator(DefaultPolicy(), patch.NewRegistry())
+	ec := NewUngatedPatcher(DefaultPolicy(), patch.NewRegistry())
 	if ec == nil {
-		t.Fatal("NewEvolutionCoordinator returned nil")
+		t.Fatal("NewUngatedPatcher returned nil")
 	}
 }
 
 func TestCoordinatorEvaluateNoProposals(t *testing.T) {
-	ec := NewEvolutionCoordinator(DefaultPolicy(), patch.NewRegistry())
+	ec := NewUngatedPatcher(DefaultPolicy(), patch.NewRegistry())
 	ec.Evaluate(context.Background()) // void method, just verify no panic
 	history := ec.DecisionHistory()
 	if len(history) != 0 {
@@ -64,7 +64,7 @@ func TestCoordinatorEvaluateNoProposals(t *testing.T) {
 }
 
 func TestCoordinatorSetDeployerNil(t *testing.T) {
-	ec := NewEvolutionCoordinator(DefaultPolicy(), patch.NewRegistry())
+	ec := NewUngatedPatcher(DefaultPolicy(), patch.NewRegistry())
 	// SetDeployer(nil) must not panic — the coordinator falls back to
 	// direct apply via the patch registry when no deployer is set.
 	ec.SetDeployer(nil)
@@ -77,7 +77,7 @@ func TestCoordinatorSetDeployerNil(t *testing.T) {
 }
 
 func TestCoordinatorApplyEmergencyNoExecutor(t *testing.T) {
-	ec := NewEvolutionCoordinator(DefaultPolicy(), patch.NewRegistry())
+	ec := NewUngatedPatcher(DefaultPolicy(), patch.NewRegistry())
 	err := ec.ApplyEmergency(context.Background(), patch.RuntimePatch{
 		Type:   patch.PatchChangeBudget,
 		Target: "nonexistent",

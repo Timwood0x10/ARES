@@ -1,11 +1,13 @@
 package evolution_test
 
-// The Coordinator patch path
-// (GenomePopulationAdapter.submitToCoordinator → Coordinator.Evaluate →
+// The UngatedPatcher patch path
+// (GenomePopulationAdapter.submitToCoordinator → UngatedPatcher.Evaluate →
 // PatchExecutor.Apply) is explicitly NOT gated by StrategyLifecycle's gate
-// chain. This test pins the declaration in doc.go so the trust-root boundary
-// stays honest: if a future change routes the patch path through lifecycle
-// gates, this test must be updated alongside the doc.go declaration.
+// chain — the type is named "Ungated" for exactly that reason (A1-c). This
+// test pins the declaration in doc.go so the trust-root boundary stays
+// honest: if a future change routes the patch path through lifecycle gates,
+// this test must be updated alongside the doc.go declaration (and the type
+// renamed back).
 
 import (
 	"os"
@@ -15,9 +17,10 @@ import (
 )
 
 // TestCoordinatorPatchPathNotGatedByLifecycle verifies the doc.go trust-root
-// declaration explicitly acknowledges the Coordinator patch path as ungated.
-// It scans the doc.go file for the UNGATED PATCH PATH marker — if the marker
-// is absent, the declaration has drifted from the documented boundary.
+// declaration explicitly acknowledges the UngatedPatcher patch path as
+// ungated. It scans the doc.go file for the UNGATED PATCH PATH marker — if
+// the marker is absent, the declaration has drifted from the documented
+// boundary.
 func TestCoordinatorPatchPathNotGatedByLifecycle(t *testing.T) {
 	repo := findModuleRoot(t)
 	docPath := filepath.Join(repo, "internal", "runtime", "ares_evolution", "doc.go")
@@ -32,12 +35,12 @@ func TestCoordinatorPatchPathNotGatedByLifecycle(t *testing.T) {
 			"explicitly documented (A1-c). Either gate the patch path through " +
 			"StrategyLifecycle or add the UNGATED PATCH PATH declaration to doc.go.")
 	}
-	// The declaration must name both submitToCoordinator and Coordinator.Evaluate
-	// so the boundary is unambiguous.
+	// The declaration must name both submitToCoordinator and
+	// UngatedPatcher.Evaluate so the boundary is unambiguous.
 	if !strings.Contains(body, "submitToCoordinator") {
 		t.Fatal("doc.go UNGATED PATCH PATH declaration must name submitToCoordinator")
 	}
-	if !strings.Contains(body, "Coordinator.Evaluate") {
-		t.Fatal("doc.go UNGATED PATCH PATH declaration must name Coordinator.Evaluate")
+	if !strings.Contains(body, "UngatedPatcher.Evaluate") {
+		t.Fatal("doc.go UNGATED PATCH PATH declaration must name UngatedPatcher.Evaluate")
 	}
 }

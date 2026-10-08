@@ -97,7 +97,7 @@ func BenchmarkCoordinator_Evaluate(b *testing.B) {
 	patchReg := patch.NewRegistry()
 	exec := &benchExecutor{}
 	patchReg.Register("bench", exec) //nolint:errcheck
-	coord := coordinator.NewEvolutionCoordinator(coordinator.DefaultPolicy(), patchReg)
+	coord := coordinator.NewUngatedPatcher(coordinator.DefaultPolicy(), patchReg)
 
 	for i := 0; i < 100; i++ {
 		coord.Submit(coordinator.PatchProposal{

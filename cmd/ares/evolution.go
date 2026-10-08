@@ -237,10 +237,12 @@ func showEvolutionStatus() error {
 	}
 	fmt.Println()
 
-	// Coordinator.
+	// UngatedPatcher: the label says "NOT gated" on purpose (A1-c) — these
+	// apply counts are patch-path decisions, not StrategyLifecycle-gated
+	// promotions, and an operator must not read them as such.
 	decisions := ev.Coordinator.DecisionHistory()
 	history := ev.Coordinator.PatchHistory()
-	fmt.Printf("Coordinator:\n")
+	fmt.Printf("UngatedPatcher (patch path NOT gated by StrategyLifecycle):\n")
 	fmt.Printf("  Pending proposals: %d\n", ev.Coordinator.PendingCount())
 	fmt.Printf("  Decisions made:    %d\n", len(decisions))
 	fmt.Printf("  Patches applied:   %d\n", len(history))

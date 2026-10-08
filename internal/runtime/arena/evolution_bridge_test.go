@@ -171,9 +171,9 @@ func TestService_Execute_WithEvolutionBridge(t *testing.T) {
 
 // ── Helpers ────────────────────────────────
 
-func newTestCoordinator(t *testing.T) *coordinator.EvolutionCoordinator {
+func newTestCoordinator(t *testing.T) *coordinator.UngatedPatcher {
 	t.Helper()
-	return coordinator.NewEvolutionCoordinator(
+	return coordinator.NewUngatedPatcher(
 		coordinator.DefaultPolicy(),
 		patch.NewRegistry(),
 	)

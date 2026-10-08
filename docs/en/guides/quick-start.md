@@ -67,8 +67,9 @@ curl -sS -X POST localhost:8080/api/tasks \
 curl -sS -H "Authorization: Bearer <same>" localhost:8080/api/tasks/<task_id>
 
 # optional sync wait: ?wait=<dur> blocks until the result channel resolves
-# (terminal state AND the session answer where one exists; hard cap 300s;
-# empty value uses tasks.wait_timeout, default 60s); on timeout the
+# (terminal state AND the session answer where one exists; an explicit value
+# must be <=300s — over-cap is rejected with 400; empty value uses
+# tasks.wait_timeout, default 60s); on timeout the
 # response stays 202 and carries the current state — submission never fails
 # on wait expiry
 ```
@@ -106,8 +107,8 @@ server:
   default_capability: ares/plan
 tasks:
   # default sync-wait for POST /api/tasks?wait= AND the ares run context
-  # timeout when set (Go duration; hard cap 300s; run keeps its own larger
-  # unset default of 120s)
+  # timeout when set (Go duration; a value above 300s is CLAMPED to 300s,
+  # not rejected; run keeps its own larger unset default of 120s)
   wait_timeout: 60s
 security:
   # dedicated HTTP control-plane credential (preferred over llm.api_key).

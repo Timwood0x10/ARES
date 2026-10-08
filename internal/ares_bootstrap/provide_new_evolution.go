@@ -36,7 +36,7 @@ type NewEvolutionComponents struct {
 	GenomeReg     *genome.Registry
 	DiffReg       *diff.Registry
 	PatchReg      *patch.Registry
-	Coordinator   *coordinator.EvolutionCoordinator
+	Coordinator   *coordinator.UngatedPatcher
 	// LLMAdapter parses natural-language LLM suggestions into PatchProposals
 	// that the Coordinator can evaluate alongside GA/Chaos/AKF/Human sources.
 	// Wired into the Coordinator's suggestion pipeline in wireGAEvolution when
@@ -300,7 +300,12 @@ func ProvideNewEvolution(dag *engine.MutableDAG, rt *knowledgeruntime.KnowledgeR
 	}
 
 	// 5. Coordinator — decision engine for all patches.
-	coord := coordinator.NewEvolutionCoordinator(coordinator.DefaultPolicy(), patchReg)
+	// TODO(tech-debt): this wiring installs no ApplyGate, so the patch path
+	// bypasses the StrategyLifecycle trust root (A1). Short term the boundary
+	// is named and declared (UngatedPatcher, A1-c); mid term wire a
+	// lifecycle-backed ApplyGate here (A1-a) — see
+	// internal/runtime/ares_evolution/doc.go (UNGATED PATCH PATH).
+	coord := coordinator.NewUngatedPatcher(coordinator.DefaultPolicy(), patchReg)
 
 	return &NewEvolutionComponents{
 		EvidenceStore: evStore,
