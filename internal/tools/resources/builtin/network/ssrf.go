@@ -121,7 +121,11 @@ func ssrfDialControl(network, address string, _ syscall.RawConn) error {
 		return fmt.Errorf("ssrf: parse dial address %q: %w", address, err)
 	}
 	if ip := net.ParseIP(host); isBlockedIP(ip) {
-		return fmt.Errorf("%w: dial to %s", ErrSSRFBlocked, ip)
+		// Report the host as given: it is the resolved IP in production (the
+		// dialer resolves first), but printing the parsed IP would render a
+		// hostname — or an unparsable address — as "<nil>", which is useless
+		// for diagnosis.
+		return fmt.Errorf("%w: dial to %s", ErrSSRFBlocked, host)
 	}
 	return nil
 }

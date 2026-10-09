@@ -5,6 +5,179 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.2] - 2026-10-09
+
+### Added
+
+- **External task interface**: `POST /api/tasks` accepts a minimal body
+  (`{"query": "..."}`) — the capability defaults to the configured
+  `server.default_capability`, so an external caller needs no knowledge of the
+  internal task model — and `GET /api/tasks/{id}` returns the task view,
+  including the session's answer and the failure reason on a failed task.
+  `POST /api/tasks?wait=<dur>` blocks until the task reaches a terminal state
+  and answers 200 with the result, degrading to 202 with the current state once
+  the wait expires; submission itself never fails because a wait expired. An
+  explicit wait over 300s is rejected with 400, while a `tasks.wait_timeout`
+  configured above the cap is clamped (default 60s).
+
+- **Shared wait primitives** (`internal/agentruntime/await.go`): `TaskResolved`
+  and `AwaitSessionResult` replace the three hand-rolled poll loops that had
+  drifted apart (serve task read, SDK submission, evolution). Each entry point
+  keeps its own cadence; the resolution rule — terminal state, plus the session
+  answer where one exists — is now defined once.
+
+- **Introspection: Memory panel** — the runtime console exposes the memory
+  subsystem (session store, distillation thresholds) next to the existing
+  panels, with the session and threshold values plumbed through configuration
+  instead of being hard-coded at the call site. The frame is a pure read of
+  guarded state produced by the manager itself (`RuntimeStatus`: live
+  session/task counts, whether the distillation engine is armed, RAG posture
+  and the effective knobs — see `internal/runtime/memory/manager_status.go`),
+  so the panel's 2s pull loop never touches the store or takes a lock it could
+  contend on.
+
+- **CI: documentation-anchor drift check** — `scripts/check_doc_anchors.sh` now
+  runs on every push, so stale `file.go:NNN` references fail fast instead of
+  rotting silently.
+
+### Changed
+
+- **`EvolutionCoordinator` renamed to `UngatedPatcher`** (A1-c). The type
+  already ran outside the `StrategyLifecycle` trust root — no production
+  assembly installs an `ApplyGate` — so the name now says it at every call site
+  and declaration, `doc.go` states the boundary explicitly, and
+  `ares evolution` labels the section accordingly. Wiring the patch path
+  through the gates (A1-a) means renaming it back.
+
+- **Chinese lexical retrieval** tokenizes CJK runs as character bigrams (with a
+  unigram for single-character runs) instead of collapsing a whole sentence
+  into one token, which had pinned the Jaccard score at 0 or 1 and turned the
+  lexical weight (0.3) into noise, degrading hybrid retrieval to pure vector
+  search.
+
+- **`ask_agent` duplicate guard**: an identical ask (same caller, target, topic
+  and payload) launched while the previous one is still pending is suppressed
+  and reported as `duplicate: true`, instead of spawning a second target-side
+  session for an answer nobody reads. The tool description tells the model not
+  to re-ask while one is pending.
+
+- **`CanApply` now mirrors `Apply` for scheduler patches**: a patch carrying a
+  name string or no value — the shape both retired producers emitted — is
+  refused up front instead of passing the check and failing mid-apply, so
+  `CanApply == nil` again implies the apply preconditions hold.
+
+### Fixed
+
+- **`ask_agent` no longer blocks the drain**: the request is delivered through
+  the managed background path (the quantum yields immediately) rather than
+  holding the scheduler, and the result contract is honest about what a caller
+  actually receives (`pending` / `no-reply`; the reply is logged, not yet
+  written back — see Known limitations). A launch refused during shutdown now
+  surfaces as an error instead of a `pending` that can never resolve.
+
+- **GA evidence loop and external result contract**: the live-DAG shadow
+  assembly and the strategy score adapter are wired so GA decisions feed the
+  evidence store (`cmd/ares/peer_assembly.go`), with tests pinning the live-DAG
+  and score-adapter paths.
+
+- **GA and MutableDAG empty implementations and hot-path defects** (adaptive
+  mutation, hypothesis generation, spatial index, multi-objective helpers), so
+  a generation can no longer churn through nodes that do nothing.
+
+- **Phase-2 deep-review defects** across the kernel and orchestrator (a
+  startup/shutdown race that could record live goroutines as stopped, an event
+  sink read outside its lock), the evolution scheduler (subscription group and
+  loop arming are now one critical section, and tick-triggered evolution is
+  serialized with `OnAgentEnd` and visible to `Shutdown`), plus memory, MCP and
+  Postgres.
+
+- **0.3.1 release-blocking defects**: tool routing, `ares status`, the plugin
+  bus, arena and pprof lifecycle, and the last environment-variable references
+  purged from the operator guide, cookbook, articles and the serve walkthrough —
+  `ares.yaml` is the single configuration entry point.
+
+- **CI correctness**: `agentos_ci.yml` referenced package paths that no longer
+  exist (`internal/ares_arena`, `internal/ares_runtime`), so its chaos-e2e and
+  agent-pool benchmark steps failed on every run — the paths are corrected. The
+  standalone `integration-test.yml` is deleted as a duplicate (`ci.yml` already
+  runs the same `-tags=integration` suite), and `ci.yml` stops triggering on
+  `master`, a branch that never carried the v0.3.1 release. `make` targets that
+  pointed at moved packages (`internal/ares_memory`, `internal/eval`,
+  `internal/integration`, `internal/events`) were repointed too.
+
+- **SSRF dial control** names the dialled host instead of printing `<nil>`, and
+  the control-layer contract (IP literals are classified by address, hostnames
+  fail closed) now has a hermetic test that runs in every mode — including
+  `-short`, which is what previously hid a test that could never pass.
+
+- **Scheduler integration test** no longer races the evolution supersede path:
+  it serializes on the in-flight cycle and samples the generation *before*
+  triggering, so "one trigger ⇒ one advance" is deterministic instead of
+  timing-dependent.
+
+### Removed
+
+- **`api/embedding`**: the deprecated alias package for `internal/embedding` had
+  no remaining references inside the repository and is gone. This is breaking
+  for external importers that used it as the public handle for the
+  `EmbeddingService` interface.
+
+- **`internal/llm/output`** (18 files): the adapter/parser/validator package lost
+  its last production caller in 0.3.1, when the dead `LLMAdapter` assembly was
+  removed and runtime LLM failover collapsed to a single `FailoverClient` chain;
+  the 0.3.1 notes called it "a 0.4 deletion candidate" and this release takes
+  it. Nothing in the LLM path imports it — model output parsing runs through the
+  chat client's own decoding — so the removal is invisible unless something
+  outside the repository imported the package directly.
+
+- **Scheduler dimension retired** (decision of 2026-08-22, completed here):
+  `graph.PriorityScheduler`, `ShortJobScheduler`, `RoundRobinScheduler` and
+  `WeightedFairScheduler` were unreachable from any production path — ready
+  batches run fully parallel, so ordering schedulers have no execution decision
+  left. The `Scheduler` interface, `DefaultScheduler` and the `SetScheduler`
+  seam remain for callers that supply their own selector.
+
+- **`PatchChangeScheduler` producers**: the LLM's `change scheduler to <type>`
+  grammar route and the arena performance-fault mapping both emitted values the
+  graph applier cannot accept (a scheduler name string, or nothing, where a
+  `Scheduler` is required), so every proposal was a guaranteed apply failure —
+  including one that was re-proposed on every slow-agent fault. The patch type
+  and its applier stay so persisted patches still decode.
+
+- **`docs/reviews/0.3.1-*.md`** (5 reports): the v0.3.1 batch review reports are
+  removed from the published docs — the 0.3.1 outcome is recorded in this file
+  and in the review notes under `plan/`.
+
+### Security
+
+- **Vector dimension mismatches are no longer silent**: `ScoreHybrid` warns
+  with both dimensions and the representation model before falling back to
+  lexical, so an embedding-model change can no longer zero every vector score
+  without leaving a trace.
+
+- Hardening inherited from the deep-review batches (tenant isolation, the SSRF
+  block list, dead-letter visibility for IPC failures) is unchanged and still
+  enforced by the same contract tests.
+
+### Known limitations
+
+- **`ask_agent` remains fire-and-forget**: the target's answer is not written
+  back to the asker yet (tracked as C-1-a). `Status: "delivered"` is therefore
+  unreachable through the serve wiring — only in-process/SDK callers that inject
+  their own `AskAgentFn` can observe a delivered answer.
+
+- **Multi-objective GA has no production entry point**: `ScoreAgentsMulti` and
+  `ParetoFrontStrategy` are deprecated with zero callers, and configuring
+  `evolution.selection_strategy: nsga2` (or `nondominated`) silently falls back
+  to single-objective tournament selection, because nothing populates
+  `DimensionScores`. Wiring the entry points or removing them is a 0.3.3
+  decision.
+
+- **The GA apply gate is not wired in production**: the `UngatedPatcher` patch
+  path still decides with its own fitness threshold rather than the
+  `StrategyLifecycle` gate chain (A1-a), which is why the type carries that
+  name.
+
 ## [0.3.1]
 
 ### Added

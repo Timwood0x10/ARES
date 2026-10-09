@@ -233,7 +233,11 @@ func TestGraphPatchExecutor_CanApply(t *testing.T) {
 		{"add edge valid", patch.RuntimePatch{Type: patch.PatchAddEdge, Target: "A", Value: "C"}, true},
 		{"add edge empty value", patch.RuntimePatch{Type: patch.PatchAddEdge, Target: "A", Value: ""}, false},
 		{"add edge non-string value", patch.RuntimePatch{Type: patch.PatchAddEdge, Target: "A", Value: 42}, false},
-		{"change scheduler valid", patch.RuntimePatch{Type: patch.PatchChangeScheduler}, true},
+		{"change scheduler valid", patch.RuntimePatch{Type: patch.PatchChangeScheduler, Value: &stubScheduler{label: "can-apply"}}, true},
+		{"change scheduler missing value", patch.RuntimePatch{Type: patch.PatchChangeScheduler}, false},
+		// The retired producers emitted exactly this shape (a scheduler NAME);
+		// CanApply must reject it instead of letting it fail mid-apply.
+		{"change scheduler name string value", patch.RuntimePatch{Type: patch.PatchChangeScheduler, Value: "round_robin"}, false},
 		{"unsupported type", patch.RuntimePatch{Type: patch.PatchType(999)}, false},
 	}
 	for _, tt := range tests {

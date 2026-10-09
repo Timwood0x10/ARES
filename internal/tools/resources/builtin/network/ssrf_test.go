@@ -110,13 +110,34 @@ func TestSSRFTransport_ReturnsClonedTransport(t *testing.T) {
 	require.NotNil(t, tr.DialContext, "SSRFTransport must set DialContext")
 }
 
-// TestSSRF_Rebinding_nipio is a network-dependent test that uses nip.io to
-// prove DNS-rebinding defense end-to-end. It is skipped under -short and when
-// nip.io is not resolvable, so it never breaks offline CI / `make check`.
+// TestSSRFControlLayer_IPLiteralsAndHostnames pins the dial-control contract
+// hermetically (no DNS, so it runs in every mode including -short): the control
+// function is handed the RESOLVED ip by the dialer, never a hostname — an IP
+// literal is therefore classified by its address, while a hostname parses to a
+// nil IP and fails closed. A previous version of TestSSRF_Rebinding_nipio
+// asserted the opposite (that the hostname "1.1.1.1.nip.io" is allowed here),
+// which can never hold and only went unnoticed because -short skipped it.
+func TestSSRFControlLayer_IPLiteralsAndHostnames(t *testing.T) {
+	// The dialer resolves the hostname before calling Control, so this is the
+	// shape that actually reaches production: a public IP is allowed.
+	require.NoError(t, ssrfDialControl("tcp", "1.1.1.1:80", nil))
+	// Private/loopback/link-local literals stay blocked.
+	require.ErrorIs(t, ssrfDialControl("tcp", "10.0.0.1:80", nil), ErrSSRFBlocked)
+	require.ErrorIs(t, ssrfDialControl("tcp", "127.0.0.1:80", nil), ErrSSRFBlocked)
+	require.ErrorIs(t, ssrfDialControl("tcp", "169.254.169.254:80", nil), ErrSSRFBlocked)
+	// A hostname is not an IP → fail closed (never a silent pass).
+	require.ErrorIs(t, ssrfDialControl("tcp", "1.1.1.1.nip.io:80", nil), ErrSSRFBlocked)
+	// A malformed address is an explicit error, not a silent pass.
+	require.Error(t, ssrfDialControl("tcp", "no-port-here", nil))
+}
+
+// TestSSRF_Rebinding_nipio is the end-to-end DNS-rebinding check: it uses
+// nip.io so the dialer really resolves a public-looking name to a blocked IP.
+// It needs DNS, not a test mode, so the guard is resolvability (offline runs
+// skip it) — deliberately NOT -short: hiding a network assertion behind -short
+// is what let a broken variant of this test survive locally while CI (which
+// runs the un-shortened suite) failed on it.
 func TestSSRF_Rebinding_nipio(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping network-dependent DNS rebinding test in -short mode")
-	}
 	// Precheck: skip if nip.io cannot be resolved (offline CI).
 	addrs, err := net.DefaultResolver.LookupHost(context.Background(), "127.0.0.1.nip.io")
 	if err != nil {
@@ -139,6 +160,7 @@ func TestSSRF_Rebinding_nipio(t *testing.T) {
 	_, err = SSRFDialer().DialContext(context.Background(), "tcp", "127.0.0.1.nip.io:80")
 	require.ErrorIs(t, err, ErrSSRFBlocked)
 
-	// Public rebinding host must NOT be blocked at the control layer.
-	require.NoError(t, ssrfDialControl("tcp", "1.1.1.1.nip.io:80", nil))
+	// The public-name half of the contract is asserted hermetically in
+	// TestSSRFControlLayer_IPLiteralsAndHostnames — Control never sees a
+	// hostname, so it cannot be asserted through this dial path offline.
 }

@@ -294,6 +294,24 @@ func waitForGeneration(t *testing.T, pop *genome.Population, genBefore int, time
 	}
 }
 
+// waitForEvolutionIdle blocks until no evolution cycle is in flight. The
+// scheduler supersedes (cancels) whatever cycle is running when a new trigger
+// arrives (see OnAgentEnd), so a test that wants "one trigger ⇒ one advance"
+// must let the previous cycle finish first; otherwise it is asserting on a
+// cancellation and goes flaky the moment the timing shifts (CI).
+func waitForEvolutionIdle(t *testing.T, s *EvolutionScheduler) {
+	t.Helper()
+	s.evolveMu.Lock()
+	eg := s.evolveEg
+	s.evolveMu.Unlock()
+	if eg == nil {
+		return
+	}
+	// Best-effort: a cycle error is logged by the scheduler's own goroutine and
+	// aggregated by Shutdown; this wait only serializes the test.
+	_ = eg.Wait()
+}
+
 // TestWiredSystem_WithSchedulerEventTrigger verifies that when the scheduler receives
 // an OnAgentEnd callback with sufficient score degradation data, it correctly triggers
 // GenomePopulationAdapter.Run() and increments the population generation.
@@ -520,11 +538,21 @@ func TestWiredSystem_SchedulerTriggersMultipleEvolutions(t *testing.T) {
 
 	genBefore := system.Population.CurrentGeneration()
 
-	// Trigger three consecutive evolutions.
+	// Trigger three consecutive evolutions, serialized. Two properties of the
+	// scheduler make the naive form of this loop racy:
+	//
+	//  1. OnAgentEnd runs the cycle in a managed goroutine and SUPERSEDES
+	//     (cancels) any cycle already in flight, so a trigger that lands during
+	//     a run legitimately advances nothing.
+	//  2. The generation must be sampled BEFORE the trigger: sampling it after
+	//     (as this test used to) can already observe the advance and then wait
+	//     for one more that no further trigger will produce — the exact
+	//     "advance from N (current=N)" CI timeout.
 	for i := 0; i < 3; i++ {
+		waitForEvolutionIdle(t, system.Scheduler)
+		genFrom := system.Population.CurrentGeneration()
 		system.Scheduler.OnAgentEnd(context.Background(), CallbackData{AgentID: fmt.Sprintf("agent-multi-%d", i)})
-		// Wait for this evolution cycle to complete before triggering the next.
-		waitForGeneration(t, system.Population, system.Population.CurrentGeneration(), 2*time.Second)
+		waitForGeneration(t, system.Population, genFrom, 2*time.Second)
 	}
 
 	genAfter := system.Population.CurrentGeneration()
