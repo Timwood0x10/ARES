@@ -124,9 +124,16 @@ func arenaActionToPatch(action Action) (patch.PatchType, string, string) {
 	case ActionKillAgent, ActionKillLeader:
 		return patch.PatchReplaceNode, action.TargetID, "fallback-" + action.TargetID
 
-	// ── Performance faults → change scheduler ─────────
+	// ── Performance faults ─────────────────────────────
+	// Not actionable: the scheduler dimension is retired (ordering schedulers
+	// have no execution decision left once ready batches run fully parallel)
+	// and a scheduler patch can no longer be applied from here — this branch
+	// used to emit PatchChangeScheduler with an empty value, which the graph
+	// applier rejects ("value must be a Scheduler"), i.e. a proposal that could
+	// only ever fail. Returning -1 keeps the fault visible in the arena report
+	// without manufacturing a dead patch. See PatchChangeScheduler.
 	case ActionSlowAgent, ActionToolTimeout:
-		return patch.PatchChangeScheduler, "graph.scheduler", ""
+		return -1, "", ""
 
 	// ── Infrastructure faults → change recovery strategy ──
 	case ActionLLMFailure, ActionMemoryCorrupt, ActionMCPDisconnect:

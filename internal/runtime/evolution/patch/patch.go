@@ -26,7 +26,16 @@ const (
 	PatchRemoveEdge                   // Remove a directed edge
 
 	// ── Scheduler mutations ────────────────────────────
-	PatchChangeScheduler // Replace the current scheduler
+	// TODO(tech-debt): PatchChangeScheduler has no live producer. The LLM
+	// "change scheduler" grammar route and the arena performance-fault mapping
+	// were both retired (2026-10-08): neither could produce a value the graph
+	// applier accepts — its Value must be a Scheduler, while they produced a
+	// string / nothing — so every proposal was a guaranteed apply failure.
+	// The dimension is retired anyway (ordering schedulers have no execution
+	// decision left once ready batches run fully parallel). Retained only so
+	// persisted patches still decode and the graph applier stays addressable;
+	// delete the type with its applier once persisted-patch replay is dropped.
+	PatchChangeScheduler // Replace the current scheduler (LEGACY: no producer)
 
 	// ── Knowledge/Planner mutations ────────────────────
 	PatchChangePlanner // Change planner strategy

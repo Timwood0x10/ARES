@@ -40,7 +40,7 @@ func buildEvolutionSuggestionPrompt(
 ) string {
 	base := "Examine the current system state and suggest one evolution improvement. " +
 		"Use one of: insert node, remove node, replace node, add edge, remove edge, " +
-		"change scheduler, change topk, change reducer, change planner, change recovery."
+		"change topk, change reducer, change planner, change recovery."
 
 	var sb strings.Builder
 	sb.WriteString(base)

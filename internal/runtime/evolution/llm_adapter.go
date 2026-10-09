@@ -43,7 +43,6 @@ type ParseResult struct {
 //	"replace node <id> with <type>"    → PatchReplaceNode
 //	"add edge <from> -> <to>"          → PatchAddEdge
 //	"remove edge <from> -> <to>"       → PatchRemoveEdge
-//	"change scheduler to <type>"       → PatchChangeScheduler
 //	"change topk to <n>"               → PatchChangeBudget
 //	"change reducer to <strategy>"     → PatchChangeReducer
 //	"change planner to <strategy>"     → PatchChangePlanner
@@ -73,9 +72,6 @@ func (a *LLMAdapter) Parse(_ context.Context, suggestion string) ([]ParseResult,
 
 	case strings.HasPrefix(lower, "remove edge"):
 		return a.parseRemoveEdge(text)
-
-	case strings.HasPrefix(lower, "change scheduler"):
-		return a.parseChangeScheduler(text)
 
 	case strings.HasPrefix(lower, "change topk"):
 		return a.parseChangeBudget(text)
@@ -218,31 +214,6 @@ func (a *LLMAdapter) parseRemoveEdge(text string) ([]ParseResult, error) {
 			},
 			Source:    coordinator.SourceLLM,
 			Reason:    fmt.Sprintf("LLM suggested removing edge %s→%s", from, to),
-			Priority:  4,
-			Timestamp: time.Now(),
-		},
-	}}, nil
-}
-
-func (a *LLMAdapter) parseChangeScheduler(text string) ([]ParseResult, error) {
-	// "change scheduler to <type>"
-	parts := strings.Fields(text)
-	if len(parts) < 4 || parts[2] != "to" {
-		return nil, errors.New("llm: change scheduler format: 'change scheduler to <type>'")
-	}
-	schedType := parts[3]
-
-	return []ParseResult{{
-		Proposal: coordinator.PatchProposal{
-			Patch: patch.RuntimePatch{
-				Type:   patch.PatchChangeScheduler,
-				Target: "graph.scheduler",
-				Value:  schedType,
-				Reason: fmt.Sprintf("llm suggested: scheduler -> %s", schedType),
-				Source: llmSource,
-			},
-			Source:    coordinator.SourceLLM,
-			Reason:    fmt.Sprintf("LLM suggested changing scheduler to %s", schedType),
 			Priority:  4,
 			Timestamp: time.Now(),
 		},

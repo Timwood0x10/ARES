@@ -103,21 +103,20 @@ func TestLLMAdapter_Parse_RemoveEdge(t *testing.T) {
 	assert.Equal(t, "C", results[0].Proposal.Patch.Value)
 }
 
-func TestLLMAdapter_Parse_ChangeScheduler(t *testing.T) {
+// TestLLMAdapter_Parse_ChangeSchedulerRetired pins the retirement of the
+// "change scheduler" route: it parsed into a string value that the graph
+// applier could never accept (its Value must be a Scheduler), so every such
+// suggestion produced a patch that always failed to apply. The scheduler
+// dimension itself is retired — ordering schedulers have no execution decision
+// left once ready batches run fully parallel — so the phrase must now be
+// rejected instead of turned into a dead proposal.
+func TestLLMAdapter_Parse_ChangeSchedulerRetired(t *testing.T) {
 	a := NewLLMAdapter()
-	results, err := a.Parse(context.Background(), "change scheduler to round_robin")
-	require.NoError(t, err)
-	require.Len(t, results, 1)
-
-	assert.Equal(t, patch.PatchChangeScheduler, results[0].Proposal.Patch.Type)
-	assert.Equal(t, "graph.scheduler", results[0].Proposal.Patch.Target)
-	assert.Equal(t, "round_robin", results[0].Proposal.Patch.Value)
-}
-
-func TestLLMAdapter_Parse_ChangeScheduler_BadFormat(t *testing.T) {
-	a := NewLLMAdapter()
-	_, err := a.Parse(context.Background(), "change scheduler lonely")
-	assert.Error(t, err)
+	_, err := a.Parse(context.Background(), "change scheduler to round_robin")
+	require.Error(t, err, "the retired scheduler route must not produce a proposal")
+	// Pin the reason: the phrase is no longer a recognized route (rather than
+	// failing for an unrelated parse error).
+	assert.ErrorContains(t, err, "unrecognized suggestion format")
 }
 
 func TestLLMAdapter_Parse_ChangeTopK(t *testing.T) {
