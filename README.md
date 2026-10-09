@@ -173,8 +173,14 @@ a bug in the README.
   caller supplying one; AKG-distilled facts all land in the `"default"` namespace. A
   real multi-tenant deployment must bind the tenant at the auth layer rather than
   trust the request body — see *Tenancy Model* above and `SECURITY.md` → Tenancy.
-- **`api.WithMaxTokens` is not enforced** on the shared L2 execution path (0.3.1);
-  only the wall-clock `api.WithTimeout` is.
+- **`WithMaxTokens` is a peer-lifetime budget, not a per-run cap.** Since 0.3.1 it is
+  enforced (no longer a silent no-op): it bridges into the runtime governance budget
+  (`sdk/sdk.go:441`) and the scheduler's `budgetOK` gate stops an agent whose
+  `tokenUsed` has reached `TokenBudget` at the next quantum boundary. Two real
+  caveats: the budget is the **L2 peer's lifetime total** — the first positive value
+  wins and later agents cannot tighten it — and enforcement is **cooperative**
+  (yield at a quantum boundary, never mid-LLM-call) (`sdk/options.go:703-717`).
+  `<= 0` means unbounded.
 - **`ask_agent` is fire-and-forget.** The target's answer is logged, not written back
   to the asker (`internal/agentsyscall/syscall.go`: *"the reply is currently
   FIRE-AND-FORGET"*); `Status: "delivered"` is unreachable through the serve wiring.
@@ -358,7 +364,7 @@ the "agent OS" building blocks distilled from the prime-agent comparison.
 | Small-step evolution | `internal/runtime/ares_evolution/refine` | Baseline-checked, rollback-capable supplement-state updates (plan → apply → rollback) |
 | Capability Fabric (SkillCatalog) | `internal/runtime/protocol/skills`: `Catalog` / `SourceManager` / `Indexer` / `Discovery` / `Loader` / `Resolver` / `Experience` | Skill = capability package: declared-source metadata index (no disk scanning), progressive disclosure metadata → SKILL.md → resources, trust-gated tool resolution (MCP / Executable / Builtin), learned-source relevance priors |
 | Output guard | `internal/agents/outputguard` | Reject structurally inconsistent agent results at the boundary |
-| Run budgets | `api.WithTimeout` (`Task.Timeout`, enforced on the L2 submission) | Wall-clock-bounded autonomous execution. `api.WithMaxTokens` is retained for API compatibility but is not enforced on the shared L2 path (0.3.1) |
+| Run budgets | `api.WithMaxTokens` (governance token budget) / `api.WithTimeout` (`Task.Timeout`) | Both enforced on the L2 path since 0.3.1, at quantum boundaries. `WithMaxTokens` is the peer's **lifetime** budget (first positive value wins, not a per-run allowance) |
 | Fingerprint cache | `internal/runtime/arena`: `WithFingerprint` | Skip re-running regression when the environment is unchanged |
 | Skills (progressive disclosure) | `internal/knowledge/skills` | Description resident in context; detail loaded on demand |
 | Session lease | `internal/agents/lease` | Exclusive expiring holds for concurrent session access |

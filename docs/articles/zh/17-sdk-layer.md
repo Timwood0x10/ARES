@@ -105,7 +105,7 @@ Agent 选项是另一组（`func(*agentConfig)`）：
 | `WithTools` | `(...tools.Tool)` | 附加工具 |
 | `WithHumanInput` | `(fn HumanInputFunc)` | **已废弃/不生效**：L2 路径无审批钩子，`Run` 会返回 `ErrHumanInputUnsupported` |
 | `WithMaxIterations` | `(n int)` | 封顶 ReAct 迭代次数（仅为 API 兼容保留） |
-| `WithMaxTokens` | `(n int)` | 单次 run 的累计 token 预算（仅为 API 兼容保留） |
+| `WithMaxTokens` | `(n int)` | token 预算，**0.3.1 起已生效**（桥接进 governance 预算；是 L2 peer 的生命周期总量，不是单次 run 上限） |
 | `WithTimeout` | `(d time.Duration)` | 单次 run 的墙钟预算 |
 | `WithToolDiscovery` | `()` | 运行时工具发现（暴露 discover_tools 元工具） |
 | `WithToolSource` | `(s toolsource.ToolSource)` | 设发现来源，隐式开启 discovery |

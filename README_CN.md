@@ -131,7 +131,7 @@ make examples          # 构建全部示例
 以下每条都是当前状态 + 证据文件。若本 README 其它地方的说法不在此清单内，要么已在代码里验证，要么就是 README 的 bug。
 
 - **租户隔离不是端到端的。** experience/蒸馏库按**列**隔离；知识侧按 **namespace** 隔离且依赖调用方传入；AKG 蒸馏出的事实全部落在 `"default"` namespace。真多租户必须在鉴权层绑定租户，不能信任请求体——见上文「租户模型」与 `SECURITY.md` → Tenancy。
-- **`api.WithMaxTokens` 在共享 L2 路径不生效**（0.3.1 起），只有 wall-clock 的 `api.WithTimeout` 生效。
+- **`WithMaxTokens` 是"peer 生命周期总量"，不是单次 run 上限。** 0.3.1 起它**已生效**（不再是静默 no-op）：桥接进 runtime 的 governance 预算（`sdk/sdk.go:441`），调度器 `budgetOK` 会在**量子边界**拦下 `tokenUsed` 已达 `TokenBudget` 的 agent。两个注意点：预算是 **L2 peer 的生命周期总量**（第一个正值生效，后续 agent 无法收紧）；执行是**协作式**的（量子边界让出，不打断进行中的 LLM 调用）（`sdk/options.go:703-717`）。`<= 0` 表示不限。
 - **`ask_agent` 是 fire-and-forget**：目标回复只写日志、不回写给提问方（`internal/agentsyscall/syscall.go`：*"the reply is currently FIRE-AND-FORGET"*）；serve 接线下拿不到 `Status: "delivered"`。
 - **多目标 GA 未接线**：没有任何代码写 `DimensionScores`，`"nsga2"`/`"nondominated"` 会静默回退单目标 tournament；`ScoreAgentsMulti`/`ParetoFrontStrategy()` 已废弃、零生产调用。
 - **GA apply gate 未在生产安装**：patch 路径按自身 fitness 阈值决策——这正是该类型叫 `UngatedPatcher` 的原因。

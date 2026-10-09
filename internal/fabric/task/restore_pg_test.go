@@ -139,6 +139,12 @@ func TestRestoreFromStorePostgresRoundTrip(t *testing.T) {
 	epoch2, err := f2.Acquire("peer-plan-7", "agent-b", time.Minute)
 	require.NoError(t, err)
 	require.Greater(t, epoch2, epoch1, "restored epoch must exceed all pre-restart epochs")
+	// ownerLocked checks ownership BEFORE the epoch (fabric.go:309 then :312),
+	// so the stale pre-restart holder trips the owner guard first...
 	err = f2.Complete("peer-plan-7", "agent-a", epoch1)
-	require.ErrorIs(t, err, ErrEpochMismatch, "pre-restart epoch must not be accepted after restore")
+	require.ErrorIs(t, err, ErrNotOwner, "pre-restart holder must not be accepted after restore")
+	// ...and epoch fencing is what the CURRENT owner hits when it presents a
+	// pre-restart epoch.
+	err = f2.Complete("peer-plan-7", "agent-b", epoch1)
+	require.ErrorIs(t, err, ErrEpochMismatch, "pre-restart epoch must not be accepted even by the current owner")
 }

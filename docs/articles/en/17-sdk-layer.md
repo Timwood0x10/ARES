@@ -105,7 +105,7 @@ Agent options are a separate set (`func(*agentConfig)`):
 | `WithTools` | `(...tools.Tool)` | Attach tools |
 | `WithHumanInput` | `(fn HumanInputFunc)` | **Deprecated / not enforced**: the L2 path has no approval hook, so `Run` fails with `ErrHumanInputUnsupported` |
 | `WithMaxIterations` | `(n int)` | Cap the ReAct iteration count (retained for API compatibility) |
-| `WithMaxTokens` | `(n int)` | Cumulative token budget for one run (retained for API compatibility) |
+| `WithMaxTokens` | `(n int)` | Token budget, **enforced since 0.3.1** (bridged into the governance budget; the L2 peer's lifetime total, not a per-run allowance) |
 | `WithTimeout` | `(d time.Duration)` | Wall-clock budget for one run |
 | `WithToolDiscovery` | `()` | Runtime tool discovery (exposes a discover_tools meta-tool) |
 | `WithToolSource` | `(s toolsource.ToolSource)` | Set discovery source; implies discovery on |
