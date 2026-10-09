@@ -833,6 +833,53 @@ feeds only the relevant subset per task** — the envcap searcher turns the
 skills catalog into "LLM-searchable" capabilities, paired with progressive
 disclosure. This is how 0.3.x avoids the "hard-dump every tool" anti-pattern.
 
+### 19.1 Active service discovery (the `internal/discovery` engine)
+
+The above is "tool-level" discovery. At the very top there is another
+**"service-level" active-discovery layer**: instead of waiting for the user to
+hand-write MCP servers in config, the system **proactively scans existing
+configs on the machine and auto-detects usable providers**.
+
+| Layer | What | When | Source |
+|---|---|---|---|
+| **① Service discovery** | Scan Claude/Cursor/VSCode/ARES configs + PATH binaries; find which MCP servers exist | every 5min (default) + self-healing loop | `internal/discovery/engine.go` |
+| **② Tool discovery** | connect + `ListTools` + `OnChange` dynamic add/remove | boot + server notifications | `internal/runtime/protocol/mcp/client.go:186` |
+| **③ Tool selection** | full set registered, only a relevant subset fed to the LLM (progressive disclosure + envcap) | at LLM call time | `cmd/ares/serve_wiring.go:215` |
+
+```mermaid
+flowchart TB
+    subgraph disc[1 service discovery - internal/discovery]
+        p[Providers scan concurrently<br/>Claude/Cursor/VSCode/ARES + PATH binaries]
+        p --> merge[merge -> diff<br/>added/updated/removed]
+        merge --> store[persist to ServiceStore]
+        merge --> evt[emit events -> EventStore "discovery" stream]
+        auto[StartAutoDiscovery<br/>every 5min + panic self-heal backoff] --> p
+    end
+    evt --> mcp[2 connect to MCP -> ListTools + OnChange]
+    mcp --> reg2[core.Registry]
+    reg2 --> sel[3 progressive disclosure + envcap feeds LLM on demand]
+```
+
+**Key design points:**
+
+- **Active != connect-what-you-configured**: it scans the IDEs' existing
+  `mcp.json` files (`providers/filesystem.go`) and auto-detects the MCP
+  servers scattered on the machine.
+- **Manual registrations are not deleted** (#51): services created by
+  `Engine.Register` are passive; the diff's removed branch protects them.
+- **Self-healing background loop**: `StartAutoDiscovery`'s goroutine recovers
+  its own panics and restarts with exponential backoff (`1s/2s/4s...30s cap`).
+- **Gated**: `Discovery.Enabled` defaults to **false**
+  (`bootstrap_builder.go:493`); when off you configure MCP manually.
+
+| Concern | Function | Source |
+|---|---|---|
+| Discovery engine (4 phases) | `Engine.DiscoverNow` | `internal/discovery/engine.go:50` |
+| Provider interface | `DiscoveryProvider.Discover` | `internal/discovery/discovery.go:87` |
+| Per-IDE config scanning | `NewClaudeProvider` / `NewCursorProvider` / `NewVSCodeProvider` / `NewARESProvider` | `internal/discovery/providers/filesystem.go` |
+| Auto-discovery loop (self-heal + backoff) | `StartAutoDiscovery` | `internal/discovery/engine.go` |
+| Assembly + event bridge | `ProvideDiscovery` / `forwardDiscoveryEvent` | `internal/ares_bootstrap/provide_discovery.go:47` |
+
 ---
 
 ## 20. SDK / CLI Usage

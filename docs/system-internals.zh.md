@@ -769,6 +769,46 @@ flowchart TB
 而是**全量注册、按需取子集**——envcap 搜索器把 skills 目录变成"可被 LLM 检索"的能力，
 配合渐进披露，每个任务只暴露相关的工具。这是 0.3.x 区别于"工具全量硬塞"的巧思。
 
+### 19.1 主动服务发现（`internal/discovery` 引擎）
+
+上面讲的是"工具级"的发现。最顶层还有一层**"服务级"的主动发现**——
+不等用户在 config 里手写 MCP 服务器，而是**主动扫描机器上已有的配置，自动摸出可用的供应商**。
+
+| 层 | 干什么 | 时机 | 源码 |
+|---|---|---|---|
+| **① 服务发现** | 主动扫 Claude/Cursor/VSCode/ARES 配置 + PATH 二进制，发现有哪些 MCP 服务器 | 每 5min（默认）+ 自愈循环 | `internal/discovery/engine.go` |
+| **② 工具发现** | 连上服务器主动 `ListTools` + `OnChange` 动态增删 | 启动 + 服务端通知 | `internal/runtime/protocol/mcp/client.go:186` |
+| **③ 工具选择** | 全量入池，只按需喂 LLM 子集（渐进披露 + envcap） | LLM 调用时 | `cmd/ares/serve_wiring.go:215` |
+
+```mermaid
+flowchart TB
+    subgraph disc[① 服务发现 · internal/discovery]
+        p[Providers 并发扫<br/>Claude/Cursor/VSCode/ARES + PATH 二进制]
+        p --> merge[merge → diff<br/>added/updated/removed]
+        merge --> store[持久化 ServiceStore]
+        merge --> evt[发事件 → EventStore "discovery" stream]
+        auto[StartAutoDiscovery<br/>默认每5min + panic自愈退避] --> p
+    end
+    evt --> mcp[② MCP 连上 → ListTools + OnChange]
+    mcp --> reg2[core.Registry]
+    reg2 --> sel[③ 渐进披露 + envcap 按需喂 LLM]
+```
+
+**关键设计：**
+
+- **主动 ≠ 配了才连**：去扫各 IDE 已有的 `mcp.json`（`providers/filesystem.go`），把机器上散落的 MCP 服务器自动摸出来。
+- **手动注册不被误删**（#51）：`Engine.Register` 出的服务是 passive，diff 的 removed 分支保护它。
+- **自愈后台循环**：`StartAutoDiscovery` 的 goroutine panic 被 recover + 指数退避重启（`1s/2s/4s...30s cap`）。
+- **门控**：`Discovery.Enabled` 默认 **false**（`bootstrap_builder.go:493`），不开就是纯手工配 MCP。
+
+| 关注点 | 函数 | 源码 |
+|---|---|---|
+| 发现引擎（4 阶段） | `Engine.DiscoverNow` | `internal/discovery/engine.go:50` |
+| Provider 接口 | `DiscoveryProvider.Discover` | `internal/discovery/discovery.go:87` |
+| 各 IDE 配置扫描 | `NewClaudeProvider`/`NewCursorProvider`/`NewVSCodeProvider`/`NewARESProvider` | `internal/discovery/providers/filesystem.go` |
+| 自动发现循环（自愈+退避） | `StartAutoDiscovery` | `internal/discovery/engine.go` |
+| 装配 + 事件桥 | `ProvideDiscovery`/`forwardDiscoveryEvent` | `internal/ares_bootstrap/provide_discovery.go:47` |
+
 ---
 
 ## 20. SDK / CLI 用法

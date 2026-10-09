@@ -231,7 +231,7 @@ if child.PromptTemplate == "" ||
 
 ### 3.7 最重要的诚实点：这条管线目前**没接进生产**
 
-`plan/0.3.1plan/REVIEW_PROGRESS.md` 里明确写了：
+0.3.1 那批评审里写得很明确：
 
 > `evolution`（旧包）：除 `LLMAdapter`（bootstrap 15min ticker 用）外，整个 Candidate→Verify→Promote pipeline（`NewCandidatePipeline` / `NewGAGenerator` / `NewDiagnoser` 等）仅 examples/tests 可达，已被 `internal/runtime/ares_evolution` 取代。
 

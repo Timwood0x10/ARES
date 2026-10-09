@@ -1,5 +1,10 @@
 # Agent 崩溃恢复
 
+> **历史文档（已归档）。** 本页描述的是 **Leader 架构**，已在 0.3.x 移除：
+> `internal/agents/leader/` 不复存在，现行恢复路径是 租约过期 → 重新入队 → checkpoint 续跑。
+> 当前模型见 `docs/system-internals.zh.md` 第 12 节（恢复）与 `docs/articles/zh/07-runtime-lifecycle-deep-dive.md`。
+> 仅作历史参考——不要照抄下方代码。
+
 当 ares 中的 Agent 崩溃时，Runtime 会检测到死亡，创建全新实例，回放事件恢复运行状态，并从记忆存储加载对话历史。Agent 恢复后拥有完整上下文，就像什么都没发生过一样。
 
 ## 恢复架构

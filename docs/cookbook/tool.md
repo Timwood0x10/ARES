@@ -18,7 +18,7 @@ import (
 func main() {
 	ctx := context.Background()
 
-	rt := sdk.MustNew(sdk.WithOllama("llama3.2"))
+	rt := sdk.NewRuntime(sdk.WithOllama("llama3.2"))
 	defer rt.Close()
 
 	// Register a custom tool.

@@ -1,5 +1,11 @@
 # Agent Crash Recovery
 
+> **Historical document (archived).** This page documents the **Leader architecture**,
+> removed in 0.3.x: `internal/agents/leader/` no longer exists and the live recovery
+> path is lease expiry → requeue → checkpoint resume. Current model:
+> `docs/system-internals.en.md` §12 (Recovery) and `docs/articles/en/07-runtime-lifecycle-deep-dive.md`.
+> Kept for reference only — do not copy the code below.
+
 When an agent crashes in ares, the Runtime detects it, creates a fresh instance, replays events to restore operational state, and loads conversation history from the memory store. The agent resumes with full context -- as if nothing happened.
 
 ## Recovery Architecture

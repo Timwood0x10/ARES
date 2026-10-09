@@ -147,7 +147,7 @@ make examples          # 构建全部示例
 
 **记录位置：**
 
-- [plan/stability_performance_plan.md](plan/stability_performance_plan.md) —— 分阶段稳定性专项：每个已修缺陷的锁定测试、泄漏清剿（kernel 与 workflow-engine 两包挂 `goleak` 门禁）、HTTP panic 守卫 + requestID 可观测性、flaky 归因、soak 测试（`SOAK_SECONDS=N go test ./tests/soak/`）
+- **稳定性专项**（计划在仓库外，落在仓库内）：每个已修缺陷的锁定测试、泄漏清剿（kernel 与 workflow-engine 两包挂 `goleak` 门禁）、HTTP panic 守卫 + requestID 可观测性、flaky 归因、soak 测试（`SOAK_SECONDS=N go test ./tests/soak/`）
 - [benchmarks/](benchmarks/) —— 入库的基准基线（`benchmark_report.md`、`benchmark_results.json`）与 benchstat 对比流程；任何优化 PR 必须附前后对照。（仓库内**不要**链接 `plan/`：该目录仅本地存在且被 gitignore。）
 
 两个"锁定测试"的例子：AKG 短查询 panic（空知识库被精确检索管线解引用）现在

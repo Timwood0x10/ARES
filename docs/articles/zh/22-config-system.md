@@ -222,7 +222,7 @@ func (c *ConfigFile) ToOptions() ([]Option, error)
 ```go
 cfg, _ := ares.LoadConfigFile("ares.yaml")
 opts, _ := cfg.ToOptions()
-rt := ares.MustNew(opts...)
+rt := ares.NewRuntime(opts...)
 ```
 
 一个 YAML 文件驱动整个 SDK。

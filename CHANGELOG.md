@@ -115,6 +115,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   triggering, so "one trigger ⇒ one advance" is deterministic instead of
   timing-dependent.
 
+- **A failed regression scorer reports the failure, not the cancellation it
+  caused**: in `RegressionTester.runStrategy`, the first scorer error cancels the
+  remaining parallel runs, and both the spawning loop and the post-wait check
+  could then return that bare `context canceled` — losing the cause. The
+  evolution gate's preserved-case check surfaced it as an opaque
+  `arena: run new strategy: context canceled` (a CI-only flake of
+  `TestCandidateRegressionChecker_PropagatesScorerError`, reproducible only under
+  the `-p 2` integration job's load). A scorer failure is now always reported as
+  `arena: score run N: <cause>`, and a bare cancellation is reported only when no
+  scorer error was observed; the defect is pinned deterministically by
+  `TestRunStrategy_ReportsScorerFailureOverCancellation`.
+
 ### Removed
 
 - **`api/embedding`**: the deprecated alias package for `internal/embedding` had
@@ -145,8 +157,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and its applier stay so persisted patches still decode.
 
 - **`docs/reviews/0.3.1-*.md`** (5 reports): the v0.3.1 batch review reports are
-  removed from the published docs — the 0.3.1 outcome is recorded in this file
-  and in the review notes under `plan/`.
+  removed from the published docs — the 0.3.1 outcome is recorded in this file.
 
 ### Security
 
@@ -1624,7 +1635,7 @@ Closed the gap between code modules and article coverage. Seven new articles (Ch
 
 ### New Features
 
-- **Genetic Algorithm Evolution System (Beta)**: Full GA genome package with `Population`, `Crossover` (Inherit/HalfSplit/Uniform modes), `TournamentSelection`, and strategy mutation engine. Supports deterministic reproduction via seed control, elite preservation, adaptive survival rates, and diversity tracking with fitness sharing. [(GA Hardening Plan)](plan/GA/README.md)
+- **Genetic Algorithm Evolution System (Beta)**: Full GA genome package with `Population`, `Crossover` (Inherit/HalfSplit/Uniform modes), `TournamentSelection`, and strategy mutation engine. Supports deterministic reproduction via seed control, elite preservation, adaptive survival rates, and diversity tracking with fitness sharing. (GA Hardening Plan)
 - **Autonomous Evolution (Dream Mode v1)**: Closed-loop evolution orchestration with Dream Cycle (trigger → mutate → evaluate → adopt → record lineage). Includes arena regression testing with Welch's t-test, bandit feedback loop for experience quality optimization, and full genealogy tracking.
 - **Agent Resurrection & Snapshot System**: Pluggable health checking for agent recovery, checkpoint-based resurrection with state restoration from EventStore and MemoryStore.
 - **Tiered Scoring System**: Multi-level scoring pipeline with FailoverScorer integration. Includes scoring cache optimization (atomic hit/miss counters), hybrid scoring with prompt crossover modes, and unevaluated score guardrails.

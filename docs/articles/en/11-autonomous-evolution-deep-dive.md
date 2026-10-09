@@ -230,7 +230,7 @@ Gate 3 uses `ares_arena`'s `BatchScorer` (`ScoreBatch`): collapse count executio
 
 ### 3.7 The most important honesty point: this pipeline is NOT wired into production
 
-`plan/0.3.1plan/REVIEW_PROGRESS.md` states plainly:
+the v0.3.1 review batch stated plainly:
 
 > `evolution` (old package): apart from `LLMAdapter` (used by the bootstrap 15-min ticker), the entire Candidate→Verify→Promote pipeline (`NewCandidatePipeline` / `NewGAGenerator` / `NewDiagnoser`, etc.) is reachable only via examples/tests; it has been superseded by `internal/runtime/ares_evolution`.
 

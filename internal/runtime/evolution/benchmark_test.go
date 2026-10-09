@@ -93,7 +93,7 @@ func BenchmarkDiffEngine_Workflow(b *testing.B) {
 	}
 }
 
-func BenchmarkCoordinator_Evaluate(b *testing.B) {
+func BenchmarkUngatedPatcher_Evaluate(b *testing.B) {
 	patchReg := patch.NewRegistry()
 	exec := &benchExecutor{}
 	patchReg.Register("bench", exec) //nolint:errcheck

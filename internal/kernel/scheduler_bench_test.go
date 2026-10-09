@@ -1,5 +1,5 @@
-// kernel — scheduler hot-path benchmarks (Phase 5 baseline,
-// plan/stability_performance_plan.md). The drain benchmark isolates the
+// kernel — scheduler hot-path benchmarks (Phase 5 baseline of the stability
+// program). The drain benchmark isolates the
 // scheduler's per-tick cost (scoring, lease, dispatch, bookkeeping) with
 // synchronous executors, so LLM/executor latency cannot mask regressions.
 package kernel

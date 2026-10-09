@@ -20,10 +20,14 @@
 # anchors, so the per-anchor shell work is one grep-backed line read with zero
 # subprocesses.
 #
-# plan/archive is pruned (REVIEW-2026-10-07 M1): those are historical reviews
-# whose anchors are EXPECTED stale after refactors; flagging them is noise.
+# Local-only and superseded trees are pruned: the whole plan/ scratch tree
+# (gitignored, author-local) and docs/archive (historical docs kept for
+# reference) — their anchors are EXPECTED stale after refactors, so flagging
+# them is noise.
 #
-# Warnings only (exit 0) so it can land in CI before the tree is clean.
+# Hard gate (exit 1): the tree is clean as of 0.3.2, so a stale anchor fails CI
+# instead of rotting silently. When a deliberately-historical document is
+# introduced, move it into docs/archive rather than loosening this check.
 #
 # Usage: scripts/check_doc_anchors.sh [repo_root]
 
@@ -40,9 +44,12 @@ CHECKS="$TMP/checks.tsv" # mdfile<TAB>mddir<TAB>ref<TAB>lineno
 WARNS="$TMP/warnings.txt"
 : > "$CHECKS"
 
-# Shared prune: dot-dirs (.git …), vendor/node_modules, and plan/archive.
+# Shared prune: dot-dirs (.git …), vendor/node_modules, the whole local-only
+# plan/ scratch tree (gitignored: its anchors are author-local notes, and a
+# stale one there says nothing about the repository), and docs/archive
+# (superseded history kept for reference — its anchors are expected to rot).
 FIND_BASE=(find "$ROOT" \( -name '.*' -o -name vendor -o -name node_modules \
-    -o -path "$ROOT/plan/archive" \) -prune -o)
+    -o -path "$ROOT/plan" -o -path "$ROOT/docs/archive" \) -prune -o)
 
 # basename -> path, one awk pass (no per-file `basename` fork).
 "${FIND_BASE[@]}" -name '*.go' -print 2>/dev/null |
@@ -115,11 +122,13 @@ WARNINGS="$(awk 'END { print NR }' "$WARNS")"
 if [ "$WARNINGS" -gt 0 ]; then
     head -n "$MAX_REPORT" "$WARNS"
     if [ "$WARNINGS" -gt "$MAX_REPORT" ]; then
-        echo "doc-anchor check: $WARNINGS warning(s) total, first $MAX_REPORT shown"
+        echo "doc-anchor check: $WARNINGS stale reference(s), first $MAX_REPORT shown" >&2
     else
-        echo "doc-anchor check: $WARNINGS warning(s) — review stale references"
+        echo "doc-anchor check: $WARNINGS stale reference(s)" >&2
     fi
+    echo "Fix the anchor (file.go:NNN) or prune the file in this script (see the header)." >&2
+    exit 1
 fi
 
-# Warnings only for now; tighten to exit 1 in a future iteration.
+echo "doc-anchor check: OK — no stale file.go:NNN references"
 exit 0

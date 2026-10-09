@@ -135,4 +135,4 @@ memory:
 - Architecture overview: [ARCHITECTURE.md](../../../ARCHITECTURE.md)
 - Full config reference: [config.yaml guide (EN)](../../articles/en/25-config-yaml-guide.en.md) / [中文](../../articles/zh/25-config-yaml-guide.zh.md)
 - Integration guide: [integration-guide.md](../development/integration-guide.md)
-- FAQ: [faq.md](faq.md)
+- FAQ: [faq.md](../../archive/en/faq.md) (historical)

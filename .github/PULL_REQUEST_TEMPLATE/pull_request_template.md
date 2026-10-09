@@ -18,7 +18,7 @@
 
 <!-- Please ensure the following are completed before merging: -->
 
-- [ ] Code follows the project's coding standards (see `plan/code_rules.md`)
+- [ ] Code follows the project's coding standards (enforced by `make ci-lint` / `.golangci.yml`; 0 issues)
 - [ ] Self-review completed
 - [ ] Comments added for complex logic
 - [ ] Documentation updated (if applicable)

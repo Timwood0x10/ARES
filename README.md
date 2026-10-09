@@ -214,7 +214,7 @@ batch alone was ~230 review findings, and each cycle finds more.
 
 **Where the records live:**
 
-- [plan/stability_performance_plan.md](plan/stability_performance_plan.md) — the phase-by-phase stability program: lock-in tests for every fixed defect, a leak program with `goleak` gates on the kernel and workflow-engine packages, HTTP panic guard + request-ID observability, flake attribution, and a soak harness (`SOAK_SECONDS=N go test ./tests/soak/`)
+- **The stability program** (planned outside this repo, executed inside it): lock-in tests for every fixed defect, `goleak` gates on the kernel and workflow-engine packages, HTTP panic guard + request-ID observability, flake attribution, and a soak harness (`SOAK_SECONDS=N go test ./tests/soak/`)
 - [benchmarks/](benchmarks/) — the committed benchmark baseline (`benchmark_report.md`, `benchmark_results.json`) and the benchstat comparison workflow; any optimization PR must show a before/after comparison. (Do not link `plan/` from the repo: that tree is local-only and gitignored.)
 
 Two examples of what "lock-in test" means: the AKG short-query panic (a nil

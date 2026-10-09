@@ -1,6 +1,6 @@
 # Makefile for ARES — Agent Runtime & Evolution System
 
-.PHONY: all lint test test-race check check-core check-tools help clean install install-cli ci ci-freeze benchmark quickstart examples cover cover-html ci-test ci-test-race ci-test-race-short ci-test-integration
+.PHONY: all lint lint-vet lint-staticcheck lint-doc-anchors test test-race check check-core check-tools help clean install install-cli ci ci-freeze benchmark quickstart examples cover cover-html ci-test ci-test-race ci-test-race-short ci-test-integration
 
 # Default target
 all: lint test
@@ -163,9 +163,16 @@ fmt:
 # so a separate `go vet` / `staticcheck` pass is a redundant full-tree analysis.
 # Measured: vet 3.4s CPU + staticcheck 4.4s CPU duplicated work per `make lint`.
 # The standalone lint-vet / lint-staticcheck targets remain for explicit use.
-lint: lint-golangci
+# lint mirrors the CI `lint` job. The anchor check is a hard gate (exit 1) and
+# docs/archive + the local plan/ tree are pruned inside the script.
+lint: lint-doc-anchors lint-golangci
 	@echo ""
 	@echo "All lint checks: PASSED"
+
+lint-doc-anchors:
+	@echo "Running documentation anchor drift check..."
+	@bash scripts/check_doc_anchors.sh
+	@echo "doc anchors: PASSED"
 
 lint-vet:
 	@echo "Running go vet..."

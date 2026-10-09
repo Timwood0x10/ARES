@@ -127,4 +127,4 @@ memory:
 - 架构总览：[ARCHITECTURE.md](../../../ARCHITECTURE.md)
 - 配置全参考：[config.yaml 配置指南](../../articles/zh/25-config-yaml-guide.zh.md) / [EN](../../articles/en/25-config-yaml-guide.en.md)
 - 集成指南：[integration-guide.md](../development/integration-guide.md)
-- 常见问题：[FAQ](faq.md)
+- 常见问题：[FAQ](../../archive/zh/faq.md)（历史文档）

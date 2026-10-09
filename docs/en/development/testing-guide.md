@@ -276,7 +276,6 @@ func TestPool_Stats(t *testing.T) {
 
 #### Example 3: Testing Agent
 
-**Code Location**: `internal/agents/leader/agent_test.go:1-50`
 
 ```go
 package leader
@@ -320,70 +319,41 @@ func TestLeaderAgent_Process(t *testing.T) {
 
 #### Example 1: End-to-End Test
 
-**Code Location**: `api/integration_test.go:1-100`
 
 ```go
-package api
+package integration_test
 
 import (
 	"context"
 	"testing"
 	"time"
 
-	"github.com/Timwood0x10/ares/api/service"
-	"github.com/Timwood0x10/ares/internal/ares_config"
+	"github.com/stretchr/testify/require"
+
+	"github.com/Timwood0x10/ares/sdk"
 )
 
+// TestEndToEndFlow exercises the real assembly path against real dependencies.
+// It skips in -short mode, like every test that needs an LLM or Postgres.
 func TestEndToEndFlow(t *testing.T) {
-	// Skip test unless integration test flag is set
 	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
+		t.Skip("integration test: needs a real LLM (and Postgres when storage.enabled)")
 	}
 
-	// Create test configuration
-	cfg := &config.Config{
-		LLM: config.LLMConfig{
-			Provider: "ollama",
-			Model:    "llama3",
-			Timeout:  60,
-		},
-		Storage: config.StorageConfig{
-			Enabled: true,
-			Type:     "postgres",
-			Host:     "localhost",
-			Port:     5433,
-			User:     "postgres",
-			Password: "postgres",
-			Database: "ARES",
-		},
-	}
+	// ares.yaml is the single configuration entry point — there is no
+	// service.Config struct and no env-var layer. Point WithConfig at a
+	// test-specific file so the test never picks up the developer's config.
+	rt, err := sdk.New(sdk.WithConfig("./testdata/ares.test.yaml"))
+	require.NoError(t, err)
+	defer rt.Close()
 
-	// Create service
-	service := service.NewAgentService(cfg)
-	if service == nil {
-		t.Fatal("NewAgentService() returned nil")
-	}
-
-	// Start service
+	agent := rt.NewAgent("e2e", sdk.WithInstruction("Answer in one short sentence."))
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	if err := service.Start(ctx); err != nil {
-		t.Skipf("Skipping test: failed to start service: %v", err)
-		return
-	}
-	defer service.Stop()
-
-	// Test query
-	result, err := service.Process(ctx, "Hello, world!")
-	if err != nil {
-		t.Errorf("Service.Process() error = %v", err)
-		return
-	}
-
-	if result == "" {
-		t.Error("Service.Process() returned empty result")
-	}
+	out, err := agent.Run(ctx, "what is 2+2?")
+	require.NoError(t, err)
+	require.NotEmpty(t, out)
 }
 ```
 
@@ -391,7 +361,6 @@ func TestEndToEndFlow(t *testing.T) {
 
 #### Example: Mock LLM Client
 
-**Code Location**: `internal/llm/mock_client.go:1-50`
 
 ```go
 package llm
@@ -450,7 +419,6 @@ func TestAgentWithMockLLM(t *testing.T) {
 
 #### Example: Connection Pool Benchmark
 
-**Code Location**: `internal/storage/postgres/pool_bench_test.go:1-50`
 
 ```go
 package postgres

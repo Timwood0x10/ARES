@@ -276,7 +276,6 @@ func TestPool_Stats(t *testing.T) {
 
 #### 示例 3: 测试 Agent
 
-**代码位置**: `internal/agents/leader/agent_test.go:1-50`
 
 ```go
 package leader
@@ -320,70 +319,40 @@ func TestLeaderAgent_Process(t *testing.T) {
 
 #### 示例 1: 端到端测试
 
-**代码位置**: `api/integration_test.go:1-100`
 
 ```go
-package api
+package integration_test
 
 import (
 	"context"
 	"testing"
 	"time"
 
-	"github.com/Timwood0x10/ares/api/service"
-	"github.com/Timwood0x10/ares/internal/ares_config"
+	"github.com/stretchr/testify/require"
+
+	"github.com/Timwood0x10/ares/sdk"
 )
 
+// TestEndToEndFlow 走真实装配路径、连真实依赖。
+// 与所有需要 LLM / Postgres 的测试一样，在 -short 下跳过。
 func TestEndToEndFlow(t *testing.T) {
-	// 跳过测试除非设置了集成测试标志
 	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
+		t.Skip("集成测试：需要真实 LLM（storage.enabled 时还需要 Postgres）")
 	}
 
-	// 创建测试配置
-	cfg := &config.Config{
-		LLM: config.LLMConfig{
-			Provider: "ollama",
-			Model:    "llama3",
-			Timeout:  60,
-		},
-		Storage: config.StorageConfig{
-			Enabled: true,
-			Type:     "postgres",
-			Host:     "localhost",
-			Port:     5433,
-			User:     "postgres",
-			Password: "postgres",
-			Database: "ARES",
-		},
-	}
+	// ares.yaml 是唯一配置入口——没有 service.Config 结构体，也没有环境变量层。
+	// WithConfig 指向测试专用文件，避免被测到开发者自己的配置。
+	rt, err := sdk.New(sdk.WithConfig("./testdata/ares.test.yaml"))
+	require.NoError(t, err)
+	defer rt.Close()
 
-	// 创建服务
-	service := service.NewAgentService(cfg)
-	if service == nil {
-		t.Fatal("NewAgentService() returned nil")
-	}
-
-	// 启动服务
+	agent := rt.NewAgent("e2e", sdk.WithInstruction("Answer in one short sentence."))
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	if err := service.Start(ctx); err != nil {
-		t.Skipf("Skipping test: failed to start service: %v", err)
-		return
-	}
-	defer service.Stop()
-
-	// 测试查询
-	result, err := service.Process(ctx, "Hello, world!")
-	if err != nil {
-		t.Errorf("Service.Process() error = %v", err)
-		return
-	}
-
-	if result == "" {
-		t.Error("Service.Process() returned empty result")
-	}
+	out, err := agent.Run(ctx, "what is 2+2?")
+	require.NoError(t, err)
+	require.NotEmpty(t, out)
 }
 ```
 
@@ -391,7 +360,6 @@ func TestEndToEndFlow(t *testing.T) {
 
 #### 示例: Mock LLM 客户端
 
-**代码位置**: `internal/llm/mock_client.go:1-50`
 
 ```go
 package llm
@@ -450,7 +418,6 @@ func TestAgentWithMockLLM(t *testing.T) {
 
 #### 示例: 连接池基准测试
 
-**代码位置**: `internal/storage/postgres/pool_bench_test.go:1-50`
 
 ```go
 package postgres

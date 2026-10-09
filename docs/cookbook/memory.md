@@ -18,7 +18,7 @@ import (
 func main() {
 	ctx := context.Background()
 
-	rt := sdk.MustNew(
+	rt := sdk.NewRuntime(
 		sdk.WithOllama("llama3.2"),
 		sdk.WithDefaultMemory(),
 	)

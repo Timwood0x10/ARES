@@ -1,5 +1,5 @@
-// Package soak runs long-duration stability checks (Phase 1 of
-// plan/stability_performance_plan.md). Skipped unless SOAK_SECONDS is set:
+// Package soak runs long-duration stability checks (Phase 1 of the stability
+// program). Skipped unless SOAK_SECONDS is set:
 // `make check` must not pay multi-minute runs. Real soaks:
 //
 //	SOAK_SECONDS=3600 go test -count=1 -run TestSoakSteadyState ./tests/soak/

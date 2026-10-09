@@ -326,7 +326,7 @@ func TestServeProductionE2E(t *testing.T) {
 // working ares.yaml, an external client POSTs {"query": "..."} (no
 // capability — the yaml default applies), polls GET /api/tasks/{id}, and
 // receives a terminal task view. It is the end-to-end proof of the
-// one-interface contract (plan/external-simple-api-plan.md §Phase 4).
+// one-interface contract (§Phase 4 of the one-interface plan).
 //
 // The assertion targets the SCHEDULING chain (submission admitted, L2
 // capability stamped, terminal state reachable, GET readable) — an LLM

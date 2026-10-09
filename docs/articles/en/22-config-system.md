@@ -222,7 +222,7 @@ That lets users write:
 ```go
 cfg, _ := ares.LoadConfigFile("ares.yaml")
 opts, _ := cfg.ToOptions()
-rt := ares.MustNew(opts...)
+rt := ares.NewRuntime(opts...)
 ```
 
 One YAML file drives the entire SDK.

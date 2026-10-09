@@ -41,8 +41,8 @@ var storageMigrations = []string{
 		updated_at TIMESTAMP DEFAULT NOW()
 	)`,
 
-	// RLS residue cleanup (signed 方案 B, plan/0.3.1plan/tenant_isolation.md
-	// 残骸清除): the policy this replaces never fired — the app connects as
+	// RLS residue cleanup (the signed Scheme B / 方案 B decision, recorded in
+	// the tenant-isolation review): the policy this replaces never fired — the app connects as
 	// the table owner (Postgres skips RLS for the owner without FORCE) and no
 	// query binds app.tenant_id — it only implied a DB-level backstop that
 	// did not exist. Isolation is carried by the explicit `WHERE tenant_id =

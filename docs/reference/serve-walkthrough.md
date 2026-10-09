@@ -126,7 +126,7 @@ if isWildcardHost(cfg.Server.Host) && !authConfigured && cfg.Introspect.Token ==
 
 第二段是 fail-closed：`0.0.0.0`/`::` 绑定 + 无鉴权 + 无 introspect token → **拒绝启动**。三个逃生口：开 `security.auth_enabled`（并设 jwt_secret）、设 `introspect.token`、改绑 loopback。
 
-`isWildcardHost` 在 `serve.go:411`，只认 `"0.0.0.0"` 和 `"::"`。
+`isWildcardHost` 在 `serve.go:341`，只认 `"0.0.0.0"` 和 `"::"`。
 
 ---
 
@@ -2389,7 +2389,7 @@ if s.attribution != nil {
 HTTP POST /api/tasks {capability:"code", payload:{input:"..."}}
  │
  ├─ agent.go:543 ServeHTTP → 路由匹配 → authorize(authWrite)
- ├─ routes_tasks.go:56 handleSubmitTask → 校验 kernel/capability
+ ├─ agent_routes_tasks.go:56 handleSubmitTask → 校验 kernel/capability
  ├─ agent_kernel.go:186 submitPeerTask
  ├─ submit.go:151 Submit
  │ ├─ 归一 capability → "ares/plan"
@@ -2403,10 +2403,10 @@ HTTP POST /api/tasks {capability:"code", payload:{input:"..."}}
  ├─ HTTP 202 Accepted（异步，不等执行）
  │
  ├─ scheduler.go:253 Run 循环被事件唤醒
- ├─ dispatch.go:43 drain → ResumableTasks 返回 root
- ├─ execute.go:52 execute → buildCandidates（fabric 活 agent）
- ├─ execute.go:149 executeWithCandidates
- │ ├─ schedule.go:24 Schedule → Pick（评分）→ Acquire（epoch=1）
+ ├─ scheduler_dispatch.go:43 drain → ResumableTasks 返回 root
+ ├─ scheduler_execute.go:52 execute → buildCandidates（fabric 活 agent）
+ ├─ scheduler_execute.go:149 executeWithCandidates
+ │ ├─ fabric_schedule.go:24 Schedule → Pick（评分）→ Acquire（epoch=1）
  │ ├─ lifecycle.go:78 Acquire → LEASED
  │ ├─ quantum.go:72 RunQuantum
  │ │ ├─ lifecycle.go:113 Start → RUNNING
