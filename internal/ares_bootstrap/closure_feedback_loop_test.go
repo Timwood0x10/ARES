@@ -220,6 +220,20 @@ func submitStrategy(t *testing.T, comp *Components, s *mutation.Strategy, genera
 	comp.NewEvolution.Lifecycle.Submit(context.Background(), s, generation)
 }
 
+// waitPromoteWindow respects the promote throttle: the lifecycle refuses a
+// second promotion within MinActiveDuration of the previous one (here
+// defaultResidencyTicks x the 100ms WatchInterval = 300ms). Sleeping past the
+// effective value keeps the two-promotion tests deterministic instead of
+// racing the throttle, which rejects with "min active duration not elapsed".
+func waitPromoteWindow(t *testing.T, comp *Components) {
+	t.Helper()
+	d := comp.NewEvolution.Lifecycle.Snapshot().MinActiveDuration
+	if d <= 0 {
+		d = 300 * time.Millisecond
+	}
+	time.Sleep(d + 50*time.Millisecond)
+}
+
 // getActiveID reads the strategy ID the live agent would consume. The
 // MemoryStrategyStore returns nil (no error) when nothing is deployed yet.
 func getActiveID(t *testing.T, comp *Components) string {
@@ -277,12 +291,20 @@ func TestClosure_VerifyGate_RejectsWorseCandidate(t *testing.T) {
 	defer comp.WaitBackground()
 	defer cancel()
 
+	se := comp.NewEvolution.ShadowEvaluator
+
+	// base-v1 must clear the (fail-closed) shadow gate to become active at all:
+	// with zero comparisons the gate rejects it ("no shadow comparisons
+	// recorded"), so the baseline needs evidence just like any other candidate.
 	base := &mutation.Strategy{ID: "base-v1", Version: 1, Score: 0.5}
+	se.StartShadow(base)
+	for i := 0; i < 5; i++ {
+		se.RecordResult(0.0, 1.0)
+	}
 	submitStrategy(t, comp, base, 1)
-	require.Equal(t, "base-v1", getActiveID(t, comp), "baseline must promote (no shadow data yet)")
+	require.Equal(t, "base-v1", getActiveID(t, comp), "baseline must clear the shadow gate")
 
 	// Feed LOSING shadow comparisons for the worse candidate.
-	se := comp.NewEvolution.ShadowEvaluator
 	worse := &mutation.Strategy{ID: "worse-v2", Version: 2, Score: 0.1}
 	se.StartShadow(worse)
 	for i := 0; i < 5; i++ {
@@ -306,11 +328,22 @@ func TestClosure_Promote_KeepsPrevious(t *testing.T) {
 	defer comp.WaitBackground()
 	defer cancel()
 
-	base := &mutation.Strategy{ID: "base-v1", Version: 1, Score: 0.5}
-	submitStrategy(t, comp, base, 1)
-	require.Equal(t, "base-v1", getActiveID(t, comp))
-
 	se := comp.NewEvolution.ShadowEvaluator
+
+	// base-v1 must clear the (fail-closed) shadow gate to become active at all:
+	// with zero comparisons the gate rejects it and the active strategy stays
+	// bootstrap-root, which is exactly the drift this test used to trip over.
+	base := &mutation.Strategy{ID: "base-v1", Version: 1, Score: 0.5}
+	se.StartShadow(base)
+	for i := 0; i < 5; i++ {
+		se.RecordResult(0.0, 1.0)
+	}
+	submitStrategy(t, comp, base, 1)
+	require.Equal(t, "base-v1", getActiveID(t, comp), "base-v1 must be promoted first")
+
+	// The promote throttle refuses a second promotion inside MinActiveDuration.
+	waitPromoteWindow(t, comp)
+
 	better := &mutation.Strategy{ID: "better-v2", Version: 2, Score: 0.9}
 	se.StartShadow(better)
 	for i := 0; i < 5; i++ {
@@ -337,12 +370,26 @@ func TestClosure_Degradation_TriggersRollback(t *testing.T) {
 	defer comp.WaitBackground()
 	defer cancel()
 
-	stratA := &mutation.Strategy{ID: "strat-a", Version: 1, Score: 0.5}
-	submitStrategy(t, comp, stratA, 1)
-
-	// stratB needs shadow evidence to pass the (now fail-closed) G2 gate:
-	// feed 5 winning comparisons (MinSamples=5 via the test config).
 	se := comp.NewEvolution.ShadowEvaluator
+
+	// strat-a has to clear the (fail-closed) G2 shadow gate as well. When it is
+	// rejected nothing is active before strat-b, Previous() stays nil and the
+	// rollback half of this test has no strategy to revert to — which used to
+	// panic here on a bare .ID dereference.
+	stratA := &mutation.Strategy{ID: "strat-a", Version: 1, Score: 0.5}
+	se.StartShadow(stratA)
+	for i := 0; i < 5; i++ {
+		se.RecordResult(0.0, 1.0)
+	}
+	submitStrategy(t, comp, stratA, 1)
+	require.Equal(t, "strat-a", getActiveID(t, comp), "strat-a must be promoted first")
+
+	// A second promotion inside MinActiveDuration is throttled away before the
+	// gate is even consulted, so wait the residency window out first.
+	waitPromoteWindow(t, comp)
+
+	// stratB needs shadow evidence too: 5 winning comparisons
+	// (MinSamples=5 via the test config).
 	stratB := &mutation.Strategy{ID: "strat-b", Version: 2, Score: 0.9}
 	se.StartShadow(stratB)
 	for i := 0; i < 5; i++ {
@@ -351,7 +398,9 @@ func TestClosure_Degradation_TriggersRollback(t *testing.T) {
 	submitStrategy(t, comp, stratB, 2)
 
 	require.Equal(t, "strat-b", getActiveID(t, comp))
-	require.Equal(t, "strat-a", comp.NewEvolution.ActiveStrategyManager.Previous().ID)
+	prev := comp.NewEvolution.ActiveStrategyManager.Previous()
+	require.NotNil(t, prev, "promote must keep the previous strategy for rollback")
+	require.Equal(t, "strat-a", prev.ID)
 
 	// Healthy baseline: 12 completed tasks → 1.0 samples for strat-b.
 	emitTaskEvents(t, comp.EventStore, ares_events.EventTaskCompleted, 12)

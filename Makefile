@@ -1,6 +1,6 @@
 # Makefile for ARES — Agent Runtime & Evolution System
 
-.PHONY: all lint test test-race check check-core check-tools help clean install install-cli ci ci-freeze benchmark quickstart examples cover cover-html ci-test-race-short
+.PHONY: all lint test test-race check check-core check-tools help clean install install-cli ci ci-freeze benchmark quickstart examples cover cover-html ci-test ci-test-race ci-test-race-short ci-test-integration
 
 # Default target
 all: lint test
@@ -72,17 +72,61 @@ ci-build:
 	@go build -v ./...
 	@echo "Build: OK"
 
-# CI tests with race detection (FULL suite, -count=1 bypasses test cache)
+# ───────────────────────────────────────────────────────────────────────────
+# Local vs CI — read this before debugging a red pipeline
+#
+#   make test                 local loop: -short, no race, -p 4 (fast feedback)
+#   make ci-test              EXACT replica of the CI `test` job: TZ=UTC,
+#                             -race -count=1 -timeout=300s -p 4, coverage,
+#                             then the G1-G4 gates. Run this before pushing.
+#   make ci-test-race         the same test invocation without the gate step
+#   make ci-test-integration  the CI `integration` job (needs TEST_POSTGRES_DSN;
+#                             it skips locally, CI runs a pgvector service)
+#
+# What actually differs CI vs a dev box (each of these has broken CI at least
+# once, so `make ci-test` pins them):
+#   * TZ: GitHub runners are UTC, a dev box usually is not. A test that
+#     compares time.Time STRUCTS instead of instants passes locally and fails
+#     in CI. TZ=UTC here makes both sides agree.
+#   * -short: the CI job does not pass it, so subprocess/e2e tests (MCP stdio,
+#     mcpclient, serve e2e) RUN there while `make test` skips them. `make
+#     ci-test` reproduces that.
+#   * GOMAXPROCS: the 2-vCPU runner defaults to 2, which starves the
+#     deadline-sensitive e2e tests — CI sets GOMAXPROCS=4 for that reason (see
+#     also the TEST_GOMAXPROCS measurements further down).
+#   * external services: Postgres exists only in the integration job; tests
+#     that need it skip unless TEST_POSTGRES_DSN is set.
+#   * gate tags: `go test ./...` does NOT compile //go:build closure files, so
+#     `make gate` is what runs the design-doc acceptance tests.
+# ───────────────────────────────────────────────────────────────────────────
+CI_TEST_TIMEOUT ?= 300s
+CI_TZ ?= UTC
+
+ci-test:  ## Replicate the CI `test` job locally (TZ=UTC + race + gates)
+	@echo "Replicating the CI test job (TZ=$(CI_TZ), -race, -timeout=$(CI_TEST_TIMEOUT))..."
+	TZ=$(CI_TZ) go test -race -count=1 -timeout=$(CI_TEST_TIMEOUT) -p $(TEST_PARALLEL) -coverprofile=cover.out ./...
+	@go tool cover -func=cover.out | tail -1
+	@$(MAKE) gate
+	@echo "ci-test: OK (same command CI runs)"
+
 ci-test-race:
-	@echo "Running full test suite with race detection..."
-	@go test -race -count=1 ./...
+	@echo "Running full test suite with race detection (CI shape, no gates)..."
+	TZ=$(CI_TZ) go test -race -count=1 -timeout=$(CI_TEST_TIMEOUT) -p $(TEST_PARALLEL) ./...
 	@echo "Tests: OK"
 
-# CI tests with race detection (short/fast path for quick local checks)
+# Local quick path: short + race.
 ci-test-race-short:
 	@echo "Running short tests with race detection..."
-	@go test -race -short -count=1 ./...
+	TZ=$(CI_TZ) go test -race -short -count=1 -p $(TEST_PARALLEL) ./...
 	@echo "Tests: OK"
+
+ci-test-integration:  ## Replicate the CI integration job (requires TEST_POSTGRES_DSN)
+	@test -n "$(TEST_POSTGRES_DSN)" || { \
+		echo "ERROR: TEST_POSTGRES_DSN is unset. CI runs a pgvector/pgvector:pg15 service;"; \
+		echo "       locally that test class SKIPS instead (which is why it only fails in CI)."; \
+		exit 1; }
+	TZ=$(CI_TZ) go test -race -count=1 -tags=integration -timeout=$(CI_TEST_TIMEOUT) -p $(TEST_PARALLEL) ./...
+	@echo "Integration: OK"
 
 # CI security scan
 ci-security:

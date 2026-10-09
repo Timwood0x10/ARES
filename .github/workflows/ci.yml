@@ -63,6 +63,16 @@ jobs:
     strategy:
       matrix:
         go-version: ['1.26']
+    env:
+      # Pin the two things a dev box gets wrong, so `make ci-test` and this job
+      # behave identically:
+      #   * TZ — runners are UTC, a local box usually is not. A test comparing
+      #     time.Time STRUCTS instead of instants passes locally and fails here.
+      #   * GOMAXPROCS — the 2-vCPU runner defaults to 2, which starves the
+      #     deadline-sensitive e2e tests; the Makefile's own measurements show
+      #     GOMAXPROCS=4 already starving them on a 14-core box.
+      TZ: UTC
+      GOMAXPROCS: "4"
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -73,15 +83,14 @@ jobs:
           go-version: ${{ matrix.go-version }}
           cache: true
 
-      - name: Unit tests with coverage
-        run: go test -race -count=1 -timeout=300s -coverprofile=cover.out ./...
-
-      # Architecture & acceptance gates (G1 reachability / G2 config contract
-      # / G3 event contract / design-doc closure assertions via `-tags closure`).
-      # `go test ./...` does NOT compile //go:build closure files, so without
-      # this step the design doc's six design-doc acceptance tests never run in CI.
-      - name: Architecture and acceptance gates
-        run: make gate
+      # One command — the same one developers run locally (`make ci-test`), so
+      # the two can no longer drift. It covers the unit suite (race, -count=1,
+      # coverage) AND the G1-G4 gates: `go test ./...` does NOT compile
+      # //go:build closure files, so without the gate step the design-doc
+      # acceptance tests never run in CI. TEST_PARALLEL and the longer timeout
+      # are the only CI-specific knobs.
+      - name: Tests + architecture/acceptance gates (same as `make ci-test`)
+        run: make ci-test TEST_PARALLEL=2 CI_TEST_TIMEOUT=600s
 
       - name: Coverage summary
         run: go tool cover -func=cover.out | tail -1
@@ -98,6 +107,12 @@ jobs:
   integration:
     name: Integration Tests
     runs-on: ubuntu-latest
+    env:
+      # Same pinning as the test job (see there). The only genuine difference
+      # from a local run is the service below: with it the DSN-gated tests
+      # execute instead of skipping, which is why this class only fails in CI.
+      TZ: UTC
+      GOMAXPROCS: "4"
     services:
       postgres:
         image: pgvector/pgvector:pg15
@@ -121,10 +136,10 @@ jobs:
           go-version: '1.26'
           cache: true
 
-      - name: Integration tests
+      - name: Integration tests (same as `make ci-test-integration`)
         env:
           TEST_POSTGRES_DSN: "postgres://postgres:postgres@localhost:5432/ARES_test?sslmode=disable"
-        run: go test -race -tags=integration -count=1 -timeout=300s ./...
+        run: make ci-test-integration TEST_PARALLEL=2 CI_TEST_TIMEOUT=600s
 
   # No benchmark job: benchmark numbers are only meaningful on a quiet machine,
   # and the job cost minutes per PR (it had already been reduced to a bare

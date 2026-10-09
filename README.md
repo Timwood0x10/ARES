@@ -14,14 +14,20 @@
 [![Chaos CI](https://github.com/Timwood0x10/ares/actions/workflows/agentos_ci.yml/badge.svg)](https://github.com/Timwood0x10/ares/actions/workflows/agentos_ci.yml)
 [![codecov](https://codecov.io/gh/Timwood0x10/ares/branch/master/graph/badge.svg)](https://codecov.io/gh/Timwood0x10/ares)
 
-**⚠️  WARNING: AKG (Adaptive Knowledge Graph) is in BETA EXPERIMENTAL STAGE**
+**Status — be precise about what you are getting**
 
-This is the **FIRST attempt to build a knowledge graph WITHOUT relying on LLMs**. The current implementation uses:
-- Rule-based relation extraction (regex patterns, no generative AI)
-- Hybrid search (BM25-style lexical + vector cosine similarity)
-- Deterministic quality scoring (no LLM evaluation)
+| Area | State |
+|---|---|
+| Kernel / task fabric / SDK | exercised end-to-end and regression-locked; **not a hardened runtime** |
+| GA evolution + patch pipeline | runs end-to-end; the apply gate and the multi-objective entry points are **not wired** |
+| **AKG** (Adaptive Knowledge Graph) | **BETA / experimental — API may change, not production-ready** |
 
-Feature status: **EXPERIMENTAL — API may change, not production-ready**. Please use for experimentation and feedback only.
+AKG is the **first attempt to build a knowledge graph without relying on LLMs**
+(rule-based relation extraction, BM25-style lexical + vector hybrid search,
+deterministic quality scoring — no generative AI in the extraction loop) and it is
+the least finished part of the system. The *Honest limits* section below lists what
+this README knows it cannot yet claim; read it before trusting any number or
+capability here.
 
 ---
 **ARES** — Agent Operating System (AgentOS).
@@ -156,39 +162,74 @@ How it holds together:
 
 - **Multi-tenant deployments**: the tenant is currently *caller-declared* at the HTTP boundary. A genuine multi-tenant deployment must bind the tenant at the auth layer (e.g. derive it from the JWT principal server-side) rather than trust the request body — and the two knowledge-side gaps above must be closed first before the isolation is end to end. See `SECURITY.md` → Tenancy.
 
+## Honest limits
+
+Every line below is the current state with the file that proves it. If a claim
+elsewhere in this README is not in this list, it is either verified in code or it is
+a bug in the README.
+
+- **Tenancy is not end-to-end.** The experience/distillation store isolates per
+  tenant *column*, but the knowledge side isolates by **namespace** and depends on the
+  caller supplying one; AKG-distilled facts all land in the `"default"` namespace. A
+  real multi-tenant deployment must bind the tenant at the auth layer rather than
+  trust the request body — see *Tenancy Model* above and `SECURITY.md` → Tenancy.
+- **`api.WithMaxTokens` is not enforced** on the shared L2 execution path (0.3.1);
+  only the wall-clock `api.WithTimeout` is.
+- **`ask_agent` is fire-and-forget.** The target's answer is logged, not written back
+  to the asker (`internal/agentsyscall/syscall.go`: *"the reply is currently
+  FIRE-AND-FORGET"*); `Status: "delivered"` is unreachable through the serve wiring.
+- **Multi-objective GA is not wired.** Nothing populates `DimensionScores`, so
+  `"nsga2"` / `"nondominated"` silently fall back to single-objective tournament
+  selection, and `ScoreAgentsMulti` / `ParetoFrontStrategy()` are deprecated with zero
+  production callers.
+- **The GA apply gate is not installed in production**, so the patch path decides by
+  its own fitness threshold — that is precisely why the type is named
+  `UngatedPatcher`.
+- **Scheduling is cooperative, not preemptive at the token level.** An agent yields
+  only at a ReAct-round boundary; a runaway LLM call is bounded by a timeout, not
+  sliced.
+- **The default fabric is in-memory and single-process.** Task durability across a
+  restart requires the Postgres-backed event store; this is not a distributed
+  scheduler.
+- **AKG is BETA** (see the Status table at the top): its API may change, and it is the
+  least finished subsystem.
+- **Benchmarks are single-run and single-machine** (Apple M3 Max, `-benchtime=500ms`):
+  a smoke baseline for before/after comparison, not an SLA.
+- **Coverage is uneven.** `cmd/ares` (the HTTP/serve surface) and the
+  discovery/introspection paths are the thinnest, and that is where the review batches
+  keep finding defects.
+
 ## Stability & Performance
 
-The 0.3.1 hardening cycle closed every known crash and leak class, and committed a performance baseline that future changes must compare against.
+The 0.3.1 hardening cycle closed every crash and leak class the deep reviews
+found — each with a lock-in test — and committed a performance baseline that future
+changes must compare against. No claim here is "all known defects fixed": the 0.3.1
+batch alone was ~230 review findings, and each cycle finds more.
 
 **Where the records live:**
 
 - [plan/stability_performance_plan.md](plan/stability_performance_plan.md) — the phase-by-phase stability program: lock-in tests for every fixed defect, a leak program with `goleak` gates on the kernel and workflow-engine packages, HTTP panic guard + request-ID observability, flake attribution, and a soak harness (`SOAK_SECONDS=N go test ./tests/soak/`)
 - [benchmarks/](benchmarks/) — the committed benchmark baseline (`benchmark_report.md`, `benchmark_results.json`) and the benchstat comparison workflow; any optimization PR must show a before/after comparison. (Do not link `plan/` from the repo: that tree is local-only and gitignored.)
 
-**Why AKG used to crash on simple questions (fixed in 0.3.1).** The retrieval
-service's constructor treats the knowledge-base repository as optional, but
-every query of ≤10 runes unconditionally routes to the precision pipeline,
-which dereferenced it. On any deployment without the knowledge base wired,
-the first short query panicked the handler. The fix fails loudly with a
-configuration error instead of panicking (locked by
-`retrieval_nil_kbrepo_test.go`), and every HTTP handler now runs under a
-panic guard that returns a structured 500 carrying a request ID instead of
-dropping the connection.
+Two examples of what "lock-in test" means: the AKG short-query panic (a nil
+knowledge repo dereferenced by the precision pipeline) now fails loudly with a
+config error — locked by `retrieval_nil_kbrepo_test.go` — and every HTTP handler
+runs under a panic guard that returns a structured 500 with a request ID instead
+of dropping the connection. Full narrative: `docs/articles/`.
 
 **Baseline headline numbers** (Apple M3 Max, 14 cores; `-benchtime=500ms -count=1`;
 re-measured 2026-10-09 for 0.3.2): scheduler drain **1.03ms per 100 tasks** (~10µs/task,
-4525 allocs), empty tick **8.6ns** (zero allocs), and the 64-node L2 growth chain
-**132ms end-to-end** (1.41MB, 13,733 allocs). Hybrid retrieval over 500 objects was last
-measured at ~340ms (2026-09-14) and is not part of the 0.3.2 re-run.
-`benchmarks/benchmark_results.json` is the 2026-09-12 structured set; `benchmarks/benchmark_report.md`
-holds the per-package tables — the 2026-09-12 baseline plus the 2026-10-09 0.3.2 re-run.
+4,525 allocs), empty tick **8.6ns** (zero allocs), 64-node L2 growth chain **132ms**
+(1.41MB, 13,733 allocs), and AKG retrieval **13.0ms / 100 objs**, **139ms / 500 objs**.
+`benchmarks/benchmark_report.md` holds the per-package tables (2026-09-12 baseline +
+2026-10-09 re-run); `benchmark_results.json` is the 2026-09-12 structured set.
 
 Quality gate: `make check` (vet + staticcheck + golangci-lint + tests) must
 stay green on every change.
 
 ## AKG — Knowledge Graph Without LLMs (Experimental)
 
-**⚠️ AKG (Adaptive Knowledge Graph) is in BETA EXPERIMENTAL stage. The API may change; it is not production-ready. Use it for experimentation and feedback.**
+*AKG is BETA (see the Status table at the top and *Honest limits*): the API may change.*
 
 ### Exploration goal
 
@@ -375,81 +416,10 @@ Deep dives into ARES internals:
 
 Two views: the **component map** (forward wiring, top to bottom in bootstrap order) and the **six feedback loops** that close back onto the runtime. Every loop is regression-locked (table below).
 
-**Component map**
-
-```mermaid
-flowchart TB
-    USER(["User - CLI - HTTP"])
-
-    USER --> SDK["SDK sdk/ - NewAgent, Team, Evolve (wraps the same bootstrap)"]
-    USER --> CLI["CLI cmd/ares - serve, arena, evolution"]
-    CLI -- "ares serve" --> BOOT
-
-    BOOT["Bootstrap wiring hub - internal/ares_bootstrap<br/>assembles every Component exactly once<br/>reverse-order cleanup on failure"]
-
-    BOOT --> HTTPG
-
-    subgraph HTTPG["HTTP surfaces"]
-        API["Console :8080<br/>/api/tasks, graphs, chaos, tools<br/>/api/evolution, /api/observability, /api/flight<br/>JWT/API-key, deny-by-default, audit"]
-    end
-
-    HTTPG ~~~ KERNELG
-
-    subgraph KERNELG["Kernel - Agents decide, Kernel enforces"]
-        POLICY["PolicyFlag<br/>taskfabric single-track"]
-        FABRIC["Task Fabric<br/>Create-Schedule-Acquire-RunQuantum<br/>lease + epoch fencing + Renew heartbeat"]
-        SCHED["KernelScheduler<br/>quantum drain, outcome attribution<br/>zombie reconcile per drain"]
-        AFAB["Agent Fabric<br/>spawn, kill, quota"]
-        REC["Recovery<br/>requeue, W1 rebind, revival"]
-        IPC["Agent IPC bus"]
-        POLICY --> FABRIC
-        AFAB --> FABRIC
-        REC --> FABRIC
-        IPC --> FABRIC
-        FABRIC --> SCHED
-    end
-
-    KERNELG -- "run quantum" --> AGENTSG
-
-    subgraph AGENTSG["Agents and tools"]
-        AG["Flat C1 peer agents<br/>ChatCognition tool-loop"]
-        BIND["ToolBinder<br/>built-in, MCP, AKF tools, native allowlist"]
-        AG --> BIND
-    end
-
-    AGENTSG ~~~ EVOG
-
-    subgraph EVOG["GA evolution pipeline"]
-        GAD["Genomes - Diff - Coordinator"]
-        DEP["Deployment pipeline<br/>staging preflight to live promote"]
-        STRAT["StrategyStore"]
-        GAD --> DEP
-        DEP --> STRAT
-    end
-
-    EVOG ~~~ MEMKG
-
-    subgraph MEMKG["Memory and knowledge"]
-        DIS["Distillation - ExpRepo<br/>spawn prior, RAG context"]
-        KR["KnowledgeRuntime<br/>AKG store, AKF tools"]
-    end
-
-    MEMKG ~~~ OBSG
-
-    subgraph OBSG["Observability and storage"]
-        FLY["FlightRecorder - EvidenceStore"]
-        TRC["EvolutionTracer, FeedbackStore, GlobalTracer"]
-        PG[("PostgreSQL optional")]
-        FLY -.-> PG
-    end
-
-    style KERNELG fill:#3b2f2f,stroke:#f59e0b,color:#fff
-    style AGENTSG fill:#0f2f44,stroke:#38bdf8,color:#fff
-    style EVOG fill:#2d1b69,stroke:#8b5cf6,color:#fff
-    style MEMKG fill:#1a2332,stroke:#94a3b8,color:#fff
-    style OBSG fill:#1a3a2a,stroke:#22c55e,color:#fff
-    style HTTPG fill:#3a1e1e,stroke:#ef4444,color:#fff
-```
+The full **component map** (bootstrap order, all 38 packages, data flow and the
+step-by-step `POST /api/tasks` walkthrough) lives in
+[ARCHITECTURE.md](ARCHITECTURE.md); this README keeps only the feedback loops
+and the mental model.
 
 **The six closed loops** (dashed edges = feedback closing back on the runtime)
 
@@ -506,34 +476,19 @@ The six loops, and what locks them shut:
 
 ### Runtime Kernel (0.3.0)
 
-ARES evolved from an "Agent Orchestration Framework" into an
-**agent-oriented dynamic compute runtime**: **Agents are not orchestrated.
-They are scheduled.** The old leader/sub hierarchy is gone — scheduling is now
-unified under one Execution Strategy / Policy (`kernel.policy`: `taskfabric` —
-the legacy track has been removed).
-
-The Kernel rests on three pillars (`Agents decide the work. Kernel schedules the work.`):
+ARES is an **agent-oriented dynamic compute runtime**: *agents are not
+orchestrated, they are scheduled* — the leader/sub hierarchy is gone and one
+Execution Policy (`kernel.policy: taskfabric`) drives every path.
 
 | Pillar | Package | Responsibility |
 |--------|---------|----------------|
-| **Scheduler** | `internal/fabric/task` | durable Task state machine + Lease/fencing (epoch), capability-aware scoring (`cap×load×conf`), Work Stealing, DAG ReadyTasks as scheduling source, cooperative preempt |
-| **IPC** | `internal/agentipc` | peer-level communication (Send/Request/Reply/Delegate/Handoff/Subscribe) + policy-gated dispatch (single-track taskfabric) |
-| **Lifecycle** | `internal/fabric/agent` | spawn/suspend/resume/retire/kill/recover + Process Tree (provenance, not hierarchy) + Cognitive State + P5 resource quota (`WithResourceBudget`) |
+| **Scheduler** | `internal/fabric/task` | durable task state machine + lease/epoch fencing, `cap×load×conf` scoring, work stealing, DAG `ReadyTasks`, cooperative preempt |
+| **IPC** | `internal/agentipc` | peer Send/Request/Reply/Delegate/Handoff/Subscribe with policy-gated dispatch |
+| **Lifecycle** | `internal/fabric/agent` | spawn/suspend/resume/retire/kill/recover, process-tree provenance, cognitive state, resource quota |
 
-- **DAG as scheduling source**: planner-produced `subagents[].dependencies`
-  are resolved into `models.Task.Context.Dependencies` by the planner,
-  carried through the kernel dispatch, and submitted to the fabric with the
-  DAG edges — a task whose dependencies are not yet complete is registered
-  but not executed; `kernelScheduler`'s `ReadyTasks` picks it up once they
-  finish.
-- **single-track kernel dispatch**: `wireKernelDispatcher`/`wireKernelPolicy`
-  assemble the taskfabric dispatcher at startup — the legacy leader path and
-  its live mid-run flip have been removed.
-- **Recovery**: `internal/aresrecovery` — lease-expiry requeue / checkpoint
-  resume / agent restart, proving **Agent death ≠ Task death**; Chaos
-  fault-injection validates the Runtime recovers.
-
-Full design: [ARES Runtime 设计文档](docs/zh/architecture/ares-runtime.md) / [ARES Runtime Design](docs/en/architecture/ares-runtime.md) (authoritative model, bilingual).
+Recovery (`internal/aresrecovery`) is what makes **agent death ≠ task death**:
+lease expiry → requeue → checkpoint resume on another executor. Full design:
+[zh](docs/zh/architecture/ares-runtime.md) / [en](docs/en/architecture/ares-runtime.md).
 
 ### The mental model: agent-as-process, task-as-thread-of-work
 
@@ -639,76 +594,24 @@ Execution → Evidence → Genome → Candidate → Diff Engine → RuntimePatch
 
 **Key design**: LLM is a **participant**, not a controller. The Coordinator treats all 7 `PatchSource` values equally. No source has privileged access.
 
-### Benchmarks (Apple M3 Max, darwin/arm64, 2026-09-12)
+Re-measured 2026-10-09 for 0.3.2 (`-benchtime=500ms -count=1 -benchmem`, Apple
+M3 Max 14 cores, go1.27.1). Full per-package tables and the 2026-09-12
+baseline: [benchmarks/benchmark_report.md](benchmarks/benchmark_report.md).
 
-```
-=== Runtime Evolution (internal/runtime/evolution) ===
-BenchmarkWorkflowGenome_Mutate       19.2k    31.5µs   46.5KB    534 allocs
-BenchmarkKnowledgeGenome_Mutate      1.42M    427ns    960B       11 allocs
-BenchmarkRecoveryGenome_Mutate       1.00M    505ns    1.25KB     21 allocs
-BenchmarkDiffEngine_Workflow         1.00M    546ns    352B        3 allocs
-BenchmarkCoordinator_Evaluate        94.7M    6.26ns   0B          0 allocs
-BenchmarkFullEvolutionCycle          59.3k    9.81µs   13.5KB    157 allocs
-
-=== Event System (internal/ares_events) ===
-BenchmarkMemoryStore_Append             944k    571ns    727B       8 allocs
-BenchmarkMemoryStore_AppendBatch       91.5k    6.50µs   21.1KB   102 allocs
-BenchmarkMemoryStore_Read              127k    4.73µs   17.1KB    11 allocs
-BenchmarkMemoryStore_ConcurrentAppend   873k    753ns    729B       7 allocs
-
-=== Evaluation Framework (internal/runtime/eval) ===
-BenchmarkExactMatchEvaluator_Evaluate        254M    2.35ns   0B        0 allocs
-BenchmarkToolUsageEvaluator_Evaluate        22.0M    27.8ns   0B        0 allocs
-BenchmarkAgentTestRunner_RunSingle          2.00M    301ns    320B      5 allocs
-BenchmarkReportGenerator_GenerateMarkdown   175k     3.39µs   4.16KB   76 allocs
-BenchmarkLoader_Load                        12.4k    48.0µs   33.3KB  601 allocs
-
-=== AKG Knowledge Fabric (internal/knowledge/*) ===
---- Linkers (100 objs) ---
-DecisionLinker                          36.3k    16.6µs   10.6KB     295 allocs
-ArchitectureLinker                      14.8k    40.7µs   163KB       85 allocs
-TimelineLinker                          314k     1.80µs   3.05KB     11 allocs
-SimilarityLinker                        315      1.90ms   4.49MB  20217 allocs
---- Compiler (100 nodes) ---
-DefaultCompiler Prompt                  13.4k    46.5µs   71.6KB     819 allocs
-DefaultCompiler All Formats             2.01k    289µs    400KB     5777 allocs
---- Memory Store ---
-Store_Save                              1.00M    885ns    1.11KB     14 allocs
-Store_Get                               3.40M    176ns    430B        4 allocs
-Store_QueryByType                       23.5k    26.1µs   72.3KB    512 allocs
-Store_Search                            4.29k    144µs    271KB    3014 allocs
---- Pipeline ---
-DefaultNormalizer_Normalize             1.20M    507ns    688B       10 allocs
---- Planner ---
-KnowledgePlanner_Plan                   809k     746ns    984B       14 allocs
---- Retriever (end-to-end, 100 objs) ---
-Retriever_Retrieve                      69       32.1ms   55.9MB 453393 allocs
-
-=== Kernel (internal/fabric/task · fabric/agent · agentipc) ===
---- Task Fabric (internal/fabric/task) ---
-Fabric_Create              1.41M    395ns    352B      4 allocs
-Fabric_Schedule            1.10M    568ns    428B     10 allocs
-Fabric_RunQuantum          466k     1.30µs   1.13KB   16 allocs
-Fabric_ReadyTasks          1.54M    386ns    960B      4 allocs
-Fabric_IsReady             39.1M    15.4ns   0B        0 allocs
---- Agent Fabric (internal/fabric/agent) ---
-Fabric_Spawn               1.49M    411ns    936B     10 allocs
-Fabric_SpawnWithResources  705k     828ns    1.45KB   14 allocs
-Fabric_SuspendResume       24.9M    24.0ns   0B        0 allocs
-Fabric_Children            22.7M    26.4ns   80B        1 alloc
---- IPC (internal/agentipc) ---
-Bus_Send                   1.95M    313ns    400B      8 allocs
-Bus_RequestReply           351k     1.73µs   1.29KB   22 allocs
-Bus_Broadcast              2.25M    263ns    400B      8 allocs
-
-=== Observability & Recovery (internal/aresrecovery) ===
-GlobalTracer_TraceTask                    6.63M   92.2ns   243B      0 allocs
-GlobalTracer_TraceMessage                 6.89M   85.9ns   293B      0 allocs
-GlobalTracer_Spans (200 spans)            425k    1.24µs   10.0KB    5 allocs
-Sandbox_ReplayRecoveryChain               208k    2.87µs   7.36KB   66 allocs
-Sandbox_SimulateAgentDeath                274k    2.15µs   5.04KB   51 allocs
-```
-
+| Benchmark | time | B/op | allocs/op |
+|---|---|---|---|
+| `Bus_Send` (IPC) | 303ns | 400 | 8 |
+| `Fabric_Schedule` | 552ns | 444 | 10 |
+| `Fabric_RunQuantum` | 1.31µs | 1.2KB | 16 |
+| `SchedulerDrainEmpty` | 8.6ns | – | 0 |
+| `SchedulerDrain100Tasks` | 1.03ms | 578KB | 4,525 |
+| `L2GraphGrowthChain64` | 132ms | 1.41MB | 13,733 |
+| `KnowledgePlanner_Plan` | 740ns | 1.0KB | 14 |
+| `Retriever_Retrieve` / 100 objs | 13.0ms | 11.2MB | 100,202 |
+| `Retriever_Retrieve` / 500 objs | 139ms | 106MB | 1,029,675 |
+| `SimilarityLinker` / 500 objs | 18.6ms | 79.8MB | 2,032 |
+| `ExactMatchEvaluator_Evaluate` | 2.3ns | – | 0 |
+| `UngatedPatcher_Evaluate` | 6.3ns | – | 0 |
 ### CLI
 
 ```bash
