@@ -98,6 +98,11 @@ func TestRestoreFromStorePostgresRoundTrip(t *testing.T) {
 	require.NoError(t, f1.Create(&Task{ID: "peer-plan-8", Capability: "tool/echo"}))
 	epoch8, err := f1.Acquire("peer-plan-8", "agent-a", time.Minute)
 	require.NoError(t, err)
+	// Start first: the state machine only allows Leased → Running → Completed
+	// (state.go canTransition), so Acquire → Complete directly is ErrIllegalState.
+	// This ran only in CI (the test skips without TEST_POSTGRES_DSN), which is
+	// why the missing hop survived locally.
+	require.NoError(t, f1.Start("peer-plan-8", "agent-a", epoch8))
 	require.NoError(t, f1.Complete("peer-plan-8", "agent-a", epoch8))
 
 	// "Restart": a fresh store instance over the same pool, a fresh fabric.

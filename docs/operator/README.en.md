@@ -1,6 +1,6 @@
 # ARES Operator Runbook
 
-> Version: 0.3.1 · Commands: `ares serve` / `ares run`
+> Version: 0.3.2 · Commands: `ares serve` / `ares run`
 > This document is the M9 milestone deliverable (AGENTOS_DEVELOPMENT_PLAN.md Section 6),
 > covering: quick start, configuration tuning, health checks, authentication,
 > hot-reload, upgrades and troubleshooting. For the architecture overview see

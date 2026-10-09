@@ -274,7 +274,7 @@ L2 graph nodes do **not** carry Output. Results live in the fabric task's checkp
 
 **4. The API layer is a contract, not an implementation.**
 
-`internal/llmcore` defines the types; `api/core` is a deprecated forwarding alias (M5 internalization); `ares_bootstrap` assembles them. Swap `storage` from in-memory to PostgreSQL without touching the contract.
+`internal/llmcore` defines the types; `api/core` was a deprecated forwarding alias (M5 internalization) — the whole `api/` subtree was removed in 0.3.2; `ares_bootstrap` assembles them. Swap `storage` from in-memory to PostgreSQL without touching the contract.
 
 ---
 

@@ -94,7 +94,7 @@ The async embedding client lives in `internal/storage/postgres/embedding/`:
 
 ```
 embedding/
-├── service.go   # EmbeddingClient satisfies internal/embedding.EmbeddingService (compile-time assertion; api/embedding is the deprecated forward)
+├── service.go   # EmbeddingClient satisfies internal/embedding.EmbeddingService (compile-time assertion; api/embedding, the deprecated forward, was removed in 0.3.2)
 ├── cache.go     # EmbeddingCache: Redis + in-memory, BLAKE2b-128 keys
 ├── client.go    # HTTP client: /embed, /embed_batch, /health
 ├── fallback.go  # FallbackClient: fallback strategies (cache-only / trigger keyword / error)

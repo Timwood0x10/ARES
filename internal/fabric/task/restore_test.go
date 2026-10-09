@@ -98,7 +98,13 @@ func TestRestoreFromStoreResumesSuspendedTask(t *testing.T) {
 	require.Equal(t, []string{"t0"}, got.Dependencies)
 	require.Equal(t, "agent-root", got.Origin)
 	require.Equal(t, RetryPolicy{MaxRetries: 3, Attempts: 1}, got.RetryPolicy)
-	require.Equal(t, t1.Deadline, got.Deadline)
+	// Compare instants, not struct values: the event round-trip normalizes the
+	// location (time.Local on the writing host, UTC after decoding a
+	// `Z`-stamped RFC3339 timestamp), so comparing the raw structs fails on any
+	// host whose local zone is UTC even though the wall clock is identical.
+	require.True(t, t1.Deadline.Equal(got.Deadline),
+		"deadline must survive the round-trip as the same instant: got %s, want %s",
+		got.Deadline, t1.Deadline)
 
 	// The checkpoint survives as the JSON-round-tripped map form that
 	// DecodeCheckpoint's second branch handles.

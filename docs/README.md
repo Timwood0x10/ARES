@@ -6,7 +6,8 @@ Welcome to the ARES framework documentation center.
 
 | Version | 中文 | English |
 |---------|------|---------|
-| v0.3.1 (dev) | [CHANGELOG](../CHANGELOG.md) | [CHANGELOG](../CHANGELOG.md) |
+| v0.3.2 (dev) | [CHANGELOG](../CHANGELOG.md) | [CHANGELOG](../CHANGELOG.md) |
+| v0.3.1 | [发布说明](../CHANGELOG.md) | [Release Notes](../CHANGELOG.md) |
 | v0.3.0 | [发布说明](../CHANGELOG.md) | [Release Notes](../CHANGELOG.md) |
 
 > 注：`docs/zh/features/` 中的部分特性文档写于 v1/v2 架构时期（2026-06 前后），涉及 Leader/Sub 模型的内容已过时——v0.3.x 起 Leader-Sub 架构已删除，现行架构见 [framework-comparison](./reference/framework-comparison-langchain-crewai-agentscope-goagent-zh.md)第3节与 [CAPABILITY-MAP](./reference/CAPABILITY-MAP.md)。这些旧文档保留作历史参考，待逐步重写。

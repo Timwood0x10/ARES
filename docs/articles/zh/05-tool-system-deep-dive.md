@@ -82,7 +82,7 @@ type Tool interface {
 - `IdempotentTool.IsIdempotent() bool` —— 纯计算工具返回 true；有副作用的（文件 I/O、网络、状态变更）不实现或返回 false。
 - `TaggableTool.Tags() map[string]string` —— 给 LLM 路由/discovery 用的语义标签，标准 key 有 `domain` / `input_type` / `output_type` / `side_effects` / `requires_network` / `mutates_state`。
 
-对外广而告之用的是 `ToolSchema`：`Name` / `Description` / `Category` / `Parameters` / `Tags`。它来自 `Registry.GetSchemas()`，并会在广告给 LLM 前被 `ToolSchemaToLLMTool` 转成 `internal/llmcore.Tool`（`api/core` 为 M5 后的 deprecated 转发）。
+对外广而告之用的是 `ToolSchema`：`Name` / `Description` / `Category` / `Parameters` / `Tags`。它来自 `Registry.GetSchemas()`，并会在广告给 LLM 前被 `ToolSchemaToLLMTool` 转成 `internal/llmcore.Tool`（`api/core` 为 M5 后的 deprecated 转发，已于 0.3.2 删除）。
 
 ### 2.2 Registry：注册、校验、渐进披露
 

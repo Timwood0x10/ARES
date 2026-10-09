@@ -113,7 +113,7 @@ validate → lock → 按分数排序 → 选存活者 → 保精英 → 促进p
 | `roulette` | `RouletteWheelSelection` | 适应度比例选择，分数平移为非负 |
 | `truncation` | `TruncationSelection` | 确定性取前 n 名（精英截断） |
 | `lineage_rank` | `LineageRankSelection` | 排序基础上按血统（ParentID）占比惩罚过度代表血统，防血统塌缩 |
-| `nsga2`/`nondominated` | `NondominatedSortingSelection` | NSGA-II：非支配排序 + 拥挤距离；无多目标数据时回退 tournament |
+| `nsga2`/`nondominated` | `NondominatedSortingSelection` | NSGA-II：非支配排序 + 拥挤距离；**未接线**——没有任何代码写 `DimensionScores`，实际总是回退 tournament（`ScoreAgentsMulti` 已标 Deprecated、零生产调用） |
 
 所有选择算子统一使用 `effectiveScore()`（优先 `SelectionScore`，否则 `Score`），使 fitness sharing 能影响全部算子。未评估个体（`Score<0`）总排最后。
 
@@ -205,7 +205,7 @@ validate → lock → 按分数排序 → 选存活者 → 保精英 → 促进p
 
 - 哨兵值 `ScoreUnevaluated = -1.0`，`IsScoreEvaluated(score) = score >= 0`（[score.go](../../../internal/runtime/ares_evolution/genome/score.go)）。
 - `Population.ScoreAgents(scorer)`：在读写锁外调用外部 scorer（可能阻塞数秒的 LLM/IO），捕获 panic 标记为未评估，写回分数并重置 `SelectionScore`，随后更新 `bestEver` / Pareto 前沿。
-- `ScoreAgentsMulti(scorer)`：多目标打分，同时写 `DimensionScores` 与聚合 `Score`。
+- `ScoreAgentsMulti(scorer)`：多目标打分，同时写 `DimensionScores` 与聚合 `Score`——**已标 Deprecated、零生产调用**（因此 `nsga2` 实际回退为单目标 tournament；需要时由 SDK 自行喂入 `DimensionScores`）。
 - 打分来源多样：`scoring` 提供 `TieredScorer`（缓存 + 预算门控 LLM + 启发式）、`MemoryAwareScorer`（证据加分 + 成本/时延惩罚）、`CachedScorer`、`BatchScorer`（批量预填缓存）。
 
 ---
@@ -265,7 +265,7 @@ recordOutcomes(反馈闭环) → 后置守卫 → submitToCoordinator → deploy
 - **提示学习**：`hintProvider.RecordStrategyOutcome` 记录胜负，供 `llm_hint_provider` 引导后续变异。
 
 ### 11.6 协调器与系统落地
-`submitToCoordinator` 将进化结果生成为 diff patches，`Source=SourceGA`、`Reason="GA: population evolution result"`、`Priority=6`，提交 `coordinator.Submit` 并 `Evaluate`。协调器经 FitnessGenome 聚合适应度（0-100 缩放）做 apply/reject/delay/drop 决策，通过 PatchExecutors 落地到运行中 agent 的 DAG、调度器、知识配置。
+`submitToCoordinator` 将进化结果生成为 diff patches，`Source=SourceGA`、`Reason="GA: population evolution result"`、`Priority=6`，提交 `UngatedPatcher.Submit` 并 `Evaluate`。协调器经 FitnessGenome 聚合适应度（0-100 缩放）做 apply/reject/delay/drop 决策，通过 PatchExecutors 落地到运行中 agent 的 DAG、调度器、知识配置。
 
 ### 11.7 守卫（Guardrails）
 `EvolutionGuardrails`（[guardrails.go](../../../internal/runtime/ares_evolution/guardrails.go)）：

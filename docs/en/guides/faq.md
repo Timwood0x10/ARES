@@ -434,6 +434,10 @@ go build ./...
 
 ---
 
-**Last Updated**: 2026-03-23  
-**Version**: v1.0.0  
+> **Historical document**: written against the v1.0.0-era codebase (2026-03-23) and not
+> re-verified against v0.3.2. Prefer the quick-start and the operator runbook for
+> current behavior; details below may describe removed packages or commands.
+
+**Last Updated**: 2026-03-23
+**Version**: v1.0.0
 **Code Base**: Based on actual go-agent code analysis

@@ -274,7 +274,7 @@ L2 图节点**不存 Output**。执行结果永远在 fabric 任务的 checkpoin
 
 **4. API 层是契约，不是实现。**
 
-`internal/llmcore/` 定义类型，`api/core/` 是 deprecated 转发别名（M5 内部化），`ares_bootstrap` 把它们接在一起。换实现不换契约——从内存切到 PostgreSQL 只换 `storage` 的实现。
+`internal/llmcore/` 定义类型，`api/core/` 曾是 deprecated 转发别名（M5 内部化），整个 `api/` 子树已于 0.3.2 删除，`ares_bootstrap` 把它们接在一起。换实现不换契约——从内存切到 PostgreSQL 只换 `storage` 的实现。
 
 ---
 

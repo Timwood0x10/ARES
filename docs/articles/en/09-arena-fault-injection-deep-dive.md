@@ -130,7 +130,7 @@ Core files (real paths, which differ from the earlier article):
 | `internal/runtime/arena/score.go` | 3-dimensional resilience score |
 | `internal/runtime/arena/http.go` | REST + SSE + API-key auth |
 | `internal/runtime/arena/integration.go` | FlightBridge — arena actions → flight recorder |
-| `internal/runtime/arena/evolution_bridge.go` | EvolutionBridge → evolution Coordinator (TBD) |
+| `internal/runtime/arena/evolution_bridge.go` | EvolutionBridge → evolution UngatedPatcher (TBD back-fill) |
 | `cmd/ares/arena.go` | `ares arena` CLI: run / validate / list / serve / survival / inspect |
 | `cmd/ares/serve_chaos.go` | production kernel chaos wiring (`wireChaos` above) |
 
@@ -141,7 +141,7 @@ Core files (real paths, which differ from the earlier article):
 `Injector` depends on two **interface subsets**: `RuntimeProvider` (a subset of ares_runtime) and `DAGProvider` (a subset of mutable-DAG mutations). The interface-based design lets arena avoid importing concrete Runtime/DAG packages and makes mocking easy.
 
 ```go
-// internal/ares_arena/injector.go
+// internal/runtime/arena/injector.go
 // Injector wraps existing ares_runtime/DAG APIs to inject chaos.
 // It does NOT implement recovery; the existing resurrection plugin and
 // failover handle that automatically.
@@ -259,9 +259,9 @@ Arena exposes only destructive endpoints (kill leader, remove nodes, corrupt mem
 
 **FlightBridge** (`integration.go`) writes each arena action as a timeline event in the flight recorder and adds a diagnostic record for failures (calling `flight.SuggestFix`). This wiring is confirmed effective: `service.Execute` calls `s.bridge.OnActionExecuted` after every action.
 
-**EvolutionBridge** (`evolution_bridge.go`) translates arena failures into `PatchProposal`s for the evolution Coordinator: `ActionRemoveNode → PatchInsertNode`, `ActionKillAgent/KillLeader → PatchReplaceNode`, `ActionSlowAgent/ToolTimeout → PatchChangeScheduler`, infrastructure faults → `PatchChangeRecoveryStrategy`, and grades them via `chaosPriority`: faults with **priority ≥ 9** (killing leader/orchestrator) go through `Coordinator.ApplyEmergency` for immediate self-healing; the rest go through `Coordinator.Submit` for evaluation.
+**EvolutionBridge** (`evolution_bridge.go`) translates arena failures into `PatchProposal`s for the evolution `UngatedPatcher`: `ActionRemoveNode → PatchInsertNode`, `ActionKillAgent/KillLeader → PatchReplaceNode`, infrastructure faults → `PatchChangeRecoveryStrategy`, and grades them via `chaosPriority`: faults with **priority ≥ 9** (killing leader/orchestrator) go through `UngatedPatcher.ApplyEmergency` for immediate self-healing; the rest go through `UngatedPatcher.Submit` for evaluation. (Slow-agent / tool-timeout faults used to map to `PatchChangeScheduler`; that mapping was removed in 0.3.2, along with the patch's other producer, because the graph applier requires a real `Scheduler` value that neither producer could supply.)
 
-> (TBD): `OnActionExecuted` does construct a proposal and submit/emergency-apply it on failure. But whether the Coordinator's evaluated proposal ultimately produces a real runtime/scheduling change depends on the Coordinator and its patch applicator. Inside `arena serve`, this operates on the process's own demo pool and mutable DAG; whether these patches flow back to the real production runtime is something I could not confirm in the code covered here, so I flag it as TBD.
+> (TBD): `OnActionExecuted` does construct a proposal and submit/emergency-apply it on failure. But whether the UngatedPatcher's evaluated proposal ultimately produces a real runtime/scheduling change depends on the UngatedPatcher and its patch applicator. Inside `arena serve`, this operates on the process's own demo pool and mutable DAG; whether these patches flow back to the real production runtime is something I could not confirm in the code covered here, so I flag it as TBD.
 
 Worth adding is the **execution feedback loop** in `cmd/ares/peer_mode.go` (from `aresrecovery`, targeting the Kernel model) that is confirmed live:
 - `ExecutionAttribution.Record / RecordWithMetrics(agentID, capability, success, latency, retries, recovers)` collects per-(agent, capability) outcomes.
@@ -279,7 +279,7 @@ flowchart LR
         M["Stats + MetricsCollector"]
         EV["EventStore arena.* events + failure evidence"]
         FB["FlightBridge → flight recorder"]
-        EB["EvolutionBridge → Coordinator (TBD back-fill)"]
+        EB["EvolutionBridge → UngatedPatcher (TBD back-fill)"]
         IN2 --> SV --> M
         SV --> EV --> FB
         SV --> EB

@@ -163,7 +163,7 @@ The 0.3.1 hardening cycle closed every known crash and leak class, and committed
 **Where the records live:**
 
 - [plan/stability_performance_plan.md](plan/stability_performance_plan.md) — the phase-by-phase stability program: lock-in tests for every fixed defect, a leak program with `goleak` gates on the kernel and workflow-engine packages, HTTP panic guard + request-ID observability, flake attribution, and a soak harness (`SOAK_SECONDS=N go test ./tests/soak/`)
-- [plan/benchmarks/](plan/benchmarks/) — the committed benchmark baseline (38 benchmarks across 7 packages) and the benchstat comparison workflow; any optimization PR must show a before/after comparison
+- [benchmarks/](benchmarks/) — the committed benchmark baseline (`benchmark_report.md`, `benchmark_results.json`) and the benchstat comparison workflow; any optimization PR must show a before/after comparison. (Do not link `plan/` from the repo: that tree is local-only and gitignored.)
 
 **Why AKG used to crash on simple questions (fixed in 0.3.1).** The retrieval
 service's constructor treats the knowledge-base repository as optional, but
@@ -175,9 +175,13 @@ configuration error instead of panicking (locked by
 panic guard that returns a structured 500 carrying a request ID instead of
 dropping the connection.
 
-**Baseline headline numbers** (Apple M3 Max): scheduler drain ~8µs per task
-(empty tick ~8.5ns), 64-node L2 growth chain ~132ms end-to-end, hybrid
-retrieval over 500 objects ~340ms. See the baseline file for the full set.
+**Baseline headline numbers** (Apple M3 Max, 14 cores; `-benchtime=500ms -count=1`;
+re-measured 2026-10-09 for 0.3.2): scheduler drain **1.03ms per 100 tasks** (~10µs/task,
+4525 allocs), empty tick **8.6ns** (zero allocs), and the 64-node L2 growth chain
+**132ms end-to-end** (1.41MB, 13,733 allocs). Hybrid retrieval over 500 objects was last
+measured at ~340ms (2026-09-14) and is not part of the 0.3.2 re-run.
+`benchmarks/benchmark_results.json` is the 2026-09-12 structured set; `benchmarks/benchmark_report.md`
+holds the per-package tables — the 2026-09-12 baseline plus the 2026-10-09 0.3.2 re-run.
 
 Quality gate: `make check` (vet + staticcheck + golangci-lint + tests) must
 stay green on every change.

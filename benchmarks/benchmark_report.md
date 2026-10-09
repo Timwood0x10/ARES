@@ -8,6 +8,10 @@ Raw outputs are not committed (machine-specific); regenerate with
 `go test -run='^$' -bench=. -benchmem -count=1 -benchtime=500ms ./<pkg>` —
 structured results live in `benchmark_results.json`.
 
+**Latest re-run: see [0.3.2 re-run (2026-10-09)](#032-re-run-2026-10-09) at the end of this
+file — 191 benchmarks across 21 packages, including the kernel scheduler / L2-growth numbers
+the README quotes. The tables in this file's first half are the 2026-09-12 baseline.**
+
 ## Event Store (`internal/ares_events`)
 
 | Benchmark | Iterations | ns/op | B/op | allocs/op | Note |
@@ -235,3 +239,284 @@ paths in this report reflect the post-convergence layout (`internal/runtime/evol
 stream handler (tree deleted), `DualTrackDispatch` (agentipc retired). Methodology note:
 this run uses `-benchtime=500ms -count=1` (previous report: 1s, single run) — treat
 cross-report sub-µs deltas with normal single-run variance.
+
+## 0.3.2 re-run (2026-10-09)
+
+Methodology: identical to the baseline above — `-benchtime=500ms -count=1 -benchmem`,
+sequential per-package runs, same machine (Apple M3 Max, 14 cores, macOS 15.7.3, go1.27.1).
+Raw output: `benchmarks/0.3.2_bench.txt` (not committed — machine-specific). Covers 191
+benchmarks across 21 packages, including the kernel scheduler/L2-growth numbers the README quotes.
+
+
+**./internal/agentipc**
+
+| Benchmark | Iterations | ns/op | B/op | allocs/op |
+|---|---|---|---|---|
+| BenchmarkBus_Send-14 | 1921470 | 303.4 | 400 | 8 |
+| BenchmarkBus_RequestReply-14 | 355506 | 1618 | 1320 | 22 |
+| BenchmarkBus_Broadcast-14 | 2393271 | 269.1 | 400 | 8 |
+
+**./internal/ares_events**
+
+| Benchmark | Iterations | ns/op | B/op | allocs/op |
+|---|---|---|---|---|
+| BenchmarkMemoryStore_Read-14 | 129968 | 4616 | 17528 | 11 |
+| BenchmarkMemoryStore_ReadAll-14 | 7134 | 85072 | 81976 | 3 |
+| BenchmarkMemoryStore_Subscribe-14 | 4536 | 116022 | 179980 | 700 |
+
+**./internal/aresrecovery**
+
+| Benchmark | Iterations | ns/op | B/op | allocs/op |
+|---|---|---|---|---|
+| BenchmarkGlobalTracerTraceTask-14 | 6064809 | 95.38 | 266 | 0 |
+| BenchmarkGlobalTracerTraceMessage-14 | 6863476 | 88.94 | 294 | 0 |
+| BenchmarkGlobalTracerSpans-14 | 395737 | 1346 | 10032 | 5 |
+| BenchmarkSandboxReplayRecoveryChain-14 | 198320 | 2682 | 7629 | 66 |
+| BenchmarkSandboxSimulateAgentDeath-14 | 299272 | 2027 | 5211 | 51 |
+
+**./internal/errors**
+
+| Benchmark | Iterations | ns/op | B/op | allocs/op |
+|---|---|---|---|---|
+| BenchmarkWrap-14 | 1000000000 | 0.2741 | 0 | 0 |
+| BenchmarkFmtErrorfW-14 | 7249936 | 72.39 | 64 | 2 |
+| BenchmarkWrapMultipleWraps-14 | 1000000000 | 0.5534 | 0 | 0 |
+| BenchmarkFmtErrorfMultipleWraps-14 | 2380538 | 250.6 | 216 | 6 |
+
+**./internal/fabric/task**
+
+| Benchmark | Iterations | ns/op | B/op | allocs/op |
+|---|---|---|---|---|
+| BenchmarkFabric_Create-14 | 1618850 | 357.8 | 357 | 4 |
+| BenchmarkFabric_Schedule-14 | 1087756 | 552.1 | 444 | 10 |
+| BenchmarkFabric_RunQuantum-14 | 428768 | 1313 | 1161 | 16 |
+| BenchmarkFabric_ReadyTasks-14 | 1525789 | 379.9 | 960 | 4 |
+| BenchmarkFabric_IsReady-14 | 38030846 | 16.41 | 0 | 0 |
+
+**./internal/kernel**
+
+| Benchmark | Iterations | ns/op | B/op | allocs/op |
+|---|---|---|---|---|
+| BenchmarkL2GraphGrowthChain64-14 | 4 | 131798844 | 1406496 | 13733 |
+| BenchmarkSchedulerDrain100Tasks-14 | 620 | 1025741 | 578154 | 4525 |
+| BenchmarkSchedulerDrainEmpty-14 | 69714750 | 8.626 | 0 | 0 |
+
+**./internal/knowledge/compiler**
+
+| Benchmark | Iterations | ns/op | B/op | allocs/op |
+|---|---|---|---|---|
+| BenchmarkDefaultCompiler_PromptFormat/nodes_10-14 | 133365 | 4486 | 5947 | 92 |
+| BenchmarkDefaultCompiler_PromptFormat/nodes_50-14 | 29912 | 20833 | 29514 | 416 |
+| BenchmarkDefaultCompiler_PromptFormat/nodes_100-14 | 13368 | 45170 | 73288 | 819 |
+| BenchmarkDefaultCompiler_PromptFormat/nodes_500-14 | 2876 | 211760 | 340765 | 4026 |
+| BenchmarkDefaultCompiler_MarkdownFormat/nodes_10-14 | 116774 | 5227 | 6268 | 112 |
+| BenchmarkDefaultCompiler_MarkdownFormat/nodes_50-14 | 21111 | 27126 | 40595 | 517 |
+| BenchmarkDefaultCompiler_MarkdownFormat/nodes_100-14 | 10000 | 54804 | 98266 | 1020 |
+| BenchmarkDefaultCompiler_MarkdownFormat/nodes_500-14 | 2360 | 275757 | 455169 | 5027 |
+| BenchmarkDefaultCompiler_JSONFormat/nodes_10-14 | 57559 | 10249 | 10270 | 271 |
+| BenchmarkDefaultCompiler_JSONFormat/nodes_50-14 | 12165 | 48566 | 58465 | 1316 |
+| BenchmarkDefaultCompiler_JSONFormat/nodes_100-14 | 5563 | 101243 | 133006 | 2619 |
+| BenchmarkDefaultCompiler_JSONFormat/nodes_500-14 | 1173 | 523335 | 624831 | 13026 |
+| BenchmarkDefaultCompiler_AllFormats/nodes_10-14 | 20510 | 29934 | 33953 | 616 |
+| BenchmarkDefaultCompiler_AllFormats/nodes_50-14 | 3951 | 140487 | 185991 | 2915 |
+| BenchmarkDefaultCompiler_AllFormats/nodes_100-14 | 2180 | 279340 | 409878 | 5777 |
+| BenchmarkDefaultCompiler_AllFormats/nodes_500-14 | 400 | 1433721 | 2034687 | 28610 |
+
+**./internal/knowledge/linker**
+
+| Benchmark | Iterations | ns/op | B/op | allocs/op |
+|---|---|---|---|---|
+| BenchmarkDecisionLinker/objs_10-14 | 379044 | 1547 | 800 | 25 |
+| BenchmarkDecisionLinker/objs_50-14 | 74799 | 8208 | 5280 | 145 |
+| BenchmarkDecisionLinker/objs_100-14 | 38061 | 16524 | 10880 | 295 |
+| BenchmarkDecisionLinker/objs_500-14 | 7424 | 82477 | 55680 | 1495 |
+| BenchmarkArchitectureLinker/objs_10-14 | 655707 | 874.4 | 1104 | 10 |
+| BenchmarkArchitectureLinker/objs_50-14 | 52921 | 11397 | 41624 | 48 |
+| BenchmarkArchitectureLinker/objs_100-14 | 15337 | 39409 | 166960 | 85 |
+| BenchmarkArchitectureLinker/objs_500-14 | 231 | 2295114 | 9097963 | 367 |
+| BenchmarkTimelineLinker/objs_10-14 | 2100205 | 285.5 | 384 | 8 |
+| BenchmarkTimelineLinker/objs_50-14 | 621680 | 1004 | 1488 | 10 |
+| BenchmarkTimelineLinker/objs_100-14 | 331195 | 1828 | 3120 | 11 |
+| BenchmarkTimelineLinker/objs_500-14 | 65720 | 8885 | 13488 | 13 |
+| BenchmarkSimilarityLinker/objs_10-14 | 75126 | 7840 | 22544 | 49 |
+| BenchmarkSimilarityLinker/objs_50-14 | 4312 | 136838 | 499832 | 214 |
+| BenchmarkSimilarityLinker/objs_100-14 | 876 | 693770 | 3008454 | 419 |
+| BenchmarkSimilarityLinker/objs_500-14 | 31 | 18648626 | 79839289 | 2032 |
+
+**./internal/knowledge/pipeline**
+
+| Benchmark | Iterations | ns/op | B/op | allocs/op |
+|---|---|---|---|---|
+| BenchmarkDefaultNormalizer_Normalize-14 | 1000000 | 503.2 | 688 | 10 |
+| BenchmarkDefaultNormalizer_AlreadyNormalized-14 | 11376536 | 53.88 | 24 | 1 |
+
+**./internal/knowledge/planner**
+
+| Benchmark | Iterations | ns/op | B/op | allocs/op |
+|---|---|---|---|---|
+| BenchmarkKnowledgePlanner_Plan-14 | 841971 | 740.1 | 1008 | 14 |
+| BenchmarkKnowledgePlanner_PlanComplexQuery-14 | 429614 | 1320 | 1553 | 18 |
+
+**./internal/knowledge/retriever**
+
+| Benchmark | Iterations | ns/op | B/op | allocs/op |
+|---|---|---|---|---|
+| BenchmarkRetriever_Retrieve/objs_10-14 | 584 | 945513 | 895867 | 7797 |
+| BenchmarkRetriever_Retrieve/objs_50-14 | 100 | 6374007 | 8058819 | 44456 |
+| BenchmarkRetriever_Retrieve/objs_100-14 | 100 | 13019297 | 11161381 | 100202 |
+| BenchmarkRetriever_Retrieve/objs_500-14 | 6 | 138850868 | 106346208 | 1029675 |
+| BenchmarkRetriever_RetrieveMultipleFormats-14 | 100 | 12886081 | 11094381 | 99854 |
+
+**./internal/knowledge/store/memory**
+
+| Benchmark | Iterations | ns/op | B/op | allocs/op |
+|---|---|---|---|---|
+| BenchmarkStore_Save-14 | 1852016 | 316.6 | 623 | 12 |
+| BenchmarkStore_SaveBatch10-14 | 204832 | 3100 | 6235 | 114 |
+| BenchmarkStore_SaveBatch100-14 | 19659 | 32338 | 60913 | 1104 |
+| BenchmarkStore_Get-14 | 12325896 | 49.38 | 13 | 1 |
+| BenchmarkStore_QueryByType-14 | 34734115 | 17.41 | 0 | 0 |
+| BenchmarkStore_Search-14 | 9465836 | 60.68 | 48 | 2 |
+| BenchmarkStore_Delete-14 | 1675011 | 357.8 | 709 | 11 |
+
+**./internal/runtime**
+
+| Benchmark | Iterations | ns/op | B/op | allocs/op |
+|---|---|---|---|---|
+
+**./internal/runtime/ares_evolution**
+
+| Benchmark | Iterations | ns/op | B/op | allocs/op |
+|---|---|---|---|---|
+| BenchmarkDreamCycle_SingleRun-14 | 2415312 | 234.3 | 272 | 4 |
+
+**./internal/runtime/ares_evolution/genome**
+
+| Benchmark | Iterations | ns/op | B/op | allocs/op |
+|---|---|---|---|---|
+| BenchmarkCrossoverUniform-14 | 282073 | 2106 | 3045 | 31 |
+| BenchmarkCrossoverUniform_LargeParams-14 | 39000 | 15576 | 21126 | 38 |
+| BenchmarkCrossoverParallel-14 | 287168 | 2305 | 3050 | 31 |
+| BenchmarkTruncationSelection/pop_10-14 | 3819781 | 161.8 | 136 | 3 |
+| BenchmarkTruncationSelection/pop_100-14 | 106563 | 5829 | 952 | 3 |
+| BenchmarkTruncationSelection/pop_500-14 | 10000 | 61513 | 4152 | 3 |
+| BenchmarkTruncationSelection/pop_1000-14 | 3805 | 157699 | 8248 | 3 |
+| BenchmarkTournamentSelection/pop_50/k=2-14 | 171458 | 3806 | 13608 | 101 |
+| BenchmarkTournamentSelection/pop_50/k=3-14 | 152558 | 4034 | 13608 | 101 |
+| BenchmarkTournamentSelection/pop_50/k=5-14 | 142882 | 4418 | 13608 | 101 |
+| BenchmarkTournamentSelection/pop_50/k=10-14 | 106016 | 5616 | 13608 | 101 |
+| BenchmarkTournamentSelection/pop_200/k=2-14 | 18336 | 33509 | 192096 | 401 |
+| BenchmarkTournamentSelection/pop_200/k=3-14 | 18007 | 33189 | 192096 | 401 |
+| BenchmarkTournamentSelection/pop_200/k=5-14 | 17398 | 34692 | 192096 | 401 |
+| BenchmarkTournamentSelection/pop_200/k=10-14 | 15669 | 38329 | 192096 | 401 |
+| BenchmarkRouletteWheelSelection/pop_10-14 | 3246802 | 185.9 | 320 | 4 |
+| BenchmarkRouletteWheelSelection/pop_100-14 | 220598 | 2713 | 3424 | 7 |
+| BenchmarkRouletteWheelSelection/pop_500-14 | 14528 | 41423 | 15424 | 9 |
+| BenchmarkRouletteWheelSelection/pop_1000-14 | 3987 | 151331 | 29760 | 10 |
+| BenchmarkSortByScore/pop_10-14 | 2950009 | 197.0 | 136 | 3 |
+| BenchmarkSortByScore/pop_100-14 | 100777 | 6081 | 952 | 3 |
+| BenchmarkSortByScore/pop_500-14 | 13317 | 53045 | 4152 | 3 |
+| BenchmarkSortByScore/pop_1000-14 | 4147 | 139532 | 8249 | 3 |
+| BenchmarkEvolve_OneGeneration/pop_10-14 | 2342240 | 253.7 | 296 | 6 |
+| BenchmarkEvolve_OneGeneration/pop_20-14 | 2349704 | 254.5 | 344 | 6 |
+| BenchmarkEvolve_OneGeneration/pop_50-14 | 2379936 | 254.4 | 344 | 6 |
+| BenchmarkEvolve_OneGeneration/pop_100-14 | 2330431 | 258.2 | 344 | 6 |
+| BenchmarkEvolveOnIdle_OneGeneration/pop_10-14 | 2344047 | 254.2 | 344 | 6 |
+| BenchmarkEvolveOnIdle_OneGeneration/pop_20-14 | 2296868 | 257.3 | 344 | 6 |
+| BenchmarkEvolveOnIdle_OneGeneration/pop_50-14 | 2186066 | 260.7 | 344 | 6 |
+| BenchmarkEvolveOnIdle_OneGeneration/pop_100-14 | 2308219 | 258.4 | 344 | 6 |
+| BenchmarkEvolve_MultipleGenerations/10_generations-14 | 237640 | 2577 | 3442 | 60 |
+| BenchmarkEvolve_MultipleGenerations/50_generations-14 | 46975 | 12923 | 17212 | 300 |
+| BenchmarkEvolve_MultipleGenerations/100_generations-14 | 23400 | 25716 | 34425 | 600 |
+| BenchmarkEvolve_Scaling/pop_5-14 | 2333937 | 257.1 | 344 | 6 |
+| BenchmarkEvolve_Scaling/pop_10-14 | 2344905 | 257.5 | 344 | 6 |
+| BenchmarkEvolve_Scaling/pop_20-14 | 2288458 | 256.9 | 344 | 6 |
+| BenchmarkEvolve_Scaling/pop_50-14 | 2343584 | 257.0 | 344 | 6 |
+| BenchmarkEvolve_Scaling/pop_100-14 | 2301610 | 259.1 | 344 | 6 |
+| BenchmarkEvolve_Scaling/pop_200-14 | 2248326 | 263.9 | 344 | 6 |
+| BenchmarkEvolve_Scaling/pop_500-14 | 1782680 | 283.3 | 296 | 6 |
+| BenchmarkPopulationCreation/size_10-14 | 41516 | 13618 | 12685 | 66 |
+| BenchmarkPopulationCreation/size_20-14 | 35278 | 16810 | 19177 | 126 |
+| BenchmarkPopulationCreation/size_50-14 | 21813 | 27572 | 38683 | 306 |
+| BenchmarkPopulationCreation/size_100-14 | 13368 | 46014 | 71299 | 606 |
+| BenchmarkBest/pop_100-14 | 2692509 | 213.4 | 528 | 3 |
+| BenchmarkBest/pop_500-14 | 1224865 | 417.4 | 528 | 3 |
+| BenchmarkBest/pop_1000-14 | 685789 | 881.4 | 528 | 3 |
+| BenchmarkStats/pop_100-14 | 842 | 719403 | 4216 | 9 |
+| BenchmarkStats/pop_500-14 | 28 | 20278832 | 29816 | 10 |
+| BenchmarkStats/pop_1000-14 | 13 | 45417173 | 57120 | 12 |
+| BenchmarkCloneStrategy/params_5-14 | 3407923 | 175.6 | 528 | 3 |
+| BenchmarkCloneStrategy/params_20-14 | 1000000 | 535.8 | 1432 | 5 |
+| BenchmarkCloneStrategy/params_50-14 | 572359 | 1069 | 2584 | 5 |
+| BenchmarkCloneStrategy/params_100-14 | 295105 | 2178 | 5144 | 5 |
+| BenchmarkRealWorldEvolution-14 | 54 | 11285061 | 5015098 | 61568 |
+| BenchmarkApplyFitnessSharing/pop_10-14 | 5752 | 105515 | 55152 | 16 |
+| BenchmarkApplyFitnessSharing/pop_50-14 | 898 | 680076 | 290448 | 56 |
+| BenchmarkApplyFitnessSharing/pop_100-14 | 438 | 1381531 | 539968 | 106 |
+| BenchmarkApplyFitnessSharing/pop_200-14 | 206 | 2873668 | 1079363 | 206 |
+| BenchmarkApplyFitnessSharing/pop_500-14 | 76 | 7937787 | 2696770 | 506 |
+| BenchmarkApplyFitnessSharing_CustomSampling/limit20_size10-14 | 494 | 1155374 | 539808 | 106 |
+| BenchmarkApplyFitnessSharing_CustomSampling/limit100_size20-14 | 229 | 2555897 | 1079282 | 206 |
+| BenchmarkApplyFitnessSharing_CustomSampling/limit0_exact-14 | 961 | 627117 | 290448 | 56 |
+
+**./internal/runtime/eval**
+
+| Benchmark | Iterations | ns/op | B/op | allocs/op |
+|---|---|---|---|---|
+| BenchmarkExactMatchEvaluator_Evaluate-14 | 251219986 | 2.325 | 0 | 0 |
+| BenchmarkToolUsageEvaluator_Evaluate-14 | 21775554 | 27.42 | 0 | 0 |
+| BenchmarkAgentTestRunner_RunSingle-14 | 2130114 | 293.0 | 320 | 5 |
+| BenchmarkReportGenerator_GenerateMarkdown-14 | 186298 | 3198 | 4258 | 76 |
+| BenchmarkLoader_Load-14 | 13225 | 44634 | 34063 | 601 |
+
+**./internal/runtime/evolution**
+
+| Benchmark | Iterations | ns/op | B/op | allocs/op |
+|---|---|---|---|---|
+| BenchmarkKnowledgeGenome_Mutate-14 | 1561977 | 385.2 | 960 | 11 |
+| BenchmarkRecoveryGenome_Mutate-14 | 1329824 | 473.9 | 1280 | 21 |
+| BenchmarkDiffEngine_Workflow-14 | 1000000 | 531.5 | 352 | 3 |
+| BenchmarkCoordinator_Evaluate-14 | 93505875 | 6.267 | 0 | 0 |
+
+**./internal/runtime/memory/distillation**
+
+| Benchmark | Iterations | ns/op | B/op | allocs/op |
+|---|---|---|---|---|
+| BenchmarkScoreMemory-14 | 188377 | 3247 | 768 | 8 |
+| BenchmarkConflictDetection-14 | 580879 | 1061 | 0 | 0 |
+| BenchmarkNoiseFilter-14 | 84712 | 7053 | 592 | 11 |
+| BenchmarkMemoryClassification-14 | 297762 | 2050 | 592 | 15 |
+| BenchmarkExperienceExtraction-14 | 4701 | 132159 | 22864 | 267 |
+| BenchmarkTopNFilter-14 | 256652 | 3573 | 16328 | 10 |
+| BenchmarkMemoryOperations/Create-14 | 7130823 | 85.40 | 24 | 1 |
+| BenchmarkMemoryOperations/Classification-14 | 2159322 | 286.6 | 64 | 3 |
+| BenchmarkStringOperations/Format-14 | 9324412 | 65.34 | 64 | 3 |
+
+**./internal/runtime/protocol/skills**
+
+| Benchmark | Iterations | ns/op | B/op | allocs/op |
+|---|---|---|---|---|
+| BenchmarkCatalogBuild100Skills-14 | 78 | 7000764 | 2085096 | 17174 |
+| BenchmarkCatalogSearch100Skills/fts5-hit-14 | 39049 | 14899 | 1009 | 26 |
+| BenchmarkCatalogSearch100Skills/keyword-fallback-14 | 40464 | 14794 | 632 | 23 |
+| BenchmarkExperienceBestMatch100-14 | 190228 | 3200 | 96 | 2 |
+
+**./internal/tools/planner**
+
+| Benchmark | Iterations | ns/op | B/op | allocs/op |
+|---|---|---|---|---|
+| BenchmarkPlanner_FullPipeline-14 | 148581 | 3701 | 4780 | 38 |
+| BenchmarkPlanner_Parallel-14 | 141294 | 4014 | 6247 | 48 |
+| BenchmarkPlanner_UnknownRequest-14 | 708855 | 806.3 | 208 | 5 |
+
+**./internal/tools/resources/core**
+
+| Benchmark | Iterations | ns/op | B/op | allocs/op |
+|---|---|---|---|---|
+| BenchmarkToolRegistration-14 | 136197 | 4405 | 9464 | 12 |
+| BenchmarkToolExecution-14 | 33680664 | 17.77 | 0 | 0 |
+| BenchmarkToolFiltering-14 | 247032 | 2445 | 4568 | 10 |
+| BenchmarkResultCreation/Success-14 | 1000000000 | 0.2723 | 0 | 0 |
+| BenchmarkResultCreation/Error-14 | 1000000000 | 0.2638 | 0 | 0 |
+| BenchmarkParameterValidation-14 | 86558739 | 7.011 | 0 | 0 |
+| BenchmarkConcurrentToolExecution-14 | 4527225 | 133.0 | 8 | 1 |

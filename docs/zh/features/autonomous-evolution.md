@@ -436,7 +436,7 @@ graph LR
 ```go
 // 启用 NSGA-II 选择
 pop, _ := genome.NewPopulation(ctx, base, mutator,
-    genome.WithSelectionStrategy("nsga2"),
+    genome.WithSelectionStrategy("nsga2"), // 遗留入口：未接线——静默回退 tournament（没有任何代码写 DimensionScores）
     genome.WithNSGADimensions([]genome.NSGADimension{
         {Name: "success_rate", Maximize: true, Weight: 0.40},
         {Name: "quality",      Maximize: true, Weight: 0.25},
@@ -446,7 +446,7 @@ pop, _ := genome.NewPopulation(ctx, base, mutator,
 )
 ```
 
-**可用的选择策略：** `tournament`、`rank`、`roulette`、`sus`、`truncation`、`nsga2`、`nondominated`
+**可用的选择策略：** `tournament`、`rank`、`roulette`、`sus`、`truncation`、`nsga2`、`nondominated`——其中后两个是遗留入口，会静默回退 `tournament`（没有任何代码写 `DimensionScores`）
 
 ### 2. 稳态 GA 模式（Steady-State GA）
 
@@ -840,7 +840,7 @@ history := pop.History()  // 返回 []GenerationHistoryEntry
 | `MaxMutationRate` | 0.5 | 0.0–1.0 | 自适应变异率上限 |
 | `MaxStagnantGenerations` | 10 | 0–100+ | 无改进后触发生重置的代数 |
 | `DiversityThreshold` | 0.15 | 0.0–1.0 | 进入激进模式的最低多样性 |
-| `SelectionStrategy` | `tournament` | 7 种策略 | `tournament` / `rank` / `roulette` / `sus` / `truncation` / `nsga2` / `nondominated` |
+| `SelectionStrategy` | `tournament` | 7 种策略（含 2 个遗留） | `tournament` / `rank` / `roulette` / `sus` / `truncation` / `nsga2` / `nondominated`——`nsga2` 与 `nondominated` 为遗留入口，会回退 `tournament` |
 | `CrossoverType` | `uniform` | 3 种类型 | `uniform` / `two_point` / `segment` |
 | `SteadyState` | `false` | bool | 启用稳态 GA（每代部分替换） |
 | `SteadyStateReplaceRate` | 0.3 | 0.1–0.5 | 稳态模式下每代替换的个体比例 |

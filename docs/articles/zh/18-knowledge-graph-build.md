@@ -130,7 +130,7 @@ flowchart LR
 
 ## 七、公共 API 与 adapter
 
-`internal/knowledgeapi` 是权威类型域，把 `internal/knowledge` 的 `KnowledgeObject/Relation/WorkingGraph/KnowledgeStore/Normalizer/EntityMatcher/Validator/Summarizer/KnowledgePipeline` 等**逐个 type alias**；`api/knowledge/`（`knowledge.go`/`service.go`/`doc.go`）是 deprecated 转发层，供外部集成方导入而不碰 `internal/`。
+`internal/knowledgeapi` 是权威类型域，把 `internal/knowledge` 的 `KnowledgeObject/Relation/WorkingGraph/KnowledgeStore/Normalizer/EntityMatcher/Validator/Summarizer/KnowledgePipeline` 等**逐个 type alias**；`api/knowledge/`（`knowledge.go`/`service.go`/`doc.go`）曾是 deprecated 转发层，**已于 0.3.2 删除**——外部集成方直接导入 `internal/knowledgeapi` 而不碰 `internal/` 实现细节。
 
 `internal/knowledge/service/adapter.go`（我数的 **112 行**，旧文写 +126 不太准）把 `internal/knowledgeapi` 桥接到内部 runtime/retriever。
 

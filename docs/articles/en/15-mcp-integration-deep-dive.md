@@ -237,7 +237,7 @@ The Discovery subsystem (`internal/discovery/`) can discover MCP servers from se
 
 - `internal/discovery/`: engine, identity normalization, health checks, events, store
 - `internal/discovery/providers/`: filesystem scanners, binary probe
-- `api/discovery/`: a thin type-alias proxy for external callers (the files `discovery.go`/`doc.go` exist in the repo)
+- `api/discovery/`: a thin type-alias proxy for external callers — **removed in 0.3.2** (import the `internal/` package directly)
 
 ### The Provider system
 
@@ -497,7 +497,7 @@ func setupMCP(_ context.Context, mcpMgr *ares_mcp.MCPManager, registry *api_tool
 		}
 	}
 	// also bridge into the internal/apitools registry so dashboards see them...
-	// (api/tools is the deprecated forwarding layer post-M5)
+	// (api/tools was the deprecated forwarding layer post-M5; removed in 0.3.2 — use internal/apitools)
 	return internalReg, nil
 }
 ```

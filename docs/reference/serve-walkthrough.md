@@ -4,7 +4,7 @@
 > 每一步都给出 `file:line` 锚点，可直接跳源码核对。
 > 未加渲染的引号内容均为源码原文摘录。
 
-基线：`dev` @ `64d55fe4`，`VERSION=0.3.1`。
+基线：`dev` @ `7f23ef5d`，`VERSION=0.3.2`。
 
 ---
 
@@ -555,7 +555,7 @@ Guardrails 那行（`:151-156` 注释）是段自白：**此前 `gaCfg.Guardrail
 
 **⑧ 代际循环** — `runEvolutionTicker`（`:410`）。周期默认 5 分钟，`evolution.min_interval` 可覆盖（`:414-419`）。每次 tick 优先走 `legacySched.Tick`，其次 `wired.Scheduler.Tick`，都没有才退到 `popAdapter.Run`（`:432-443`）——注释说这是为了**让分数可见，使 `shouldEvolve` + guardrails + MinInterval 总是被应用**。跑完把这一代轨迹写进共享 tracer（`:448-451`），`/evolution/trajectory` 才有活数据。
 
-**⑨ LLM 建议管线** — `runLLMSuggestions`（`:461`）。15 分钟一轮：`buildEvolutionSuggestionPrompt`（基于当前进化状态与近期证据）→ `Generate` → `Parse` → 逐条 `Coordinator.Submit(proposal)` → `Coordinator.Evaluate(ctx)`。解析失败只 `Debug`——**LLM 回复不匹配任何已知模式是预期内的**（`:485-488`）。
+**⑨ LLM 建议管线** — `runLLMSuggestions`（`:461`）。15 分钟一轮：`buildEvolutionSuggestionPrompt`（基于当前进化状态与近期证据）→ `Generate` → `Parse` → 逐条 `UngatedPatcher.Submit(proposal)` → `UngatedPatcher.Evaluate(ctx)`。解析失败只 `Debug`——**LLM 回复不匹配任何已知模式是预期内的**（`:485-488`）。
 
 交叉算子在 `internal/evoapi/genome/genome.go`：`uniform` / `single_point` / `two_point` / `scattered`（`:17-22`），提示模板继承模式 `PromptInherit` / `PromptHalfSplit` / `PromptUniform`（`:27-31`）。`:78-80` 的注释记了一个历史 bug：`CrossoverType` 曾被静默丢弃，每次调用都跑内层引擎的 uniform 默认。
 
@@ -2453,7 +2453,7 @@ HTTP POST /api/tasks {capability:"code", payload:{input:"..."}}
 | Task Fabric vs Agent Fabric | `internal/fabric/task/`（任务状态机）vs `internal/fabric/agent/`（agent 能力/身份） |
 | `internal/runtime.Manager` vs `kernel.Orchestrator` | 前者管 agent 生命周期 + 插件总线；后者管系统组件图的控制面。`kernel/component.go:5-8` 有专门注释区分 |
 | `ares run` vs `ares serve` | 前者走 SDK 进程内路径（`runRun` 在 `main.go:335`，`sdk.NewRuntime` 在 `main.go:365`），**全程无 HTTP**；后者走 Bootstrap + HTTP 控制台。执行核都是 `agentruntime` |
-| **「动态图」** vs 第19节 的图投影 | `DynamicExecutor` / `WorkflowReloader` / `WorkflowService`（`docs/zh/features/dynamic-graph.md` 所述）是 Leader/Sub 时期的引擎，v0.3.x 已随该架构删除，**在 `cmd/` 与 `ares_bootstrap/` 中零引用，未接入 serve**。第19节 穿的是任务织物的图事件投影，两者不是一回事。第4.7节 建的进化 `MutableDAG` 又是第三样——那是给进化系统打补丁用的占位拓扑 |
+| **「动态图」** vs 第19节 的图投影 | `DynamicExecutor` / `WorkflowReloader` / `WorkflowService`（原 `docs/zh/features/dynamic-graph.md` 所述，该文已随 Leader/Sub 架构一并移除）是 Leader/Sub 时期的引擎，v0.3.x 已随该架构删除，**在 `cmd/` 与 `ares_bootstrap/` 中零引用，未接入 serve**。第19节 穿的是任务织物的图事件投影，两者不是一回事。第4.7节 建的进化 `MutableDAG` 又是第三样——那是给进化系统打补丁用的占位拓扑 |
 | GA genome vs 策略 | 一个 genome 承载一组策略参数（temperature / max_tokens 等），fitness 从共享 evidence store 读。策略的历史版本存 `evolution_strategies`（append-only，每版本一行），激活态由 ASM 管理 |
 | 量子 vs 任务 | 一个任务可以跑多个量子（yield→resume）。`t.Quantum` 是任务的执行深度，跨租约持有者累加 |
 

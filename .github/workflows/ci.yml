@@ -45,11 +45,17 @@ jobs:
         with:
           version: "latest"
 
+      # Do NOT use golangci/golangci-lint-action here: its `version: latest`
+      # resolves within the v1 line, which is built with an older Go and refuses
+      # a config for a newer target ("the Go language version (go1.24) used to
+      # build golangci-lint is lower than the targeted Go version (1.26.1)").
+      # .golangci.yml is v2-schema, so build the v2 line with this job's own
+      # toolchain and run the repo's tuned target.
+      - name: Install golangci-lint
+        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
+
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
-        with:
-          version: latest
-          timeout: 10m
+        run: make ci-lint
 
   test:
     name: Test
@@ -120,39 +126,7 @@ jobs:
           TEST_POSTGRES_DSN: "postgres://postgres:postgres@localhost:5432/ARES_test?sslmode=disable"
         run: go test -race -tags=integration -count=1 -timeout=300s ./...
 
-  benchmark:
-    name: Benchmarks
-    runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: pgvector/pgvector:pg15
-        env:
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: ARES_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.26'
-          cache: true
-
-      - name: Run benchmarks
-        env:
-          TEST_POSTGRES_DSN: "postgres://postgres:postgres@localhost:5432/ARES_test?sslmode=disable"
-        run: go test -bench=. -benchmem -count=1 -timeout=300s ./... 2>&1 | tee benchmark-output.txt
-
-      - name: Upload benchmark results
-        uses: actions/upload-artifact@v4
-        with:
-          name: benchmark-results
-          path: benchmark-output.txt
+  # No benchmark job: benchmark numbers are only meaningful on a quiet machine,
+  # and the job cost minutes per PR (it had already been reduced to a bare
+  # checkout + setup-go). Record baselines on demand instead — see
+  # benchmarks/benchmark_report.md and `make benchmark`.

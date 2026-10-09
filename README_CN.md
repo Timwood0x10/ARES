@@ -125,7 +125,7 @@ make examples          # 构建全部示例
 **记录位置：**
 
 - [plan/stability_performance_plan.md](plan/stability_performance_plan.md) —— 分阶段稳定性专项：每个已修缺陷的锁定测试、泄漏清剿（kernel 与 workflow-engine 两包挂 `goleak` 门禁）、HTTP panic 守卫 + requestID 可观测性、flaky 归因、soak 测试（`SOAK_SECONDS=N go test ./tests/soak/`）
-- [plan/benchmarks/](plan/benchmarks/) —— 入库的基准基线（7 包 38 基准）与 benchstat 对比流程；任何优化 PR 必须附前后对照
+- [benchmarks/](benchmarks/) —— 入库的基准基线（`benchmark_report.md`、`benchmark_results.json`）与 benchstat 对比流程；任何优化 PR 必须附前后对照。（仓库内**不要**链接 `plan/`：该目录仅本地存在且被 gitignore。）
 
 **AKG 为什么曾在一问短句就崩溃（0.3.1 已修复）。** 检索服务的构造器把知识库
 仓储当可选参数（允许为空），但所有 ≤10 字符的短查询会无条件进入精确检索管线，
@@ -134,8 +134,12 @@ handler panic。修复后：入口 fail-loud 返回明确的配置错误而非 p
 （`retrieval_nil_kbrepo_test.go` 锁定回归）；并且所有 HTTP handler 现在都跑在
 panic 守卫之下——返回带 requestID 的结构化 500，而不是掐断连接。
 
-**基线要点数字**（Apple M3 Max）：调度排空 ~8µs/任务（空转 tick ~8.5ns）、
-64 节点 L2 生长链端到端 ~132ms、500 对象混合检回 ~340ms。完整数字见基线文件。
+**基线要点数字**（Apple M3 Max 14 核；`-benchtime=500ms -count=1`；2026-10-09 针对
+0.3.2 重测）：调度排空 **100 任务 1.03ms**（~10µs/任务、4525 allocs）、空转 tick **8.6ns**
+（零分配）、64 节点 L2 生长链端到端 **132ms**（1.41MB、13,733 allocs）。500 对象混合检回
+最近一次测量为 ~340ms（2026-09-14），不在本次 0.3.2 重测范围内。
+`benchmarks/benchmark_results.json` 是 2026-09-12 的结构化数字；`benchmarks/benchmark_report.md`
+存放分包表格——2026-09-12 基线 + 2026-10-09 的 0.3.2 重测。
 
 质量门：`make check`（vet + staticcheck + golangci-lint + 测试）每次改动必须全绿。
 

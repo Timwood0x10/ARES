@@ -160,7 +160,7 @@ graph TD
 
     VER --> REL[CandidatePipeline.Release]
     REL --> R3[发布再确认<br/>门3 在任何 patch 构建/应用之前运行]
-    R3 -->|"通过"| RUN[Coordinator.Submit/Evaluate<br/>DecisionApply?]
+    R3 -->|"通过"| RUN[UngatedPatcher.Submit/Evaluate<br/>DecisionApply?]
     R3 -->|"失败"| REJ2[StatusRejected<br/>release regression gate]
     RUN -->|"Apply"| DEP[DeploymentPipeline 或 registry.Apply]
     RUN -.->|"Reject/Drop/Delay"| REJ2
@@ -403,7 +403,7 @@ func SortByScore(strategies []*mutation.Strategy) {
 
 ### 5.4 多目标与稳态（可选，至少代码在那）
 
-- **NSGA-II**（`multi_objective.go`）：四维默认 方向 成功/质量 Maximize、成本/延迟 Minimize；选择时按 Pareto 等级优先、同级按拥挤距离降序。想用就传 `"nsga2"` / `"nondominated"` 选择策略。
+- **NSGA-II**（`multi_objective.go`）：四维默认 方向 成功/质量 Maximize、成本/延迟 Minimize；选择时按 Pareto 等级优先、同级按拥挤距离降序。**0.3.2 起未接线**：没有任何代码写 `DimensionScores`，传 `"nsga2"` / `"nondominated"` 会静默回退 tournament；多目标入口已标 Deprecated。
 - **稳态 GA**（`EvolveSteadyState`）：每代只替换 10–50%（`replaceRate` 默认 0.3），保留探索历史，在线学习更平滑。
 - **规范/选择分数分离**（`effectiveScore()`）：`Score` 绝不临时改，`SelectionScore` 每代从 0 开始被适应度共享调整，防污染 canonical fitness。
 
@@ -437,7 +437,7 @@ Swap / Split / Merge / SetMetadata
 
 ## 七、进化怎么打到运行系统上：L1 MutableDAG（与 bootstrap 的接线）
 
-进化的"作动面"不是黑盒。`internal/ares_bootstrap/provide_new_evolution.go` 的 `ProvideNewEvolution` 一次性装好：Evidence Store → Genome Registry → Diff Registry → Patch Registry → Coordinator。它注册四类基因组与四类 differ（workflow/knowledge/recovery/memory），并在 patch registry 里挂上对应执行器。
+进化的"作动面"不是黑盒。`internal/ares_bootstrap/provide_new_evolution.go` 的 `ProvideNewEvolution` 一次性装好：Evidence Store → Genome Registry → Diff Registry → Patch Registry → `UngatedPatcher`。它注册四类基因组与四类 differ（workflow/knowledge/recovery/memory），并在 patch registry 里挂上对应执行器。
 
 但有两个关键问题是**初始化时解决不了的**，需要事后注入"活对象"：
 
@@ -455,7 +455,7 @@ graph TD
 
     C --> T[SetToolClassDAG<br/>注入 L1 能力图: toolName#argShape<br/>enabled/budget/prior 元数据]
 
-    D1 --> E[Coordinator.Evaluate<br/>对通过的 patch 调用执行器 → 作用到运行系统]
+    D1 --> E[UngatedPatcher.Evaluate<br/>对通过的 patch 调用执行器 → 作用到运行系统]
 ```
 
 `UpdateLiveDAG(dag)` 干了三件事，全用"就地替换"而非"重新注册"（因为 `patch.Registry.Register` **不能覆盖已注册的 key**，直接重注册必失败）:
