@@ -12,6 +12,8 @@ const redactedMarker = "***"
 //   - LLM.Extra values (custom provider credentials ride here)
 //   - Storage.Password
 //   - Security.JWTSecret
+//   - Security.APIKey (HTTP control-plane credential)
+//   - Security.ArenaAPIKey
 //   - Introspect.Token
 //   - Kernel.Chaos.StopToken (halts live fault injection)
 //   - MCP servers' stdio Env values and SSE Headers values
@@ -35,10 +37,14 @@ func (c *Config) Redacted() *Config {
 		out.Storage.Password = redactedMarker
 	}
 
-	// JWT signing secret and arena write credential.
+	// JWT signing secret, dedicated control-plane API key, and arena write
+	// credential.
 	out.Security = c.Security
 	if out.Security.JWTSecret != "" {
 		out.Security.JWTSecret = redactedMarker
+	}
+	if out.Security.APIKey != "" {
+		out.Security.APIKey = redactedMarker
 	}
 	if out.Security.ArenaAPIKey != "" {
 		out.Security.ArenaAPIKey = redactedMarker

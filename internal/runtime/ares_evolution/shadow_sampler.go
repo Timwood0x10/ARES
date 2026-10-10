@@ -150,6 +150,9 @@ func (s *ShadowSampler) Prime(ctx context.Context, candidate, active *mutation.S
 		// here would make the gate a rubber stamp.
 		return
 	}
+	// Fresh dedicated evidence budget per Prime: one candidate's gate
+	// sampling must not consume the next candidate's evidence budget.
+	s.evaluator.ResetEvidenceBudget()
 
 	timeout := s.timeout
 	if timeout <= 0 {

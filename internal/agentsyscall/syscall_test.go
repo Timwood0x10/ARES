@@ -424,8 +424,8 @@ func TestAskAgent_NotWiredFailsLoud(t *testing.T) {
 // TestAskAgent_EmptyTargetRejected verifies the Kernel enforces a non-empty
 // target even when the primitive is wired.
 func TestAskAgent_EmptyTargetRejected(t *testing.T) {
-	kernel := NewKernel(nil, nil, nil, nil, WithAskAgent(func(ctx context.Context, from, to, topic string, payload any) error {
-		return nil
+	kernel := NewKernel(nil, nil, nil, nil, WithAskAgent(func(ctx context.Context, from, to, topic string, payload any) (any, error) {
+		return nil, nil
 	}))
 	if _, err := kernel.AskAgent(kctx.WithCallerID(context.Background(), "agent-A"), AskAgentArgs{To: ""}); err == nil {
 		t.Fatal("ask_agent with empty target must be rejected")
@@ -438,10 +438,10 @@ func TestAskAgent_EmptyTargetRejected(t *testing.T) {
 func TestAskAgent_ForwardsToPrimitive(t *testing.T) {
 	var gotFrom, gotTo, gotTopic string
 	var gotPayload map[string]any
-	kernel := NewKernel(nil, nil, nil, nil, WithAskAgent(func(ctx context.Context, from, to, topic string, payload any) error {
+	kernel := NewKernel(nil, nil, nil, nil, WithAskAgent(func(ctx context.Context, from, to, topic string, payload any) (any, error) {
 		gotFrom, gotTo, gotTopic = from, to, topic
 		gotPayload = payload.(map[string]any)
-		return nil
+		return nil, nil
 	}))
 
 	res, err := kernel.AskAgent(kctx.WithCallerID(context.Background(), "agent-A"), AskAgentArgs{
@@ -470,8 +470,8 @@ func TestAskAgent_ForwardsToPrimitive(t *testing.T) {
 // binder and decodes its args (to/topic/payload) correctly.
 func TestAskAgent_BoundToBinder(t *testing.T) {
 	binder := &stubBinder{}
-	kernel := NewKernel(nil, nil, nil, nil, WithAskAgent(func(ctx context.Context, from, to, topic string, payload any) error {
-		return nil
+	kernel := NewKernel(nil, nil, nil, nil, WithAskAgent(func(ctx context.Context, from, to, topic string, payload any) (any, error) {
+		return nil, nil
 	}))
 	BindTools(binder, kernel)
 
@@ -630,9 +630,9 @@ func TestCreateTaskInheritsContextTenant(t *testing.T) {
 func TestAskAgentStampsContextTenant(t *testing.T) {
 	var got any
 	kernel := NewKernel(agentfabric.NewFabric(), nil, nil, nil)
-	kernel.SetAskAgent(func(_ context.Context, _, _, _ string, payload any) error {
+	kernel.SetAskAgent(func(_ context.Context, _, _, _ string, payload any) (any, error) {
 		got = payload
-		return nil
+		return nil, nil
 	})
 
 	// Forged tenant in the args is overwritten by the context tenant.

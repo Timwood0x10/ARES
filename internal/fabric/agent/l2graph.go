@@ -329,7 +329,12 @@ type routerCognition struct {
 	// NewRouterCognitionWithPlanner. Nil = no synthesis (tests, degraded
 	// wiring): the answer body emits the gap body.
 	synthesis *answerSynthesizer
-	logger    *slog.Logger
+	// agentFabric is the shared agent fabric, extracted from the planner
+	// (when available) so the tool executor can enforce per-agent
+	// ToolAllowlist at execution time. Nil = no enforcement
+	// (backward compatible, tests).
+	agentFabric *Fabric
+	logger      *slog.Logger
 }
 
 var _ Cognition = (*routerCognition)(nil)
@@ -365,6 +370,14 @@ func NewRouterCognitionWithPlanner(binder ToolBinder, planner Cognition, session
 			chat:     pc.chat,
 			assemble: pc.assembleAnswerMessages,
 		}
+		r.agentFabric = pc.agentFabric
+		if r.agentFabric == nil && r.logger != nil {
+			// Degraded wiring: without the planner's shared agent fabric the
+			// execution-time ToolAllowlist guard cannot resolve the executing
+			// agent, so a restricted agent would run unrestricted. Surface it
+			// once at construction instead of failing open silently.
+			r.logger.Warn("agentfabric: router built without the planner's agent fabric — per-agent ToolAllowlist enforcement is disabled at execution time")
+		}
 	}
 	return r
 }
@@ -380,7 +393,7 @@ func (r *routerCognition) ExecuteStep(ctx context.Context, task *models.Task) (*
 		if strings.TrimSpace(tool) == "" || r.binder == nil {
 			return nil, fmt.Errorf("agentfabric: tool node %q has no binder", name)
 		}
-		return (&toolCognition{tool: tool, binder: r.binder, logger: r.logger}).ExecuteStep(ctx, task)
+		return (&toolCognition{tool: tool, binder: r.binder, agentFabric: r.agentFabric, logger: r.logger}).ExecuteStep(ctx, task)
 	case name == answerAgentType:
 		return (&answerCognition{
 			logger:    r.logger,
@@ -429,9 +442,10 @@ func (c *rootCognition) ExecuteStep(_ context.Context, task *models.Task) (*Step
 // quantum. It is stateless — all inputs ride the task — so one instance can
 // drive many tool nodes.
 type toolCognition struct {
-	tool   string
-	binder ToolBinder
-	logger *slog.Logger
+	tool        string
+	binder      ToolBinder
+	agentFabric *Fabric // optional: for per-agent ToolAllowlist enforcement (E3)
+	logger      *slog.Logger
 }
 
 var _ Cognition = (*toolCognition)(nil)
@@ -451,6 +465,23 @@ func (c *toolCognition) ExecuteStep(ctx context.Context, task *models.Task) (*St
 	// serves every agent, so the id rides the quantum-scoped executingAgentKey
 	// on the task payload (executor.go withExecutingAgent).
 	ctx = kctx.WithCallerID(ctx, executingAgentID(task.Payload))
+
+	// Enforce the per-agent ToolAllowlist at execution time. The planner
+	// already checks at growth time, but a tool node grown before the
+	// allowlist was set — or a graph where the allowlist changed between
+	// growth and execution — must not slip through. This is the
+	// execution-time guardrail.
+	if c.agentFabric != nil {
+		agentID := executingAgentID(task.Payload)
+		if agentID != "" {
+			if agent, err := c.agentFabric.Get(agentID); err == nil {
+				if !agent.IsToolAllowed(c.tool) {
+					return nil, fmt.Errorf("agentfabric: tool %q blocked by per-agent allowlist for agent %q", c.tool, agentID)
+				}
+			}
+		}
+	}
+
 	res, err := c.binder.CallTool(ctx, c.tool, argsFromPayload(task.Payload))
 	if err != nil {
 		return nil, fmt.Errorf("agentfabric: tool %q call: %w", c.tool, err)
@@ -472,6 +503,13 @@ func executingAgentID(payload map[string]any) string {
 // answerContentKey is the arg a terminal answer node reads its body from,
 // e.g. AddToolNode(ctx, id, "answer", map[string]any{"content": ...}, dep).
 const answerContentKey = "content"
+
+// answerTruncatedKey is the arg stamped on an answer node grown by the
+// planner's depth guard: it marks the session's final answer as truncated
+// (the plan hit the growth-depth upper bound and the answer was forced).
+// answerCognition copies it into the terminal result metadata so external
+// callers can distinguish "completed" from "hit the depth bound".
+const answerTruncatedKey = "truncated"
 
 // unansweredBody is the body emitted when a terminal answer node carries no
 // supplied content. It states the absence instead of reading like a result:
@@ -535,7 +573,9 @@ var _ Cognition = (*answerCognition)(nil)
 
 // ExecuteStep completes the terminal node with the answer content supplied
 // on the node; a content-less node completes with the synthesized answer
-// when synthesis is wired, else with the explicit gap body.
+// when synthesis is wired, else with the explicit gap body. A node stamped
+// with the depth-guard truncation marker carries it into the terminal
+// result metadata so external callers can detect the truncation.
 func (c *answerCognition) ExecuteStep(ctx context.Context, task *models.Task) (*StepOutcome, error) {
 	body, ok := argsFromPayload(task.Payload)[answerContentKey].(string)
 	if !ok || strings.TrimSpace(body) == "" {
@@ -547,6 +587,12 @@ func (c *answerCognition) ExecuteStep(ctx context.Context, task *models.Task) (*
 	}
 	result := models.NewTaskResult(task.TaskID, task.AgentType)
 	result.SetSuccess([]*models.RecommendItem{{ItemID: task.TaskID, Content: body}}, "answer node terminated session")
+	if truncated, ok := argsFromPayload(task.Payload)[answerTruncatedKey].(bool); ok && truncated {
+		if result.Metadata == nil {
+			result.Metadata = make(map[string]any)
+		}
+		result.Metadata[answerTruncatedKey] = true
+	}
 	if c.sessions != nil && strings.TrimSpace(task.SessionID) != "" {
 		// The session ends here: drop the graph handle and stop the
 		// incremental-compile subscription so no new nodes can grow into

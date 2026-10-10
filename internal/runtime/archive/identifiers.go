@@ -7,9 +7,9 @@ import (
 	"strings"
 )
 
-// Compiled regexes for P3 identifier protection (see
-// plan/context_compression_strategy.md). These are package-level and
-// immutable after init, so they are safe for concurrent use.
+// Compiled regexes for P3 identifier protection (the P0-P3 retention scheme
+// documented in this package's doc.go). These are package-level and immutable
+// after init, so they are safe for concurrent use.
 var (
 	// reCommitHash matches abbreviated (7+) or full (40) lowercase hex commit
 	// hashes. The word boundary prevents matching hex-like substrings inside

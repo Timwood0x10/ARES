@@ -87,7 +87,7 @@ graph LR
 | — | `flight.NewFlightRecorder` + `.Start(ctx)` | `FlightRecorder` | 共享单例，assert 失败不致命 |
 | — | `wireLegacyEvolution` → `ProvideEvolution(...)` | `Evolution` | 门控 Enabled 且依赖齐备 |
 | — | `wireRetrievers(...)` | （注入 Memory） | best-effort |
-| — | Deployment pipeline → `SetDeployer` | （注入 Coordinator） | 门控 `cfg.Evolution.Deployment.Enabled` |
+| — | Deployment pipeline → `SetDeployer` | （注入 UngatedPatcher） | 门控 `cfg.Evolution.Deployment.Enabled` |
 | 9 | `wireGAEvolution(ctx, cfg, comp, newEvol, guidanceProvider)` | （GA + ticker + lifecycle） | 门控 `cfg.Evolution.Enabled` |
 | 10 | `ProvideDiscovery(ctx, &cfg.Discovery, comp.EventStore)` | `Discovery` | `ErrDiscoveryDisabled` 视为关闭 |
 | 11 | `wireSystemRuntime(ctx, cfg, &comp)` | `SystemRuntime`, `SystemRegistry` | 观察性注册 |
@@ -145,7 +145,7 @@ type Components struct {
 | `ProvideMCP(ctx, cfg) (*ares_mcp.MCPManager, error)` | MCP | `NewMCPManager` + `Start` |
 | `ProvideLLM(cfg) (*LLMComponents, error)` | LLM | `llm.NewClient` + 回调 + `CostDashboard` |
 | `ProvideObservability(tracer, feedback, spans) (*ObservabilityProviders)` | Dashboard | `IntrospectOptions()` 喂给 introspect |
-| `ProvideNewEvolution(dag, rt, memoryStore, evStore) (*NewEvolutionComponents, error)` | NewEvolution | 注册 Genome/Diff/Patch 三个 Registry + Coordinator |
+| `ProvideNewEvolution(dag, rt, memoryStore, evStore) (*NewEvolutionComponents, error)` | NewEvolution | 注册 Genome/Diff/Patch 三个 Registry + UngatedPatcher |
 | `ProvideEvolution(ctx, cfg, eventStore, expRepo, llmClient, fr) (*EvolutionComponents, error)` | 旧 Evolution | 需要全套依赖才非空 |
 
 `NewEvolutionComponents` 暴露 `UpdateLiveDAG(dag)`、`UpdateLiveKnowledgeRuntime(rt)`、`SetToolClassDAG(dag)`——serve 在 Agent 装配好后把"真实运行时"注入进进化系统（在占位图上就地 `SetDAG`/`SetGraph`，因为 `patch.Registry.Register` **不能覆盖**已注册的 key）。

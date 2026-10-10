@@ -130,3 +130,19 @@ func buildTestDAG(t *testing.T) *engine.MutableDAG {
 	require.NoError(t, err)
 	return dag
 }
+
+// TestWorkflowGenome_MutateEmptyAgentPoolNoPanic locks the GA-soak crash
+// fix: a WorkflowGenomeConfig built without AgentPool (struct literals
+// bypass DefaultWorkflowGenomeConfig) must make the pool-dependent
+// operators no-op instead of panicking on rand.Intn(0) — the panic killed
+// the whole serve process on the first real evolution cycle.
+func TestWorkflowGenome_MutateEmptyAgentPoolNoPanic(t *testing.T) {
+	dag := buildTestDAG(t)
+	cfg := DefaultWorkflowGenomeConfig()
+	cfg.AgentPool = nil
+	g := NewWorkflowGenome(dag, cfg)
+
+	children, err := g.Mutate(context.Background(), 8)
+	require.NoError(t, err)
+	require.Len(t, children, 8)
+}

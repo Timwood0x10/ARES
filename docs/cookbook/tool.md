@@ -12,18 +12,17 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/Timwood0x10/ares/api/tools"
 	"github.com/Timwood0x10/ares/sdk"
 )
 
 func main() {
 	ctx := context.Background()
 
-	rt := sdk.MustNew(sdk.WithOllama("llama3.2"))
+	rt := sdk.NewRuntime(sdk.WithOllama("llama3.2"))
 	defer rt.Close()
 
 	// Register a custom tool.
-	rt.ToolRegistry().Register(tools.ToolFunc{
+	rt.ToolRegistry().Register(sdk.ToolFunc{
 		ToolName: "weather",
 		ToolDesc: "Get weather for a city",
 		Fn: func(_ context.Context, p map[string]any) (any, error) {
@@ -46,7 +45,7 @@ func main() {
 
 ## Key Points
 
-- Tools implement `tools.Tool` interface: `Name()`, `Description()`, `Execute()`.
+- Tools implement the `sdk.Tool` interface: `Name()`, `Description()`, `Execute()`.
 - `ToolFunc` wraps a function as a tool — quickest way to get started.
 - The LLM decides when to call tools via ReAct loop.
 - Built-in tools (calculator, web_search, file_tools) are auto-registered.

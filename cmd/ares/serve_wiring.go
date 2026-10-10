@@ -483,15 +483,15 @@ func startServeHTTPAndHooks(
 	// without credentials still see the exposure.
 	authConfigured := cfg.Security.AuthEnabled && cfg.Security.JWTSecret != ""
 
-	// API key for destructive endpoints (agents/chaos/tools). When empty,
-	// all destructive requests are denied (deny-by-default). The credential
-	// is llm.api_key from ares.yaml — the single configuration entry point
-	// (no environment variable exists for it). Local clients (e.g. the
-	// 28-collab-graphs fixture) present the same ares.yaml key. Anything
-	// that learns the LLM key also holds the control-plane write
-	// credential, so keep ares.yaml protected (loopback bind, file
-	// permissions, not committed to VCS).
-	serveAPIKey := cfg.LLM.APIKey
+	// Control-plane HTTP credential: security.api_key when set, else the
+	// legacy fallback llm.api_key — both from ares.yaml, the single
+	// configuration entry point (no environment variable exists for either).
+	// Dedicated security.api_key decouples the HTTP gate from the LLM
+	// provider credential; the fallback preserves pre-existing deployments.
+	// Empty result = deny-by-default on every gated endpoint. Anything
+	// holding this value holds the control-plane write credential, so keep
+	// ares.yaml protected (loopback bind, file permissions, not in VCS).
+	serveAPIKey := resolveServeAPIKey(cfg)
 
 	// M-S1: the control plane's exposure state is printed on every startup —
 	// bind address, credential layers, introspect token — so the effective
@@ -569,6 +569,11 @@ func startServeHTTPAndHooks(
 		// Peer runtime kernel: powers the POST /api/tasks submission endpoint
 		// (submitPeerTask).
 		kernel: peerKernel,
+		// External one-interface entry defaults, sourced from ares.yaml only:
+		// server.default_capability for capability-less submissions and
+		// tasks.wait_timeout for the `?wait=` default sync-wait.
+		defaultCapability: resolveDefaultCapability(cfg),
+		taskWaitDefault:   resolveTaskWaitDefault(cfg),
 		// Chaos emergency-stop credential: POST /api/chaos/stop
 		// requires a matching X-Chaos-Token header; empty disables the route.
 		chaosStopToken: cfg.Kernel.Chaos.StopToken,

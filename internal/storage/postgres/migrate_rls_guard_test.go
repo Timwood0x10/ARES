@@ -6,7 +6,7 @@ import (
 )
 
 // TestStorageMigrationsNeverActivateRLS locks the signed 方案 B decision
-// (plan/0.3.1plan/tenant_isolation.md, 残骸清除 2026-09-13): tenant isolation
+// (residue cleanup, 2026-09-13): tenant isolation
 // is carried by explicit tenant_id predicates in repository queries only —
 // never by RLS policies.
 //

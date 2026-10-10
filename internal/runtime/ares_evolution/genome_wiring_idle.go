@@ -38,25 +38,24 @@ func buildActiveStrategyManager(cfg SystemConfig) (*ActiveStrategyManager, error
 }
 
 // buildShadowEvaluator creates the shadow evaluator with optional scorer.
+//
+// Scorer contract for shadow comparisons: the evaluator draws evidence via
+// TieredScorer.ScoreEvidence (cache BYPASSED) so each minSamples comparison
+// against a different replay window is an independent draw when the scorer
+// is non-deterministic. The per-generation cache serves population fitness
+// scoring only — routing shadow comparisons through it made every window
+// return the first draw's score (win rate 0/1, MinSamples satisfied by
+// repetition). DeterministicScorer therefore reflects ONLY an explicit
+// fixed seed (temperature 0), which is the one condition that still makes
+// independent draws identical.
 func buildShadowEvaluator(cfg SystemConfig, tiered *scoring.TieredScorer, baseStrategy *mutation.Strategy) *ShadowEvaluator {
-	// The tiered scorer caches by strategy hash for the whole generation, so the
-	// FIRST comparison populates the cache and every later one is a cache hit
-	// returning the identical score. That makes the scorer effectively
-	// deterministic even with a temperature>0 LLM behind it, which the previous
-	// code only flagged when an explicit seed was configured. Record it here so
-	// the warning below reflects what actually happens.
-	if tiered != nil && cfg.Scorer != nil {
-		cfg.ShadowEvalConfig.DeterministicScorer = true
-	}
 	shadowEval := NewShadowEvaluator(cfg.ShadowEvalConfig)
 	shadowEval.SetActiveStrategy(baseStrategy)
 	// Shadow scoring is budget-gated ONLY when an LLM scorer is actually
-	// wired (cfg.Scorer != nil ⇔ evolution.llm_scoring enabled). A raw
-	// cfg.Scorer here would let every Submit's Prime run minSamples×2 LLM
-	// calls with zero accounting against MaxLLMCallsPerGeneration;
-	// TieredScorer instead enforces the budget
-	// (TryRecordLLMCall), reuses the per-generation score cache, and falls
-	// back to the heuristic when the budget is exhausted.
+	// wired (cfg.Scorer != nil ⇔ evolution.llm_scoring enabled).
+	// TieredScorer enforces the budget (TryRecordLLMCall) and falls back to
+	// the heuristic when the budget is exhausted; ScoreEvidence deliberately
+	// skips the population-fitness cache (see the doc comment above).
 	//
 	// Without an LLM scorer the tiered scorer is heuristic-only
 	// (ConstantScorer 50): every comparison would be an exact tie, which is
@@ -73,8 +72,25 @@ func buildShadowEvaluator(cfg SystemConfig, tiered *scoring.TieredScorer, baseSt
 	// path (unit + closure) working.
 	if cfg.Scorer != nil {
 		if tiered != nil {
+			// DEDICATED evidence budget (GA-soak fix): shadow draws run on
+			// their own Budget derived from MaxLLMCallsPerGeneration, NOT
+			// the population scoring budget — population scoring exhausting
+			// the generation budget used to starve the gate down to
+			// prior-vs-prior ties. ScoreEvidence bypasses the cache and
+			// consumes THIS budget; Prime refreshes it via
+			// ResetEvidenceBudget.
+			shadowTiered, _, terr := newShadowEvidenceTiered(cfg)
+			if terr != nil {
+				log.WarnContext(context.Background(),
+					"shadow evidence scorer construction failed, falling back to population tiered scorer",
+					"method", "buildShadowEvaluator", "error", terr)
+				shadowTiered = tiered
+			} else {
+				shadowEval.SetEvidenceTiered(shadowTiered)
+			}
+			evidenceScorer := shadowTiered
 			shadowEval.SetShadowScorer(func(ctx context.Context, s *mutation.Strategy) float64 {
-				score, _, err := tiered.Score(ctx, s)
+				score, _, err := evidenceScorer.ScoreEvidence(ctx, s)
 				if err != nil {
 					log.WarnContext(ctx, "shadow scorer failed, treating as score 0", "method", "buildShadowEvaluator", "strategy_id", s.ID, "error", err)
 					return 0
@@ -91,7 +107,7 @@ func buildShadowEvaluator(cfg SystemConfig, tiered *scoring.TieredScorer, baseSt
 	if cfg.ShadowEvalConfig.DeterministicScorer {
 		log.Warn("shadow evaluator: scorer is deterministic — comparisons are identical, MinSamples is satisfied by repetition, not by independent evidence",
 			"min_samples", cfg.ShadowEvalConfig.MinSamples,
-			"reason", "per-generation score cache and/or fixed LLM seed",
+			"reason", "fixed LLM seed (temperature 0)",
 		)
 	}
 	log.InfoContext(context.Background(), "shadow evaluation enabled", "method", "buildShadowEvaluator",
@@ -101,6 +117,47 @@ func buildShadowEvaluator(cfg SystemConfig, tiered *scoring.TieredScorer, baseSt
 		"budget_gated", cfg.Scorer != nil && tiered != nil,
 	)
 	return shadowEval
+}
+
+// shadowEvidenceBudget derives the dedicated LLM-call cap for shadow
+// evidence draws from the population generation budget: floor of 4 (a
+// MinSamples-scale window needs several independent draws), quarter of the
+// population budget above that. Code-level derivation keeps the yaml surface
+// unchanged (G2 config-contract gate) while decoupling gate sampling from
+// population scoring exhaustion.
+func shadowEvidenceBudget(maxPopPerGeneration int) int {
+	budget := maxPopPerGeneration / 4
+	if budget < 4 {
+		budget = 4
+	}
+	return budget
+}
+
+// newShadowEvidenceTiered builds the shadow path's dedicated
+// budget-gated scorer: a fresh Budget at shadowEvidenceBudget cap, a fresh
+// small ScoreCache (ScoreEvidence bypasses cache reads/writes; the cache
+// only satisfies the TieredScorer constructor), and the configured LLM +
+// heuristic scorer functions.
+func newShadowEvidenceTiered(cfg SystemConfig) (*scoring.TieredScorer, int, error) {
+	budgetLimit := shadowEvidenceBudget(cfg.MaxLLMCallsPerGeneration)
+	budget, err := scoring.NewBudget(budgetLimit)
+	if err != nil {
+		return nil, budgetLimit, fmt.Errorf("shadow evidence budget: %w", err)
+	}
+	heuristic := cfg.HeuristicScorer
+	if heuristic == nil {
+		heuristic = func(*mutation.Strategy) float64 { return 0.5 }
+	}
+	ts, err := scoring.NewTieredScorer(scoring.TieredScorerConfig{
+		Cache:           scoring.NewScoreCache(16),
+		Budget:          budget,
+		HeuristicScorer: heuristic,
+		LLMScorer:       cfg.Scorer,
+	})
+	if err != nil {
+		return nil, budgetLimit, fmt.Errorf("shadow evidence tiered scorer: %w", err)
+	}
+	return ts, budgetLimit, nil
 }
 
 // guidanceHintAdapter adapts an evolution.GuidanceProvider to mutation.HintProvider.

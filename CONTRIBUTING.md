@@ -26,7 +26,7 @@ We welcome feature suggestions! Please:
 
 1. **Fork the repository** and create your branch from `master`
 
-2. **Follow coding standards** as defined in `plan/code_rules.md`
+2. **Follow the coding standards enforced by CI**: `.golangci.yml` + `make ci-lint` (0 issues required), plus `gofmt`/`go vet`/`staticcheck`. The standards document itself is maintained outside this repository.
 
 3. **Write meaningful commit messages**:
    ```

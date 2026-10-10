@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/agentruntime"
-	"github.com/Timwood0x10/ares/internal/core/models"
+	agentfabric "github.com/Timwood0x10/ares/internal/fabric/agent"
 	taskfabric "github.com/Timwood0x10/ares/internal/fabric/task"
 )
 
@@ -88,94 +88,40 @@ func (r *Runtime) submitThroughL2(ctx context.Context, execCore *agentruntime.Ex
 	if cancel != nil {
 		defer cancel()
 	}
-	ticker := time.NewTicker(l2PollInterval)
-	defer ticker.Stop()
-	// The stall verdict needs sustained evidence: a single poll landing in
-	// the answer-node compile gap must not kill a live session.
-	stalls := &agentruntime.StallDetector{}
-	for {
-		// Fast failure: a failed plan means the session can never answer.
-		if tk, err := r.sdkFabric.Task(taskID); err == nil && tk.State == taskfabric.StateFailed {
-			return nil, fmt.Errorf("sdk submit: task %s failed", taskID)
-		}
-		// Fast failure: a terminally failed answer node closes the session's
-		// sole exit — no answer can ever arrive (the plan itself may have
-		// completed, so the check above alone would spin to the deadline).
-		if l2SessionAnswerFailed(r.sdkFabric, sessionID) {
-			return nil, fmt.Errorf("sdk submit: session %s answer task failed", sessionID)
-		}
-		if answer, ok := l2SessionAnswer(r.sdkFabric, sessionID); ok {
-			if answer == "" {
-				return nil, fmt.Errorf("sdk submit: session %s answered empty", sessionID)
-			}
-			return &Result{
-				Output:     answer,
-				ToolCalls:  l2SessionToolCalls(r.sdkFabric, sessionID),
-				TokenUsage: l2PlanTokenUsage(r.sdkFabric, taskID),
-				Duration:   time.Since(start),
-			}, nil
-		}
-		// Fast failure: every session task terminal with no answer left means
-		// the graph can never grow one (a failed grown node cascades into the
-		// continuation plan node, and grown nodes retry zero times) — fail
-		// now instead of spinning the full deadline. The detector requires
-		// this to hold across consecutive polls so a transient gap in the
-		// async answer-node compile is not mistaken for death.
-		if stalls.Stalled(r.sdkFabric, sessionID, taskID) {
-			// Race guard: the answer-availability check above and this stall
-			// verdict are two separate reads, so the answer node can complete
-			// and record its body between them. Re-check once so a stall
-			// declared inside that window still returns the now-available
-			// answer instead of a spurious "stalled" error.
-			if answer, ok := l2SessionAnswer(r.sdkFabric, sessionID); ok {
-				return &Result{
-					Output:     answer,
-					ToolCalls:  l2SessionToolCalls(r.sdkFabric, sessionID),
-					TokenUsage: l2PlanTokenUsage(r.sdkFabric, taskID),
-					Duration:   time.Since(start),
-				}, nil
-			}
-			return nil, fmt.Errorf("sdk submit: session %s stalled — all tasks terminal, no answer", sessionID)
-		}
-		select {
-		case <-waitCtx.Done():
-			// Task.Timeout and a caller-context deadline share waitCtx; name
-			// the duration only when the task set one (a caller deadline is
-			// reported as the plain wrapped context error).
-			if waitCtx.Err() == context.DeadlineExceeded && taskBounded {
-				return nil, fmt.Errorf("sdk submit: task %s timed out after %s: %w", taskID, t.Timeout, context.DeadlineExceeded)
-			}
-			return nil, fmt.Errorf("sdk submit: task %s: %w", taskID, waitCtx.Err())
-		case <-ticker.C:
-		}
+	// The shared wait primitive (agentruntime.AwaitSessionResult) owns the
+	// invariants the loop used to maintain by hand: answer scan first, a
+	// race-guard re-check after a sustained stall verdict, and the single
+	// answer-decode path. Poll cadence and timeout semantics stay here.
+	opts := agentruntime.AwaitOptions{}
+	if taskBounded {
+		opts.Wait = t.Timeout
 	}
-}
-
-// l2SessionAnswer returns the first COMPLETED answer task's content for a
-// session. It scans fabric task ids (sess/<sid>/…/answer#…) rather than the
-// session graph: the answer body releases its session on success, so the
-// registry entry is already gone by the time the poll loop looks. The
-// "sess/<sid>/" boundary match keeps sibling sessions (sess-auto-1 vs
-// sess-auto-12) from shadowing each other. Continuation turns need no extra
-// staleness filter here: Sessions.Admit harvests the previous turn's terminal
-// tasks at re-admission, before this turn's plan can grow an answer.
-func l2SessionAnswer(f *taskfabric.Fabric, sessionID string) (string, bool) {
-	prefix := "sess/" + sessionID + "/"
-	for _, id := range f.IDs() {
-		if !strings.HasPrefix(id, prefix) || !strings.Contains(id, "/answer#") {
-			continue
+	aw := agentruntime.AwaitSessionResult(waitCtx, r.sdkFabric, sessionID, taskID, opts)
+	switch {
+	case aw.Err == nil:
+		if aw.Answer == "" {
+			return nil, fmt.Errorf("sdk submit: session %s answered empty", sessionID)
 		}
-		tk, err := f.Task(id)
-		if err != nil || tk.State != taskfabric.StateCompleted {
-			continue
+		return &Result{
+			Output:     aw.Answer,
+			ToolCalls:  l2SessionToolCalls(r.sdkFabric, sessionID),
+			TokenUsage: l2PlanTokenUsage(r.sdkFabric, taskID),
+			Duration:   time.Since(start),
+		}, nil
+	case aw.PlanFailed, aw.AnswerFailed:
+		return nil, fmt.Errorf("sdk submit: %w", aw.Err)
+	case aw.Stalled:
+		// The *StalledError already carries the E5 failure diagnostics.
+		return nil, fmt.Errorf("sdk submit: %w", aw.Err)
+	default:
+		// Wait-budget expiry: Task.Timeout and a caller-context deadline
+		// share waitCtx; name the duration only when the task set one (a
+		// caller deadline is reported as the plain wrapped context error).
+		if waitCtx.Err() == context.DeadlineExceeded && taskBounded {
+			return nil, fmt.Errorf("sdk submit: task %s timed out after %s: %w", taskID, t.Timeout, context.DeadlineExceeded)
 		}
-		content, err := l2AnswerContent(tk)
-		if err != nil || content == "" {
-			continue
-		}
-		return content, true
+		return nil, fmt.Errorf("sdk submit: task %s: %w", taskID, waitCtx.Err())
 	}
-	return "", false
 }
 
 // l2WaitContext bounds the settle-poll loop: an explicit Task.Timeout wins;
@@ -194,25 +140,6 @@ func l2WaitContext(ctx context.Context, timeout time.Duration) (waitCtx context.
 	}
 	waitCtx, cancel = context.WithTimeout(ctx, l2DefaultWait)
 	return waitCtx, false, cancel
-}
-
-// l2SessionAnswerFailed reports whether any answer task of the session is
-// terminally FAILED — the session's sole exit is closed, so the wait loop
-// can give up immediately instead of spinning to its deadline. Prior-turn
-// answers cannot false-trigger this: Sessions.Admit harvests a re-admitted
-// session's terminal tasks before this turn's plan can grow an answer, so
-// any answer# task in the fabric belongs to the current turn.
-func l2SessionAnswerFailed(f *taskfabric.Fabric, sessionID string) bool {
-	prefix := "sess/" + sessionID + "/"
-	for _, id := range f.IDs() {
-		if !strings.HasPrefix(id, prefix) || !strings.Contains(id, "/answer#") {
-			continue
-		}
-		if tk, err := f.Task(id); err == nil && tk.State == taskfabric.StateFailed {
-			return true
-		}
-	}
-	return false
 }
 
 // l2PlanTokenUsage reads the submission's LLM spend from the plan task's
@@ -249,7 +176,7 @@ func l2PlanTokenUsage(f *taskfabric.Fabric, planTaskID string) TokenUsage {
 // arrives: the answer node is the session's terminal exit, so the tool set
 // is frozen by then.
 func l2SessionToolCalls(f *taskfabric.Fabric, sessionID string) int {
-	prefix := "sess/" + sessionID + "/"
+	prefix := agentfabric.SessionTaskPrefix(sessionID)
 	calls := 0
 	for _, id := range f.IDs() {
 		if !strings.HasPrefix(id, prefix) {
@@ -264,28 +191,4 @@ func l2SessionToolCalls(f *taskfabric.Fabric, sessionID string) int {
 		}
 	}
 	return calls
-}
-
-// l2AnswerContent reads the terminal answer body from its completion
-// checkpoint (same read path as cmd/ares's sessionAnswerContent:
-// items[0].Content). The in-memory fabric keeps the concrete
-// []*models.RecommendItem type, so no serialization fallback is needed.
-func l2AnswerContent(tk *taskfabric.Task) (string, error) {
-	dc, err := taskfabric.DecodeCheckpoint(tk.Checkpoint)
-	if err != nil {
-		return "", err
-	}
-	sc, ok := dc.StepCheckpoint.(map[string]any)
-	if !ok {
-		return "", fmt.Errorf("answer checkpoint carries no result map")
-	}
-	raw, ok := sc["items"]
-	if !ok {
-		return "", fmt.Errorf("answer envelope carries no items")
-	}
-	items, ok := raw.([]*models.RecommendItem)
-	if !ok || len(items) == 0 {
-		return "", fmt.Errorf("answer items unreadable, got %T", raw)
-	}
-	return items[0].Content, nil
 }

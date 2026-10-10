@@ -560,6 +560,30 @@ func TestRun_CancelByContext(t *testing.T) {
 	}
 }
 
+// errScorer always fails; it exercises the failure-propagation path.
+type errScorer struct{ err error }
+
+func (e errScorer) Score(context.Context, any) (float64, error) { return 0, e.err }
+
+// TestRunStrategy_ReportsScorerFailureOverCancellation pins the root cause when
+// parallel scoring fails part-way: the first failure cancels the remaining runs,
+// and the spawning loop reports the cancellation it induced ("context canceled")
+// when it observes it before the wait, discarding the scorer error that caused
+// it. More runs than maxParallelRuns forces the loop past the semaphore, so the
+// defect reproduces deterministically instead of as a scheduling-dependent
+// CI-only flake of TestCandidateRegressionChecker_PropagatesScorerError
+// (2026-10-09).
+func TestRunStrategy_ReportsScorerFailureOverCancellation(t *testing.T) {
+	rt, err := NewRegressionTesterWithScorer(errScorer{err: errors.New("scorer failure")})
+	require.NoError(t, err)
+
+	runs := maxParallelRuns + 5
+	_, err = rt.runStrategy(context.Background(), "strategy", runs, []any{"case-1"})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "scorer failure",
+		"a scorer failure must be reported as such, not as the cancellation it induced")
+}
+
 // TestRun_InvalidConfig checks configuration validation.
 func TestRun_InvalidConfig(t *testing.T) {
 	tests := []struct {

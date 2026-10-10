@@ -165,11 +165,31 @@ func TestGraphPatchExecutor_Apply_RemoveEdge(t *testing.T) {
 	}
 }
 
+// stubScheduler is the Scheduler patch payload used by the scheduler-patch
+// tests. Those tests exercise the PatchChangeScheduler mechanism (apply,
+// rollback, concurrent apply vs SetScheduler) — any Scheduler implementation
+// serves, and no concrete ordering policy ships: the scheduler genome
+// dimension was retired (sdk.Graph runs fully-parallel ready batches, so
+// ordering schedulers have no execution decision left — see
+// internal/ares_bootstrap/provide_new_evolution.go).
+type stubScheduler struct {
+	// label distinguishes two stub instances in the concurrency test.
+	label string
+}
+
+// Select returns the first ready node; the stub carries no ordering policy.
+func (s *stubScheduler) Select(ready []string) string {
+	if len(ready) == 0 {
+		return ""
+	}
+	return ready[0]
+}
+
 func TestGraphPatchExecutor_Apply_ChangeScheduler(t *testing.T) {
 	g := buildPatcherTestGraph(t)
 	exec := NewGraphPatchExecutor(g)
 
-	newSched := NewRoundRobinScheduler()
+	newSched := &stubScheduler{label: "patched"}
 
 	rollback, err := exec.Apply(context.Background(), patch.RuntimePatch{
 		Type:  patch.PatchChangeScheduler,
@@ -180,7 +200,7 @@ func TestGraphPatchExecutor_Apply_ChangeScheduler(t *testing.T) {
 	assert.Equal(t, patch.PatchChangeScheduler, rollback.Type)
 
 	// Verify scheduler was changed.
-	assert.IsType(t, &RoundRobinScheduler{}, g.scheduler)
+	assert.IsType(t, &stubScheduler{}, g.scheduler)
 
 	// Verify rollback restores original scheduler.
 	_, ok := rollback.Value.(*DefaultScheduler)
@@ -213,7 +233,11 @@ func TestGraphPatchExecutor_CanApply(t *testing.T) {
 		{"add edge valid", patch.RuntimePatch{Type: patch.PatchAddEdge, Target: "A", Value: "C"}, true},
 		{"add edge empty value", patch.RuntimePatch{Type: patch.PatchAddEdge, Target: "A", Value: ""}, false},
 		{"add edge non-string value", patch.RuntimePatch{Type: patch.PatchAddEdge, Target: "A", Value: 42}, false},
-		{"change scheduler valid", patch.RuntimePatch{Type: patch.PatchChangeScheduler}, true},
+		{"change scheduler valid", patch.RuntimePatch{Type: patch.PatchChangeScheduler, Value: &stubScheduler{label: "can-apply"}}, true},
+		{"change scheduler missing value", patch.RuntimePatch{Type: patch.PatchChangeScheduler}, false},
+		// The retired producers emitted exactly this shape (a scheduler NAME);
+		// CanApply must reject it instead of letting it fail mid-apply.
+		{"change scheduler name string value", patch.RuntimePatch{Type: patch.PatchChangeScheduler, Value: "round_robin"}, false},
 		{"unsupported type", patch.RuntimePatch{Type: patch.PatchType(999)}, false},
 	}
 	for _, tt := range tests {
@@ -306,8 +330,6 @@ func TestGraphPatchExecutor_Apply_ChangeScheduler_Concurrent_NoRace(t *testing.T
 	g := buildPatcherTestGraph(t)
 	exec := NewGraphPatchExecutor(g)
 
-	priorities := map[string]int{"A": 1, "B": 2, "C": 3}
-
 	var wg sync.WaitGroup
 	for i := 0; i < 50; i++ {
 		wg.Add(2)
@@ -315,12 +337,12 @@ func TestGraphPatchExecutor_Apply_ChangeScheduler_Concurrent_NoRace(t *testing.T
 			defer wg.Done()
 			_, _ = exec.Apply(context.Background(), patch.RuntimePatch{
 				Type:  patch.PatchChangeScheduler,
-				Value: NewRoundRobinScheduler(),
+				Value: &stubScheduler{label: "patch"},
 			})
 		}()
 		go func() {
 			defer wg.Done()
-			_, _ = g.SetScheduler(NewPriorityScheduler(priorities))
+			_, _ = g.SetScheduler(&stubScheduler{label: "direct"})
 		}()
 	}
 	wg.Wait()

@@ -4,7 +4,7 @@
 > 每一步都给出 `file:line` 锚点，可直接跳源码核对。
 > 未加渲染的引号内容均为源码原文摘录。
 
-基线：`dev` @ `64d55fe4`，`VERSION=0.3.1`。
+基线：`dev` @ `7f23ef5d`，`VERSION=0.3.2`。
 
 ---
 
@@ -126,7 +126,7 @@ if isWildcardHost(cfg.Server.Host) && !authConfigured && cfg.Introspect.Token ==
 
 第二段是 fail-closed：`0.0.0.0`/`::` 绑定 + 无鉴权 + 无 introspect token → **拒绝启动**。三个逃生口：开 `security.auth_enabled`（并设 jwt_secret）、设 `introspect.token`、改绑 loopback。
 
-`isWildcardHost` 在 `serve.go:411`，只认 `"0.0.0.0"` 和 `"::"`。
+`isWildcardHost` 在 `serve.go:341`，只认 `"0.0.0.0"` 和 `"::"`。
 
 ---
 
@@ -540,7 +540,7 @@ Guardrails 那行（`:151-156` 注释）是段自白：**此前 `gaCfg.Guardrail
 
 **⑤ Scorer 与 G2 姿态** — `wireScorerAndShadowGate`（`:169`）。要点是**G2 闸的姿态必须在 `NewWiredEvolutionSystem` 之前定下来**（`:203-207` 注释），否则事后反注册。
 
-不变量（`:205-207`）：**跳过部署前验证，只允许在部署后验证已布防时**；两者皆无则 G2 保持 fail-closed。
+不变量（`:205-207`）：**跳过部署前验证，只允许在部署后验证已布防时**；两者皆无则 G2 保持 fail-closed。运行期同理（GA-soak 修复）：shadow 闸已注册但 decisive 比较数 < `shadow.min_samples`（冷启动平局/薄证据）且 rollback 已武装时，闸对该次决策 **skip**（快照 `shadow_gate_skip_reason` 可见）；rollback 未武装则维持 fail-closed 拒绝。
 
 `hasScorer := gaCfg.Scorer != nil || gaCfg.DeterministicScorerEnabled`（`:217`）。`:199-201` 这段解开了一个死锁：LLM scoring 关闭时置 `DeterministicScorerEnabled = true`，让 G2 闸保持注册，**仅凭执行归因证据就产出 shadow 对比**，一次 LLM 调用都不需要——注释称之为打破"zero-token ⇒ no G2"。
 
@@ -555,7 +555,7 @@ Guardrails 那行（`:151-156` 注释）是段自白：**此前 `gaCfg.Guardrail
 
 **⑧ 代际循环** — `runEvolutionTicker`（`:410`）。周期默认 5 分钟，`evolution.min_interval` 可覆盖（`:414-419`）。每次 tick 优先走 `legacySched.Tick`，其次 `wired.Scheduler.Tick`，都没有才退到 `popAdapter.Run`（`:432-443`）——注释说这是为了**让分数可见，使 `shouldEvolve` + guardrails + MinInterval 总是被应用**。跑完把这一代轨迹写进共享 tracer（`:448-451`），`/evolution/trajectory` 才有活数据。
 
-**⑨ LLM 建议管线** — `runLLMSuggestions`（`:461`）。15 分钟一轮：`buildEvolutionSuggestionPrompt`（基于当前进化状态与近期证据）→ `Generate` → `Parse` → 逐条 `Coordinator.Submit(proposal)` → `Coordinator.Evaluate(ctx)`。解析失败只 `Debug`——**LLM 回复不匹配任何已知模式是预期内的**（`:485-488`）。
+**⑨ LLM 建议管线** — `runLLMSuggestions`（`:461`）。15 分钟一轮：`buildEvolutionSuggestionPrompt`（基于当前进化状态与近期证据）→ `Generate` → `Parse` → 逐条 `UngatedPatcher.Submit(proposal)` → `UngatedPatcher.Evaluate(ctx)`。解析失败只 `Debug`——**LLM 回复不匹配任何已知模式是预期内的**（`:485-488`）。
 
 交叉算子在 `internal/evoapi/genome/genome.go`：`uniform` / `single_point` / `two_point` / `scattered`（`:17-22`），提示模板继承模式 `PromptInherit` / `PromptHalfSplit` / `PromptUniform`（`:27-31`）。`:78-80` 的注释记了一个历史 bug：`CrossoverType` 曾被静默丢弃，每次调用都跑内层引擎的 uniform 默认。
 
@@ -615,7 +615,7 @@ if serveConfigPath != "" {
 
 ### 5.2 ~~`createLLMAdapterWithFallback`~~ — 已移除（0.3.1 / independent-review F-07）
 
-旧版在此构造 `internal/llm/output` 的 `LLMAdapter` 并穿针引线传入 `createAndServeAgents`/`createPeerAgents`，但函数体从未消费它——它宣称的"运行时 fallback 链"从未真正执行。0.3.1 删除了这条死装配，`cmd/ares/llm_adapter.go`（含 `ErrNoLLMAdapter`）随之移除。`internal/llm/output` 包本体保留（仍有 `evolution` 侧的 Parse 消费者与测试），登记为 0.4 删除候选。
+旧版在此构造 `internal/llm/output` 的 `LLMAdapter` 并穿针引线传入 `createAndServeAgents`/`createPeerAgents`，但函数体从未消费它——它宣称的"运行时 fallback 链"从未真正执行。0.3.1 删除了这条死装配，`cmd/ares/llm_adapter.go`（含 `ErrNoLLMAdapter`）随之移除。`internal/llm/output` 包本体于 0.4 周期整包删除（全仓零生产/测试外消费者，G1 可达性门禁核验）——历史描述仅存于 `CHANGELOG.md` 与 `docs/reviews/`。
 
 运行期的 provider 降级只剩一条链：**`FailoverClient`**（见 5.3）。
 
@@ -2041,7 +2041,7 @@ g, err := c.sessions.GetSession(sessionID)
 depth := g.PlanDepth()
 if depth >= c.maxDepth {
  c.forcedAnswers.Add(1)
- return c.growAnswerNode(ctx, g, task, "max plan depth reached", nil)
+ return c.growAnswerNode(ctx, g, task, "", nil) // content-less: synthesis/gap-body answers; guard text never becomes the answer
 }
 
 prompt, err := c.assembleContext(ctx, task, g) // 从前驱路径组装上下文
@@ -2389,7 +2389,7 @@ if s.attribution != nil {
 HTTP POST /api/tasks {capability:"code", payload:{input:"..."}}
  │
  ├─ agent.go:543 ServeHTTP → 路由匹配 → authorize(authWrite)
- ├─ routes_tasks.go:56 handleSubmitTask → 校验 kernel/capability
+ ├─ agent_routes_tasks.go:56 handleSubmitTask → 校验 kernel/capability
  ├─ agent_kernel.go:186 submitPeerTask
  ├─ submit.go:151 Submit
  │ ├─ 归一 capability → "ares/plan"
@@ -2403,10 +2403,10 @@ HTTP POST /api/tasks {capability:"code", payload:{input:"..."}}
  ├─ HTTP 202 Accepted（异步，不等执行）
  │
  ├─ scheduler.go:253 Run 循环被事件唤醒
- ├─ dispatch.go:43 drain → ResumableTasks 返回 root
- ├─ execute.go:52 execute → buildCandidates（fabric 活 agent）
- ├─ execute.go:149 executeWithCandidates
- │ ├─ schedule.go:24 Schedule → Pick（评分）→ Acquire（epoch=1）
+ ├─ scheduler_dispatch.go:43 drain → ResumableTasks 返回 root
+ ├─ scheduler_execute.go:52 execute → buildCandidates（fabric 活 agent）
+ ├─ scheduler_execute.go:149 executeWithCandidates
+ │ ├─ fabric_schedule.go:24 Schedule → Pick（评分）→ Acquire（epoch=1）
  │ ├─ lifecycle.go:78 Acquire → LEASED
  │ ├─ quantum.go:72 RunQuantum
  │ │ ├─ lifecycle.go:113 Start → RUNNING
@@ -2453,7 +2453,7 @@ HTTP POST /api/tasks {capability:"code", payload:{input:"..."}}
 | Task Fabric vs Agent Fabric | `internal/fabric/task/`（任务状态机）vs `internal/fabric/agent/`（agent 能力/身份） |
 | `internal/runtime.Manager` vs `kernel.Orchestrator` | 前者管 agent 生命周期 + 插件总线；后者管系统组件图的控制面。`kernel/component.go:5-8` 有专门注释区分 |
 | `ares run` vs `ares serve` | 前者走 SDK 进程内路径（`runRun` 在 `main.go:335`，`sdk.NewRuntime` 在 `main.go:365`），**全程无 HTTP**；后者走 Bootstrap + HTTP 控制台。执行核都是 `agentruntime` |
-| **「动态图」** vs 第19节 的图投影 | `DynamicExecutor` / `WorkflowReloader` / `WorkflowService`（`docs/zh/features/dynamic-graph.md` 所述）是 Leader/Sub 时期的引擎，v0.3.x 已随该架构删除，**在 `cmd/` 与 `ares_bootstrap/` 中零引用，未接入 serve**。第19节 穿的是任务织物的图事件投影，两者不是一回事。第4.7节 建的进化 `MutableDAG` 又是第三样——那是给进化系统打补丁用的占位拓扑 |
+| **「动态图」** vs 第19节 的图投影 | `DynamicExecutor` / `WorkflowReloader` / `WorkflowService`（原 `docs/zh/features/dynamic-graph.md` 所述，该文已随 Leader/Sub 架构一并移除）是 Leader/Sub 时期的引擎，v0.3.x 已随该架构删除，**在 `cmd/` 与 `ares_bootstrap/` 中零引用，未接入 serve**。第19节 穿的是任务织物的图事件投影，两者不是一回事。第4.7节 建的进化 `MutableDAG` 又是第三样——那是给进化系统打补丁用的占位拓扑 |
 | GA genome vs 策略 | 一个 genome 承载一组策略参数（temperature / max_tokens 等），fitness 从共享 evidence store 读。策略的历史版本存 `evolution_strategies`（append-only，每版本一行），激活态由 ASM 管理 |
 | 量子 vs 任务 | 一个任务可以跑多个量子（yield→resume）。`t.Quantum` 是任务的执行深度，跨租约持有者累加 |
 

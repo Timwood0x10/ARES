@@ -130,7 +130,7 @@ flowchart LR
 | `internal/runtime/arena/score.go` | 三维弹性评分 |
 | `internal/runtime/arena/http.go` | REST + SSE + API key 认证 |
 | `internal/runtime/arena/integration.go` | FlightBridge — arena 动作 → 飞行记录器 |
-| `internal/runtime/arena/evolution_bridge.go` | EvolutionBridge → evolution Coordinator（待核实） |
+| `internal/runtime/arena/evolution_bridge.go` | EvolutionBridge → evolution UngatedPatcher（待核实回灌） |
 | `cmd/ares/arena.go` | `ares arena` CLI：run / validate / list / serve / survival / inspect |
 | `cmd/ares/serve_chaos.go` | 生产 kernel 混沌接线（上一节的 wireChaos） |
 
@@ -256,9 +256,9 @@ arena 暴露的都是破坏性端点（杀 leader、删节点、内存破坏）�
 
 **FlightBridge**（`integration.go`）把每个 arena 动作写成飞行记录器的 timeline 事件，失败动作再补一条 diagnostic 记录（并调用 `flight.SuggestFix`）。这是确定有效的接线：`service.Execute` 在每个动作后调用 `s.bridge.OnActionExecuted`。
 
-**EvolutionBridge**（`evolution_bridge.go`）把 arena 的失败动作翻译成给 evolution Coordinator 的 `PatchProposal`：`ActionRemoveNode → PatchInsertNode`、`ActionKillAgent/KillLeader → PatchReplaceNode`、`ActionSlowAgent/ToolTimeout → PatchChangeScheduler`、基础设施类故障 → `PatchChangeRecoveryStrategy` 等，并按 `chaosPriority` 分级：**priority ≥ 9** 的故障（杀 leader/orchestrator）走 `Coordinator.ApplyEmergency` 立即自愈，其余走 `Coordinator.Submit` 评估。
+**EvolutionBridge**（`evolution_bridge.go`）把 arena 的失败动作翻译成给 evolution `UngatedPatcher` 的 `PatchProposal`：`ActionRemoveNode → PatchInsertNode`、`ActionKillAgent/KillLeader → PatchReplaceNode`、基础设施类故障 → `PatchChangeRecoveryStrategy` 等，并按 `chaosPriority` 分级：**priority ≥ 9** 的故障（杀 leader/orchestrator）走 `UngatedPatcher.ApplyEmergency` 立即自愈，其余走 `UngatedPatcher.Submit` 评估。（慢 Agent / 工具超时曾映射为 `PatchChangeScheduler`，该映射已于 0.3.2 随该 patch 的另一个生产者一并移除——graph 应用器要求一个真实的 `Scheduler` 值，两个生产者都给不出。）
 
-> （待核实）：`OnActionExecuted` 在失败时确实会构造 proposal 并提交/紧急应用。但 "chaos→Coordinator"，以及"Coordinator 评估的这个 proposal 最终是否会产生真实的运行时/调度变更"，取决于 Coordinator 及其 patch 应用器的接线与行为。在 `arena serve` 这个**独立演练进程**里，它操作的是进程自己的 demo Agent 池与 MutableDAG；这些 patch 是否回灌到真实的生产运行时，我没有在这篇文章覆盖的代码里确认到，存疑，特此标注。
+> （待核实）：`OnActionExecuted` 在失败时确实会构造 proposal 并提交/紧急应用。但 "chaos→UngatedPatcher"，以及"UngatedPatcher 评估的这个 proposal 最终是否会产生真实的运行时/调度变更"，取决于 UngatedPatcher 及其 patch 应用器的接线与行为。在 `arena serve` 这个**独立演练进程**里，它操作的是进程自己的 demo Agent 池与 MutableDAG；这些 patch 是否回灌到真实的生产运行时，我没有在这篇文章覆盖的代码里确认到，存疑，特此标注。
 
 值得一并提的是 `cmd/ares/peer_mode.go` 里那条确定生效的**执行反馈回路**（`aresrecovery`，面向 Kernel 模型）：
 - `ExecutionAttribution.Record/RecordWithMetrics(agentID, capability, success, latency, retries, recovers)` 采集每个 (agent, capability) 的结果。
@@ -276,7 +276,7 @@ flowchart LR
         M["Stats + MetricsCollector"]
         EV["EventStore arena.* 事件 + 失败 evidence"]
         FB["FlightBridge → 飞行记录器"]
-        EB["EvolutionBridge → Coordinator（待核实回灌）"]
+        EB["EvolutionBridge → UngatedPatcher（待核实回灌）"]
         IN2 --> SV --> M
         SV --> EV --> FB
         SV --> EB

@@ -436,7 +436,7 @@ graph LR
 ```go
 // Enable NSGA-II selection
 pop, _ := genome.NewPopulation(ctx, base, mutator,
-    genome.WithSelectionStrategy("nsga2"),
+    genome.WithSelectionStrategy("nsga2"), // legacy entry point: not wired — silently falls back to tournament (no code writes DimensionScores)
     genome.WithNSGADimensions([]genome.NSGADimension{
         {Name: "success_rate", Maximize: true, Weight: 0.40},
         {Name: "quality",      Maximize: true, Weight: 0.25},
@@ -446,7 +446,7 @@ pop, _ := genome.NewPopulation(ctx, base, mutator,
 )
 ```
 
-**Available selection strategies:** `tournament`, `rank`, `roulette`, `sus`, `truncation`, `nsga2`, `nondominated`
+**Available selection strategies:** `tournament`, `rank`, `roulette`, `sus`, `truncation`, `nsga2`, `nondominated` — the last two are deprecated entry points that silently fall back to `tournament` (no code populates `DimensionScores`)
 
 ### 2. Steady-State GA Mode
 
@@ -840,7 +840,7 @@ history := pop.History()  // Returns []GenerationHistoryEntry
 | `MaxMutationRate` | 0.5 | 0.0–1.0 | Ceiling for adaptive mutation rate |
 | `MaxStagnantGenerations` | 10 | 0–100+ | Generations without improvement before reset |
 | `DiversityThreshold` | 0.15 | 0.0–1.0 | Minimum diversity before aggressive mode |
-| `SelectionStrategy` | `tournament` | 7 strategies | `tournament` / `rank` / `roulette` / `sus` / `truncation` / `nsga2` / `nondominated` |
+| `SelectionStrategy` | `tournament` | 7 strategies (2 legacy) | `tournament` / `rank` / `roulette` / `sus` / `truncation` / `nsga2` / `nondominated` — `nsga2` and `nondominated` are legacy entry points that fall back to `tournament` |
 | `CrossoverType` | `uniform` | 3 types | `uniform` / `two_point` / `segment` |
 | `SteadyState` | `false` | bool | Enable steady-state GA (partial replacement per gen) |
 | `SteadyStateReplaceRate` | 0.3 | 0.1–0.5 | Fraction of individuals replaced per gen in steady-state mode |

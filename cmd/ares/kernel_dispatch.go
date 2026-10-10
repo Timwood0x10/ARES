@@ -26,9 +26,12 @@ import (
 //   - *agentipc.DualTrackDispatcher: the assembled kernel dispatcher.
 //   - *agentipc.PolicyFlag: the execution policy flag.
 //
-// TODO(tech-debt): agentipc has no retry/dead-letter semantics (the legacy ahp
-// DLQProcessor was removed with the leader-sub protocol). Wire IPC retry or a
-// dead-letter path when multi-agent messaging scales.
+// TODO(tech-debt): agentipc records undeliverable/timed-out requests in a
+// bounded DeadLetterStore (bus.go DeadLetters), but there is NO automatic
+// retry/redelivery — a dead letter is diagnosed, never replayed. Wire a
+// retry/redelivery policy (bounded, with backoff) when multi-agent messaging
+// scales; the store already carries From/To/Topic/Payload/TraceID, so it is
+// the natural input to such a policy.
 func wireKernelDispatcher(
 	subAgents []subAgentCapability,
 ) (*agentipc.DualTrackDispatcher, *agentipc.PolicyFlag) {

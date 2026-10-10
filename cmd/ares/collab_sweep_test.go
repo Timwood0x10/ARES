@@ -37,7 +37,7 @@ func seedCollabTask(t *testing.T, f *taskfabric.Fabric, id, state string) {
 		t.Fatalf("start %s: %v", id, err)
 	}
 	if state == "failed" {
-		if err := f.Fail(id, holder, epoch); err != nil {
+		if err := f.Fail(id, holder, epoch, nil); err != nil {
 			t.Fatalf("fail %s: %v", id, err)
 		}
 	}

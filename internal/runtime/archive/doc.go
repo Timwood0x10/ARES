@@ -6,7 +6,7 @@
 // not git-squash), so later rounds can reference "round N's conclusion" rather
 // than a fragment of a compacted tool output.
 //
-// Retention follows a multi-level priority (see plan/context_compression_strategy.md):
+// Retention follows a multi-level priority (P0-P3, the scheme this package implements):
 //   - P0 architecture decisions and P3 identifiers (commit hash, PR#, IP:port)
 //     are preserved verbatim and never truncated.
 //   - P2 verification state (pass/fail) is preserved as a conclusion; the raw

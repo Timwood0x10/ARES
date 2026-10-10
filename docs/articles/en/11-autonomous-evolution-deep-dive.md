@@ -158,7 +158,7 @@ graph TD
 
     VER --> REL[CandidatePipeline.Release]
     REL --> R3[release reconfirmation<br/>gate-3 runs before any patch is built/applied]
-    R3 -->|"pass"| RUN[Coordinator.Submit/Evaluate<br/>DecisionApply?]
+    R3 -->|"pass"| RUN[UngatedPatcher.Submit/Evaluate<br/>DecisionApply?]
     R3 -->|"fail"| REJ2[StatusRejected<br/>release regression gate]
     RUN -->|"Apply"| DEP[DeploymentPipeline or registry.Apply]
     RUN -.->|"Reject/Drop/Delay"| REJ2
@@ -230,7 +230,7 @@ Gate 3 uses `ares_arena`'s `BatchScorer` (`ScoreBatch`): collapse count executio
 
 ### 3.7 The most important honesty point: this pipeline is NOT wired into production
 
-`plan/0.3.1plan/REVIEW_PROGRESS.md` states plainly:
+the v0.3.1 review batch stated plainly:
 
 > `evolution` (old package): apart from `LLMAdapter` (used by the bootstrap 15-min ticker), the entire Candidate→Verify→Promote pipeline (`NewCandidatePipeline` / `NewGAGenerator` / `NewDiagnoser`, etc.) is reachable only via examples/tests; it has been superseded by `internal/runtime/ares_evolution`.
 
@@ -402,7 +402,7 @@ func SortByScore(strategies []*mutation.Strategy) {
 
 ### 5.4 Multi-objective and steady-state (optional, at least the code exists)
 
-- **NSGA-II** (`multi_objective.go`): four dimensions — success/quality Maximize, cost/latency Minimize; selection sorts by Pareto rank first, then crowding distance descending within a rank. Enable via the `"nsga2"` / `"nondominated"` selection strategy.
+- **NSGA-II** (`multi_objective.go`): four dimensions — success/quality Maximize, cost/latency Minimize; selection sorts by Pareto rank first, then crowding distance descending within a rank. **Not wired in 0.3.2**: nothing populates `DimensionScores`, so selecting `"nsga2"` / `"nondominated"` silently falls back to tournament, and the multi-objective entry points are deprecated.
 - **Steady-state GA** (`EvolveSteadyState`): replace only 10–50% per generation (`replaceRate` default 0.3), preserving exploration history for smoother online learning.
 - **Canonical/selection score split** (`effectiveScore()`): `Score` is never temporarily modified; `SelectionScore` resets to 0 each generation and absorbs fitness-sharing adjustments — protecting canonical fitness from pollution.
 
@@ -436,7 +436,7 @@ Each operator **touches the real `MutableDAG` directly** (`AddNode`+`AddEdge`, `
 
 ## 7. How Evolution Reaches the Running System: MutableDAG (the bootstrap wiring)
 
-Evolution's "action surface" isn't a black box. `ProvideNewEvolution` in `internal/ares_bootstrap/provide_new_evolution.go` wires it all in one shot: Evidence Store → Genome Registry → Diff Registry → Patch Registry → Coordinator. It registers four genomes and four differs (workflow/knowledge/recovery/memory), and mounts corresponding executors in the patch registry.
+Evolution's "action surface" isn't a black box. `ProvideNewEvolution` in `internal/ares_bootstrap/provide_new_evolution.go` wires it all in one shot: Evidence Store → Genome Registry → Diff Registry → Patch Registry → `UngatedPatcher`. It registers four genomes and four differs (workflow/knowledge/recovery/memory), and mounts corresponding executors in the patch registry.
 
 But two problems can't be solved at init time — they need live objects injected later:
 
@@ -454,7 +454,7 @@ graph TD
 
     C --> T[SetToolClassDAG<br/>inject L1 capability graph: toolName#argShape<br/>enabled/budget/prior metadata]
 
-    D1 --> E[Coordinator.Evaluate<br/>accepted patches hit executors → reach the running system]
+    D1 --> E[UngatedPatcher.Evaluate<br/>accepted patches hit executors → reach the running system]
 ```
 
 `UpdateLiveDAG(dag)` does three things, all via in-place swap rather than re-registration (because `patch.Registry.Register` **cannot overwrite an already-registered key** — a naive re-register always fails):

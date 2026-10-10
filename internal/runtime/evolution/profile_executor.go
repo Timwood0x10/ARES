@@ -18,7 +18,7 @@ var ErrInvalidProfilePatch = errors.New("evolution: patch does not target a prof
 
 // ProfileExecutor applies PatchChangeInstruction patches to the candidate
 // profile region of a ProfileStore. It implements patch.Executor so it can be
-// registered in a patch.Registry and driven by the EvolutionCoordinator.
+// registered in a patch.Registry and driven by the UngatedPatcher.
 type ProfileExecutor struct {
 	store *ProfileStore
 }

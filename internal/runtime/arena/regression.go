@@ -470,8 +470,12 @@ func (rt *RegressionTester) runStrategy(ctx context.Context, strategy any, n int
 	defer runCancel()
 
 	for i := 0; i < n; i++ {
-		if err := runCtx.Err(); err != nil {
-			return nil, err
+		if runCtx.Err() != nil {
+			// Either the caller's context ended, or a sibling run failed and
+			// cancelled the rest. Stop spawning and let the post-wait checks
+			// below name the root cause instead of reporting a bare
+			// "context canceled".
+			break
 		}
 
 		sem <- struct{}{}
@@ -513,12 +517,18 @@ func (rt *RegressionTester) runStrategy(ctx context.Context, strategy any, n int
 	}
 	wg.Wait()
 
-	// If context was cancelled during parallel scoring, prefer that error.
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
+	// A scorer failure is the root cause and must win over the cancellation it
+	// induced: errgroup cancels its context as soon as the first of the two
+	// strategy sides fails, so checking ctx.Err() first would replace the
+	// actionable "arena: score run N: <scorer failure>" with a bare "context
+	// canceled" — hiding the real cause in logs and in the evolution gate
+	// (TestCandidateRegressionChecker_PropagatesScorerError).
 	if runErr != nil {
 		return nil, runErr
+	}
+	// No scorer error: a cancelled or timed-out context is then the real cause.
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	// A cancellation may have raced between the scorer returning and the slot
 	// write, leaving some slots unfilled. Never return a 0-filled partial

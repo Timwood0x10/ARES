@@ -53,8 +53,12 @@ func TestPostgresEventStore_SubscribeBurstDeliversAll(t *testing.T) {
 	}
 	require.NoError(t, store.Append(ctx, streamID, events, 0))
 
-	// Poll interval is 1s: at least 3 pages (100+100+50) are needed, plus
-	// re-read polls — 15s is generous headroom without risking a hang.
+	// One wake-up drains the whole backlog (drainBacklog pages through the
+	// 100/100/50 read limit without waiting for another notification), so the
+	// burst should land in well under a second. 15s is a hang guard, not a
+	// budget: it still tolerates one 10s fallback tick, which is exactly what a
+	// regression to one-page-per-wake-up needs in order to fail here (it stalled
+	// at 199/250 with the page 3 tick still 10s away).
 	seen := make(map[string]bool, total)
 	deadline := time.After(15 * time.Second)
 	for len(seen) < total {

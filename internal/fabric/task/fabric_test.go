@@ -238,7 +238,7 @@ func TestFabricFailRetries(t *testing.T) {
 	if err := f.Start("t1", "agent-a", epoch); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	if err := f.Fail("t1", "agent-a", epoch); err != nil {
+	if err := f.Fail("t1", "agent-a", epoch, nil); err != nil {
 		t.Fatalf("Fail: %v", err)
 	}
 	task, _ := f.Task("t1")
@@ -253,7 +253,7 @@ func TestFabricFailRetries(t *testing.T) {
 	if err := f.Start("t1", "agent-a", epoch2); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	if err := f.Fail("t1", "agent-a", epoch2); err != nil {
+	if err := f.Fail("t1", "agent-a", epoch2, nil); err != nil {
 		t.Fatalf("Fail: %v", err)
 	}
 	if task, _ := f.Task("t1"); task.State != StateFailed {
@@ -277,7 +277,7 @@ func TestFabricTerminalEventsCarryAgentID(t *testing.T) {
 		if err := f.Start("t1", "agent-a", epoch); err != nil {
 			t.Fatalf("Start: %v", err)
 		}
-		if err := f.Fail("t1", "agent-a", epoch); err != nil {
+		if err := f.Fail("t1", "agent-a", epoch, nil); err != nil {
 			t.Fatalf("Fail: %v", err)
 		}
 		var failedAgent string

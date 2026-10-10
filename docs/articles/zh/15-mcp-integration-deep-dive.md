@@ -238,7 +238,7 @@ Discovery 子系统（`internal/discovery/`）能从多个来源自动发现 MCP
 
 - `internal/discovery/`：引擎、身份归一化、健康检查、事件、存储
 - `internal/discovery/providers/`：文件系统扫描器、二进制探针
-- `api/discovery/`：给外部调用者的类型别名的薄代理（在代码里实际存在 `discovery.go`/`doc.go` 等）
+- `api/discovery/`：给外部调用者的类型别名的薄代理——**已于 0.3.2 删除**（直接导入 `internal/` 对应包）
 
 ### Provider 系统
 
@@ -497,7 +497,7 @@ func setupMCP(_ context.Context, mcpMgr *ares_mcp.MCPManager, registry *api_tool
 			}
 		}
 	}
-	// 再桥接进 internal/apitools registry（api/tools 是 deprecated 转发，dashboard 之类能看到）...
+	// 再桥接进 internal/apitools registry（api/tools 是 deprecated 转发，已于 0.3.2 删除）...
 	return internalReg, nil
 }
 ```

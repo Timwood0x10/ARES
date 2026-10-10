@@ -207,10 +207,16 @@ func (f *Fabric) CompleteWithCheckpoint(id, agentID string, epoch uint64, checkp
 // Fail marks a RUNNING task FAILED, or requeues it to READY when the retry
 // policy allows another attempt (Agent death ≠ Task death).
 //
+// cause is the quantum step error to stamp into the checkpoint's LastError
+// on the TERMINAL failure path — it is what the external task view surfaces
+// as "why did this fail". Pass nil when no error text exists (operator
+// kill, recovery sweeps). A requeue leaves the checkpoint untouched: the
+// task continues, and a stale failure cause must not shadow a later outcome.
+//
 // Terminal failure cascades to every transitive READY dependent: a FAILED
 // predecessor can never satisfy the dependency gate again, so the downstream
 // subgraph would otherwise sit unschedulable forever.
-func (f *Fabric) Fail(id, agentID string, epoch uint64) error {
+func (f *Fabric) Fail(id, agentID string, epoch uint64, cause error) error {
 	pending := make([]*pendingAppend, 0, 1)
 	f.mu.Lock()
 	defer f.flushAppends(&pending)
@@ -237,6 +243,10 @@ func (f *Fabric) Fail(id, agentID string, epoch uint64) error {
 	if err := t.transition(StateFailed); err != nil {
 		return err
 	}
+	// Replace (never mutate) the checkpoint pointer so off-lock snapshot
+	// readers of the previous envelope stay race-free — the fabric's
+	// documented checkpoint ownership rule.
+	t.Checkpoint = checkpointWithCause(t.Checkpoint, cause)
 	pending = append(pending, f.recordLocked(t, EventTaskFailed))
 	// Terminal failure propagates: every transitive READY dependent can never
 	// become schedulable again, so fail it here instead of stranding the

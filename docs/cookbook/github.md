@@ -12,18 +12,17 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/Timwood0x10/ares/api/tools"
 	"github.com/Timwood0x10/ares/sdk"
 )
 
 func main() {
 	ctx := context.Background()
 
-	rt := sdk.MustNew(sdk.WithOpenAI("gpt-4o-mini"))
+	rt := sdk.NewRuntime(sdk.WithOpenAI("gpt-4o-mini"))
 	defer rt.Close()
 
 	// Register a GitHub issue reader tool.
-	rt.ToolRegistry().Register(tools.ToolFunc{
+	rt.ToolRegistry().Register(sdk.ToolFunc{
 		ToolName: "get_issue",
 		ToolDesc: "Get a GitHub issue by owner/repo/number",
 		Fn: func(_ context.Context, p map[string]any) (any, error) {

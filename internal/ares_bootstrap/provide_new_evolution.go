@@ -36,7 +36,7 @@ type NewEvolutionComponents struct {
 	GenomeReg     *genome.Registry
 	DiffReg       *diff.Registry
 	PatchReg      *patch.Registry
-	Coordinator   *coordinator.EvolutionCoordinator
+	Coordinator   *coordinator.UngatedPatcher
 	// LLMAdapter parses natural-language LLM suggestions into PatchProposals
 	// that the Coordinator can evaluate alongside GA/Chaos/AKF/Human sources.
 	// Wired into the Coordinator's suggestion pipeline in wireGAEvolution when
@@ -147,6 +147,15 @@ func ProvideNewEvolution(dag *engine.MutableDAG, rt *knowledgeruntime.KnowledgeR
 			InsertionRate: 0.3,
 			PruneRate:     0.2,
 			EvidenceStore: evStore,
+			// Seed the mutation pool with L2-routable agent types. This
+			// struct literal bypasses genome.DefaultWorkflowGenomeConfig(),
+			// so omitting AgentPool left it empty and mutateInsertNode /
+			// mutateReplaceNode panicked on rand.Intn(0) the first time a
+			// generation actually ran (GA soak 2026-09-21: evolution
+			// completed generation=1, then the diff-patch mutation crashed
+			// the process). L2 types keep evolved topology nodes claimable
+			// by the scheduler's capability set.
+			AgentPool: []string{"ares/plan", "ares/answer"},
 		})
 		if err := genomeReg.Register(wfGenome); err != nil {
 			return nil, fmt.Errorf("register workflow genome: %w", err)
@@ -291,7 +300,12 @@ func ProvideNewEvolution(dag *engine.MutableDAG, rt *knowledgeruntime.KnowledgeR
 	}
 
 	// 5. Coordinator — decision engine for all patches.
-	coord := coordinator.NewEvolutionCoordinator(coordinator.DefaultPolicy(), patchReg)
+	// TODO(tech-debt): this wiring installs no ApplyGate, so the patch path
+	// bypasses the StrategyLifecycle trust root (A1). Short term the boundary
+	// is named and declared (UngatedPatcher, A1-c); mid term wire a
+	// lifecycle-backed ApplyGate here (A1-a) — see
+	// internal/runtime/ares_evolution/doc.go (UNGATED PATCH PATH).
+	coord := coordinator.NewUngatedPatcher(coordinator.DefaultPolicy(), patchReg)
 
 	return &NewEvolutionComponents{
 		EvidenceStore: evStore,

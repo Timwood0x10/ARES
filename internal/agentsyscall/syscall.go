@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/Timwood0x10/ares/internal/core/models"
 	"github.com/Timwood0x10/ares/internal/fabric/agent"
@@ -104,14 +105,44 @@ func cognitionFunc(executor Executor) agentfabric.Cognition {
 type RegisterExecutorFn func(agentID string, executor Executor)
 
 // AskAgentFn is the injected collaboration primitive behind the ask_agent tool.
-// It must send a cross-agent request to target on the given topic and deliver
-// the caller's payload. In production this is wired at serve time to
-// aresrecovery.EvolutionAwareIPC.Send, which routes through the agentipc Bus —
-// so the request lands in the existing "collaboration" feedback source via the
-// CollaborationObserver, reusing the already-closed OBSERVE half.
+// It sends a cross-agent request to target on the given topic, delivers the
+// caller's payload, and optionally returns the target's answer.
+//
+// DEADLOCK NOTE (C-1 fix): The production wiring (serve_peer.go) launches
+// Bus.Request in a managed background goroutine (runBackground) and returns
+// ErrAskAgentYielding immediately — the asking quantum does NOT block on the
+// reply. This breaks the drain deadlock: the asking quantum completes,
+// drain's wg.Wait() unblocks, and the scheduler is free to drain the target's
+// work.
+//
+// The reply is currently FIRE-AND-FORGET: it is logged but NOT written back
+// to the asker's cognitive state or task payload. A future iteration (C-1-a)
+// may deliver the reply through an event-store-triggered drain so the asker's
+// next quantum sees it; until then, AskAgent returns {Accepted: true,
+// Status: "pending"} — the LLM is explicitly told the answer is not available
+// yet and must be re-checked.
+//
 // Declared as a function (not an interface) so this package stays decoupled
 // from agentipc/aresrecovery; the function is set at the consumer.
-type AskAgentFn func(ctx context.Context, from, to, topic string, payload any) error
+//
+// The returned answer is the reply message's Payload (any). When the
+// function returns ErrAskAgentYielding, the answer is nil (pending) —
+// AskAgent maps this to {Accepted: true, Status: "pending"}.
+type AskAgentFn func(ctx context.Context, from, to, topic string, payload any) (any, error)
+
+// ErrAskAgentYielding is the sentinel returned by AskAgentFn when the request
+// has been launched in a background goroutine but the reply has not yet
+// arrived. AskAgent maps this to {Accepted: true, Status: "pending"} — the
+// quantum completes without blocking, and the scheduler is free to drain the
+// target's work. This is the C-1 fix: the asking quantum must NOT block inside
+// drain, because the reply depends on the same drain loop advancing the target's
+// tasks.
+var ErrAskAgentYielding = errors.New("agentsyscall: ask_agent request launched in background, reply pending")
+
+// ErrAskAgentNoReply is the sentinel returned by AskAgentFn when the request
+// was delivered but the target has no reply path (e.g. plain peer registry).
+// AskAgent maps this to {Accepted: true, Status: "no-reply"}.
+var ErrAskAgentNoReply = errors.New("agentsyscall: ask_agent delivered but target has no reply path")
 
 // Kernel is the ensemble of fabric-level subsystems the syscalls operate on.
 // It is the "Kernel enforces" surface: the syscalls validate against the
@@ -127,6 +158,19 @@ type Kernel struct {
 	// replaces it at runtime via SetAskAgent while every LLM tool call reads
 	// it lock-free — a plain field would be a data race.
 	askAgent atomic.Pointer[AskAgentFn]
+	// askMu guards recentAsks. Duplicate suppression is the enforcement that
+	// keeps a fire-and-forget ask_agent from becoming a retry amplifier: the
+	// reply is never written back to the asker (C-1), so a model re-asking
+	// the same question every quantum would spawn a fresh target-side session
+	// and a fresh background request each time, with no chance of ever
+	// succeeding.
+	askMu sync.Mutex
+	// recentAsks holds fingerprints of ask_agent requests whose reply is
+	// still pending, keyed to the time they were launched. Entries expire
+	// after askDedupeWindow — a best-effort approximation of "still in
+	// flight", because the Kernel only observes the LAUNCH, never the
+	// background request's completion.
+	recentAsks map[string]time.Time
 	// loopCtx is the lifetime context for plan loops started via the
 	// create_plan loop option. A syscall Kernel is a long-lived managed
 	// object (it backs every agent's tool binder for the whole serve
@@ -272,6 +316,14 @@ type SpawnAgentArgs struct {
 	// the value is used only for direct/Kernel-internal calls without a
 	// context identity. Empty parent = root spawn.
 	ParentID string `json:"parent_id,omitempty"`
+	// ToolAllowlist restricts the spawned agent to only the listed tools.
+	// When non-empty, the planner and the tool executor both enforce it —
+	// a tool not in the list is rejected at plan-growth time AND at
+	// execution time. Empty or nil means the agent inherits every
+	// registered tool (backward compatible). Tool names use the bare
+	// tool name (e.g. "file_read"), not the capability form
+	// ("tool/file_read").
+	ToolAllowlist []string `json:"tool_allowlist,omitempty"`
 }
 
 // SpawnAgentResult is the return value of the spawn_agent tool — what the
@@ -332,11 +384,12 @@ func (k *Kernel) SpawnAgent(ctx context.Context, args SpawnAgentArgs) (*SpawnAge
 	}
 
 	spec := agentfabric.SpawnSpec{
-		Identity:     agentID,
-		Capabilities: []string{args.Capability},
-		ParentID:     parentID,
-		TaskContext:  args.TaskContext,
-		Resources:    args.Resources,
+		Identity:      agentID,
+		Capabilities:  []string{args.Capability},
+		ParentID:      parentID,
+		TaskContext:   args.TaskContext,
+		Resources:     args.Resources,
+		ToolAllowlist: args.ToolAllowlist,
 		// Budget from birth: syscall-spawned peers inherit the Kernel's
 		// configured governance so they are bounded like configured agents.
 		// Zero value = unlimited (pre-budget behavior).
@@ -460,32 +513,138 @@ type AskAgentArgs struct {
 // AskAgentResult is the return value of the ask_agent tool.
 type AskAgentResult struct {
 	// Accepted reports that the request was handed to the collaboration
-	// primitive (a fire-and-forget send — acceptance is not an answer).
+	// primitive. This is a delivery receipt, NOT an answer — see Status.
 	Accepted bool `json:"accepted"`
+	// Status indicates the outcome: "delivered" (answer included),
+	// "pending" (background request launched, answer not yet available),
+	// or "no-reply" (target unreachable or no reply path).
+	Status string `json:"status"`
+	// Answer is the target agent's reply payload. nil when the request is
+	// pending (Status="pending") or the target has no reply path.
+	// Callers MUST check Status before relying on Answer.
+	//
+	// NOTE: the serve wiring never produces an answer today — its AskAgentFn
+	// either yields (Status="pending") or reports that the target has no
+	// reply path (Status="no-reply"), because the background reply is logged
+	// but not written back (see AskAgentFn; C-1-a is the follow-up).
+	// Status="delivered" with a non-nil Answer is reachable only for
+	// in-process/SDK callers that inject their own AskAgentFn.
+	Answer any `json:"answer,omitempty"`
+	// Duplicate reports that this ask was suppressed because an identical
+	// request (same caller, target, topic and payload) was launched less
+	// than askDedupeWindow ago and is still pending. No new collaboration
+	// session was created for it — the caller should wait for the
+	// outstanding answer instead of re-asking.
+	Duplicate bool `json:"duplicate,omitempty"`
+}
+
+// askDedupeWindow approximates "the previous identical ask is still in
+// flight". It mirrors the serve-side askAgentTimeout (30s): the Kernel learns
+// only that a request was LAUNCHED (ErrAskAgentYielding), never that the
+// background request finished, so a fixed window is the only signal available.
+const askDedupeWindow = 30 * time.Second
+
+// maxRecentAsks bounds the dedupe map. An agent could otherwise mint
+// unbounded distinct fingerprints within one window.
+const maxRecentAsks = 1024
+
+// askFingerprint identifies one collaboration request for dedupe purposes.
+// fmt prints maps with sorted keys, so the fingerprint is stable across runs
+// (the payload carries the Kernel-stamped tenant, so two tenants are never
+// conflated).
+func askFingerprint(from, to, topic string, payload any) string {
+	return from + "\x00" + to + "\x00" + topic + "\x00" + fmt.Sprintf("%v", payload)
+}
+
+// pendingAskExists reports whether an identical ask was launched within
+// askDedupeWindow.
+func (k *Kernel) pendingAskExists(key string) bool {
+	k.askMu.Lock()
+	defer k.askMu.Unlock()
+	at, ok := k.recentAsks[key]
+	if !ok {
+		return false
+	}
+	return time.Since(at) < askDedupeWindow
+}
+
+// rememberPendingAsk records a launched (yielded) ask so an identical repeat
+// within askDedupeWindow is suppressed. Expired entries are pruned here, and
+// the map fails OPEN on overflow (dedupe stops suppressing) rather than
+// blocking the caller.
+func (k *Kernel) rememberPendingAsk(key string) {
+	k.askMu.Lock()
+	defer k.askMu.Unlock()
+	if k.recentAsks == nil {
+		k.recentAsks = make(map[string]time.Time, 64)
+	}
+	now := time.Now()
+	for prev, at := range k.recentAsks {
+		if now.Sub(at) >= askDedupeWindow {
+			delete(k.recentAsks, prev)
+		}
+	}
+	if len(k.recentAsks) >= maxRecentAsks {
+		k.recentAsks = make(map[string]time.Time, 64)
+	}
+	k.recentAsks[key] = now
 }
 
 // AskAgent is the Kernel syscall behind the ask_agent tool.
 // It forwards a cross-agent request to the injected AskAgentFn, which in
-// production is ipc.Send — so the attempt produces a collaboration receipt
-// in the existing "collaboration" feedback source, attributed to the active
-// strategy. The Kernel enforces:
+// production is agentipc.Bus.Request — so the attempt produces a
+// collaboration receipt in the existing "collaboration" feedback source,
+// attributed to the active strategy. The Kernel enforces:
 //
 //   - a non-empty target is required;
 //   - the primitive MUST be wired (fail-loud); a nil primitive would make the
 //     tool a silent no-op, which is exactly the open-loop the plan removes.
+//
+// AskAgent is the Kernel syscall behind the ask_agent tool. It forwards a
+// cross-agent request to the injected AskAgentFn.
+//
+// C-1 fix: when AskAgentFn returns ErrAskAgentYielding, the request has been
+// launched in a background goroutine — the quantum completes immediately with
+// {Accepted: true, Status: "pending"}. The asking quantum does NOT block inside
+// drain, breaking the deadlock cycle (asker blocks drain → drain can't
+// advance target's tasks → target can't reply → asker blocks forever).
+//
+// The reply is currently fire-and-forget (logged but not written back to the
+// asker). The LLM receives Status="pending" and should re-check later.
 func (k *Kernel) AskAgent(ctx context.Context, a AskAgentArgs) (*AskAgentResult, error) {
 	if a.To == "" {
 		return nil, errors.New("agentsyscall: ask_agent requires a target agent")
 	}
-	if fn := k.askAgentFn(); fn == nil {
+	fn := k.askAgentFn()
+	if fn == nil {
 		return nil, errors.New("agentsyscall: ask_agent not wired (no collaboration IPC) — the agent cannot ask until serve injects it")
-	} else {
-		from := kctx.CallerID(ctx)
-		if err := fn(ctx, from, a.To, a.Topic, askAgentPayload(ctx, a.Payload)); err != nil {
-			return nil, fmt.Errorf("agentsyscall: ask_agent to %s failed: %w", a.To, err)
-		}
 	}
-	return &AskAgentResult{Accepted: true}, nil
+	from := kctx.CallerID(ctx)
+	payload := askAgentPayload(ctx, a.Payload)
+	key := askFingerprint(from, a.To, a.Topic, payload)
+	// Duplicate suppression: the reply is never written back (C-1), so an
+	// identical ask repeated while the previous one is pending can only ever
+	// spawn another target-side session for an answer nobody will read.
+	// Suppress it and say so explicitly instead of amplifying the retry.
+	if k.pendingAskExists(key) {
+		return &AskAgentResult{Accepted: true, Status: "pending", Duplicate: true}, nil
+	}
+	answer, err := fn(ctx, from, a.To, a.Topic, payload)
+	if err != nil {
+		if errors.Is(err, ErrAskAgentYielding) {
+			// Background request launched; the quantum completes without
+			// blocking drain. The reply is logged but NOT written back —
+			// the LLM receives Status="pending" and should re-check.
+			k.rememberPendingAsk(key)
+			return &AskAgentResult{Accepted: true, Status: "pending"}, nil
+		}
+		if errors.Is(err, ErrAskAgentNoReply) {
+			// Delivered but target has no reply path.
+			return &AskAgentResult{Accepted: true, Status: "no-reply"}, nil
+		}
+		return nil, fmt.Errorf("agentsyscall: ask_agent to %s failed: %w", a.To, err)
+	}
+	return &AskAgentResult{Accepted: true, Status: "delivered", Answer: answer}, nil
 }
 
 // askAgentPayload stamps the asking quantum's tenant onto the message payload
@@ -537,6 +696,16 @@ func BindTools(binder ToolBinder, kernel *Kernel) {
 		if v, ok := args["resources"].(map[string]any); ok {
 			sa.Resources = v
 		}
+		// Parse tool_allowlist from LLM-provided args. The LLM
+		// can restrict the spawned agent to a subset of tools. Each element
+		// is a bare tool name (e.g. "file_read").
+		if tools, ok := args["tool_allowlist"].([]any); ok {
+			for _, t := range tools {
+				if s, ok := t.(string); ok && s != "" {
+					sa.ToolAllowlist = append(sa.ToolAllowlist, s)
+				}
+			}
+		}
 		return kernel.SpawnAgent(ctx, sa)
 	})
 
@@ -557,7 +726,8 @@ func BindTools(binder ToolBinder, kernel *Kernel) {
 		}
 		return kernel.CreateTask(ctx, ct)
 	})
-	// the whole-DAG planning entry. See plan.go. JSON round-trip keeps
+	// create_plan is the whole-DAG planning entry. See plan.go. JSON
+	// round-trip keeps
 	// the parse strict: type mismatches surface as errors instead of silently
 	// dropping fields (e.g. a string "3" for priority).
 	binder.BindTool(AskAgentTool, func(ctx context.Context, args map[string]any) (any, error) {
@@ -620,6 +790,11 @@ func ToolSchemas() []ToolSchema {
 						paramType:        paramTypeObject,
 						paramDescription: "Shared task state to pass to the new agent (goal, constraints). Never include private reasoning.",
 					},
+					"tool_allowlist": map[string]any{
+						paramType:        paramTypeArray,
+						paramItems:       map[string]any{paramType: paramTypeString},
+						paramDescription: "Restrict the spawned agent to only these tools (bare tool names, e.g. [\"file_read\"]). Omit to inherit all registered tools.",
+					},
 				},
 				paramRequired: []string{paramCapability},
 			},
@@ -649,7 +824,7 @@ func ToolSchemas() []ToolSchema {
 		},
 		{
 			Name:        AskAgentTool,
-			Description: "Ask a specific target agent a question on a topic. The request is delivered to the target's collaboration handler. Use this when you know WHICH agent to ask, rather than spawning a new one (spawn_agent) or decomposing into tasks (create_task).",
+			Description: "Ask a specific target agent a question on a topic. The request is delivered asynchronously: the tool returns immediately with status 'pending' (answer not yet available) or 'no-reply' (target has no reply path). The target's answer is NOT available in the response — this is a fire-and-forget delivery, not a synchronous round-trip. Do NOT re-ask the same question while a previous ask is pending: identical asks (same target, topic and payload) are suppressed and report duplicate=true until the pending one expires. Use this when you know WHICH agent to ask, rather than spawning a new one (spawn_agent) or decomposing into tasks (create_task).",
 			Parameters: map[string]any{
 				paramType: paramTypeObject,
 				paramProperties: map[string]any{

@@ -123,8 +123,8 @@ func runServe() error {
 	// threaded through createAndServeAgents/createPeerAgents but never
 	// consumed, so the "runtime fallback chain" it advertised never ran.
 	// Runtime failover lives in FailoverClient (createChatClient); the
-	// unused internal/llm/output adapter package has zero callers left
-	// and is a 0.4 deletion candidate (independent-review F-07).
+	// unused internal/llm/output adapter package had zero callers left and
+	// was deleted in full (independent-review F-07, executed 0.4).
 	chatClient, err := createChatClient(cfg)
 	if err != nil {
 		return fmt.Errorf("create chat client: %w", err)

@@ -84,6 +84,21 @@ type ServerConfig struct {
 	// addresses refuse to start — pprof exposes memory and goroutine dumps.
 	// Formerly the ARES_PPROF_ADDR env var.
 	PprofAddr string `yaml:"pprof_addr"`
+	// DefaultCapability is the capability POST /api/tasks uses when a
+	// submission omits one — the external one-interface entry point. Set
+	// from ares.yaml only (default "ares/plan": the single L2 submission
+	// capability the Submitter normalizes every plan-path task to).
+	DefaultCapability string `yaml:"default_capability"`
+}
+
+// TasksConfig tunes the external task-submission surface (POST /api/tasks).
+// All values come from ares.yaml — there is no CLI-flag config path.
+type TasksConfig struct {
+	// WaitTimeout is the Go-duration default sync-wait applied when
+	// POST /api/tasks carries `?wait=` with no explicit value (default
+	// "60s"). Explicit `?wait=<dur>` values are capped at 300s at the
+	// handler; this configured default is capped the same way.
+	WaitTimeout string `yaml:"wait_timeout"`
 }
 
 // SecurityConfig holds JWT authentication and RBAC settings for the HTTP
@@ -106,10 +121,17 @@ type SecurityConfig struct {
 	AuthEnabled bool `yaml:"auth_enabled"`
 	// ArenaAPIKey is the credential `ares arena serve` requires on every
 	// request (X-API-Key), and the key the arena CLI subcommands attach to
-	// their outgoing calls. Empty + no --api-key flag keeps arena
+	// their outgoing requests. Empty + no --api-key flag keeps arena
 	// deny-by-default (refuses to start unless --allow-anonymous).
 	// Formerly the ARENA_API_KEY env var.
 	ArenaAPIKey string `yaml:"arena_api_key"`
+	// APIKey is the dedicated HTTP control-plane write/read credential for
+	// the serve surface (POST /api/tasks, GET /api/tasks/{id}, tool call
+	// endpoints...). When set it takes precedence over llm.api_key so the
+	// LLM provider credential no longer doubles as the HTTP gate token.
+	// Empty falls back to llm.api_key (pre-0.3.x behavior, kept for
+	// compatibility). Redacted like every other secret in Redacted().
+	APIKey string `yaml:"api_key"`
 }
 
 // IntrospectConfig configures the runtime introspection read side: the

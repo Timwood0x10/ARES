@@ -83,16 +83,13 @@ func TestWiring_ShadowSampler_NotWiredWhenDreamCycleFeeds(t *testing.T) {
 	}
 }
 
-// TestWiring_ShadowSampler_BudgetGated locks review finding #1: when an LLM
-// scorer is wired, the shadow path MUST draw from the same per-generation
-// budget as population scoring. Before this fix buildShadowEvaluator wired the
-// raw cfg.Scorer, so every Submit's Prime ran minSamples×2 LLM calls with zero
-// accounting against MaxLLMCallsPerGeneration. With the tiered scorer wired as
-// the shadow scorer, Prime's Evaluate calls go through TieredScorer.Score,
-// which calls TryRecordLLMCall before each LLM score and falls back to the
-// heuristic once the budget is exhausted. The assertion below is that the LLM
-// scorer is never invoked more times than the budget allows.
-func TestWiring_ShadowSampler_BudgetGated(t *testing.T) {
+// TestWiring_ShadowSampler_DedicatedEvidenceBudget locks the GA-soak fix:
+// shadow evidence draws run on a DEDICATED budget derived from (but not
+// capped by) MaxLLMCallsPerGeneration — population scoring can no longer
+// starve the gate. The dedicated cap is max(4, pop/4); draws beyond the cap
+// fall back to the heuristic so Prime still fills the full comparison
+// window.
+func TestWiring_ShadowSampler_DedicatedEvidenceBudget(t *testing.T) {
 	defer discardLogs()()
 	base := &mutation.Strategy{
 		ID:     "bootstrap-root",
@@ -106,15 +103,16 @@ func TestWiring_ShadowSampler_BudgetGated(t *testing.T) {
 	cfg.StrategyStore = newMockStrategyStore()
 	cfg.RollbackPolicyConfig = RollbackPolicyConfig{Enabled: true}
 	cfg.ShadowEvalConfig = ShadowEvaluationConfig{Enabled: true, MinSamples: 3, MinWinRate: 0.55}
-	// Wire an LLM scorer with a tight budget: 4 LLM calls across the whole
-	// generation, shared by population scoring AND shadow Prime.
+	// Population budget is deliberately TINY: with the old shared budget the
+	// gate could draw at most 1 LLM call per generation. The dedicated
+	// shadow budget must exceed it.
 	var llmCalls atomic.Int64
 	cfg.Scorer = genome.ScorerFunc(func(*mutation.Strategy) float64 {
 		llmCalls.Add(1)
 		return 0.8
 	})
 	cfg.HeuristicScorer = genome.ScorerFunc(func(*mutation.Strategy) float64 { return 0.5 })
-	cfg.MaxLLMCallsPerGeneration = 4
+	cfg.MaxLLMCallsPerGeneration = 1
 
 	system, err := NewWiredEvolutionSystem(base, cfg)
 	if err != nil {
@@ -129,25 +127,42 @@ func TestWiring_ShadowSampler_BudgetGated(t *testing.T) {
 		t.Fatal("with an LLM scorer wired, the shadow scorer must be budget-gated (tiered), not absent")
 	}
 
-	// Prime requests MinSamples×2 = 6 scorer evaluations; at most 4 may hit
-	// the LLM. The rest fall back to the heuristic so the gate still gets a
-	// full comparison window.
+	dedicated := shadowEvidenceBudget(cfg.MaxLLMCallsPerGeneration)
+	if dedicated <= cfg.MaxLLMCallsPerGeneration {
+		t.Fatalf("dedicated shadow budget %d must exceed the population budget %d",
+			dedicated, cfg.MaxLLMCallsPerGeneration)
+	}
+
 	sampler := NewShadowSampler(system.ShadowEvaluator, cfg.ShadowEvalConfig.MinSamples)
 	sampler.Prime(context.Background(), &mutation.Strategy{ID: "cand"}, &mutation.Strategy{ID: "active"})
 
 	got := llmCalls.Load()
-	if got > int64(cfg.MaxLLMCallsPerGeneration) {
-		t.Fatalf("shadow Prime exceeded the shared LLM budget: %d calls, budget %d",
+	if got > int64(dedicated) {
+		t.Fatalf("shadow Prime exceeded its DEDICATED budget: %d calls, cap %d", got, dedicated)
+	}
+	if got <= int64(cfg.MaxLLMCallsPerGeneration) {
+		t.Fatalf("shadow draws = %d, want > population budget %d — separation must let the gate draw past population exhaustion",
 			got, cfg.MaxLLMCallsPerGeneration)
 	}
 	if n := len(system.ShadowEvaluator.Results()); n != cfg.ShadowEvalConfig.MinSamples {
-		t.Fatalf("expected a full comparison window (%d), got %d — the heuristic fallback must keep the gate able to judge",
+		t.Fatalf("expected a full comparison window (%d), got %d — heuristic fallback must keep the gate able to judge",
 			cfg.ShadowEvalConfig.MinSamples, n)
 	}
-	// The tiered scorer caches per generation, so every comparison after the
-	// first is a cache hit returning an identical score. The evaluator must
-	// report that, otherwise the window looks like independent evidence.
-	if !system.ShadowEvaluator.IsDeterministicScorer() {
-		t.Fatal("a cache-backed tiered scorer must be reported as deterministic")
+	// ScoreEvidence cache-bypass (GA-3): no fixed seed ⇒ not deterministic.
+	if system.ShadowEvaluator.IsDeterministicScorer() {
+		t.Fatal("cache-bypassed evidence draws must not be reported as deterministic without a fixed seed")
+	}
+}
+
+// TestShadowEvidenceBudgetDerivation pins the code-level cap formula.
+func TestShadowEvidenceBudgetDerivation(t *testing.T) {
+	if got := shadowEvidenceBudget(1); got != 4 {
+		t.Fatalf("budget(1) = %d, want floor 4", got)
+	}
+	if got := shadowEvidenceBudget(40); got != 10 {
+		t.Fatalf("budget(40) = %d, want 10 (pop/4)", got)
+	}
+	if got := shadowEvidenceBudget(200); got != 50 {
+		t.Fatalf("budget(200) = %d, want 50 (pop/4)", got)
 	}
 }

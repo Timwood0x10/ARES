@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -175,6 +178,109 @@ func TestDistill_WithEmbeddingEnqueuerEnqueuesAsyncBackfill(t *testing.T) {
 	assert.Equal(t, exp.ID, enq.called[0].TaskID)
 	assert.Equal(t, "how to sort things", enq.called[0].Content)
 	assert.Equal(t, "tenant-1", enq.called[0].TenantID)
+}
+
+// TestDistill_DoubleFailureLogsErrorAndKeepsRow pins D1: when the async
+// enqueue AND the synchronous fallback embed both fail, the row is still
+// persisted (distillation itself must not fail — the experience is valid
+// without a vector), but the failure must be OBSERVABLE at ERROR level with
+// the row identity. A NULL vector is a permanent recall gap whenever the
+// reconciler is not running, and SearchByVector is fail-closed on NULL, so it
+// misses silently — a Warn would hide a real defect.
+func TestDistill_DoubleFailureLogsErrorAndKeepsRow(t *testing.T) {
+	llmClient := newTestLLM(t, llmExtractionContent)
+
+	// A closed loopback server makes the synchronous fallback embed fail
+	// deterministically (connection refused) without touching the network.
+	deadSrv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	deadURL := deadSrv.URL
+	deadSrv.Close()
+	embClient := embedding.NewEmbeddingClient(deadURL, "test-model", nil, 200*time.Millisecond)
+
+	repo := &fakeExpRepo{}
+	enq := &fakeEnqueuer{err: errors.New("queue unavailable")}
+
+	// The service snapshots slog.Default() at construction, so the capture
+	// must be installed BEFORE NewDistillationService or the records below
+	// would never arrive.
+	logs := captureDefaultLogD1(t)
+	svc := NewDistillationService(llmClient, embClient, repo, WithEmbeddingEnqueuer(enq))
+
+	exp, err := svc.Distill(context.Background(), distillableTask())
+	require.NoError(t, err, "a broken embedding path must not fail distillation itself")
+	require.NotNil(t, exp)
+
+	// The row survives without a vector — that is the documented trade-off.
+	require.Len(t, repo.created, 1)
+	assert.Empty(t, repo.created[0].Embedding, "no vector could be written")
+
+	rec, ok := logs.findError("NULL vector")
+	require.True(t, ok, "enqueue + sync backfill double failure must be logged at ERROR (D1)")
+	assert.Equal(t, "tenant-1", logAttrString(rec, "tenant_id"))
+	assert.NotEmpty(t, logAttrString(rec, "experience_id"), "the ERROR must identify the affected row")
+}
+
+// captureLogD1 records every slog entry emitted through the default logger.
+// Guarded by a mutex because the default logger is process-wide.
+type captureLogD1 struct {
+	mu      sync.Mutex
+	records []slog.Record
+}
+
+// Enabled reports that every level is captured.
+func (c *captureLogD1) Enabled(context.Context, slog.Level) bool { return true }
+
+// Handle appends a copy of the record (the record is only valid during the call).
+func (c *captureLogD1) Handle(_ context.Context, r slog.Record) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.records = append(c.records, r.Clone())
+	return nil
+}
+
+// WithAttrs returns the handler unchanged; attribute grouping is irrelevant here.
+func (c *captureLogD1) WithAttrs([]slog.Attr) slog.Handler { return c }
+
+// WithGroup returns the handler unchanged; group nesting is irrelevant here.
+func (c *captureLogD1) WithGroup(string) slog.Handler { return c }
+
+// findError returns the first ERROR record whose message contains substr.
+func (c *captureLogD1) findError(substr string) (slog.Record, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, r := range c.records {
+		if r.Level == slog.LevelError && strings.Contains(r.Message, substr) {
+			return r, true
+		}
+	}
+	return slog.Record{}, false
+}
+
+// captureDefaultLogD1 installs a capturing handler as the default slog logger
+// and restores the previous logger when the test ends.
+func captureDefaultLogD1(t *testing.T) *captureLogD1 {
+	t.Helper()
+	c := &captureLogD1{}
+	prev := slog.Default()
+	slog.SetDefault(slog.New(c))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return c
+}
+
+// logAttrString returns the string value of the named attribute, or "" when the
+// attribute is absent or not a string.
+func logAttrString(r slog.Record, key string) string {
+	got := ""
+	r.Attrs(func(a slog.Attr) bool {
+		if a.Key != key {
+			return true
+		}
+		if a.Value.Kind() == slog.KindString {
+			got = a.Value.String()
+		}
+		return false
+	})
+	return got
 }
 
 // TestDistill_WithoutEnqueuerEmbedsSynchronously proves backward compatibility:

@@ -1,6 +1,6 @@
-// agent — opt-in pprof/expvar exposure (Phase 3 observability,
-// plan/stability_performance_plan.md). Config-gated (server.pprof_addr in
-// ares.yaml), loopback-enforced, off by default.
+// agent — opt-in pprof/expvar exposure (Phase 3 of the stability program,
+// the plan behind the lock-in tests in this repo). Config-gated
+// (server.pprof_addr in ares.yaml), loopback-enforced, off by default.
 package main
 
 import (

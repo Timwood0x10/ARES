@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -60,6 +61,30 @@ type ConfigFile struct {
 	Evolution struct {
 		Enabled bool `yaml:"enabled"`
 	} `yaml:"evolution"`
+	// Tasks tunes sync-wait surfaces (`ares run` context timeout); the serve
+	// HTTP surface reads the ares_config twin of the same yaml section.
+	Tasks TasksFileConfig `yaml:"tasks"`
+}
+
+// SessionFileConfig carries session store window knobs for the memory
+// subsystem. Named (not an anonymous struct) so programmatic ConfigFile
+// construction — tests, embedding hosts — can build it without spelling an
+// inline type. Mirrors ares_config.SessionConfig's MaxHistory leaf.
+type SessionFileConfig struct {
+	// MaxHistory bounds messages retained per session in the store
+	// (0 = component default). The runtime clamps it up to the read-side
+	// memory.max_history so the store never undercuts the context window.
+	MaxHistory int `yaml:"max_history"`
+}
+
+// TasksFileConfig tunes the sync-wait surfaces driven from ares.yaml
+// (mirrors ares_config.TasksConfig). Consumers: `ares run` uses it as the
+// agent.Run context timeout; serve uses the ares_config twin as the
+// POST /api/tasks `?wait=` default. Empty = per-surface default.
+type TasksFileConfig struct {
+	// WaitTimeout is a Go duration (e.g. "90s"); empty uses the surface
+	// default. Sync waits are hard-capped at 300s regardless of source.
+	WaitTimeout string `yaml:"wait_timeout"`
 }
 
 // MemoryFileConfig carries all memory subsystem knobs. Fields left at their
@@ -68,6 +93,8 @@ type MemoryFileConfig struct {
 	Enabled     bool `yaml:"enabled"`
 	MaxHistory  int  `yaml:"max_history"`
 	MaxSessions int  `yaml:"max_sessions"`
+	// Session tunes the session store window (see SessionFileConfig).
+	Session SessionFileConfig `yaml:"session"`
 	// EnableDistillation tri-state: nil defaults to true,
 	// mirroring ares_config.MemoryConfig so SDK yaml and serve yaml agree.
 	EnableDistillation    *bool `yaml:"enable_distillation"`
@@ -205,6 +232,9 @@ func (c *ConfigFile) Validate() error {
 	if err := c.validateMemory(); err != nil {
 		return err
 	}
+	if err := c.validateTasksWait(); err != nil {
+		return err
+	}
 	// Database section: validate only when host is set (section present).
 	if c.Database.Host != "" {
 		if c.Database.Port < 1 || c.Database.Port > 65535 {
@@ -245,6 +275,9 @@ func (c *ConfigFile) validateMemory() error {
 	if c.Memory.MaxSessions < 0 {
 		return fmt.Errorf("memory.max_sessions %d: %w", c.Memory.MaxSessions, ErrInvalidRange)
 	}
+	if c.Memory.Session.MaxHistory < 0 {
+		return fmt.Errorf("memory.session.max_history %d: %w", c.Memory.Session.MaxHistory, ErrInvalidRange)
+	}
 	// DistillationThreshold 0 means "unset": the sdk falls back to the
 	// component default at apply time. Negative is invalid.
 	if c.Memory.DistillationThreshold < 0 {
@@ -262,6 +295,23 @@ func (c *ConfigFile) validateMemory() error {
 		if c.Memory.RAGMinScore < 0 || c.Memory.RAGMinScore > 1 {
 			return fmt.Errorf("memory.rag_min_score %v: %w", c.Memory.RAGMinScore, ErrInvalidRange)
 		}
+	}
+	return nil
+}
+
+// validateTasksWait validates the tasks sync-wait section: when set it must
+// parse as a positive Go duration; the 300s hard cap is applied by the
+// consumer (ares run / serve wait), not rejected here.
+func (c *ConfigFile) validateTasksWait() error {
+	if c.Tasks.WaitTimeout == "" {
+		return nil
+	}
+	d, err := time.ParseDuration(c.Tasks.WaitTimeout)
+	if err != nil {
+		return fmt.Errorf("tasks.wait_timeout %q: %w", c.Tasks.WaitTimeout, ErrInvalidRange)
+	}
+	if d <= 0 {
+		return fmt.Errorf("tasks.wait_timeout %q: %w", c.Tasks.WaitTimeout, ErrInvalidRange)
 	}
 	return nil
 }
@@ -394,6 +444,9 @@ func (c *ConfigFile) ToOptions() ([]Option, error) {
 	// Memory. Each unset field falls back to the component default.
 	if c.Memory.Enabled {
 		opts = append(opts, WithMemoryConfig(c.Memory.MaxHistory, c.Memory.MaxSessions))
+		if c.Memory.Session.MaxHistory > 0 {
+			opts = append(opts, WithSessionMaxHistory(c.Memory.Session.MaxHistory))
+		}
 		if c.Memory.DistillationEnabled() {
 			// DistillationThreshold 0 means "ungated": fire on every event,
 			// matching every downstream component's contract. We pass it

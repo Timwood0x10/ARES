@@ -21,6 +21,7 @@ func TestConfigRedacted(t *testing.T) {
 		},
 		Security: SecurityConfig{
 			JWTSecret: "jwt-secret",
+			APIKey:    "http-plane-key",
 		},
 		Introspect: IntrospectConfig{
 			Token: "panel-token",
@@ -30,7 +31,8 @@ func TestConfigRedacted(t *testing.T) {
 	got := cfg.Redacted()
 
 	// Receiver must be untouched.
-	if cfg.LLM.APIKey != "sk-secret-1" || cfg.Storage.Password != "db-pass" || cfg.Security.JWTSecret != "jwt-secret" || cfg.Introspect.Token != "panel-token" {
+	if cfg.LLM.APIKey != "sk-secret-1" || cfg.Storage.Password != "db-pass" || cfg.Security.JWTSecret != "jwt-secret" ||
+		cfg.Security.APIKey != "http-plane-key" || cfg.Introspect.Token != "panel-token" {
 		t.Fatal("Redacted must not mutate the receiver")
 	}
 
@@ -43,6 +45,9 @@ func TestConfigRedacted(t *testing.T) {
 	}
 	if got.Security.JWTSecret != "***" {
 		t.Errorf("Security.JWTSecret = %q, want ***", got.Security.JWTSecret)
+	}
+	if got.Security.APIKey != "***" {
+		t.Errorf("Security.APIKey = %q, want ***", got.Security.APIKey)
 	}
 	if got.Introspect.Token != "***" {
 		t.Errorf("Introspect.Token = %q, want ***", got.Introspect.Token)

@@ -67,7 +67,7 @@ func TestCandidatePipeline_EndToEnd(t *testing.T) {
 	candidateStore.Submit(candidate)
 
 	registry := patch.NewRegistry()
-	coord := coordinator.NewEvolutionCoordinator(coordinator.DefaultPolicy(), registry)
+	coord := coordinator.NewUngatedPatcher(coordinator.DefaultPolicy(), registry)
 	pipeline := NewCandidatePipeline(candidateStore, profileStore, registry, coord, nil)
 
 	released, err := pipeline.Release(ctx, candidate.ID)
@@ -100,7 +100,7 @@ func TestCandidatePipeline_AuditTrail(t *testing.T) {
 	candidateStore.Submit(candidate)
 
 	registry := patch.NewRegistry()
-	coord := coordinator.NewEvolutionCoordinator(coordinator.DefaultPolicy(), registry)
+	coord := coordinator.NewUngatedPatcher(coordinator.DefaultPolicy(), registry)
 	pipeline := NewCandidatePipeline(candidateStore, profileStore, registry, coord, nil)
 	_, err = pipeline.Release(ctx, candidate.ID)
 	require.NoError(t, err)
@@ -162,7 +162,7 @@ func TestCandidatePipeline_ReleaseNotVerified(t *testing.T) {
 	candidateStore.Submit(candidate)
 
 	registry := patch.NewRegistry()
-	coord := coordinator.NewEvolutionCoordinator(coordinator.DefaultPolicy(), registry)
+	coord := coordinator.NewUngatedPatcher(coordinator.DefaultPolicy(), registry)
 	pipeline := NewCandidatePipeline(candidateStore, profileStore, registry, coord, nil)
 
 	released, err := pipeline.Release(context.Background(), candidate.ID)
@@ -177,7 +177,7 @@ func TestCandidatePipeline_ReleaseNotFound(t *testing.T) {
 	profileStore := newTestProfileStore(t, "coder", "old")
 	candidateStore := NewCandidateStore()
 	registry := patch.NewRegistry()
-	coord := coordinator.NewEvolutionCoordinator(coordinator.DefaultPolicy(), registry)
+	coord := coordinator.NewUngatedPatcher(coordinator.DefaultPolicy(), registry)
 	pipeline := NewCandidatePipeline(candidateStore, profileStore, registry, coord, nil)
 
 	released, err := pipeline.Release(context.Background(), "cand-999")
@@ -283,7 +283,7 @@ func TestCandidatePipeline_ReleaseRegressionGate_Rejects(t *testing.T) {
 	candidateStore.Submit(c)
 
 	registry := patch.NewRegistry()
-	coord := coordinator.NewEvolutionCoordinator(coordinator.DefaultPolicy(), registry)
+	coord := coordinator.NewUngatedPatcher(coordinator.DefaultPolicy(), registry)
 	pipeline := NewCandidatePipelineWithOptions(
 		candidateStore, profileStore, registry, coord, nil,
 		WithReleaseRegressionCheck(func(cand *Candidate) error {
@@ -313,7 +313,7 @@ func TestCandidatePipeline_ReleaseRegressionGate_Passes(t *testing.T) {
 	candidateStore.Submit(c)
 
 	registry := patch.NewRegistry()
-	coord := coordinator.NewEvolutionCoordinator(coordinator.DefaultPolicy(), registry)
+	coord := coordinator.NewUngatedPatcher(coordinator.DefaultPolicy(), registry)
 	pipeline := NewCandidatePipelineWithOptions(
 		candidateStore, profileStore, registry, coord, nil,
 		WithReleaseRegressionCheck(func(_ *Candidate) error {
@@ -343,7 +343,7 @@ func TestCandidatePipeline_ReleaseRegressionGate_Skipped(t *testing.T) {
 	candidateStore.Submit(c)
 
 	registry := patch.NewRegistry()
-	coord := coordinator.NewEvolutionCoordinator(coordinator.DefaultPolicy(), registry)
+	coord := coordinator.NewUngatedPatcher(coordinator.DefaultPolicy(), registry)
 	pipeline := NewCandidatePipeline(candidateStore, profileStore, registry, coord, nil) // no regression check
 
 	released, err := pipeline.Release(ctx, c.ID)

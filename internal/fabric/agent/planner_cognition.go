@@ -253,11 +253,23 @@ func (c *plannerCognition) ExecuteStep(ctx context.Context, task *models.Task) (
 	depth := g.PlanDepth()
 	if depth >= c.maxDepth {
 		// Growth-depth upper bound reached: force an answer node so the
-		// session terminates instead of growing unbounded.
+		// session terminates instead of growing unbounded. The guard
+		// enforces TERMINATION only — the answer node is grown content-LESS
+		// on purpose: answerCognition then runs M4.2 synthesis over the
+		// accumulated predecessor/tool history (same bounded view the
+		// planner itself has), falling back to the honest gap body when
+		// synthesis is unavailable. Stamping the guard literal as content
+		// made it the session answer — external clients saw COMPLETED
+		// result="max plan depth reached" (REVIEW-2026-09-21 P2).
 		c.forcedAnswers.Add(1)
 		c.logger.Warn("planner: max plan depth reached, forcing answer",
 			"session", sessionID, "depth", depth, "max", c.maxDepth)
-		return c.growAnswerNode(ctx, g, task, "max plan depth reached", nil)
+		// The truncation fact rides the answer node so the terminal result
+		// metadata carries it (answerTruncatedKey) — external clients must
+		// be able to distinguish "completed" from "hit the depth bound".
+		return c.growAnswerNode(ctx, g, task, "", nil, map[string]any{
+			answerTruncatedKey: true,
+		})
 	}
 
 	// Assemble the LLM context from the predecessor path.
@@ -319,7 +331,7 @@ func (c *plannerCognition) ExecuteStep(ctx context.Context, task *models.Task) (
 
 	// No tool calls: the LLM gave a final answer. Grow an answer node.
 	if len(resp.ToolCalls) == 0 {
-		return c.growAnswerNode(ctx, g, task, resp.Content, resp)
+		return c.growAnswerNode(ctx, g, task, resp.Content, resp, nil)
 	}
 
 	// Tool calls: grow tool nodes + a new plan node depending on them.
@@ -331,7 +343,7 @@ func (c *plannerCognition) ExecuteStep(ctx context.Context, task *models.Task) (
 		// All tool calls were skipped by L1 constraints (enabled=false
 		// or budget exhausted). Force an answer so the session terminates
 		// instead of looping on a planner that can never grow a tool.
-		return c.growAnswerNode(ctx, g, task, resp.Content, resp)
+		return c.growAnswerNode(ctx, g, task, resp.Content, resp, nil)
 	}
 
 	result := models.NewTaskResult(task.TaskID, task.AgentType)
@@ -649,6 +661,14 @@ func (c *plannerCognition) growToolNodes(
 				"tool", toolName, "session", sessionID)
 			continue
 		}
+		// Per-agent tool allowlist check. The executing agent's identity rides the
+		// task payload; when an allowlist is set, only listed tools are
+		// permitted.
+		if !c.isToolAllowedForAgent(toolName, task) {
+			c.logger.Warn("planner: tool blocked by per-agent allowlist; skipping",
+				"tool", toolName, "session", sessionID)
+			continue
+		}
 		if !c.toolBudgetRemaining(g, toolName) {
 			c.logger.Warn("planner: tool budget exhausted by L1 constraint; skipping",
 				"tool", toolName, "session", sessionID)
@@ -692,8 +712,22 @@ func (c *plannerCognition) growToolNodes(
 		if err := g.AddToolNode(ctx, nodeID, toolName, metadata, prev); err != nil {
 			return grown, fmt.Errorf("add tool node %s: %w", nodeID, err)
 		}
-		// Chain sequential tools within the same round: the next tool
-		// depends on this one (data flow).
+		// Chain sequential tools within the same round: the next tool depends on
+		// this one (data flow).
+		//
+		// This serial chaining is an intentional design choice, not an
+		// architectural limitation. The DAG supports fan-out:
+		// depsCompletedLocked checks every dependency, and ReadyTasks
+		// returns all ready tasks at once (see TestFabricFanoutReadyTasks).
+		// PlanStep.DependsOn is []string and ProjectStep copies it as-is,
+		// so multi-predecessor topologies are reachable.
+		//
+		// The planner chains serially because LLM tool-call ordering
+		// typically carries data flow (tool B reads tool A's output), and
+		// the planner has no signal to distinguish "order matters" from
+		// "order is arbitrary". Restructuring the topology at runtime via
+		// the GA's PatchAddEdge — changing the mutation operator — is a
+		// lower-risk path to parallel expression than changing the planner.
 		prev = nodeID
 		grown++
 	}
@@ -743,6 +777,33 @@ func (c *plannerCognition) isToolEnabled(toolName string) bool {
 		return true
 	}
 	return val != "false"
+}
+
+// isToolAllowedForAgent checks the per-agent tool allowlist.
+// Returns true (permissive) when no agent fabric is wired, the task carries
+// no executing-agent stamp, or the agent has no allowlist set (nil = inherit
+// all). Returns false only when the agent has a non-nil allowlist that does
+// not contain the tool name.
+//
+// ASYMMETRY WITH THE EXECUTION GUARD: growth-time rejection SKIPS the tool
+// node — the quantum continues with the remaining tool calls and the model
+// sees only a warn log — while execution-time rejection FAILS the task
+// (l2graph toolCognition.ExecuteStep). Growth can therefore silently drop a
+// tool the model asked for; the execution guard is the backstop for nodes
+// that already existed when the allowlist was set (or was tightened).
+func (c *plannerCognition) isToolAllowedForAgent(toolName string, task *models.Task) bool {
+	if c.agentFabric == nil {
+		return true
+	}
+	agentID, _ := task.Payload[executingAgentKey].(string)
+	if agentID == "" {
+		return true
+	}
+	agent, err := c.agentFabric.Get(agentID)
+	if err != nil {
+		return true // agent gone = permissive (don't block on a race)
+	}
+	return agent.IsToolAllowed(toolName)
 }
 
 // toolBudgetRemaining checks whether the L2 graph still has budget for one
@@ -812,6 +873,15 @@ func (c *plannerCognition) l1Priors() []string {
 // usage rides the answer node's task result metadata into the checkpoint
 // envelope (the fitness cost channel, M4).
 //
+// content is the final-turn answer text the planner's LLM produced. Empty
+// means "no stamped answer" — the depth-guard path deliberately grows the
+// node content-less so answerCognition synthesizes from history (or emits
+// the gap body); guard/debug literals must never ride this parameter.
+//
+// extra carries additional args stamped onto the answer node (merged into
+// the AddToolNode args map). The depth-guard path uses it to mark the
+// session's final answer as truncated; nil elsewhere.
+//
 // The predecessor is the current plan node when it exists in the graph
 // (subsequent quanta), or the root node when it doesn't (the first plan
 // quantum). When the plan node IS in the graph, its predecessor (the last
@@ -822,6 +892,7 @@ func (c *plannerCognition) growAnswerNode(
 	task *models.Task,
 	content string,
 	resp *llmcore.GenerateResponse,
+	extra map[string]any,
 ) (*StepOutcome, error) {
 	// The answer node is the terminal of the SAME round the quantum would
 	// have grown, so its ID comes from the stable round derivation — never
@@ -844,6 +915,9 @@ func (c *plannerCognition) growAnswerNode(
 		args := map[string]any{
 			"content":       content,
 			planMetadataKey: task.SessionID,
+		}
+		for k, v := range extra {
+			args[k] = v
 		}
 		if task.TenantID != "" {
 			args[tenantMetadataKey] = task.TenantID

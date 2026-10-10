@@ -487,11 +487,41 @@ func (m *ActiveStrategyManager) Rollback(ctx context.Context) (*mutation.Strateg
 //   - *mutation.Strategy: clone of the current strategy, or nil if none deployed.
 func (m *ActiveStrategyManager) Current() *mutation.Strategy {
 	m.mu.RLock()
-	defer m.mu.RUnlock()
-	if m.current == nil {
+	if m.current != nil {
+		c := m.current.Clone()
+		m.mu.RUnlock()
+		return c
+	}
+	m.mu.RUnlock()
+	// Fall back to the durable store: bootstrap seeds the base strategy
+	// directly via store.SetActive (ensureBootstrapActiveStrategy), and a
+	// PG restart recovers a deployed strategy without passing through the
+	// ASM promote path. The store is the source of truth; m.current is the
+	// promoted-path cache. The store read stays OUTSIDE m.mu — the store
+	// guards itself, and nesting the locks would invert nothing but add
+	// hold time.
+	st, err := m.store.GetActive(context.Background())
+	if err != nil || st == nil {
 		return nil
 	}
-	return m.current.Clone()
+	return mutationStrategyFromStore(st)
+}
+
+// mutationStrategyFromStore projects the store's deployment view onto the
+// mutation-layer strategy shape the ASM serves to consumers (lifecycle
+// snapshot, policy sources, shadow baselines).
+func mutationStrategyFromStore(st *Strategy) *mutation.Strategy {
+	if st == nil {
+		return nil
+	}
+	return &mutation.Strategy{
+		ID:             st.ID,
+		ParentID:       st.ParentID,
+		Version:        st.Version,
+		Name:           st.Name,
+		Params:         st.Params,
+		PromptTemplate: st.PromptTemplate,
+	}
 }
 
 // Previous returns the previously active strategy (cloned).

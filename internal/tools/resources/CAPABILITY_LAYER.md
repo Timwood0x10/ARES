@@ -441,6 +441,4 @@ Potential improvements to the capability engine:
 
 ## References
 
-- [CapabilityLayer.md](../../plan/CapabilityLayer.md) - Design specification
-- [code_rules.md](../../plan/code_rules.md) - Coding standards
 - [AGENT_TOOLS_INTEGRATION.md](AGENT_TOOLS_INTEGRATION.md) - Agent tools integration guide

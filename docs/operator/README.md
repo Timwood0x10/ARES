@@ -1,6 +1,6 @@
 # ARES Operator Runbook
 
-> 版本：0.3.1 · 适用命令：`ares serve` / `ares run`
+> 版本：0.3.2 · 适用命令：`ares serve` / `ares run`
 > 本文档是 M9 里程碑交付（AGENTOS_DEVELOPMENT_PLAN.md 第6节），覆盖：快速启动、配置调优、
 > 健康检查、认证、热重载、升级与故障排查。架构总览见
 > [docs/zh/architecture/ares-runtime.md](../zh/architecture/ares-runtime.md)。

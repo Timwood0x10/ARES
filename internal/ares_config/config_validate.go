@@ -5,6 +5,7 @@ package ares_config
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -54,6 +55,10 @@ func (c *Config) Validate() error {
 		return err
 	}
 
+	if err := c.validateTasks(); err != nil {
+		return err
+	}
+
 	if c.Storage.EventsRetentionDays < 0 {
 		return fmt.Errorf("invalid events retention days: %d, must be >= 0 (0 = keep forever)", c.Storage.EventsRetentionDays)
 	}
@@ -61,10 +66,37 @@ func (c *Config) Validate() error {
 	return nil
 }
 
+// validateTasks validates the external task-submission surface config.
+// tasks.wait_timeout must parse as a positive Go duration when set; the
+// 300s hard cap is enforced at the handler (a larger configured default is
+// clamped, not rejected).
+func (c *Config) validateTasks() error {
+	if c.Tasks.WaitTimeout == "" {
+		return nil
+	}
+	d, err := time.ParseDuration(c.Tasks.WaitTimeout)
+	if err != nil {
+		return fmt.Errorf("invalid tasks.wait_timeout %q: %w", c.Tasks.WaitTimeout, err)
+	}
+	if d <= 0 {
+		return fmt.Errorf("invalid tasks.wait_timeout %q: must be positive", c.Tasks.WaitTimeout)
+	}
+	return nil
+}
+
 // validateServer validates server configuration
 func (c *Config) validateServer() error {
 	if c.Server.Port < 1 || c.Server.Port > 65535 {
 		return fmt.Errorf("invalid server port: %d, must be between 1 and 65535", c.Server.Port)
+	}
+	// setDefaults fills an empty value with "ares/plan" before Validate runs
+	// on the production load path; an explicitly set whitespace-only value
+	// must not silently become an audit-log capability of blank spaces. The
+	// value itself is audit-only — execution normalizes to the single L2
+	// capability at the Submitter. Empty here is legal: unit tests Validate
+	// partial configs without defaults, and the load path backfills.
+	if c.Server.DefaultCapability != "" && strings.TrimSpace(c.Server.DefaultCapability) == "" {
+		return fmt.Errorf("invalid server.default_capability: must not be blank")
 	}
 	return nil
 }

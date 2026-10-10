@@ -72,6 +72,17 @@ const (
 	restoreKeyInputTokens  = "input_tokens"
 	restoreKeyOutputTokens = "output_tokens"
 	restoreKeyTotalTokens  = "total_tokens"
+	// restoreKeyLastError carries the terminal failure cause through a
+	// checkpoint's JSON round-trip (persist → restore): the value also lives
+	// inside the checkpoint envelope, but the map-decode path of
+	// DecodeCheckpoint reads it back by this key.
+	restoreKeyLastError = "last_error"
+	// restoreKeyTenantID carries the envelope's tenant scope through the
+	// same checkpoint_json round-trip. DecodeCheckpoint's map path must
+	// extract it: any decode→EncodeCheckpoint re-wrap (e.g. Fail's cause
+	// stamp on a post-restore task) would otherwise silently drop tenant
+	// attribution.
+	restoreKeyTenantID = "tenant_id"
 )
 
 // RestoreFromStore rebuilds the in-memory task set from the attached event

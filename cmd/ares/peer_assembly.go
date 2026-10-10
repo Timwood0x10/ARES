@@ -228,12 +228,7 @@ func (a *peerAssembly) wireEvolutionFeedback() {
 		replay := evolution.NewReplayScorer(comp.EvidenceStore, func() float64 {
 			return det.ScoreAttribution(attribution)
 		}, evolution.WithReplayQueryLimit(cfg.Evolution.Shadow.ReplayQueryLimit))
-		// Without an evidence store replay degrades to prior-vs-prior, i.e.
-		// the tie deadlock above. Leave the scorer unset in that case so the
-		// shadow gate stays honestly fail-closed instead of judging on ties.
-		if replay.HasStore() {
-			comp.NewEvolution.ShadowEvaluator.SetShadowScorer(replay.Score)
-		}
+		applyServeShadowScorer(comp.NewEvolution.ShadowEvaluator, replay)
 	}
 
 	// Wrap the confidence-injection adapter with score write-back.
@@ -248,6 +243,28 @@ func (a *peerAssembly) wireEvolutionFeedback() {
 		aresrecovery.RunScoredFeedbackLoop(loopCtx, scoredFeedback, 10*time.Second)
 		return nil
 	})
+}
+
+// applyServeShadowScorer installs the zero-LLM ReplayScorer as the shadow
+// evaluator's comparison scorer, but ONLY when the evaluator has no
+// independent scorer of its own. With evolution.llm_scoring enabled,
+// buildShadowEvaluator already wired the budget-gated tiered ScoreEvidence
+// wrapper — that independent-draw path is production truth. The pre-fix
+// unconditional overwrite replaced it with replay.Score whenever an evidence
+// store existed, collapsing serve-mode shadow comparisons to cold-start
+// prior ties that the gate fail-closed on (GA soak 2026-09-21:
+// "win rate 1.00 over 1 comparisons below threshold"). A store-less replay
+// is refused for the same reason: prior-vs-prior ties deadlock the gate.
+// Returns true when replay was installed.
+func applyServeShadowScorer(se *evolution.ShadowEvaluator, replay *evolution.ReplayScorer) bool {
+	if se == nil || replay == nil || !replay.HasStore() {
+		return false
+	}
+	if se.HasIndependentScorer() {
+		return false
+	}
+	se.SetShadowScorer(replay.Score)
+	return true
 }
 
 // startCollabGC reclaims terminal collaboration-graph residue left by fail-fast / timeout submissions off the hot path.

@@ -174,15 +174,17 @@ func (s *DistillationService) Distill(ctx context.Context, task *TaskResult) (*E
 			// Fall back to a synchronous embed+update so the row does not stay
 			// without a vector until the reconciler picks it up.
 			if backfillErr := s.backfillEmbedding(ctx, exp, extracted.Problem); backfillErr != nil {
-				// The row IS persisted (Create above succeeded); the pre-fix
-				// `return nil, err` made callers retry Distill, which Created
-				// a DUPLICATE vectorless row. Log and succeed — Reconcile's
-				// experiences pass (embedding IS NULL, no live queue entry)
-				// is the designed recovery path for exactly this state.
-				s.logger.Warn("sync embedding backfill failed after enqueue failure; reconciler will retry",
+				// Enqueue + sync embed both failed — the row is
+				// persisted but will have embedding IS NULL. This is a
+				// permanent gap if the reconciler is also not running.
+				// Elevate to Error so it is not silently swallowed; the
+				// reconciler path (SearchByVector fail-closed on NULL)
+				// silently misses recall, so the operator must see this.
+				s.logger.Error("embedding persist failed: enqueue + sync backfill both failed; row has NULL vector, reconciler must retry",
 					"error", backfillErr,
 					"experience_id", exp.ID,
-					"tenant_id", exp.TenantID)
+					"tenant_id", exp.TenantID,
+					"table", storage_models.ExperiencesTable)
 			}
 		}
 	} else {

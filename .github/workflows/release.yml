@@ -8,6 +8,11 @@ on:
 permissions:
   contents: write
 
+# Same one-toolchain policy as ci.yml: release artifacts must be built by the Go
+# version go.mod declares, and nothing may pull a second toolchain mid-build.
+env:
+  GOTOOLCHAIN: local
+
 jobs:
   release:
     name: Create Release
@@ -19,7 +24,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.26'
+          go-version-file: go.mod
           cache: true
 
       - name: Run tests

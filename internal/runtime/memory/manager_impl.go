@@ -48,6 +48,12 @@ type memoryManager struct {
 	// EmbeddingPipeline: unified embedding generation for memory and query paths.
 	pipeline memembed.EmbeddingPipeline
 
+	// distillConfig snapshots the DistillationConfig the attached distiller
+	// was built with (guarded by mu). ApplyLiveConfig copies it before
+	// pushing a threshold change so UpdateConfig does not clobber the other
+	// tuned fields with fresh defaults.
+	distillConfig *distillation.DistillationConfig
+
 	// Event sourcing: optional EventStore for emitting lifecycle ares_events.
 	eventStore ares_events.EventStore
 	streamID   string // Stream ID used when appending ares_events.
@@ -137,6 +143,9 @@ func NewMemoryManager(config *MemoryConfig) (MemoryManager, error) {
 		config.MaxSessions,
 		config.SessionTTL,
 	)
+	if cap := effectiveSessionMaxHistory(config); cap > 0 {
+		sessionMemory.WithMaxMessages(cap)
+	}
 
 	taskMemory := memctx.NewTaskMemory(
 		config.MaxTasks,
@@ -179,6 +188,9 @@ func NewMemoryManagerWithDistiller(config *MemoryConfig, embedder apiembed.Embed
 		config.MaxSessions,
 		config.SessionTTL,
 	)
+	if cap := effectiveSessionMaxHistory(config); cap > 0 {
+		sessionMemory.WithMaxMessages(cap)
+	}
 
 	taskMemory := memctx.NewTaskMemory(
 		config.MaxTasks,
@@ -187,6 +199,9 @@ func NewMemoryManagerWithDistiller(config *MemoryConfig, embedder apiembed.Embed
 
 	// Create new distillation engine
 	distillConfig := distillation.DefaultDistillationConfig()
+	if config.DistillationThreshold > 0 {
+		distillConfig.DistillationThreshold = config.DistillationThreshold
+	}
 	distiller := distillation.NewDistiller(distillConfig, embedder, expRepo)
 
 	pipeline, err := memembed.NewEmbeddingPipeline(embedder)
@@ -203,6 +218,7 @@ func NewMemoryManagerWithDistiller(config *MemoryConfig, embedder apiembed.Embed
 		embedder:      embedder,
 		pipeline:      pipeline,
 		expRepo:       expRepo,
+		distillConfig: distillConfig,
 		ctxCleaner:    memctx.NewContextCleaner(),
 		// The recommended production constructor must wire session leasing
 		// exactly like NewMemoryManager: without it AcquireSessionLease
@@ -328,12 +344,43 @@ func (m *memoryManager) SetEventStore(store ares_events.EventStore, streamID str
 // ApplyLiveConfig implements LiveConfigApplier: it pushes patch-updated
 // limits into the live SessionMemory/TaskMemory, which capture TTL/capacity
 // at construction and would otherwise keep enforcing boot-time values.
+// SessionMaxHistory and DistillationThreshold ride the same push — a patch
+// that only mutates the stored config would leave the session store cap and
+// the distiller's round gate at their construction-time values.
+//
+// Locking: the caller (MemoryPatchExecutor.Apply) already holds the store's
+// write lock via MemoryConfigStore.Lock, so this method must NOT re-acquire
+// m.mu — doing so self-deadlocks on the non-reentrant sync.RWMutex. The
+// unlocked reads of m.distiller/m.distillConfig are safe for the same reason.
 func (m *memoryManager) ApplyLiveConfig(cfg *MemoryConfig) {
 	if cfg == nil {
 		return
 	}
 	m.sessionMemory.Reconfigure(cfg.MaxSessions, cfg.SessionTTL)
 	m.taskMemory.Reconfigure(cfg.MaxTasks, cfg.TaskTTL)
+	// Session store cap: push the EFFECTIVE value every time — the helper
+	// clamps up to the read window, and a zero config value pushes 0, which
+	// WithMaxMessages translates back to the component default. Skipping the
+	// push when the knob is zero would leave a previously tightened cap live.
+	m.sessionMemory.WithMaxMessages(effectiveSessionMaxHistory(cfg))
+	if m.distiller != nil && m.distillConfig != nil && cfg.DistillationThreshold >= 0 {
+		if updater, ok := m.distiller.(interface {
+			UpdateConfig(*distillation.DistillationConfig)
+		}); ok {
+			// Copy the construction config so only the threshold moves;
+			// UpdateConfig replaces the whole struct and would otherwise
+			// reset every other tuned field to fresh defaults. Zero is a
+			// valid pushed value (ungated firing), so a patch/rollback that
+			// clears the gate reaches the live distiller instead of being
+			// silently dropped by a >0 guard.
+			next := *m.distillConfig
+			if next.DistillationThreshold != cfg.DistillationThreshold {
+				next.DistillationThreshold = cfg.DistillationThreshold
+				m.distillConfig = &next
+				updater.UpdateConfig(&next)
+			}
+		}
+	}
 }
 
 // emitEvent appends a single event using the canonical ares_events.Emit.
@@ -662,8 +709,14 @@ func (m *memoryManager) StoreDistilledTask(ctx context.Context, taskID string, d
 	if distilled == nil {
 		return errors.New("distilled task cannot be nil")
 	}
-	if m.distiller == nil || m.expRepo == nil {
-		return errors.New("distillation engine not initialized, use NewMemoryManagerWithDistiller")
+	// Snapshot the engine under RLock: SetDistillationEngine attaches it
+	// under the write lock after construction, and unlocked reads here would
+	// race with that injection.
+	m.mu.RLock()
+	distiller, expRepo, defaultTenant := m.distiller, m.expRepo, m.defaultTenantID
+	m.mu.RUnlock()
+	if distiller == nil || expRepo == nil {
+		return ErrDistillationEngineNotInitialized
 	}
 
 	log.Info("[Memory Distillation] Storing distilled task", "task_id", taskID)
@@ -697,13 +750,12 @@ func (m *memoryManager) StoreDistilledTask(ctx context.Context, taskID string, d
 		// "default": SearchSimilarTasks reads m.defaultTenantID, so a literal
 		// here wrote under "default" while a SetDefaultTenantID override made
 		// every read look in another tenant — self-written experiences became
-		// unfindable (write/read tenant mismatch).
-		m.mu.RLock()
-		tenantID = m.defaultTenantID
-		m.mu.RUnlock()
+		// unfindable (write/read tenant mismatch). defaultTenant was
+		// snapshotted with the engine at method entry.
+		tenantID = defaultTenant
 	}
 
-	memories, err := m.distiller.DistillConversation(ctx, taskID, distMessages, tenantID, userID)
+	memories, err := distiller.DistillConversation(ctx, taskID, distMessages, tenantID, userID)
 	if err != nil {
 		return errors.Wrap(err, "distill conversation")
 	}
@@ -749,7 +801,7 @@ func (m *memoryManager) StoreDistilledTask(ctx context.Context, taskID string, d
 				Vector:           mem.Vector,
 			}
 
-			if err := m.expRepo.Create(storeCtx, exp); err != nil {
+			if err := expRepo.Create(storeCtx, exp); err != nil {
 				log.Error("[Memory Distillation] Failed to store experience",
 					"task_id", taskID, "error", err)
 				return errors.Wrap(err, "store experience")
@@ -783,8 +835,14 @@ func (m *memoryManager) StoreDistilledTask(ctx context.Context, taskID string, d
 
 // SearchSimilarTasks searches for similar tasks using vector-based search.
 func (m *memoryManager) SearchSimilarTasks(ctx context.Context, query string, limit int) ([]*models.Task, error) {
-	if m.pipeline == nil || m.expRepo == nil {
-		return nil, errors.New("distillation engine not initialized, use NewMemoryManagerWithDistiller")
+	// Snapshot the engine under RLock: SetDistillationEngine attaches it
+	// under the write lock after construction, and unlocked reads here would
+	// race with that injection.
+	m.mu.RLock()
+	pipeline, expRepo := m.pipeline, m.expRepo
+	m.mu.RUnlock()
+	if pipeline == nil || expRepo == nil {
+		return nil, ErrDistillationEngineNotInitialized
 	}
 	// Reject a negative limit: it would panic on make(_, 0, limit) below and
 	// the backing repositories treat it as either "no limit" (Postgres LIMIT
@@ -797,8 +855,8 @@ func (m *memoryManager) SearchSimilarTasks(ctx context.Context, query string, li
 		"query", truncpkg.WithEllipsis(query, 50),
 		"limit", limit)
 
-	spec := memembed.BuildMemoryQuerySpec(query, m.pipeline.Model(), 1, 0)
-	queryVector, err := m.pipeline.Embed(ctx, spec)
+	spec := memembed.BuildMemoryQuerySpec(query, pipeline.Model(), 1, 0)
+	queryVector, err := pipeline.Embed(ctx, spec)
 	if err != nil {
 		return nil, errors.Wrap(err, "generate query embedding")
 	}
@@ -809,7 +867,7 @@ func (m *memoryManager) SearchSimilarTasks(ctx context.Context, query string, li
 	m.mu.RLock()
 	tenant := m.defaultTenantID
 	m.mu.RUnlock()
-	experiences, err := m.expRepo.SearchByVector(ctx, queryVector, tenant, limit)
+	experiences, err := expRepo.SearchByVector(ctx, queryVector, tenant, limit)
 	if err != nil {
 		return nil, errors.Wrap(err, "search experiences")
 	}

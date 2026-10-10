@@ -110,7 +110,7 @@ func (r *KnowledgeRuntime) ProviderNames() []string {
 // Config holds optional runtime configuration.
 type Config struct {
 	MaxConcurrentProviders int  // Max parallel provider loads (default 5)
-	LazyLoading            bool // Clamp the graph budget when set; full lazy loading was removed with LazyGraph (tech-debt: see plan/0.3.1plan)
+	LazyLoading            bool // Clamp the graph budget when set; full lazy loading was removed with LazyGraph (tech-debt, not yet replaced)
 	// Types restricts recall to these object types. It is forwarded to every
 	// provider as Intent.Scope.Types, which StoreProvider already honours.
 	// Empty means no type restriction.

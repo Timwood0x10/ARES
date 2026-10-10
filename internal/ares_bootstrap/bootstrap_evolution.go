@@ -522,6 +522,16 @@ func wireGAEvolution(ctx context.Context, cfg *ares_config.Config, comp *Compone
 		ID:     "bootstrap-root",
 		Params: map[string]any{paramTemperature: 0.7, paramMaxTokens: 4096},
 	}
+	// Seed the strategy store BEFORE any score producer starts: the zero-LLM
+	// write-back (aresrecovery → strategyScoreAdapter.WriteActiveScore) and
+	// every policy-source read go through store.GetActive, which on an empty
+	// store returns nil — every recovery score then fails with "no active
+	// strategy" and the GA accumulates no fitness at all. A store that
+	// already holds an active strategy (PG restart with a deployed
+	// candidate) is left untouched.
+	if err := ensureBootstrapActiveStrategy(ctx, memStore, base); err != nil {
+		return err
+	}
 	gaCfg := assembleGAConfig(ctx, cfg, comp, memStore, guidanceProvider)
 	rollbackArmed := cfg.Evolution.Rollback.IsEnabled()
 	wireScorerAndShadowGate(ctx, cfg, comp, &gaCfg, rollbackArmed)
@@ -555,6 +565,44 @@ func wireGAEvolution(ctx context.Context, cfg *ares_config.Config, comp *Compone
 	legacySched := wireEvolutionScheduler(ctx, comp, wired, popAdapter)
 	runEvolutionTicker(ctx, cfg, comp, wired, legacySched, popAdapter)
 	runLLMSuggestions(ctx, comp, newEvol)
+	return nil
+}
+
+// bootstrapStrategyNeutralScore is the seeded Score of the bootstrap-root
+// strategy: a neutral prior in [0,1]. The first recovery write-back
+// overwrites it with a measured value; until then the GA treats the root as
+// unproven-but-not-failed.
+const bootstrapStrategyNeutralScore = 0.5
+
+// ensureBootstrapActiveStrategy persists the GA base strategy as the active
+// deployment when the store has none yet, so score write-back and
+// policy-source reads have a target from boot. Idempotent: an existing
+// active strategy (any source) is never overwritten.
+func ensureBootstrapActiveStrategy(ctx context.Context, store evolution.StrategyStore, base *mutation.Strategy) error {
+	if store == nil || base == nil {
+		return nil
+	}
+	existing, err := store.GetActive(ctx)
+	if err != nil && !errors.Is(err, evolution.ErrNoActiveStrategy) {
+		return fmt.Errorf("bootstrap active strategy: read store: %w", err)
+	}
+	if existing != nil {
+		return nil
+	}
+	seed := &evolution.Strategy{
+		ID:                   base.ID,
+		Name:                 base.ID,
+		Version:              1,
+		Params:               base.Params,
+		PromptTemplate:       base.PromptTemplate,
+		Score:                bootstrapStrategyNeutralScore,
+		StrategyMutationType: "bootstrap",
+	}
+	if err := store.SetActive(ctx, seed); err != nil {
+		return fmt.Errorf("bootstrap active strategy: %w", err)
+	}
+	log.InfoContext(ctx, "bootstrap: base strategy seeded as active",
+		"strategy_id", seed.ID, "score", seed.Score)
 	return nil
 }
 

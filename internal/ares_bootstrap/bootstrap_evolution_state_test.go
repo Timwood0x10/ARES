@@ -83,7 +83,12 @@ func TestRecentFitnessSummary_RespectsLimit(t *testing.T) {
 func TestBuildEvolutionSuggestionPrompt_NilState(t *testing.T) {
 	prompt := buildEvolutionSuggestionPrompt(context.Background(), nil, nil)
 	assert.Contains(t, prompt, "suggest one evolution improvement")
-	assert.Contains(t, prompt, "change scheduler")
+	assert.Contains(t, prompt, "change recovery")
+	// The scheduler route is retired (no producer can produce an appliable
+	// value, and ordering schedulers have no execution decision left) — the
+	// prompt must not advertise it, or the LLM would keep proposing patches
+	// that always fail to apply. See PatchChangeScheduler.
+	assert.NotContains(t, prompt, "change scheduler")
 	assert.NotContains(t, prompt, "Current evolution state")
 	assert.NotContains(t, prompt, "Currently deployed strategy")
 }

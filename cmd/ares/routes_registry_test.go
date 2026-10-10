@@ -176,6 +176,7 @@ func TestActionRoutesRegistry(t *testing.T) {
 		{"GET", "/api/mcp/tools", authRead},                  // MCP tool inventory
 		{"POST", "/api/mcp/tools/{name}/call", authWrite},    // MCP tool invocation
 		{"POST", "/api/tasks", authWrite},                    // peer task submission
+		{"GET", "/api/tasks/{task_id}", authRead},            // peer task status/result read
 		{"POST", "/api/graphs", authWrite},                   // collaboration graph
 		{"*", "/api/...", authRead},                          // control-server read tail
 		{"*", "/...", authNone},                              // non-API 404 tail

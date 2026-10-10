@@ -273,7 +273,7 @@ func TestSessionStalled(t *testing.T) {
 	epoch, err := fabric.Acquire("sess/s1/d1/tool#0", "test-agent", time.Minute)
 	require.NoError(t, err)
 	require.NoError(t, fabric.Start("sess/s1/d1/tool#0", "test-agent", epoch))
-	require.NoError(t, fabric.Fail("sess/s1/d1/tool#0", "test-agent", epoch))
+	require.NoError(t, fabric.Fail("sess/s1/d1/tool#0", "test-agent", epoch, nil))
 	require.True(t, SessionStalled(fabric, "s1", ""),
 		"all tasks terminal with no answer must read as stalled")
 

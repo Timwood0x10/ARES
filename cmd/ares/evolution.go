@@ -6,7 +6,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -21,7 +20,6 @@ import (
 	"github.com/Timwood0x10/ares/internal/aresrecovery"
 	"github.com/Timwood0x10/ares/internal/core/models"
 	"github.com/Timwood0x10/ares/internal/evidence"
-	"github.com/Timwood0x10/ares/internal/fabric/task"
 	"github.com/Timwood0x10/ares/internal/fabric/task/workflow/engine"
 	"github.com/Timwood0x10/ares/internal/logger"
 	evolution "github.com/Timwood0x10/ares/internal/runtime/ares_evolution"
@@ -239,10 +237,12 @@ func showEvolutionStatus() error {
 	}
 	fmt.Println()
 
-	// Coordinator.
+	// UngatedPatcher: the label says "NOT gated" on purpose (A1-c) — these
+	// apply counts are patch-path decisions, not StrategyLifecycle-gated
+	// promotions, and an operator must not read them as such.
 	decisions := ev.Coordinator.DecisionHistory()
 	history := ev.Coordinator.PatchHistory()
-	fmt.Printf("Coordinator:\n")
+	fmt.Printf("UngatedPatcher (patch path NOT gated by StrategyLifecycle):\n")
 	fmt.Printf("  Pending proposals: %d\n", ev.Coordinator.PendingCount())
 	fmt.Printf("  Decisions made:    %d\n", len(decisions))
 	fmt.Printf("  Patches applied:   %d\n", len(history))
@@ -578,106 +578,33 @@ func executeAskViaSession(ctx context.Context, k *kernelHandle, taskID, prompt s
 		return "", err
 	}
 
+	// The shared wait primitive (agentruntime.AwaitSessionResult) owns the
+	// invariants this loop maintained by hand: answer scan first, race-guard
+	// re-check after a sustained stall verdict, and the single answer-decode
+	// path (SDK parity is now structural, not comment-enforced). Release and
+	// error-shaping stay here.
 	waitCtx := ctx
 	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
 		var cancel context.CancelFunc
 		waitCtx, cancel = context.WithTimeout(ctx, collabTimeout)
 		defer cancel()
 	}
-	ticker := time.NewTicker(20 * time.Millisecond)
-	defer ticker.Stop()
-	// The stall verdict needs sustained evidence: a single poll landing in
-	// the answer-node compile gap must not kill a live session (SDK parity —
-	// agentruntime.StallDetector documents the window).
-	stalls := &agentruntime.StallDetector{}
-	for {
-		// Fast failure: a failed plan means the session can never answer.
-		if tk, err := k.fabric.Task(planTaskID); err == nil && tk.State == taskfabric.StateFailed {
-			k.sessions().ReleaseQuietly(sessionID)
-			return "", fmt.Errorf("agentipc: ask session %s plan task failed", sessionID)
+	aw := agentruntime.AwaitSessionResult(waitCtx, k.fabric, sessionID, planTaskID, agentruntime.AwaitOptions{})
+	k.sessions().ReleaseQuietly(sessionID)
+	switch {
+	case aw.Err == nil:
+		if aw.Answer == "" {
+			return "", fmt.Errorf("agentipc: ask session %s answered empty", sessionID)
 		}
-		if answer, ok := completedSessionAnswer(k, sessionID); ok {
-			k.sessions().ReleaseQuietly(sessionID)
-			if answer == "" {
-				return "", fmt.Errorf("agentipc: ask session %s answered empty", sessionID)
-			}
-			return answer, nil
+		return aw.Answer, nil
+	case aw.PlanFailed, aw.AnswerFailed, aw.Stalled:
+		return "", fmt.Errorf("agentipc: ask session %s: %w", sessionID, aw.Err)
+	default:
+		if err := waitCtx.Err(); err != nil {
+			return "", fmt.Errorf("agentipc: ask session %s: %w", sessionID, err)
 		}
-		// Fast failure: every session task terminal with no answer means the
-		// graph can never grow one (a failed grown node cascades into the
-		// continuation plan node, and grown nodes retry zero times) — fail
-		// now instead of spinning to the deadline. The detector requires the
-		// verdict to hold across consecutive polls so a transient gap in the
-		// async answer-node compile is not mistaken for death (SDK parity).
-		if stalls.Stalled(k.fabric, sessionID, planTaskID) {
-			// Race guard (SDK parity): the answer scan above and this verdict
-			// are two separate reads, so the answer can complete between
-			// them — re-check once instead of erroring on a session that
-			// just answered.
-			if answer, ok := completedSessionAnswer(k, sessionID); ok && answer != "" {
-				k.sessions().ReleaseQuietly(sessionID)
-				return answer, nil
-			}
-			k.sessions().ReleaseQuietly(sessionID)
-			return "", fmt.Errorf("agentipc: ask session %s stalled — all tasks terminal, no answer", sessionID)
-		}
-		select {
-		case <-waitCtx.Done():
-			k.sessions().ReleaseQuietly(sessionID)
-			if err := waitCtx.Err(); err != nil {
-				return "", fmt.Errorf("agentipc: ask session %s: %w", sessionID, err)
-			}
-			return "", fmt.Errorf("agentipc: ask session %s timed out", sessionID)
-		case <-ticker.C:
-		}
+		return "", fmt.Errorf("agentipc: ask session %s timed out", sessionID)
 	}
-}
-
-// completedSessionAnswer returns the first COMPLETED answer task's content
-// for a session. It scans fabric task ids (sess/<sid>/…/answer#…) rather
-// than the session graph: the answer body releases its session on success,
-// so the registry entry is already gone by the time we poll.
-// The sess/<sid>/ boundary match keeps sibling sessions (ipc-sess-tk-1 vs
-// ipc-sess-tk-12) from shadowing each other.
-func completedSessionAnswer(k *kernelHandle, sessionID string) (string, bool) {
-	prefix := "sess/" + sessionID + "/"
-	for _, id := range k.fabric.IDs() {
-		if !strings.HasPrefix(id, prefix) || !strings.Contains(id, "/answer#") {
-			continue
-		}
-		tk, err := k.fabric.Task(id)
-		if err != nil || tk.State != taskfabric.StateCompleted {
-			continue
-		}
-		content, err := sessionAnswerContent(tk)
-		if err != nil || content == "" {
-			continue
-		}
-		return content, true
-	}
-	return "", false
-}
-
-// sessionAnswerContent reads the terminal answer body from its envelope
-// (same read path as the canary harness: items[0].Content).
-func sessionAnswerContent(tk *taskfabric.Task) (string, error) {
-	dc, err := taskfabric.DecodeCheckpoint(tk.Checkpoint)
-	if err != nil {
-		return "", err
-	}
-	sc, ok := dc.StepCheckpoint.(map[string]any)
-	if !ok {
-		return "", fmt.Errorf("agentipc: answer checkpoint carries no result map")
-	}
-	raw, ok := sc["items"]
-	if !ok {
-		return "", fmt.Errorf("agentipc: answer envelope carries no items")
-	}
-	items, ok := raw.([]*models.RecommendItem)
-	if !ok || len(items) == 0 {
-		return "", fmt.Errorf("agentipc: answer items unreadable, got %T", raw)
-	}
-	return items[0].Content, nil
 }
 
 // strategyScoreAdapter bridges the aresrecovery.StrategyScoreWriter interface

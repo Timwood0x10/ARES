@@ -1,6 +1,6 @@
 # Makefile for ARES — Agent Runtime & Evolution System
 
-.PHONY: all lint test test-race check check-core check-tools help clean install install-cli ci ci-freeze benchmark quickstart examples cover cover-html ci-test-race-short
+.PHONY: all lint lint-vet lint-staticcheck lint-doc-anchors test test-race check check-core check-tools help clean install install-cli ci ci-freeze benchmark quickstart examples cover cover-html ci-test ci-test-race ci-test-race-short ci-test-integration
 
 # Default target
 all: lint test
@@ -72,17 +72,61 @@ ci-build:
 	@go build -v ./...
 	@echo "Build: OK"
 
-# CI tests with race detection (FULL suite, -count=1 bypasses test cache)
+# ───────────────────────────────────────────────────────────────────────────
+# Local vs CI — read this before debugging a red pipeline
+#
+#   make test                 local loop: -short, no race, -p 4 (fast feedback)
+#   make ci-test              EXACT replica of the CI `test` job: TZ=UTC,
+#                             -race -count=1 -timeout=300s -p 4, coverage,
+#                             then the G1-G4 gates. Run this before pushing.
+#   make ci-test-race         the same test invocation without the gate step
+#   make ci-test-integration  the CI `integration` job (needs TEST_POSTGRES_DSN;
+#                             it skips locally, CI runs a pgvector service)
+#
+# What actually differs CI vs a dev box (each of these has broken CI at least
+# once, so `make ci-test` pins them):
+#   * TZ: GitHub runners are UTC, a dev box usually is not. A test that
+#     compares time.Time STRUCTS instead of instants passes locally and fails
+#     in CI. TZ=UTC here makes both sides agree.
+#   * -short: the CI job does not pass it, so subprocess/e2e tests (MCP stdio,
+#     mcpclient, serve e2e) RUN there while `make test` skips them. `make
+#     ci-test` reproduces that.
+#   * GOMAXPROCS: the 2-vCPU runner defaults to 2, which starves the
+#     deadline-sensitive e2e tests — CI sets GOMAXPROCS=4 for that reason (see
+#     also the TEST_GOMAXPROCS measurements further down).
+#   * external services: Postgres exists only in the integration job; tests
+#     that need it skip unless TEST_POSTGRES_DSN is set.
+#   * gate tags: `go test ./...` does NOT compile //go:build closure files, so
+#     `make gate` is what runs the design-doc acceptance tests.
+# ───────────────────────────────────────────────────────────────────────────
+CI_TEST_TIMEOUT ?= 300s
+CI_TZ ?= UTC
+
+ci-test:  ## Replicate the CI `test` job locally (TZ=UTC + race + gates)
+	@echo "Replicating the CI test job (TZ=$(CI_TZ), -race, -timeout=$(CI_TEST_TIMEOUT))..."
+	TZ=$(CI_TZ) go test -race -count=1 -timeout=$(CI_TEST_TIMEOUT) -p $(TEST_PARALLEL) -coverprofile=cover.out ./...
+	@go tool cover -func=cover.out | tail -1
+	@$(MAKE) gate
+	@echo "ci-test: OK (same command CI runs)"
+
 ci-test-race:
-	@echo "Running full test suite with race detection..."
-	@go test -race -count=1 ./...
+	@echo "Running full test suite with race detection (CI shape, no gates)..."
+	TZ=$(CI_TZ) go test -race -count=1 -timeout=$(CI_TEST_TIMEOUT) -p $(TEST_PARALLEL) ./...
 	@echo "Tests: OK"
 
-# CI tests with race detection (short/fast path for quick local checks)
+# Local quick path: short + race.
 ci-test-race-short:
 	@echo "Running short tests with race detection..."
-	@go test -race -short -count=1 ./...
+	TZ=$(CI_TZ) go test -race -short -count=1 -p $(TEST_PARALLEL) ./...
 	@echo "Tests: OK"
+
+ci-test-integration:  ## Replicate the CI integration job (requires TEST_POSTGRES_DSN)
+	@test -n "$(TEST_POSTGRES_DSN)" || { \
+		echo "ERROR: TEST_POSTGRES_DSN is unset. CI runs a pgvector/pgvector:pg15 service;"; \
+		echo "       locally that test class SKIPS instead (which is why it only fails in CI)."; \
+		exit 1; }
+	TZ=$(CI_TZ) go test -race -count=1 -tags=integration -timeout=$(CI_TEST_TIMEOUT) -p $(TEST_PARALLEL) ./...
+	@echo "Integration: OK"
 
 # CI security scan
 ci-security:
@@ -119,22 +163,35 @@ fmt:
 # so a separate `go vet` / `staticcheck` pass is a redundant full-tree analysis.
 # Measured: vet 3.4s CPU + staticcheck 4.4s CPU duplicated work per `make lint`.
 # The standalone lint-vet / lint-staticcheck targets remain for explicit use.
-lint: lint-golangci
+# lint mirrors the CI `lint` job. The anchor check is a hard gate (exit 1) and
+# docs/archive + the local plan/ tree are pruned inside the script.
+lint: lint-doc-anchors lint-golangci
 	@echo ""
 	@echo "All lint checks: PASSED"
+
+lint-doc-anchors:
+	@echo "Running documentation anchor drift check..."
+	@bash scripts/check_doc_anchors.sh
+	@echo "doc anchors: PASSED"
 
 lint-vet:
 	@echo "Running go vet..."
 	@go vet ./...
 	@echo "go vet: PASSED"
 
+# staticcheck's importer cannot read export data written by a Go minor newer
+# than it supports — 2026.2.1 stops at Go 1.26 and fails on a Go 1.27 tree with
+# "export data version 5 is greater than maximum supported version 4" (the exact
+# Lint failure of 2026-10-09). The target therefore runs it under the Go version
+# go.mod declares: the same single toolchain CI uses, so a dev box on a newer Go
+# cannot produce a failure CI would not.
 lint-staticcheck:
 	@echo "Running staticcheck..."
 	@if command -v staticcheck >/dev/null 2>&1; then \
-		staticcheck ./... && \
+		GOTOOLCHAIN="go$$(awk '/^go /{print $$2; exit}' go.mod)" staticcheck ./... && \
 		echo "staticcheck: PASSED"; \
 	else \
-		echo "WARNING: staticcheck not installed. Install with: go install honnef.co/go/tools/cmd/staticcheck@latest"; \
+		echo "WARNING: staticcheck not installed. Install with: go install honnef.co/go/tools/cmd/staticcheck@v0.8.1"; \
 	fi
 
 lint-golangci:
@@ -205,7 +262,7 @@ test-core:
 # Other modules — check total coverage across tools packages
 test-tools:
 	@echo "Running tools module tests with coverage..."
-	@go test -cover -coverprofile=coverage.out ./internal/llm/... ./internal/fabric/task/workflow/... ./internal/ares_memory/... ./internal/ares_shutdown/... ./internal/ares_ratelimit/... ./internal/tools/... ./internal/storage/... ./internal/agents/...
+	@go test -cover -coverprofile=coverage.out ./internal/llm/... ./internal/fabric/task/workflow/... ./internal/runtime/memory/... ./internal/ares_shutdown/... ./internal/ares_ratelimit/... ./internal/tools/... ./internal/storage/... ./internal/agents/...
 	@echo ""
 	@echo "--- Per-package coverage ---"
 	@go tool cover -func=coverage.out | grep "total:" || true
@@ -276,7 +333,7 @@ benchmark:
 	@echo "Running benchmarks..."
 	@echo ""
 	@echo "=== Evaluation Framework Benchmarks ==="
-	@go test -bench=. -benchmem ./internal/eval/...
+	@go test -bench=. -benchmem ./internal/runtime/eval/...
 	@echo ""
 	@echo "=== Plugin System Benchmarks ==="
 	@go test -bench=. -benchmem ./internal/tools/resources/core/...
@@ -288,11 +345,11 @@ benchmark:
 
 benchmark-quick:
 	@echo "Running quick benchmarks (1s each)..."
-	@go test -bench=. -benchtime=1s ./internal/eval/... ./internal/tools/resources/core/...
+	@go test -bench=. -benchtime=1s ./internal/runtime/eval/... ./internal/tools/resources/core/...
 
 benchmark-profile:
 	@echo "Running benchmarks with CPU profile..."
-	@go test -bench=. -cpuprofile=cpu.prof ./internal/eval/...
+	@go test -bench=. -cpuprofile=cpu.prof ./internal/runtime/eval/...
 	@go tool pprof -top cpu.prof
 
 benchmark-save:
@@ -306,7 +363,7 @@ benchmark-save:
 	@echo "---" >> benchmarks/benchmark_report.md
 	@echo "" >> benchmarks/benchmark_report.md
 	@echo "## Evaluation Framework Benchmarks" >> benchmarks/benchmark_report.md
-	@go test -bench=. -benchmem ./internal/eval/... >> benchmarks/benchmark_report.md 2>&1
+	@go test -bench=. -benchmem ./internal/runtime/eval/... >> benchmarks/benchmark_report.md 2>&1
 	@echo "" >> benchmarks/benchmark_report.md
 	@echo "✅ Benchmark results saved to benchmarks/benchmark_report.md"
 
@@ -362,7 +419,7 @@ demo-down:
 demo-test:
 	@echo "Running integration tests against demo services..."
 	@TEST_POSTGRES_DSN="postgres://postgres:postgres@localhost:5433/ARES_test?sslmode=disable" \
-		go test -v -count=1 -timeout=180s ./internal/integration/... ./internal/events/... 2>&1 | \
+		go test -v -count=1 -timeout=180s ./tests/integration/... ./internal/ares_events/... 2>&1 | \
 		grep -E "^(=== RUN|--- |ok |FAIL|--- FAIL|PASS|SKIP)"
 	@echo ""
 	@echo "✅ Integration tests completed"

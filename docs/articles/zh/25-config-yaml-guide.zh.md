@@ -110,7 +110,7 @@ memory:
   rag_min_score: 0.4                # [0,1]，enable_rag 时校验
 ```
 
-> 诚实提醒：`configs/ares.yaml` 实样把记忆关掉了（`enabled: false`），并给出 `distillation_threshold: 3`、`enable_rag: false`、`rag_top_k: 5`、`rag_min_score: 0.4` 的示例。
+> 诚实提醒：`configs/ares.yaml` 实样开启记忆（`enabled: true`，与 `config_defaults.go` 的 leader contract default-on 一致），并给出 `distillation_threshold: 3`、`enable_rag: false`、`rag_top_k: 5`、`rag_min_score: 0.4` 的示例。注意三道独立门：`enabled` 管会话记忆；蒸馏还需 `storage(postgres)` + `embedding`；RAG 注入 prompt 还需 `enable_rag: true`。
 
 ---
 
@@ -170,6 +170,9 @@ evolution:
   #             watch_interval: "30s", min_active_duration: "90s", outcome_weight, dimension_eval_weight,
   #             workflow_weight, scheduler_weight, recovery_weight, blacklist_generations: 3 }
   # rollback: { enabled: true, degradation_threshold: 0.15, window_size: 5, min_samples: 3 }
+  #   ⚠️ 耦合（B4）：`enabled: false` 会同时拆掉两个安全网 —— 部署后的自动回滚
+  #   监视，以及 G2 影子门禁的"证据不足则跳过"路径（该门禁转为 fail-closed 拒绝）。
+  #   关闭 rollback 不是局部改动；详见 configs/ares.yaml 的带注释样例。
   # shadow: { min_samples: 20, min_win_rate: 0.55, replay_window_span: "10m", replay_query_limit: 200 }
   # shadow_execution: { enabled: false, sample_size: 3 }
   # channel_feedback: { collab_enabled: false, collab_weight: 0.0, tool_enabled: false, tool_weight: 0.0 }
@@ -217,7 +220,8 @@ tools:
   #   - npx @modelcontextprotocol/server-filesystem ./data
 
 reflection:
-  enabled: false              # agent 自我反思开关
+  enabled: false              # 未实现：SDK 侧 enabled: true 会直接报错；
+                              # serve 侧无对应字段，该键被忽略
 ```
 
 serve 侧额外：`kernel.policy`/`lease_ttl`/`resources`/`max_restarts`/各类 interval 与 timeout；`agents.sub` 每个条目 `{id, type, category, triggers, model, provider, dependencies, role, priority, max_tool_rounds, ...}`。

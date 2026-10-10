@@ -414,10 +414,19 @@ func TestStrategyLifecycle_Submit_SeedExemptionIsOneShot(t *testing.T) {
 	require.True(t, lc.seeded, "seed flag must flip on the first Submit")
 
 	// Simulate the ASM losing its active strategy (reset / emptied store).
+	// BOTH layers must be cleared: Current() treats the durable store as
+	// the source of truth when the in-memory promote cache is nil (GA-1
+	// observability seam), so clearing only asm.current would leave the
+	// seed visible through the store fallback.
 	asm.mu.Lock()
 	asm.current = nil
 	asm.previous = nil
 	asm.mu.Unlock()
+	if ms, ok := asm.store.(*mockStrategyStore); ok {
+		ms.mu.Lock()
+		ms.active = nil
+		ms.mu.Unlock()
+	}
 
 	// No shadow data → fail-closed gates. The candidate must NOT get a
 	// second gate-free deploy, and the active stays gone.

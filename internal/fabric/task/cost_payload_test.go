@@ -50,7 +50,7 @@ func TestFailedEventCarriesCapabilityToo(t *testing.T) {
 	epoch, err := f.Acquire("t-fail-cap", "agent-a", time.Minute)
 	require.NoError(t, err)
 	require.NoError(t, f.Start("t-fail-cap", "agent-a", epoch))
-	require.NoError(t, f.Fail("t-fail-cap", "agent-a", epoch))
+	require.NoError(t, f.Fail("t-fail-cap", "agent-a", epoch, nil))
 
 	sawFailed := false
 	for _, ev := range readEvents(t, store, "t-fail-cap") {
@@ -128,7 +128,7 @@ func TestFailedEventNeverCarriesTokenUsage(t *testing.T) {
 	require.NoError(t, f.Start("t-tok-fail", "agent-a", epoch))
 	// A failure with a token-bearing envelope must NOT stamp tokens on the
 	// event: the observer's cost penalty applies to successes only.
-	require.NoError(t, f.Fail("t-tok-fail", "agent-a", epoch))
+	require.NoError(t, f.Fail("t-tok-fail", "agent-a", epoch, nil))
 	for _, ev := range readEvents(t, store, "t-tok-fail") {
 		if ev.Type == ares_events.EventTaskFailed {
 			assert.NotContains(t, ev.Payload, "total_tokens")

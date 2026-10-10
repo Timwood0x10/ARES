@@ -130,7 +130,7 @@ For completeness: `internal/runtime/protocol/skills/indexer.go`'s `parseFrontMat
 
 ## 7. The public API & adapter
 
-`internal/knowledgeapi` is the canonical type domain (still aliasing `internal/knowledge`'s `KnowledgeObject/Relation/WorkingGraph/KnowledgeStore/Normalizer/EntityMatcher/Validator/Summarizer/KnowledgePipeline` implementation types); `api/knowledge/` is the deprecated forwarding layer.
+`internal/knowledgeapi` is the canonical type domain (still aliasing `internal/knowledge`'s `KnowledgeObject/Relation/WorkingGraph/KnowledgeStore/Normalizer/EntityMatcher/Validator/Summarizer/KnowledgePipeline` implementation types); `api/knowledge/` was the deprecated forwarding layer — removed in 0.3.2; import `internal/knowledgeapi` directly.
 
 `internal/knowledge/service/adapter.go` (**112 lines** as counted; the old "+126" was off) bridges `internal/knowledgeapi` to the internal runtime/retriever.
 

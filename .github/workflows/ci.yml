@@ -2,12 +2,31 @@ name: CI
 
 on:
   push:
-    branches: [master]
+    branches: [main, dev]
   pull_request:
-    branches: [master]
+    branches: [main, dev]
 
 permissions:
   contents: read
+
+# One-toolchain policy. Every job compiles with exactly the Go version go.mod
+# declares (`go-version-file: go.mod`, so a go.mod bump moves CI with it), and no
+# step may install a second toolchain: `GOTOOLCHAIN: local` makes any such silent
+# download fail loudly instead of quietly reintroducing one. That is what broke
+# the Lint job on 2026-10-09: dominikh/staticcheck-action@v1 defaults to
+# `install-go: true`, so the job carried setup-go's Go *and* the action's, and
+# staticcheck died importing stdlib ("internal error in importing
+# internal/byteorder: export data version 5 is greater than maximum supported
+# version 4") on a commit that is clean under a single toolchain.
+# Tool versions are pinned here so the gate cannot drift with an upstream release
+# — bump deliberately, in one place. Coupling to respect: staticcheck 2026.2.1
+# stops at Go 1.26 export data, so it must move WITH go.mod's Go minor (verified:
+# the same toolchain passes, a Go 1.27 tree fails with "export data version 5 is
+# greater than maximum supported version 4").
+env:
+  GOTOOLCHAIN: local
+  STATICCHECK_VERSION: v0.8.1
+  GOLANGCI_LINT_VERSION: v2.14.0
 
 jobs:
   lint:
@@ -20,7 +39,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.26'
+          go-version-file: go.mod
           cache: true
 
       - name: Format check
@@ -34,26 +53,57 @@ jobs:
       - name: Convergence freeze check
         run: bash scripts/check_convergence_freeze.sh
 
+      - name: Documentation anchor drift check
+        run: bash scripts/check_doc_anchors.sh
+
       - name: Vet
         run: go vet ./...
 
+      # Staticcheck is built by this job's own Go (the same toolchain that
+      # compiled the repo) and pinned via the workflow env, instead of the
+      # third-party action that installed its own Go and cached its own binary —
+      # see the one-toolchain policy above.
+      - name: Install staticcheck
+        run: go install honnef.co/go/tools/cmd/staticcheck@$STATICCHECK_VERSION
+
       - name: Staticcheck
-        uses: dominikh/staticcheck-action@v1
-        with:
-          version: "latest"
+        run: make lint-staticcheck
+
+      # Do NOT use golangci/golangci-lint-action here: its `version: latest`
+      # resolves within the v1 line, which is built with an older Go and refuses
+      # a config for a newer target ("the Go language version (go1.24) used to
+      # build golangci-lint is lower than the targeted Go version (1.26.1)").
+      # .golangci.yml is v2-schema, so build the v2 line with this job's own
+      # toolchain and run the repo's tuned target.
+      - name: Install golangci-lint
+        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$GOLANGCI_LINT_VERSION
 
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
-        with:
-          version: latest
-          timeout: 10m
+        run: make ci-lint
 
   test:
     name: Test
     runs-on: ubuntu-latest
+    # This single-entry matrix is a JOB-NAME LABEL, not a version source: the Go
+    # version comes from `go-version-file: go.mod` below (that was the drift this
+    # job used to carry — a hardcoded '1.26' against go.mod's 1.26.1). It stays
+    # because GitHub appends the matrix to the check name this job reports
+    # ("Test (1.26)"); a branch-protection rule listing that name as required
+    # would be stranded by a rename. If a real multi-Go sweep is ever wanted,
+    # each entry needs its own required check.
     strategy:
       matrix:
         go-version: ['1.26']
+    env:
+      # Pin the two things a dev box gets wrong, so `make ci-test` and this job
+      # behave identically:
+      #   * TZ — runners are UTC, a local box usually is not. A test comparing
+      #     time.Time STRUCTS instead of instants passes locally and fails here.
+      #   * GOMAXPROCS — the 2-vCPU runner defaults to 2, which starves the
+      #     deadline-sensitive e2e tests; the Makefile's own measurements show
+      #     GOMAXPROCS=4 already starving them on a 14-core box.
+      TZ: UTC
+      GOMAXPROCS: "4"
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -61,18 +111,17 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: ${{ matrix.go-version }}
+          go-version-file: go.mod
           cache: true
 
-      - name: Unit tests with coverage
-        run: go test -race -count=1 -timeout=300s -coverprofile=cover.out ./...
-
-      # Architecture & acceptance gates (G1 reachability / G2 config contract
-      # / G3 event contract / design-doc closure assertions via `-tags closure`).
-      # `go test ./...` does NOT compile //go:build closure files, so without
-      # this step the design doc's six design-doc acceptance tests never run in CI.
-      - name: Architecture and acceptance gates
-        run: make gate
+      # One command — the same one developers run locally (`make ci-test`), so
+      # the two can no longer drift. It covers the unit suite (race, -count=1,
+      # coverage) AND the G1-G4 gates: `go test ./...` does NOT compile
+      # //go:build closure files, so without the gate step the design-doc
+      # acceptance tests never run in CI. TEST_PARALLEL and the longer timeout
+      # are the only CI-specific knobs.
+      - name: Tests + architecture/acceptance gates (same as `make ci-test`)
+        run: make ci-test TEST_PARALLEL=2 CI_TEST_TIMEOUT=600s
 
       - name: Coverage summary
         run: go tool cover -func=cover.out | tail -1
@@ -89,6 +138,12 @@ jobs:
   integration:
     name: Integration Tests
     runs-on: ubuntu-latest
+    env:
+      # Same pinning as the test job (see there). The only genuine difference
+      # from a local run is the service below: with it the DSN-gated tests
+      # execute instead of skipping, which is why this class only fails in CI.
+      TZ: UTC
+      GOMAXPROCS: "4"
     services:
       postgres:
         image: pgvector/pgvector:pg15
@@ -109,47 +164,15 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.26'
+          go-version-file: go.mod
           cache: true
 
-      - name: Integration tests
+      - name: Integration tests (same as `make ci-test-integration`)
         env:
           TEST_POSTGRES_DSN: "postgres://postgres:postgres@localhost:5432/ARES_test?sslmode=disable"
-        run: go test -race -tags=integration -count=1 -timeout=300s ./...
+        run: make ci-test-integration TEST_PARALLEL=2 CI_TEST_TIMEOUT=600s
 
-  benchmark:
-    name: Benchmarks
-    runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: pgvector/pgvector:pg15
-        env:
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: ARES_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.26'
-          cache: true
-
-      - name: Run benchmarks
-        env:
-          TEST_POSTGRES_DSN: "postgres://postgres:postgres@localhost:5432/ARES_test?sslmode=disable"
-        run: go test -bench=. -benchmem -count=1 -timeout=300s ./... 2>&1 | tee benchmark-output.txt
-
-      - name: Upload benchmark results
-        uses: actions/upload-artifact@v4
-        with:
-          name: benchmark-results
-          path: benchmark-output.txt
+  # No benchmark job: benchmark numbers are only meaningful on a quiet machine,
+  # and the job cost minutes per PR (it had already been reduced to a bare
+  # checkout + setup-go). Record baselines on demand instead — see
+  # benchmarks/benchmark_report.md and `make benchmark`.

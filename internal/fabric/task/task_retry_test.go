@@ -56,7 +56,7 @@ func TestFailRetryBudgetContract(t *testing.T) {
 				if err := f.Start("t1", "agent-a", epoch); err != nil {
 					t.Fatalf("start attempt %d: %v", i+1, err)
 				}
-				if err := f.Fail("t1", "agent-a", epoch); err != nil {
+				if err := f.Fail("t1", "agent-a", epoch, nil); err != nil {
 					t.Fatalf("fail attempt %d: %v", i+1, err)
 				}
 				got, err := f.Task("t1")

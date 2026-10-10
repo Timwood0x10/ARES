@@ -155,6 +155,7 @@ tr.click:hover td{background:var(--surface2)}
   <div class="nav" data-page="scheduler"><span class="ic">⇶</span>Scheduler</div>
   <div class="group">RUNTIME</div>
   <div class="nav" data-page="execution"><span class="ic">↷</span>Execution</div>
+  <div class="nav" data-page="memory"><span class="ic">◎</span>Memory</div>
   <div class="nav" data-page="events"><span class="ic">≡</span>Events</div>
   <div class="foot">Runtime <b id="ver">v0.3.1</b><br><span id="side-meta">connecting…</span></div>
 </nav>
@@ -180,9 +181,12 @@ tr.click:hover td{background:var(--surface2)}
       </div>
     </div>
 
-    <div class="grid3" style="margin-top:14px">
+    <div class="grid2" style="margin-top:14px">
       <div class="card"><h2>Task Fabric</h2><div class="kv"><span>ready</span><b id="o-ready">0</b></div><div class="kv"><span>running / leased</span><b id="o-running">0</b></div><div class="kv"><span>suspended</span><b id="o-suspend">0</b></div><div class="kv"><span>done / failed</span><b id="o-done">0</b></div></div>
       <div class="card"><h2>Collaboration</h2><div id="o-collab" class="empty">no collaboration yet</div></div>
+    </div>
+    <div class="grid2" style="margin-top:14px">
+      <div class="card"><h2>Memory</h2><div id="o-memory" class="empty">—</div></div>
       <div class="card"><h2>Chaos</h2><div id="o-chaos" class="empty">—</div></div>
     </div>
   </section>
@@ -232,6 +236,13 @@ tr.click:hover td{background:var(--surface2)}
         <div><h2>Task State</h2><div id="ex-state" class="empty">—</div></div>
       </div>
     </div>
+  </section>
+
+  <!-- ══ MEMORY ══ -->
+  <section class="page" id="page-memory">
+    <h1>Memory <span class="sub">sessions · distillation · RAG</span></h1>
+    <div class="pg-desc">Cross-turn session memory, the distillation engine behind memory_search, and retrieval-augmented prompt injection.</div>
+    <div id="memory-body"><div class="empty">memory is not wired in this runtime</div></div>
   </section>
 
   <!-- ══ EVENTS ══ -->
@@ -324,6 +335,16 @@ function renderOverview(s){
       <div class="kv"><span>recovery</span><b>${state}</b></div>
       <div class="kv"><span>live injections</span><b>${(c.live&&c.live.injections)||0}</b></div>`;
   } else $('o-chaos').textContent='—';
+  // memory
+  const mm=s.memory;
+  if(mm&&mm.wired){
+    $('o-memory').className='';
+    $('o-memory').innerHTML=`
+      <div class="kv"><span>sessions / tasks</span><b>${mm.sessions??0} / ${mm.tasks??0}</b></div>
+      <div class="kv"><span>distillation engine</span><b>${badge(mm.distillation_engine,'armed','b-ok')}</b></div>
+      <div class="kv"><span>RAG</span><b>${badge(mm.enable_rag,mm.enable_rag?('on · '+mm.retrievers+' retrievers'):'off','b-info')}</b></div>
+      <div class="kv"><span>context window</span><b>${mm.max_history??0}</b></div>`;
+  } else $('o-memory').textContent='not wired';
 }
 
 /* ── TASKS ── */
@@ -466,6 +487,39 @@ function renderExec(){
   }).join('')||'<div class="empty">no raw events for this task</div>';
 }
 
+/* ── MEMORY ── */
+function renderMemory(s){
+  const m=s&&s.memory;
+  if(!m||!m.wired){
+    $('memory-body').innerHTML='<div class="empty">memory is not wired in this runtime (memory.enabled=false)</div>';
+    return;
+  }
+  const thr=m.distillation_threshold>0?m.distillation_threshold+' rounds':'ungated';
+  const sessCap=m.session_max_history>0?m.session_max_history:'default';
+  $('memory-body').innerHTML=`
+    <div class="grid3">
+      <div class="card"><h2>Stores</h2>
+        <div class="kv"><span>sessions</span><b>${m.sessions??0}</b></div>
+        <div class="kv"><span>tasks</span><b>${m.tasks??0}</b></div>
+        <div class="kv"><span>storage</span><b>${esc(m.storage||'—')}</b></div>
+        <div class="kv"><span>lifecycle</span><b>${badge(m.started,'running','b-ok')}</b></div>
+      </div>
+      <div class="card"><h2>Engines</h2>
+        <div class="kv"><span>distillation engine</span><b>${badge(m.distillation_engine,'armed','b-ok')}</b></div>
+        <div class="kv"><span>round gate</span><b>${esc(thr)}</b></div>
+        <div class="kv"><span>RAG retrievers</span><b>${m.retrievers??0}</b></div>
+        <div class="kv"><span>skills resident</span><b>${m.skills??0}</b></div>
+      </div>
+      <div class="card"><h2>Config</h2>
+        <div class="kv"><span>context window</span><b>${m.max_history??0}</b></div>
+        <div class="kv"><span>session msg cap</span><b>${esc(String(sessCap))}</b></div>
+        <div class="kv"><span>max sessions</span><b>${m.max_sessions??0}</b></div>
+        <div class="kv"><span>RAG</span><b>${m.enable_rag?`on · top_k ${m.rag_top_k} · min ${m.rag_min_score}`:'off'}</b></div>
+      </div>
+    </div>
+    ${m.distillation_engine?'':'<div class="card" style="margin-top:12px"><h2>Note</h2><div class="pg-desc">Distillation engine is not armed — memory_search and distilled-task storage fail closed on this runtime. Arm it by configuring storage(postgres) + embedding so bootstrap can inject the engine.</div></div>'}`;
+}
+
 /* ── EVENTS ── */
 async function loadEvents(){
   try{
@@ -513,6 +567,7 @@ async function tick(){
     if(curPage==='agents')renderAgents(last);
     if(curPage==='scheduler')renderScheduler(last);
     if(curPage==='execution')renderExec();
+    if(curPage==='memory')renderMemory(last);
     if(curPage==='events'&&Date.now()-lastFetch>3000){lastFetch=Date.now();loadEvents();}
   }catch(e){$('meta').textContent='collector unreachable — retrying…';}
 }

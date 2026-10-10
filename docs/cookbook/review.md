@@ -19,7 +19,7 @@ import (
 func main() {
 	ctx := context.Background()
 
-	rt := sdk.MustNew(sdk.WithOpenAI("gpt-4o-mini"))
+	rt := sdk.NewRuntime(sdk.WithOpenAI("gpt-4o-mini"))
 	defer rt.Close()
 
 	// Get git diff as review input.

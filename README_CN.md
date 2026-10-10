@@ -16,7 +16,15 @@
 - 混合检索（BM25 风格词法 + 向量余弦相似度）
 - 确定性质量评分（无 LLM 评估）
 
-功能状态：**实验性 —— API 可能变化，非生产就绪**。仅用于实验与反馈。
+**状态 —— 看清你能得到什么**
+
+| 区域 | 状态 |
+|---|---|
+| Kernel / task fabric / SDK | 端到端可用、有回归锁定；**尚不是加固过的 runtime** |
+| GA 进化 + patch 管线 | 端到端可跑；**apply gate 与多目标入口未接线** |
+| **AKG**（自适应知识图谱） | **BETA / 实验性 —— API 可能变化，非生产就绪** |
+
+下面「已知不足」一节列出这份 README 明知不能宣称的内容；在相信任何数字或能力之前请先读它。
 
 ---
 **ARES** — 智能体操作系统（Agent Operating System）。
@@ -118,30 +126,47 @@ make examples          # 构建全部示例
 
 - **多租户部署**：当前租户由 HTTP 边界的**调用方声明**。真正的多租户部署必须在鉴权层绑定租户（如从 JWT principal 服务端推导），而非信任请求体；并且需要先把上面两条知识侧的边界补上，才谈得上端到端隔离。见 `SECURITY.md` → Tenancy。
 
+## 已知不足（诚实清单）
+
+以下每条都是当前状态 + 证据文件。若本 README 其它地方的说法不在此清单内，要么已在代码里验证，要么就是 README 的 bug。
+
+- **租户隔离不是端到端的。** experience/蒸馏库按**列**隔离；知识侧按 **namespace** 隔离且依赖调用方传入；AKG 蒸馏出的事实全部落在 `"default"` namespace。真多租户必须在鉴权层绑定租户，不能信任请求体——见上文「租户模型」与 `SECURITY.md` → Tenancy。
+- **`WithMaxTokens` 是"peer 生命周期总量"，不是单次 run 上限。** 0.3.1 起它**已生效**（不再是静默 no-op）：桥接进 runtime 的 governance 预算（`sdk/sdk.go:441`），调度器 `budgetOK` 会在**量子边界**拦下 `tokenUsed` 已达 `TokenBudget` 的 agent。两个注意点：预算是 **L2 peer 的生命周期总量**（第一个正值生效，后续 agent 无法收紧）；执行是**协作式**的（量子边界让出，不打断进行中的 LLM 调用）（`sdk/options.go:703-717`）。`<= 0` 表示不限。
+- **`ask_agent` 是 fire-and-forget**：目标回复只写日志、不回写给提问方（`internal/agentsyscall/syscall.go`：*"the reply is currently FIRE-AND-FORGET"*）；serve 接线下拿不到 `Status: "delivered"`。
+- **多目标 GA 未接线**：没有任何代码写 `DimensionScores`，`"nsga2"`/`"nondominated"` 会静默回退单目标 tournament；`ScoreAgentsMulti`/`ParetoFrontStrategy()` 已废弃、零生产调用。
+- **GA apply gate 未在生产安装**：patch 路径按自身 fitness 阈值决策——这正是该类型叫 `UngatedPatcher` 的原因。
+- **调度是协作式的**：只在 ReAct 轮边界让出；单个失控的 LLM 调用靠超时兜底，不会被切片抢占。
+- **默认 fabric 是内存态、单进程**：跨重启的任务持久化需要 Postgres 事件存储；这不是分布式调度器。
+- **AKG 处于 BETA**（见顶部状态表）：API 可能变化，是完成度最低的子系统。
+- **基准是单次、单机测量**（Apple M3 Max，`-benchtime=500ms`）：只作前后对照的冒烟基线，不是 SLA。
+- **覆盖不均**：`cmd/ares`（HTTP/serve 面）与 discovery/introspection 一带最薄，也正是评审批次反复发现问题的地方。
+
 ## 稳定性与性能
 
-0.3.1 加固周期关闭了全部已知的崩溃与泄漏类缺陷，并入库了性能基线——后续改动必须与之对照。
+0.3.1 加固周期关闭了深度评审**发现**的全部崩溃与泄漏类缺陷（每项都有锁定测试），并入库了性能基线——后续改动必须与之对照。这里没有"已知缺陷已全部修完"的宣称：仅 0.3.1 一批评审就有约 230 项发现，每轮还会继续发现。
 
 **记录位置：**
 
-- [plan/stability_performance_plan.md](plan/stability_performance_plan.md) —— 分阶段稳定性专项：每个已修缺陷的锁定测试、泄漏清剿（kernel 与 workflow-engine 两包挂 `goleak` 门禁）、HTTP panic 守卫 + requestID 可观测性、flaky 归因、soak 测试（`SOAK_SECONDS=N go test ./tests/soak/`）
-- [plan/benchmarks/](plan/benchmarks/) —— 入库的基准基线（7 包 38 基准）与 benchstat 对比流程；任何优化 PR 必须附前后对照
+- **稳定性专项**（计划在仓库外，落在仓库内）：每个已修缺陷的锁定测试、泄漏清剿（kernel 与 workflow-engine 两包挂 `goleak` 门禁）、HTTP panic 守卫 + requestID 可观测性、flaky 归因、soak 测试（`SOAK_SECONDS=N go test ./tests/soak/`）
+- [benchmarks/](benchmarks/) —— 入库的基准基线（`benchmark_report.md`、`benchmark_results.json`）与 benchstat 对比流程；任何优化 PR 必须附前后对照。（仓库内**不要**链接 `plan/`：该目录仅本地存在且被 gitignore。）
 
-**AKG 为什么曾在一问短句就崩溃（0.3.1 已修复）。** 检索服务的构造器把知识库
-仓储当可选参数（允许为空），但所有 ≤10 字符的短查询会无条件进入精确检索管线，
-而该管线直接解引用它。于是在任何未接知识库的部署上，第一个短查询就会让
-handler panic。修复后：入口 fail-loud 返回明确的配置错误而非 panic
-（`retrieval_nil_kbrepo_test.go` 锁定回归）；并且所有 HTTP handler 现在都跑在
-panic 守卫之下——返回带 requestID 的结构化 500，而不是掐断连接。
+两个"锁定测试"的例子：AKG 短查询 panic（空知识库被精确检索管线解引用）现在
+fail-loud 返回配置错误——由 `retrieval_nil_kbrepo_test.go` 锁定；并且所有 HTTP
+handler 都跑在 panic 守卫下——返回带 requestID 的结构化 500，而不是掐断连接。
+完整叙述见 `docs/articles/`。
 
-**基线要点数字**（Apple M3 Max）：调度排空 ~8µs/任务（空转 tick ~8.5ns）、
-64 节点 L2 生长链端到端 ~132ms、500 对象混合检回 ~340ms。完整数字见基线文件。
+**基线要点数字**（Apple M3 Max 14 核；`-benchtime=500ms -count=1`；2026-10-09 针对
+0.3.2 重测）：调度排空 **100 任务 1.03ms**（~10µs/任务、4525 allocs）、空转 tick **8.6ns**
+（零分配）、64 节点 L2 生长链 **132ms**（1.41MB、13,733 allocs）、AKG 检索
+**13.0ms / 100 对象**、**139ms / 500 对象**。
+`benchmarks/benchmark_report.md` 存放分包表格（2026-09-12 基线 + 2026-10-09 重测）；
+`benchmark_results.json` 是 2026-09-12 的结构化数字。
 
 质量门：`make check`（vet + staticcheck + golangci-lint + 测试）每次改动必须全绿。
 
 ## AKG —— 无需 LLM 的知识图谱（实验性）
 
-**⚠️ AKG（自适应知识图谱）处于 BETA 实验阶段。API 可能变化，非生产就绪。仅用于实验与反馈。**
+*AKG 处于 BETA（见顶部状态表与「已知不足」）：API 可能变化。*
 
 ### 探索目标
 
@@ -280,81 +305,8 @@ lease 过期、回到 READY、其 checkpoint 在另一个执行者上恢复。
 
 两个视图：**组件地图**（正向接线，按 bootstrap 装配顺序自上而下）与**六条反馈闭环**（回馈运行时的边）。每条环都有回归测试锁定（见下表）。
 
-**组件地图**
-
-```mermaid
-flowchart TB
-    USER(["User - CLI - HTTP"])
-
-    USER --> SDK["SDK sdk/ - NewAgent, Team, Evolve (wraps the same bootstrap)"]
-    USER --> CLI["CLI cmd/ares - serve, arena, evolution"]
-    CLI -- "ares serve" --> BOOT
-
-    BOOT["Bootstrap wiring hub - internal/ares_bootstrap<br/>assembles every Component exactly once<br/>reverse-order cleanup on failure"]
-
-    BOOT --> HTTPG
-
-    subgraph HTTPG["HTTP surfaces"]
-        API["Console :8080<br/>/api/tasks, graphs, chaos, tools<br/>/api/evolution, /api/observability, /api/flight<br/>JWT/API-key, deny-by-default, audit"]
-    end
-
-    HTTPG ~~~ KERNELG
-
-    subgraph KERNELG["Kernel - Agents decide, Kernel enforces"]
-        POLICY["PolicyFlag<br/>taskfabric single-track"]
-        FABRIC["Task Fabric<br/>Create-Schedule-Acquire-RunQuantum<br/>lease + epoch fencing + Renew heartbeat"]
-        SCHED["KernelScheduler<br/>quantum drain, outcome attribution<br/>zombie reconcile per drain"]
-        AFAB["Agent Fabric<br/>spawn, kill, quota"]
-        REC["Recovery<br/>requeue, W1 rebind, revival"]
-        IPC["Agent IPC bus"]
-        POLICY --> FABRIC
-        AFAB --> FABRIC
-        REC --> FABRIC
-        IPC --> FABRIC
-        FABRIC --> SCHED
-    end
-
-    KERNELG -- "run quantum" --> AGENTSG
-
-    subgraph AGENTSG["Agents and tools"]
-        AG["Flat C1 peer agents<br/>ChatCognition tool-loop"]
-        BIND["ToolBinder<br/>built-in, MCP, AKF tools, native allowlist"]
-        AG --> BIND
-    end
-
-    AGENTSG ~~~ EVOG
-
-    subgraph EVOG["GA evolution pipeline"]
-        GAD["Genomes - Diff - Coordinator"]
-        DEP["Deployment pipeline<br/>staging preflight to live promote"]
-        STRAT["StrategyStore"]
-        GAD --> DEP
-        DEP --> STRAT
-    end
-
-    EVOG ~~~ MEMKG
-
-    subgraph MEMKG["Memory and knowledge"]
-        DIS["Distillation - ExpRepo<br/>spawn prior, RAG context"]
-        KR["KnowledgeRuntime<br/>AKG store, AKF tools"]
-    end
-
-    MEMKG ~~~ OBSG
-
-    subgraph OBSG["Observability and storage"]
-        FLY["FlightRecorder - EvidenceStore"]
-        TRC["EvolutionTracer, FeedbackStore, GlobalTracer"]
-        PG[("PostgreSQL optional")]
-        FLY -.-> PG
-    end
-
-    style KERNELG fill:#3b2f2f,stroke:#f59e0b,color:#fff
-    style AGENTSG fill:#0f2f44,stroke:#38bdf8,color:#fff
-    style EVOG fill:#2d1b69,stroke:#8b5cf6,color:#fff
-    style MEMKG fill:#1a2332,stroke:#94a3b8,color:#fff
-    style OBSG fill:#1a3a2a,stroke:#22c55e,color:#fff
-    style HTTPG fill:#3a1e1e,stroke:#ef4444,color:#fff
-```
+完整的**组件地图**（bootstrap 顺序、38 个包、数据流与一次 `POST /api/tasks` 的 23 步走读）
+见 [ARCHITECTURE.md](ARCHITECTURE.md)：README 只保留反馈闭环与心智模型。
 
 **六条闭环**（虚线 = 回馈运行时的反馈边）
 
@@ -498,39 +450,25 @@ Execution → Evidence → Genome → Candidate → Diff Engine → RuntimePatch
 | **3 个 Executor** | 将 Patch 应用到运行时代码 | Graph, Knowledge, Recovery |
 | **LLM Adapter** | 将自然语言建议转为 PatchProposal | 解析后 → Coordinator |
 
-**关键设计**：LLM 是**参与者**，而非主导者。Coordinator 对所有 7 个 `PatchSource` 值一视同仁，没有来源拥有特权。
+**关键设计**：LLM 是**参与者**，而非主导者。UngatedPatcher 对所有 7 个 `PatchSource` 值一视同仁，没有来源拥有特权。
 
-### 基准测试（Apple M3 Max，darwin/arm64，2026-09-12）
+2026-10-09 针对 0.3.2 重测（`-benchtime=500ms -count=1 -benchmem`，Apple M3 Max 14 核、
+go1.27.1）。完整分包表格与 2026-09-12 基线见 [benchmarks/benchmark_report.md](benchmarks/benchmark_report.md)。
 
-```
-=== 运行时进化（internal/runtime/evolution） ===
-BenchmarkWorkflowGenome_Mutate       19.2k   31.5µs  46.5KB    534 allocs
-BenchmarkKnowledgeGenome_Mutate      1.42M   427ns   960B       11 allocs
-BenchmarkRecoveryGenome_Mutate       1.00M   505ns   1.25KB     21 allocs
-BenchmarkDiffEngine_Workflow         1.00M   546ns   352B        3 allocs
-BenchmarkCoordinator_Evaluate        94.7M   6.26ns  0B          0 allocs
-BenchmarkFullEvolutionCycle          59.3k   9.81µs  13.5KB    157 allocs
-
-=== 事件系统（internal/ares_events） ===
-BenchmarkMemoryStore_Append             944k   571ns    727B       8 allocs
-BenchmarkMemoryStore_AppendBatch       91.5k   6.50µs   21.1KB   102 allocs
-BenchmarkMemoryStore_Read              127k   4.73µs   17.1KB    11 allocs
-BenchmarkMemoryStore_ConcurrentAppend   873k   753ns    729B       7 allocs
-
-=== 内核（internal/fabric/task · fabric/agent · agentipc） ===
-Fabric_Create              1.41M    395ns    352B      4 allocs
-Fabric_Schedule            1.10M    568ns    428B     10 allocs
-Fabric_RunQuantum          466k     1.30µs   1.13KB   16 allocs
-Fabric_ReadyTasks          1.54M    386ns    960B      4 allocs
-Fabric_IsReady             39.1M    15.4ns   0B        0 allocs
-Fabric_Spawn               1.49M    411ns    936B     10 allocs
-Fabric_SpawnWithResources  705k     828ns    1.45KB   14 allocs
-Fabric_SuspendResume       24.9M    24.0ns   0B        0 allocs
-Fabric_Children            22.7M    26.4ns   80B        1 alloc
-Bus_Send                   1.95M    313ns    400B      8 allocs
-Bus_RequestReply           351k     1.73µs   1.29KB   22 allocs
-Bus_Broadcast              2.25M    263ns    400B      8 allocs
-```
+| 基准 | 耗时 | B/op | allocs/op |
+|---|---|---|---|
+| `Bus_Send`（IPC） | 303ns | 400 | 8 |
+| `Fabric_Schedule` | 552ns | 444 | 10 |
+| `Fabric_RunQuantum` | 1.31µs | 1.2KB | 16 |
+| `SchedulerDrainEmpty` | 8.6ns | – | 0 |
+| `SchedulerDrain100Tasks` | 1.03ms | 578KB | 4,525 |
+| `L2GraphGrowthChain64` | 132ms | 1.41MB | 13,733 |
+| `KnowledgePlanner_Plan` | 740ns | 1.0KB | 14 |
+| `Retriever_Retrieve` / 100 对象 | 13.0ms | 11.2MB | 100,202 |
+| `Retriever_Retrieve` / 500 对象 | 139ms | 106MB | 1,029,675 |
+| `SimilarityLinker` / 500 对象 | 18.6ms | 79.8MB | 2,032 |
+| `ExactMatchEvaluator_Evaluate` | 2.3ns | – | 0 |
+| `UngatedPatcher_Evaluate` | 6.3ns | – | 0 |
 
 ### CLI
 
@@ -573,20 +511,7 @@ go run examples/_internal/runtime_evolution/full/       # 全部 4 个 Genome + 
 | **世代历史** | 每代快照及元数据 |
 | **经验系统** | 三层管道：ToolCallRecord → RawExperience → NormalizedExperience → EvolutionHint → GuidanceProvider |
 
-### 基准测试（Apple M3 Max，darwin/arm64，2026-09-12）
-
-```
-=== GA Genome（internal/runtime/ares_evolution/genome） ===
-CrossoverUniform (10 params)         262k   2.29µs   2.97KB    31 allocs
-CrossoverUniform (100 params)       34.1k   17.2µs   20.6KB    38 allocs
-TruncationSelection (pop=100)       103k    5.82µs   952B       3 allocs
-TournamentSelection (pop=50,k=2)    158k    3.84µs   13.3KB   101 allocs
-RouletteWheelSelection (pop=100)    208k    3.02µs   3.34KB     7 allocs
-Evolve_OneGeneration (pop=100)      2.22M   271ns    344B       6 allocs
-Evolve_MultipleGenerations (100)    23.2k   26.3µs   33.6KB   600 allocs
-ApplyFitnessSharing (pop=100)       429     1.36ms   527KB    106 allocs
-RealWorldEvolution (100 gen)        58      10.5ms   4.31MB  61922 allocs
-```
+数字见上方 0.3.2 重测表与 [benchmarks/benchmark_report.md](benchmarks/benchmark_report.md)。
 
 ### 示例
 

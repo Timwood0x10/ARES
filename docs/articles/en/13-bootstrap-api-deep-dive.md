@@ -87,7 +87,7 @@ The assembly order in `Bootstrap` is **meaningful** — downstream components ar
 | — | `flight.NewFlightRecorder` + `.Start(ctx)` | `FlightRecorder` | shared singleton |
 | — | `wireLegacyEvolution` → `ProvideEvolution(...)` | `Evolution` | gated by Enabled + deps present |
 | — | `wireRetrievers(...)` | (injects into Memory) | best-effort |
-| — | Deployment pipeline → `SetDeployer` | (injects into Coordinator) | gated by `cfg.Evolution.Deployment.Enabled` |
+| — | Deployment pipeline → `SetDeployer` | (injects into UngatedPatcher) | gated by `cfg.Evolution.Deployment.Enabled` |
 | 9 | `wireGAEvolution(ctx, cfg, comp, newEvol, guidanceProvider)` | (GA + ticker + lifecycle) | gated by `cfg.Evolution.Enabled` |
 | 10 | `ProvideDiscovery(ctx, &cfg.Discovery, comp.EventStore)` | `Discovery` | `ErrDiscoveryDisabled` = off |
 | 11 | `wireSystemRuntime(ctx, cfg, &comp)` | `SystemRuntime`, `SystemRegistry` | observational registration |
@@ -145,7 +145,7 @@ The container also exposes read helpers: `Snapshot()`, `ComponentStatus(name)`, 
 | `ProvideMCP(ctx, cfg) (*ares_mcp.MCPManager, error)` | MCP | `NewMCPManager` + `Start` |
 | `ProvideLLM(cfg) (*LLMComponents, error)` | LLM | `llm.NewClient` + callbacks + `CostDashboard` |
 | `ProvideObservability(tracer, feedback, spans) (*ObservabilityProviders)` | Dashboard | `IntrospectOptions()` feeds introspect |
-| `ProvideNewEvolution(dag, rt, memoryStore, evStore) (*NewEvolutionComponents, error)` | NewEvolution | registers Genome/Diff/Patch Registries + Coordinator |
+| `ProvideNewEvolution(dag, rt, memoryStore, evStore) (*NewEvolutionComponents, error)` | NewEvolution | registers Genome/Diff/Patch Registries + UngatedPatcher |
 | `ProvideEvolution(ctx, cfg, eventStore, expRepo, llmClient, fr) (*EvolutionComponents, error)` | legacy Evolution | non-nil only when all deps present |
 
 `NewEvolutionComponents` exposes `UpdateLiveDAG(dag)`, `UpdateLiveKnowledgeRuntime(rt)`, `SetToolClassDAG(dag)` — serve injects the *real* runtime into the evolution system after agents are assembled (via in-place `SetDAG`/`SetGraph`, because `patch.Registry.Register` **cannot overwrite** an already-registered key).

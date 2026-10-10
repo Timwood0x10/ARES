@@ -516,7 +516,7 @@ type shadowVerifyGate struct{ l *StrategyLifecycle }
 
 func (g shadowVerifyGate) Name() string { return "shadow" }
 
-func (g shadowVerifyGate) Check(_ context.Context, _ *mutation.Strategy, _ *mutation.Strategy) (bool, float64, string) {
+func (g shadowVerifyGate) Check(ctx context.Context, candidate, active *mutation.Strategy) (bool, float64, string) {
 	se := g.l.shadow
 	if se == nil {
 		// Unreachable when registered via NewStrategyLifecycle (the gate is
@@ -540,22 +540,60 @@ func (g shadowVerifyGate) Check(_ context.Context, _ *mutation.Strategy, _ *muta
 		// verify pipeline and a rubber stamp.
 		return false, 0, "no shadow comparisons recorded — fail-closed (no independent scorer wired)"
 	}
-	if report.TotalComparisons == 0 {
-		// FAIL-CLOSED with a distinction: comparisons WERE gathered
-		// but every one was an exact tie (e.g. cold-start prior-vs-prior on an
-		// empty/sparse evidence store). Report the tie count so the operator
-		// can tell "no evidence" (nil above) from "gathered but uninformative".
-		return false, 0, fmt.Sprintf(
-			"shadow evidence is all ties (%d comparisons, 0 decisive) — fail-closed: no decisive evidence the candidate is better",
-			report.TieCount,
-		)
+	// Thin-evidence posture (GA-soak fix): decisive comparisons below the
+	// MinSamples floor — including the all-ties cold-start window — carry no
+	// candidate-specific verdict. The documented decision table allows
+	// skipping PRE-deployment verification ONLY when the POST-deployment
+	// rollback net is armed; without armed rollback the gate stays
+	// fail-closed. Decisive evidence that the candidate LOSES still rejects
+	// below regardless of rollback.
+	if pass, reason, skipped := shadowGateInsufficient(report, se.MinSamples(), g.l.cfg.RollbackArmed); skipped {
+		g.l.recordShadowGateSkip(reason)
+		return pass, report.WinRate, reason
 	}
 	if ok {
 		return true, report.WinRate,
 			fmt.Sprintf("shadow win rate %.2f over %d comparisons meets threshold", report.WinRate, report.TotalComparisons)
 	}
 	return false, report.WinRate,
-		fmt.Sprintf("shadow win rate %.2f over %d comparisons below threshold (insufficient samples counts as fail)", report.WinRate, report.TotalComparisons)
+		fmt.Sprintf("shadow win rate %.2f over %d comparisons below threshold (insufficient samples counts as fail)",
+			report.WinRate, report.TotalComparisons)
+}
+
+// shadowGateInsufficient classifies the thin-evidence posture:
+// decisive comparisons (TotalComparisons excludes exact ties) below the
+// MinSamples floor. Returns skipped=false when evidence is plentiful enough
+// for a real win-rate verdict — the caller then applies the threshold.
+// When skipped=true, pass reflects the rollback posture: armed rollback
+// earns a recorded skip (reason names the posture), disarmed stays
+// fail-closed.
+func shadowGateInsufficient(report *ShadowReport, minSamples int, rollbackArmed bool) (pass bool, reason string, skipped bool) {
+	if report.TotalComparisons >= minSamples {
+		return false, "", false
+	}
+	if !rollbackArmed {
+		if report.TotalComparisons == 0 {
+			return false, fmt.Sprintf(
+				"shadow evidence is all ties (%d comparisons, 0 decisive) — fail-closed: no decisive evidence the candidate is better",
+				report.TieCount), false
+		}
+		return false, fmt.Sprintf(
+			"shadow win rate %.2f over %d comparisons below threshold (insufficient samples counts as fail)",
+			report.WinRate, report.TotalComparisons), false
+	}
+	return true, fmt.Sprintf(
+		"shadow gate skipped: decisive comparisons %d below MinSamples %d (ties=%d) — rollback net armed, post-deployment watch verifies",
+		report.TotalComparisons, minSamples, report.TieCount), true
+}
+
+// recordShadowGateSkip stores the runtime skip reason so the lifecycle
+// snapshot exposes it. Distinct from the wiring-time WithShadowGateDisabled
+// reason (an unregistered gate): this records a REGISTERED gate that skipped
+// a specific decision under the armed-rollback posture.
+func (l *StrategyLifecycle) recordShadowGateSkip(reason string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.shadowGateSkipReason = reason
 }
 
 // Start launches the rollback watch loop. It is idempotent. The loop runs

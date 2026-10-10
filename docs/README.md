@@ -6,7 +6,8 @@ Welcome to the ARES framework documentation center.
 
 | Version | 中文 | English |
 |---------|------|---------|
-| v0.3.1 (dev) | [CHANGELOG](../CHANGELOG.md) | [CHANGELOG](../CHANGELOG.md) |
+| v0.3.2 (dev) | [CHANGELOG](../CHANGELOG.md) | [CHANGELOG](../CHANGELOG.md) |
+| v0.3.1 | [发布说明](../CHANGELOG.md) | [Release Notes](../CHANGELOG.md) |
 | v0.3.0 | [发布说明](../CHANGELOG.md) | [Release Notes](../CHANGELOG.md) |
 
 > 注：`docs/zh/features/` 中的部分特性文档写于 v1/v2 架构时期（2026-06 前后），涉及 Leader/Sub 模型的内容已过时——v0.3.x 起 Leader-Sub 架构已删除，现行架构见 [framework-comparison](./reference/framework-comparison-langchain-crewai-agentscope-goagent-zh.md)第3节与 [CAPABILITY-MAP](./reference/CAPABILITY-MAP.md)。这些旧文档保留作历史参考，待逐步重写。
@@ -23,7 +24,7 @@ Welcome to the ARES framework documentation center.
 | Topic | 中文 | English |
 |-------|------|---------|
 | Quick Start | [快速开始](./zh/guides/quick-start.md) | [Quick Start](./en/guides/quick-start.md) |
-| FAQ | [常见问题](./zh/guides/faq.md) | [FAQ](./en/guides/faq.md) |
+| FAQ (archived) | [常见问题](./archive/zh/faq.md) | [FAQ](./archive/en/faq.md) |
 | Architecture | [架构总图](../ARCHITECTURE.md)（38 包分层，带 `file:line`） | [Architecture](../ARCHITECTURE.md)（同上，中文权威版） |
 | Framework Comparison | [框架对比](./reference/framework-comparison-langchain-crewai-agentscope-goagent-zh.md) | [Framework Comparison](./reference/framework-comparison-langchain-crewai-agentscope-goagent-en.md) |
 | Capability Map | [能力地图](./reference/CAPABILITY-MAP.md) | [Capability Map](./reference/CAPABILITY-MAP.en.md) |
@@ -34,11 +35,13 @@ Welcome to the ARES framework documentation center.
 
 ## Coding Standards / 编码规范
 
-| Document | 说明 | 强制 |
-|----------|------|------|
-| [Code Rules](../plan/rules/code_rules.md) | Go 编码规范：命名、格式、错误处理、并发、禁止模式 | ✅ CI 拦截 |
-| [Skills](../plan/rules/skills.md) | 开发技能要求与最佳实践 | 推荐 |
-| [Uber Go Style](../plan/rules/uber_go_style.md) | Uber Go 风格指南参考 | 推荐 |
+编码规范**由 CI 强制**，规范原文由维护者本地维护（不在仓库内）：
+
+| 载体 | 说明 |
+|------|------|
+| [`.golangci.yml`](../.golangci.yml) + `make ci-lint` | golangci-lint v2 配置与调优后的入口，PR 必须 0 issue |
+| [`CONTRIBUTING.md`](../CONTRIBUTING.md) | 提交与评审约定 |
+| `scripts/check_*.sh` | 冻结清单 / 文档锚点漂移等结构性门禁（`make gate` 的一部分） |
 
 ---
 
@@ -47,7 +50,7 @@ Welcome to the ARES framework documentation center.
 | Feature | 中文 | English |
 |---------|------|---------|
 | Kernel Scheduler (task fabric) | [框架对比第3节](./reference/framework-comparison-langchain-crewai-agentscope-goagent-zh.md) | [Comparison第3节](./reference/framework-comparison-langchain-crewai-agentscope-goagent-en.md) |
-| Agent Recovery | [Agent 恢复](./zh/features/agent-recovery.md) | [Agent Recovery](./en/features/agent-recovery.md) |
+| Agent Recovery (archived, Leader era) | [Agent 恢复](./archive/zh/agent-recovery.md) | [Agent Recovery](./archive/en/agent-recovery.md) |
 | Event Sourcing | [事件溯源](./zh/features/event-sourcing.md) | [Event Sourcing](./en/features/event-sourcing.md) |
 | Memory Distillation | [记忆蒸馏](./articles/zh/03-memory-distillation-deep-dive.md) | [Memory Distillation](./articles/en/03-memory-distillation-deep-dive.md) |
 | Autonomous Evolution | [自主进化](./zh/features/autonomous-evolution.md) | [Autonomous Evolution](./en/features/autonomous-evolution.md) |
@@ -94,8 +97,8 @@ docs/
 │   └── guides/
 ├── cookbook/          # Runnable recipe agents
 ├── operator/          # Operator runbook
-├── reviews/           # Architecture review reports
-├── bug@ques/          # Bug post-mortems (append-only, see plan/rules)
+├── system-internals.en.md / .zh.md   # Runtime internals: startup → hot path → graphs → IPC → recovery → evolution → storage/knowledge/memory/MCP/SDK/security
+├── bug@ques/          # Bug post-mortems (append-only)
 └── archive/           # Historical docs (superseded, kept for reference)
 ```
 

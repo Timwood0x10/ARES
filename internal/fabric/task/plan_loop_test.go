@@ -42,7 +42,7 @@ func failTask(t *testing.T, f *Fabric, id string) {
 	if err := f.Start(id, "worker", epoch); err != nil {
 		t.Fatalf("Start %s: %v", id, err)
 	}
-	if err := f.Fail(id, "worker", epoch); err != nil {
+	if err := f.Fail(id, "worker", epoch, nil); err != nil {
 		t.Fatalf("Fail %s: %v", id, err)
 	}
 }

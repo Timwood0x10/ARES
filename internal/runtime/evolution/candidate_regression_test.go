@@ -148,6 +148,10 @@ func TestCandidateRegressionChecker_SkipsEmptySuite(t *testing.T) {
 }
 
 func TestCandidateRegressionChecker_PropagatesScorerError(t *testing.T) {
+	// End-to-end guard for the CI-only flake of 2026-10-09 ("arena: run new
+	// strategy: context canceled" instead of the scorer error). The defect is
+	// in the arena runner's cancellation handling; it is pinned deterministically
+	// by TestRunStrategy_ReportsScorerFailureOverCancellation there.
 	checker, err := NewCandidateRegressionChecker(
 		newRegressionProfileStore(t, stableInstructionsCoder),
 		&failingScorer{},

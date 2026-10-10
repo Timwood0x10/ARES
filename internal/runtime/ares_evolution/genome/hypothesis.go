@@ -249,23 +249,22 @@ var paramRanges = map[string][2]float64{
 
 // clampParam bounds a parameter value to its known valid range.
 // Unknown params use a wide default [0, 10000] to accommodate integer params.
-// Note: parameters with range starting at 0 (temperature, top_p) will never
-// reach exactly 0 — any value ≤ 0 is lifted to epsilon (0.0001). This is
-// intentional: some LLM providers reject temperature=0 as invalid, and a
-// near-zero value is effectively deterministic for practical purposes.
+// For params whose range starts at 0 (temperature, top_p), any value below
+// epsilon is lifted to epsilon: some LLM providers reject temperature=0 as
+// invalid, and a near-zero value is effectively deterministic.
 func clampParam(key string, v float64) float64 {
 	const epsilon = 0.0001
 	r, ok := paramRanges[key]
 	if !ok {
 		r = [2]float64{0, 10000}
 	}
-	if v <= 0 || v < r[0] {
+	if v < r[0] || v <= 0 {
 		if r[0] > 0 {
 			return r[0]
 		}
 		return epsilon
 	}
-	if v > 0 && v < epsilon {
+	if v < epsilon {
 		return epsilon
 	}
 	if v > r[1] {

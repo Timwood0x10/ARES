@@ -1,71 +1,151 @@
-//go:build closure
-
 package evolution
-
-// scheduler_tick_gate_test.go locks two scheduler invariants:
-//
-//	5. single-trigger — repeated Tick calls inside MinInterval run at most
-//	   one evolution cycle (throttling applies to the time-triggered path
-//	   too).
-//	6. dimensional consistency — RecordScore clamps every input to [0,1] so
-//	   the score window stays dimensionally consistent with RollbackPolicy
-//	   thresholds.
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
-	"time"
-
-	"github.com/stretchr/testify/assert"
 )
 
-// TestClosure_Tick_MinIntervalThrottlesRepeatTicks (single-trigger).
-func TestClosure_Tick_MinIntervalThrottlesRepeatTicks(t *testing.T) {
-	adapter := newMockAdapterForScheduler()
-	s := NewEvolutionScheduler(nil, adapter, WithMinInterval(time.Hour))
-	s.SetEnabled(true)
+// tickProbeAdapter counts Run invocations.
+type tickProbeAdapter struct{ runs atomic.Int64 }
 
-	// Tick only evolves on TriggerOnIdle via degradation detection or the
-	// 100-score periodic branch. The window trims to scoreWindowSize (50),
-	// so seed a degradation signal instead: 30 successes then 10 failures
-	// → avg 0.75 vs recent 0.0 → drop 1.0 ≥ 0.15 → the FIRST Tick genuinely
-	// runs one generation.
-	for i := 0; i < 30; i++ {
-		s.RecordScore(taskScoreSuccess)
+func (a *tickProbeAdapter) Run(context.Context) error { a.runs.Add(1); return nil }
+
+// TestTickFiresOnTriggerOnIdleGate locks the serve ticker gate contract:
+// wired.Scheduler (EnableScheduler=true, TriggerOnIdle) runs the population
+// adapter on Tick only when shouldEvolve passes — score count ≥ 20 AND
+// (recent-score degradation ≥ 15% OR count ≥ 100). The GA soak found
+// generation stuck at 0; this test pins the gate's truth table so a soak
+// failure can be attributed to EVENT DELIVERY (scores never recorded) rather
+// than gate logic.
+func TestTickFiresOnTriggerOnIdleGate(t *testing.T) {
+	newSched := func(t *testing.T) (*EvolutionScheduler, *tickProbeAdapter) {
+		t.Helper()
+		adapter := &tickProbeAdapter{}
+		s := NewEvolutionScheduler(nil, adapter,
+			WithTrigger(TriggerOnIdle), WithMinInterval(0), WithEnabled(true))
+		return s, adapter
 	}
-	for i := 0; i < 10; i++ {
+
+	t.Run("degradation after score floor fires", func(t *testing.T) {
+		s, adapter := newSched(t)
+		for i := 0; i < 25; i++ {
+			s.RecordScore(taskScoreSuccess)
+		}
+		for i := 0; i < 10; i++ {
+			s.RecordScore(taskScoreFailure)
+		}
+		s.Tick(context.Background())
+		if adapter.runs.Load() == 0 {
+			t.Fatal("count=35 with all-recent failures must fire (drop=1.0 >= 0.15)")
+		}
+	})
+
+	t.Run("below reliability floor does not fire", func(t *testing.T) {
+		s, adapter := newSched(t)
+		for i := 0; i < 15; i++ {
+			s.RecordScore(taskScoreFailure)
+		}
+		s.Tick(context.Background())
+		if adapter.runs.Load() != 0 {
+			t.Fatalf("count=15 < 20 reliability floor must not fire, runs=%d", adapter.runs.Load())
+		}
+	})
+
+	t.Run("all-failure window fires at reliability floor", func(t *testing.T) {
+		s, adapter := newSched(t)
+		for i := 0; i < 25; i++ {
+			s.RecordScore(taskScoreFailure)
+		}
+		s.Tick(context.Background())
+		if adapter.runs.Load() == 0 {
+			t.Fatal("avg==0 all-failure window must fire at count>=20 — broken fleet is when GA must explore")
+		}
+	})
+
+	t.Run("all-success below periodic threshold does not fire", func(t *testing.T) {
+		s, adapter := newSched(t)
+		for i := 0; i < 30; i++ {
+			s.RecordScore(taskScoreSuccess)
+		}
+		s.Tick(context.Background())
+		if adapter.runs.Load() != 0 {
+			t.Fatalf("count=30 all-success < periodic threshold must not fire, runs=%d", adapter.runs.Load())
+		}
+	})
+
+	t.Run("periodic threshold fires without degradation", func(t *testing.T) {
+		s, adapter := newSched(t)
+		// The threshold must be observable within the score window cap:
+		// RecordScore evicts beyond scoreWindowSize (50), so a threshold
+		// above the cap would be unreachable dead config.
+		if periodicEvolutionScoreThreshold >= scoreWindowSize {
+			t.Fatalf("periodicEvolutionScoreThreshold=%d must stay below scoreWindowSize=%d",
+				periodicEvolutionScoreThreshold, scoreWindowSize)
+		}
+		for i := 0; i < periodicEvolutionScoreThreshold; i++ {
+			s.RecordScore(taskScoreSuccess)
+		}
+		s.Tick(context.Background())
+		if adapter.runs.Load() == 0 {
+			t.Fatalf("count=%d periodic threshold must fire", periodicEvolutionScoreThreshold)
+		}
+	})
+
+	t.Run("disabled scheduler never fires", func(t *testing.T) {
+		adapter := &tickProbeAdapter{}
+		s := NewEvolutionScheduler(nil, adapter,
+			WithTrigger(TriggerOnIdle), WithMinInterval(0), WithEnabled(false))
+		for i := 0; i < 100; i++ {
+			s.RecordScore(taskScoreSuccess)
+		}
+		s.Tick(context.Background())
+		if adapter.runs.Load() != 0 {
+			t.Fatal("disabled scheduler must ignore Tick")
+		}
+	})
+}
+
+// panickingAdapter simulates a genome/diff panic inside the evolution cycle.
+type panickingAdapter struct{}
+
+func (a *panickingAdapter) Run(context.Context) error {
+	panic("adapter exploded")
+}
+
+// TestTickRecoversFromAdapterPanic locks the serve-liveness contract: a
+// panic inside the Tick-triggered evolution run must NOT kill the process
+// (errgroup never recovers panics — GA soak 2026-09-21 lost serve to
+// rand.Intn(0) in WorkflowGenome.mutateInsertNode). Recover → log → return;
+// lastRun stays stale so the next tick retries.
+func TestTickRecoversFromAdapterPanic(t *testing.T) {
+	bad := &panickingAdapter{}
+	s := NewEvolutionScheduler(nil, bad,
+		WithTrigger(TriggerOnIdle), WithMinInterval(0), WithEnabled(true))
+	for i := 0; i < 40; i++ {
 		s.RecordScore(taskScoreFailure)
 	}
+	// Must return (not crash) despite the adapter panic.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.Tick(context.Background())
+	}()
+	<-done
 
-	ctx := context.Background()
-	s.Tick(ctx)
-	assert.Equal(t, 1, adapter.runCountLocked(),
-		"first Tick with an eligible window must run exactly one generation")
+	// lastRun must remain unset so the next tick is eligible to retry.
+	s.mu.Lock()
+	last := s.lastRun
+	s.mu.Unlock()
+	if !last.IsZero() {
+		t.Fatalf("lastRun=%v, want zero after a panicked run (next tick must retry)", last)
+	}
 
-	// Second Tick inside MinInterval must be throttled: still one run.
-	s.Tick(ctx)
-	assert.Equal(t, 1, adapter.runCountLocked(),
-		"Tick inside MinInterval must not start a second generation")
-}
-
-// TestClosure_RecordScore_ClampsToUnitInterval (unit-interval clamping).
-func TestClosure_RecordScore_ClampsToUnitInterval(t *testing.T) {
-	s := NewEvolutionScheduler(nil, newMockAdapterForScheduler())
-
-	s.RecordScore(5.0) // out-of-range high → clamped to 1.0
-	avg, _, count := s.scoreSnapshot()
-	assert.Equal(t, 1, count)
-	assert.InDelta(t, 1.0, avg, 0.0001, "scores above 1.0 must clamp to 1.0")
-
-	s.RecordScore(-2.0) // out-of-range low → clamped to 0.0
-	avg, _, count = s.scoreSnapshot()
-	assert.Equal(t, 2, count)
-	assert.InDelta(t, 0.5, avg, 0.0001, "scores below 0.0 must clamp to 0.0 (window: 1.0 + 0.0)")
-}
-
-// runCountLocked is a race-free accessor for the mock's run counter.
-func (m *mockAdapterForScheduler) runCountLocked() int {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.runCount
+	// Swap in a healthy adapter — the retry path must work.
+	healthy := &tickProbeAdapter{}
+	s.SetAdapter(healthy)
+	s.Tick(context.Background())
+	if healthy.runs.Load() == 0 {
+		t.Fatal("post-panic retry with a healthy adapter must run the cycle")
+	}
 }

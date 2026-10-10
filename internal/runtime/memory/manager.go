@@ -92,6 +92,19 @@ type MemoryConfig struct {
 	// MaxHistory is the maximum number of turns to keep in context.
 	MaxHistory int
 
+	// SessionMaxHistory bounds how many messages one session may STORE in the
+	// session memory (0 = component default). Distinct from MaxHistory: that
+	// field is the read-side context window applied at BuildContext time,
+	// while this one caps the underlying store so long-lived sessions cannot
+	// grow without bound. Mirrors ares_config memory.session.max_history.
+	SessionMaxHistory int
+
+	// DistillationThreshold is the number of conversation rounds that must
+	// accumulate before the internal distiller fires on message events
+	// (0 = leave the distiller default, which is ungated event-driven
+	// firing). Mirrors ares_config memory.distillation_threshold.
+	DistillationThreshold int
+
 	// MaxSessions is the maximum number of sessions to store.
 	MaxSessions int
 
@@ -167,6 +180,14 @@ var ErrInvalidRAGConfig = errors.New("invalid RAG configuration")
 // agent" (("", nil)) from "backend cannot answer this question" (this error).
 var ErrAgentCheckpointNotSupported = errors.New(
 	"agent checkpoint lookup not supported by this memory backend")
+
+// ErrDistillationEngineNotInitialized is returned by the distillation-backed
+// methods (StoreDistilledTask, SearchSimilarTasks) when neither
+// NewMemoryManagerWithDistiller nor SetDistillationEngine attached the
+// engine. Callers can use errors.Is to distinguish "memory search unavailable
+// on this manager" from a runtime retrieval failure.
+var ErrDistillationEngineNotInitialized = errors.New(
+	"distillation engine not initialized; build with NewMemoryManagerWithDistiller or inject via SetDistillationEngine")
 
 // Role constants re-exported for convenience.
 const (
@@ -321,6 +342,12 @@ func (c *MemoryConfig) validate() error {
 	if c.MaxHistory <= 0 {
 		return fmt.Errorf("MaxHistory must be positive, got %d", c.MaxHistory)
 	}
+	if c.SessionMaxHistory < 0 {
+		return fmt.Errorf("SessionMaxHistory must be non-negative, got %d", c.SessionMaxHistory)
+	}
+	if c.DistillationThreshold < 0 {
+		return fmt.Errorf("DistillationThreshold must be non-negative, got %d", c.DistillationThreshold)
+	}
 	if c.VectorDim <= 0 {
 		return fmt.Errorf("VectorDim must be positive, got %d", c.VectorDim)
 	}
@@ -340,7 +367,27 @@ func (c *MemoryConfig) validate() error {
 	return nil
 }
 
+// effectiveSessionMaxHistory returns the per-session store cap to enforce:
+// a positive SessionMaxHistory clamped up to the read-side MaxHistory so the
+// store can never retain less than the context window BuildContext draws
+// from (session.go keeps the component default above every read window for
+// the same reason). Zero means "component default" and is returned as zero —
+// SessionMemory.WithMaxMessages(0) restores that default.
+func effectiveSessionMaxHistory(cfg *MemoryConfig) int {
+	if cfg == nil || cfg.SessionMaxHistory <= 0 {
+		return 0
+	}
+	if cfg.SessionMaxHistory < cfg.MaxHistory {
+		return cfg.MaxHistory
+	}
+	return cfg.SessionMaxHistory
+}
+
 // DefaultMemoryConfig returns default configuration for MemoryManager.
+// SessionMaxHistory and DistillationThreshold stay zero: the session store
+// falls back to its component message cap and the distiller keeps its
+// ungated default, so callers that only flip EnableRAG still get a working
+// manager without re-seeding every knob.
 func DefaultMemoryConfig() *MemoryConfig {
 	opts := llmcore.DefaultCleanOptions()
 	return &MemoryConfig{

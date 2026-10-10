@@ -1,8 +1,8 @@
 # ares Architecture Deep Dive (XX): LLM Client Layer — Client, Failover, and Multi-Provider Abstraction (0.3.x)
 
-Article V (Tool System) showed how tools get called. But *who* calls the LLM? That's the `internal/llm/` layer — actually **two packages**: `internal/llm` (`Client`, `FailoverClient`, ~5.4k lines including tests) and `internal/llm/output` (per-provider adapters and response parsing, ~5.8k lines). Together they let ares talk to OpenAI, Ollama, OpenRouter, and Anthropic without caring which one is answering.
+Article V (Tool System) showed how tools get called. But *who* calls the LLM? That's the `internal/llm/` layer — a **single package** (`Client`, `FailoverClient`, ~5.4k lines including tests) that lets ares talk to OpenAI, Ollama, OpenRouter, and Anthropic without caring which one is answering.
 
-> Honesty correction: the old article claimed "5,799 lines across two packages." Actual `wc -l` (including `_test.go`) is ~5,400 for `internal/llm` and ~5,791 for `internal/llm/output` — about 11k lines combined.
+> **0.4 deletion record**: the ReAct-era sibling package `internal/llm/output` (per-provider adapters + response parsing, ~5.8k lines) had **zero production callers** since 0.3.1 (independent-review F-07) and was deleted in full. Runtime provider failover lives solely in `internal/llm`'s `FailoverClient` chain; tool-calling message/tool types live in `internal/llmcore` (`ToolCall`, `LLMMessage`, …) and are normalized per provider inside `internal/llm/chat.go`. Historical descriptions of the deleted package remain only in `CHANGELOG.md` and `docs/reviews/`.
 
 ---
 
@@ -133,60 +133,6 @@ ch, err := client.GenerateStream(attemptCtx, prompt)
 
 ---
 
-## The DeepSeek `ReasoningContent`
-
-DeepSeek thinking-mode responses carry a `reasoning_content` field separate from `content`. Early ares parsing dropped it.
-
-> Location correction: the old article placed this on `Message`/`AssistantMsg` in `internal/llmcore/llm.go`. **Inaccurate** — the field lives in the `internal/llm/output` package: `output/openai.go`'s `Message` (with a `reasoning_content` JSON tag) is parsed and threaded into `AssistantMsg.ReasoningContent` in `output/toolcall.go` via `parseToolCallsFromResponse`, and `AssistantMsg.toMap()` writes it back (so the thinking trace round-trips through multi-turn tool calls):
-
-```go
-// internal/llm/output/toolcall.go
-type AssistantMsg struct {
-    Role             string              `json:"role"`
-    Content          string              `json:"content,omitempty"`
-    ReasoningContent string              `json:"reasoning_content,omitempty"` // DeepSeek thinking trace
-    ToolCalls        []AssistantToolCall `json:"tool_calls,omitempty"`
-}
-
-func (m *AssistantMsg) toMap() map[string]interface{} {
-    msg := map[string]interface{}{keyRole: m.Role, keyContent: m.Content}
-    if m.ReasoningContent != "" {
-        msg["reasoning_content"] = m.ReasoningContent
-    }
-    // ...
-    return msg
-}
-```
-
-**Honest reflection**: This is a provider-specific quirk leaking into core structures. You might ask "shouldn't a clean design use `ProviderMetadata map[string]any`?" A typed `ReasoningContent` field is easier to use and document. We chose pragmatism over purity.
-
----
-
-## The Output Adapter: a Factory, Not a Switch (zero production callers since 0.3.1)
-
-> **0.3.1 status (independent-review F-07)**: `internal/llm/output` now has **no production caller**. Serve used to thread an adapter through peer assembly via `createLLMAdapterWithFallback`, but nothing ever consumed it — that dead assembly was removed, and runtime LLM failover is a single `FailoverClient` chain in `internal/llm`. The Factory described below is still the package's real design, but the whole package is registered as a **0.4 deletion candidate**.
-
-Production code has no `NewAdapter(provider) + switch`. It's a **registration-based `Factory`** (`output/factory.go`). Adapters register into `Factory.adapters` by provider name; `Create`/`CreateAdapter` looks them up; an unknown provider returns `ErrUnsupportedProvider`. `RegisterProvider` lets you mount a custom adapter externally:
-
-```go
-// internal/llm/output/factory.go
-type Factory struct{ adapters map[string]func(*Config) LLMAdapter }
-
-func NewFactory() *Factory { /* registers openai / ollama / openrouter */ }
-
-func (f *Factory) Create(provider string, config *Config) (LLMAdapter, error)
-func CreateAdapter(provider string, config *Config) (LLMAdapter, error)
-func RegisterProvider(provider string, factory func(*Config) LLMAdapter)
-```
-
-Three built-in adapters — `NewOpenAIAdapter`, `NewOllamaAdapter`, `NewOpenRouterAdapter` — all implement `LLMAdapter` (`Generate` / `GenerateWithParams` / `GenerateStructured` / `GenerateStream` / `GetModel`). `OpenRouterAdapter` reuses most OpenAI logic; **there is no standalone Anthropic adapter** (Anthropic `Chat`/streaming are handled directly by `internal/llm`'s `chatAnthropic`/`streamAnthropic`).
-
-Provider response shapes differ, then normalize to unified types; `parser.go` folds LLM text into structured results (`ParseRecommendResult`/`ParseJSON`/`ParseArray`…, with markdown-fence stripping, brace balancing, and `fixJSONString` repairs). Ollama's `Generate` reads `/api/generate`'s `response` field; OpenAI reads `choices[].message.content` from `/chat/completions`.
-
-**Honest reflection**: Anthropic uses a different message/tool format than OpenAI. At some point someone tried to normalize everything to OpenAI's shape at the adapter layer; it worked for simple cases but broke on tool calls. The final design: each adapter owns its protocol, `parser.go` does the final normalization. One line to remember: **the adapter owns protocol differences; the parser owns output differences.**
-
----
-
 ## Chat Routing and Tool Calling
 
 `Chat(ctx, messages []*core.LLMMessage, tools []core.Tool, params map[string]any)` is the tool-calling path (`params` carries evolution-strategy overrides for temperature/tokens/top_k). It dispatches by provider:
@@ -211,7 +157,7 @@ if baseURL == "" {
 req, _ := http.NewRequestWithContext(ctx, "POST", baseURL+"/api/chat", bytes.NewBuffer(jsonBody))
 ```
 
-The response's `message.tool_calls` normalizes into `core.ToolCall`. `internal/llm/output/toolcall.go` defines the tool-calling output types: `ToolCall`, `ToolResult`, `ToolChoice` (`auto`/`none`/`required`), `ToolCallResponse`, and the `ToolCapable` interface (`GenerateWithTools` / `SendToolResult`).
+The response's `message.tool_calls` normalizes into `llmcore.ToolCall` (`internal/llmcore/llm.go`) — the shared tool-calling message/tool types (`ToolCall`, `LLMMessage`, `Tool`, `GenerateResponse`) every provider's `chatXxx` path writes into.
 
 ---
 

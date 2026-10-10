@@ -15,7 +15,9 @@ import (
 // newGuardedAdapter builds a population adapter whose population is entirely
 // unevaluated (every variant carries genome.ScoreUnevaluated, which is what
 // mockGenomeMutator produces), with the given guardrails attached.
-func newGuardedAdapter(t *testing.T, g *EvolutionGuardrails) *GenomePopulationAdapter {
+// generation seeds Population.Generation: 0 is the cold-start bootstrap
+// population (guardrail-exempt), >=1 an established one (guarded).
+func newGuardedAdapter(t *testing.T, g *EvolutionGuardrails, generation int) *GenomePopulationAdapter {
 	t.Helper()
 	base := &mutation.Strategy{
 		ID:        "base",
@@ -27,6 +29,7 @@ func newGuardedAdapter(t *testing.T, g *EvolutionGuardrails) *GenomePopulationAd
 		genome.WithPopulationSize(10),
 	)
 	require.NoError(t, err)
+	pop.Generation = generation
 
 	crosser, err := genome.NewCrossover(genome.WithSeed(1))
 	require.NoError(t, err)
@@ -41,25 +44,33 @@ func newGuardedAdapter(t *testing.T, g *EvolutionGuardrails) *GenomePopulationAd
 }
 
 // TestAdapterPreGuardrailsBlockUnevaluatedPopulation is the behavioural
-// contract for the adapter layer.
+// contract for the adapter layer, in both postures:
 //
-// Historically bootstrap never assigned gaCfg.Guardrails, so WithAdapterGuardrails
-// was never applied and runPreGuardrails returned nil on its first line. The
-// "majority of the population is unevaluated" check — the guardrail's only
-// Critical pre-condition — could not fire in any production configuration.
-//
-// This test drives the check through the adapter rather than calling
-// PreEvolveCheck directly, so it fails if the adapter ever stops consulting
-// the guardrail (which is exactly how the defect went unnoticed).
+//   - generation 0 (cold start): the bootstrap population is unevaluated BY
+//     DEFINITION — the first cycle is what scores it. Pre-fix the guardrail
+//     blocked that cycle forever (GA soak: unevaluated 19/20 every tick,
+//     generation stuck at 0). The adapter must NOT gate here.
+//   - generation >= 1 with an unevaluated majority: the guardrail's Critical
+//     pre-condition fires and the cycle blocks.
 func TestAdapterPreGuardrailsBlockUnevaluatedPopulation(t *testing.T) {
 	ctx := context.Background()
 	g, err := NewEvolutionGuardrails()
 	require.NoError(t, err)
 
-	adapter := newGuardedAdapter(t, g)
-	err = adapter.runPreGuardrails(ctx)
-	require.Error(t, err, "a majority-unevaluated population must block the cycle")
-	assert.Contains(t, err.Error(), "pre-evolve guardrail check failed")
+	t.Run("cold start is exempt", func(t *testing.T) {
+		adapter := newGuardedAdapter(t, g, 0)
+		require.Positive(t, adapter.PopulationUnevaluated(),
+			"fixture must be majority-unevaluated")
+		assert.NoError(t, adapter.runPreGuardrails(ctx),
+			"generation 0 cold start must not be blocked — the first cycle evaluates the population")
+	})
+
+	t.Run("established generation blocks", func(t *testing.T) {
+		adapter := newGuardedAdapter(t, g, 3)
+		err := adapter.runPreGuardrails(ctx)
+		require.Error(t, err, "a majority-unevaluated population at generation>=1 must block the cycle")
+		assert.Contains(t, err.Error(), "pre-evolve guardrail check failed")
+	})
 }
 
 // TestAdapterPreGuardrailsNilPassesThrough pins the nil-guardrails behavior as
@@ -68,29 +79,24 @@ func TestAdapterPreGuardrailsBlockUnevaluatedPopulation(t *testing.T) {
 // guardrails (tests, minimal configs) must still run, so the nil check is a
 // deliberate opt-out, not the default.
 func TestAdapterPreGuardrailsNilPassesThrough(t *testing.T) {
-	adapter := newGuardedAdapter(t, nil)
+	adapter := newGuardedAdapter(t, nil, 0)
 	assert.NoError(t, adapter.runPreGuardrails(context.Background()),
 		"without guardrails the adapter must not gate (documented opt-out)")
 }
 
 // TestSchedulerTickBlockedByGuardrails is the behavioural contract for the
-// legacy scheduler path.
-//
-// Two defects had to be fixed for this to be assertable at all:
-//  1. ProvideEvolution passed only WithEnabled and WithMinInterval, so
-//     s.guardrails stayed nil and checkGuardrails returned true unconditionally.
-//  2. checkGuardrails passed a hardcoded unevaluatedCount of 0, and an
-//     unevaluated majority is PreEvolveCheck's ONLY ShouldStop condition — so
-//     even a configured guardrail could not block. Wiring (1) without (2) would
-//     have produced a gate that still never fires.
-//
-// The assertion is therefore end-to-end: a population the guardrail objects to
-// must prevent adapter.Run from being called at all, not merely log a warning.
+// legacy scheduler path at an ESTABLISHED generation: a population the
+// guardrail objects to must prevent adapter.Run from being called at all,
+// not merely log a warning. The cold-start (generation 0) posture — where
+// the guardrail must NOT block — is pinned by
+// TestAdapterPreGuardrailsBlockUnevaluatedPopulation/cold-start and
+// TestPreEvolveCheck_ColdStartUnevaluatedExempt.
 func TestSchedulerTickBlockedByGuardrails(t *testing.T) {
 	ctx := context.Background()
-	// A real adapter over a fully-unevaluated population: it implements
-	// populationInspector, so the scheduler can see the population shape.
-	adapter := newGuardedAdapter(t, nil)
+	// A real adapter over a fully-unevaluated population at an established
+	// generation: it implements populationInspector, so the scheduler sees
+	// the population shape and the cold-start exemption does not apply.
+	adapter := newGuardedAdapter(t, nil, 4)
 
 	g, err := NewEvolutionGuardrails()
 	require.NoError(t, err)
@@ -115,7 +121,7 @@ func TestSchedulerTickBlockedByGuardrails(t *testing.T) {
 	require.Positive(t, adapter.PopulationUnevaluated(),
 		"the fixture must have unevaluated individuals for the guardrail to object to")
 	assert.False(t, s.checkGuardrails(ctx),
-		"an unevaluated-majority population must block the cycle")
+		"an unevaluated-majority population at generation>=1 must block the cycle")
 
 	// The verdict must actually gate execution, not merely be logged.
 	genBefore := adapter.PopulationGeneration()
@@ -132,15 +138,17 @@ func TestSchedulerCheckGuardrailsNilPassesThrough(t *testing.T) {
 		"without guardrails the scheduler must not gate (documented opt-out)")
 }
 
-// TestSchedulerGuardrailsSeeRealPopulationShape locks fix (2) above on its own:
-// an adapter that reports its population must have that shape forwarded to
-// PreEvolveCheck. Without this the guardrail is configured but blind, which is
-// indistinguishable from not being wired at all.
+// TestSchedulerGuardrailsSeeRealPopulationShape locks fix (2) from the
+// TickBlocked test on its own: an adapter that reports its population must
+// have that shape forwarded to PreEvolveCheck. Without this the guardrail is
+// configured but blind, which is indistinguishable from not being wired at
+// all. Driven at an established generation so the guardrail actually fires
+// an event carrying the shape.
 func TestSchedulerGuardrailsSeeRealPopulationShape(t *testing.T) {
 	ctx := context.Background()
-	adapter := newGuardedAdapter(t, nil)
+	adapter := newGuardedAdapter(t, nil, 2)
 
-	var gotPop, gotUnevaluated, gotGeneration int
+	var gotGeneration int
 	g, err := NewEvolutionGuardrails(
 		WithGuardrailEventHandler(func(evt GuardrailEvent) {
 			gotGeneration = evt.Generation
@@ -152,10 +160,11 @@ func TestSchedulerGuardrailsSeeRealPopulationShape(t *testing.T) {
 	s.SetEnabled(true)
 	require.False(t, s.checkGuardrails(ctx))
 
-	gotPop = adapter.PopulationSize()
-	gotUnevaluated = adapter.PopulationUnevaluated()
+	gotPop := adapter.PopulationSize()
+	gotUnevaluated := adapter.PopulationUnevaluated()
 	assert.Equal(t, 10, gotPop, "population size must reach the guardrail")
 	assert.Positive(t, gotUnevaluated, "unevaluated count must reach the guardrail")
 	assert.Equal(t, adapter.PopulationGeneration(), gotGeneration,
 		"guardrail events must carry the real generation, not a hardcoded 0")
+	assert.Equal(t, 2, gotGeneration, "the established-generation fixture must be visible in the event")
 }

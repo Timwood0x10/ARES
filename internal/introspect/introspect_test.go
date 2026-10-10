@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -131,6 +132,85 @@ func TestConcurrentCollectSetLatest(t *testing.T) {
 	<-done
 	if c.seq.Load() != 200 {
 		t.Fatalf("seq = %d, want 200", c.seq.Load())
+	}
+}
+
+// TestCollectorMemorySource locks the Memory panel contract: a wired source
+// lands on Snapshot.Memory; a nil source omits the field entirely so the
+// panel can render the disabled state instead of a zeroed frame.
+func TestCollectorMemorySource(t *testing.T) {
+	withMem := NewCollector(Sources{
+		Memory: func() MemoryStatus {
+			return MemoryStatus{Wired: true, Sessions: 3, DistillationEngine: true, MaxHistory: 10}
+		},
+	})
+	snap := withMem.Collect()
+	if snap.Memory == nil {
+		t.Fatal("Memory source must populate Snapshot.Memory")
+	}
+	if !snap.Memory.Wired || snap.Memory.Sessions != 3 || !snap.Memory.DistillationEngine {
+		t.Errorf("memory frame not mapped: %+v", snap.Memory)
+	}
+
+	withoutMem := NewCollector(Sources{})
+	snap2 := withoutMem.Collect()
+	if snap2.Memory != nil {
+		t.Fatalf("nil Memory source must omit Snapshot.Memory, got %+v", snap2.Memory)
+	}
+}
+
+// TestSnapshotMemoryJSONContract locks the panel JS ⇄ API key alignment for
+// the Memory page: web/panel.html reads these exact snake_case keys.
+func TestSnapshotMemoryJSONContract(t *testing.T) {
+	var store Store
+	store.Set(Snapshot{
+		Seq: 1,
+		Memory: &MemoryStatus{
+			Wired:                 true,
+			Sessions:              2,
+			Tasks:                 4,
+			DistillationEngine:    true,
+			Retrievers:            1,
+			Skills:                5,
+			MaxHistory:            10,
+			SessionMaxHistory:     50,
+			DistillationThreshold: 3,
+			MaxSessions:           100,
+			EnableRAG:             true,
+			RAGTopK:               5,
+			RAGMinScore:           0.4,
+			Storage:               "memory",
+			Started:               true,
+		},
+	})
+	w := httptest.NewRecorder()
+	NewHandler(&store).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/v1/introspect/snapshot", nil))
+	var m map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &m); err != nil {
+		t.Fatal(err)
+	}
+	mem, ok := m["memory"].(map[string]any)
+	if !ok {
+		t.Fatalf("snapshot missing memory section: %s", w.Body.String())
+	}
+	for _, key := range []string{"wired", "sessions", "tasks", "distillation_engine", "retrievers",
+		"skills", "max_history", "session_max_history", "distillation_threshold", "max_sessions",
+		"enable_rag", "rag_top_k", "rag_min_score", "storage", "started"} {
+		if _, ok := mem[key]; !ok {
+			t.Errorf("memory json contract broken: missing %q", key)
+		}
+	}
+	// The panel asset must reference the same keys, or the page renders empty.
+	body, err := webFS.ReadFile("web/panel.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(body)
+	for _, needle := range []string{"data-page=\"memory\"", "renderMemory", "distillation_engine",
+		"session_max_history", "distillation_threshold", "o-memory"} {
+		if !strings.Contains(html, needle) {
+			t.Errorf("panel.html missing memory surface: %s", needle)
+		}
 	}
 }
 

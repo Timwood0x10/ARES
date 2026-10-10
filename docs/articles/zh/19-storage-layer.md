@@ -94,7 +94,7 @@ flowchart LR
 
 ```
 embedding/
-├── service.go   # EmbeddingClient 实现 internal/embedding.EmbeddingService（api/embedding 为 deprecated 转发；空壳断言）
+├── service.go   # EmbeddingClient 实现 internal/embedding.EmbeddingService（api/embedding 为 deprecated 转发，已于 0.3.2 删除；空壳断言）
 ├── cache.go     # EmbeddingCache：Redis + 内存双栈，BLAKE2b-128 键
 ├── client.go    # HTTP 客户端：/embed、/embed_batch、/health
 ├── fallback.go  # FallbackClient：兜底策略（纯缓存 / 触发关键词 / 直接报错）

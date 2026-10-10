@@ -72,7 +72,7 @@ func (s *MemoryStrategyStore) SetActive(ctx context.Context, strategy *Strategy)
 		s.history = s.history[len(s.history)-s.maxHistory:]
 	}
 
-	esLog.Info(ctx, "strategy set active",
+	esLog.Info(ctx, "SetActive", "strategy set active",
 		"strategy_id", strategy.ID,
 		"version", strategy.Version,
 		"score", strategy.Score,

@@ -114,7 +114,7 @@ func TestFailCascadesToDependents(t *testing.T) {
 	if err := f.Start("a", "agent-x", epoch); err != nil {
 		t.Fatalf("Start a: %v", err)
 	}
-	if err := f.Fail("a", "agent-x", epoch); err != nil {
+	if err := f.Fail("a", "agent-x", epoch, nil); err != nil {
 		t.Fatalf("Fail a: %v", err)
 	}
 
@@ -171,7 +171,7 @@ func TestFailRetryRequeueDoesNotCascade(t *testing.T) {
 	if err := f.Start("a", "agent-x", epoch); err != nil {
 		t.Fatalf("Start a: %v", err)
 	}
-	if err := f.Fail("a", "agent-x", epoch); err != nil {
+	if err := f.Fail("a", "agent-x", epoch, nil); err != nil {
 		t.Fatalf("Fail a: %v", err)
 	}
 	if a, _ := f.Task("a"); a.State != StateReady {
@@ -199,7 +199,7 @@ func TestCascadeEmitsFailedEventsPerDependent(t *testing.T) {
 	if err := f.Start("a", "agent-x", epoch); err != nil {
 		t.Fatalf("Start a: %v", err)
 	}
-	if err := f.Fail("a", "agent-x", epoch); err != nil {
+	if err := f.Fail("a", "agent-x", epoch, nil); err != nil {
 		t.Fatalf("Fail a: %v", err)
 	}
 	var failedB bool
@@ -227,4 +227,48 @@ func completeSimple(f *Fabric, t *testing.T, id string) error {
 		return err
 	}
 	return f.Complete(id, "agent-x", epoch)
+}
+
+// TestFabricFanoutReadyTasks: the DAG supports fan-out — one
+// parent with three children that all become READY simultaneously after the
+// parent completes. depsCompletedLocked checks ALL dependencies, and
+// ReadyTasks returns every READY task whose deps are done, with no "one at a
+// time" limit. This pins the structural capability the planner could use
+// (today it chains serially by choice, not by architectural constraint).
+func TestFabricFanoutReadyTasks(t *testing.T) {
+	f := NewFabric()
+	if err := f.Create(depTask("parent")); err != nil {
+		t.Fatalf("Create parent: %v", err)
+	}
+	for _, child := range []string{"tool-a", "tool-b", "tool-c"} {
+		if err := f.Create(depTask(child, "parent")); err != nil {
+			t.Fatalf("Create %s: %v", child, err)
+		}
+	}
+
+	// Stage 1: only parent is ready.
+	ready := f.ReadyTasks()
+	if len(ready) != 1 || ready[0] != "parent" {
+		t.Fatalf("stage 1: want [parent], got %v", ready)
+	}
+
+	// Complete parent.
+	if err := completeSimple(f, t, "parent"); err != nil {
+		t.Fatalf("complete parent: %v", err)
+	}
+
+	// Stage 2: all three children must be simultaneously READY.
+	ready = f.ReadyTasks()
+	if len(ready) != 3 {
+		t.Fatalf("stage 2: want 3 ready children, got %d: %v", len(ready), ready)
+	}
+	seen := make(map[string]bool, 3)
+	for _, id := range ready {
+		seen[id] = true
+	}
+	for _, want := range []string{"tool-a", "tool-b", "tool-c"} {
+		if !seen[want] {
+			t.Errorf("stage 2: %s must be ready, got %v", want, ready)
+		}
+	}
 }

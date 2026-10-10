@@ -83,7 +83,7 @@ Two optional interfaces (detected via type assertion):
 - `IdempotentTool.IsIdempotent() bool` — pure-computation tools return true; tools with side effects (file I/O, network, state mutation) either don't implement it or return false.
 - `TaggableTool.Tags() map[string]string` — semantic tags for LLM routing/discovery. Standard keys: `domain` / `input_type` / `output_type` / `side_effects` / `requires_network` / `mutates_state`.
 
-The outward-facing shape is `ToolSchema`: `Name` / `Description` / `Category` / `Parameters` / `Tags`. It comes from `Registry.GetSchemas()` and is converted to `internal/llmcore.Tool` via `ToolSchemaToLLMTool` (`api/core` is the deprecated forward post-M5) before being advertised to the LLM.
+The outward-facing shape is `ToolSchema`: `Name` / `Description` / `Category` / `Parameters` / `Tags`. It comes from `Registry.GetSchemas()` and is converted to `internal/llmcore.Tool` via `ToolSchemaToLLMTool` (`api/core` was the deprecated forward post-M5; removed in 0.3.2) before being advertised to the LLM.
 
 ### 2.2 Registry: register, validate, progressive disclosure
 

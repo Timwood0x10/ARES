@@ -139,6 +139,20 @@ func TestEvolutionBridge_ChaosPriority(t *testing.T) {
 	assert.Equal(t, 3, chaosPriority("unknown"), "unknown low")
 }
 
+// TestEvolutionBridge_PerformanceFaultsAreNotActionable pins the retirement of
+// the scheduler-patch route on the chaos side: a slow-agent / tool-timeout fault
+// must NOT map to PatchChangeScheduler — that mapping emitted an empty value the
+// graph applier can never accept (its Value must be a Scheduler), i.e. a
+// proposal that could only ever fail to apply. The fault stays visible in the
+// arena report; it simply yields no proposal now. See PatchChangeScheduler.
+func TestEvolutionBridge_PerformanceFaultsAreNotActionable(t *testing.T) {
+	for _, at := range []ActionType{ActionSlowAgent, ActionToolTimeout} {
+		patchType, _, _ := arenaActionToPatch(Action{Type: at})
+		assert.Equal(t, patch.PatchType(-1), patchType,
+			"action %s must be not-actionable (scheduler patch route retired)", at)
+	}
+}
+
 func TestService_SetEvolutionBridge(t *testing.T) {
 	s := NewService(NewInjector(nil, nil), nil, nil)
 	coord := newTestCoordinator(t)
@@ -171,9 +185,9 @@ func TestService_Execute_WithEvolutionBridge(t *testing.T) {
 
 // ── Helpers ────────────────────────────────
 
-func newTestCoordinator(t *testing.T) *coordinator.EvolutionCoordinator {
+func newTestCoordinator(t *testing.T) *coordinator.UngatedPatcher {
 	t.Helper()
-	return coordinator.NewEvolutionCoordinator(
+	return coordinator.NewUngatedPatcher(
 		coordinator.DefaultPolicy(),
 		patch.NewRegistry(),
 	)

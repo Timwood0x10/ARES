@@ -134,6 +134,15 @@ func (e *GraphPatchExecutor) CanApply(_ context.Context, p patch.RuntimePatch) e
 		}
 		return nil
 	case patch.PatchChangeScheduler:
+		// Mirror applyChangeScheduler's precondition (and SetScheduler's nil
+		// guard) so CanApply == nil really means Apply can proceed. A scheduler
+		// patch carrying a name string or no value used to pass this check and
+		// then fail mid-apply, which made CanApply=true meaningless here — and
+		// it was exactly the shape both retired producers emitted.
+		sched, ok := p.Value.(Scheduler)
+		if !ok || sched == nil {
+			return errors.New("graph executor: change scheduler value must be a Scheduler")
+		}
 		return nil
 	case patch.PatchRestoreNode:
 		if _, ok := p.Value.(nodeRestore); !ok {

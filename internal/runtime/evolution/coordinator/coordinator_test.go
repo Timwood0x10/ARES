@@ -45,18 +45,18 @@ func TestDefaultPolicy(t *testing.T) {
 	assert.Equal(t, 70.0, p.ApplyFitnessThreshold)
 }
 
-// ── EvolutionCoordinator ────────────────────
+// ── UngatedPatcher ────────────────────
 
-func TestNewEvolutionCoordinator(t *testing.T) {
+func TestNewUngatedPatcher(t *testing.T) {
 	patchReg := patch.NewRegistry()
-	coord := NewEvolutionCoordinator(DefaultPolicy(), patchReg)
+	coord := NewUngatedPatcher(DefaultPolicy(), patchReg)
 	require.NotNil(t, coord)
 	assert.Equal(t, 0, coord.PendingCount())
 }
 
 func TestCoordinator_Submit(t *testing.T) {
 	patchReg := patch.NewRegistry()
-	coord := NewEvolutionCoordinator(DefaultPolicy(), patchReg)
+	coord := NewUngatedPatcher(DefaultPolicy(), patchReg)
 
 	coord.Submit(PatchProposal{
 		Patch:     patch.RuntimePatch{Type: patch.PatchInsertNode, Target: "test"},
@@ -70,7 +70,7 @@ func TestCoordinator_Submit(t *testing.T) {
 
 func TestCoordinator_Submit_Multiple(t *testing.T) {
 	patchReg := patch.NewRegistry()
-	coord := NewEvolutionCoordinator(DefaultPolicy(), patchReg)
+	coord := NewUngatedPatcher(DefaultPolicy(), patchReg)
 
 	for i := 0; i < 5; i++ {
 		coord.Submit(PatchProposal{
@@ -90,7 +90,7 @@ func TestCoordinator_Evaluate_AppliesPatches(t *testing.T) {
 	exec := &recordingExecutor{}
 	require.NoError(t, patchReg.Register("test-target", exec))
 
-	coord := NewEvolutionCoordinator(DefaultPolicy(), patchReg)
+	coord := NewUngatedPatcher(DefaultPolicy(), patchReg)
 	coord.Submit(PatchProposal{
 		Patch:    patch.RuntimePatch{Type: patch.PatchInsertNode, Target: "test-target"},
 		Source:   SourceGA,
@@ -108,7 +108,7 @@ func TestCoordinator_Evaluate_AutoApplyHighPriority(t *testing.T) {
 	exec := &recordingExecutor{}
 	require.NoError(t, patchReg.Register("urgent", exec))
 
-	coord := NewEvolutionCoordinator(PolicyGenome{AutoApplyThreshold: 8, MaxPatchesPerMinute: 100}, patchReg)
+	coord := NewUngatedPatcher(PolicyGenome{AutoApplyThreshold: 8, MaxPatchesPerMinute: 100}, patchReg)
 
 	// Priority 10 >= threshold 8 → auto-apply.
 	coord.Submit(PatchProposal{
@@ -126,7 +126,7 @@ func TestCoordinator_Evaluate_DelaysOnRateLimit(t *testing.T) {
 	exec := &recordingExecutor{}
 	require.NoError(t, patchReg.Register("rate-test", exec))
 
-	coord := NewEvolutionCoordinator(PolicyGenome{MaxPatchesPerMinute: 0}, patchReg)
+	coord := NewUngatedPatcher(PolicyGenome{MaxPatchesPerMinute: 0}, patchReg)
 
 	coord.Submit(PatchProposal{
 		Patch:    patch.RuntimePatch{Type: patch.PatchInsertNode, Target: "rate-test"},
@@ -151,7 +151,7 @@ func TestCoordinator_Evaluate_DelayedProposalRequeued(t *testing.T) {
 	require.NoError(t, patchReg.Register("delayed", exec))
 
 	// GA patch with fitness in the delay band (30 < 50 < 70).
-	coord := NewEvolutionCoordinator(DefaultPolicy(), patchReg)
+	coord := NewUngatedPatcher(DefaultPolicy(), patchReg)
 	coord.Submit(PatchProposal{
 		Patch:    patch.RuntimePatch{Type: patch.PatchInsertNode, Target: "delayed"},
 		Source:   SourceGA,
@@ -193,7 +193,7 @@ func TestCoordinator_Evaluate_GA_FitnessAboveThreshold_Applies(t *testing.T) {
 	exec := &recordingExecutor{}
 	require.NoError(t, patchReg.Register("ga-fit", exec))
 
-	coord := NewEvolutionCoordinator(PolicyGenome{
+	coord := NewUngatedPatcher(PolicyGenome{
 		AutoApplyThreshold:    8,
 		MaxPatchesPerMinute:   100,
 		MinFitnessThreshold:   30.0,
@@ -221,7 +221,7 @@ func TestCoordinator_Evaluate_GA_FitnessBelowFloor_Rejects(t *testing.T) {
 	exec := &recordingExecutor{}
 	require.NoError(t, patchReg.Register("ga-poor", exec))
 
-	coord := NewEvolutionCoordinator(PolicyGenome{
+	coord := NewUngatedPatcher(PolicyGenome{
 		AutoApplyThreshold:    8,
 		MaxPatchesPerMinute:   100,
 		MinFitnessThreshold:   30.0,
@@ -249,7 +249,7 @@ func TestCoordinator_Evaluate_GA_FitnessMiddleGround_Delays(t *testing.T) {
 	exec := &recordingExecutor{}
 	require.NoError(t, patchReg.Register("ga-ok", exec))
 
-	coord := NewEvolutionCoordinator(PolicyGenome{
+	coord := NewUngatedPatcher(PolicyGenome{
 		AutoApplyThreshold:    8,
 		MaxPatchesPerMinute:   100,
 		MinFitnessThreshold:   30.0,
@@ -277,7 +277,7 @@ func TestCoordinator_Evaluate_NonGA_FitnessZero_FallsBackToPriority(t *testing.T
 	exec := &recordingExecutor{}
 	require.NoError(t, patchReg.Register("human", exec))
 
-	coord := NewEvolutionCoordinator(PolicyGenome{
+	coord := NewUngatedPatcher(PolicyGenome{
 		AutoApplyThreshold:    8,
 		MaxPatchesPerMinute:   100,
 		MinFitnessThreshold:   30.0,
@@ -305,7 +305,7 @@ func TestCoordinator_Evaluate_GA_FitnessZero_FallsBackToPriority(t *testing.T) {
 	exec := &recordingExecutor{}
 	require.NoError(t, patchReg.Register("ga-zero", exec))
 
-	coord := NewEvolutionCoordinator(PolicyGenome{
+	coord := NewUngatedPatcher(PolicyGenome{
 		AutoApplyThreshold:    8,
 		MaxPatchesPerMinute:   100,
 		MinFitnessThreshold:   30.0,
@@ -330,7 +330,7 @@ func TestCoordinator_Evaluate_GA_FitnessZero_FallsBackToPriority(t *testing.T) {
 
 func TestCoordinator_DecisionHistory(t *testing.T) {
 	patchReg := patch.NewRegistry()
-	coord := NewEvolutionCoordinator(DefaultPolicy(), patchReg)
+	coord := NewUngatedPatcher(DefaultPolicy(), patchReg)
 
 	coord.Submit(PatchProposal{
 		Patch:    patch.RuntimePatch{Type: patch.PatchInsertNode, Target: "t"},
@@ -347,7 +347,7 @@ func TestCoordinator_PatchHistory(t *testing.T) {
 	exec := &recordingExecutor{}
 	require.NoError(t, patchReg.Register("test", exec))
 
-	coord := NewEvolutionCoordinator(DefaultPolicy(), patchReg)
+	coord := NewUngatedPatcher(DefaultPolicy(), patchReg)
 	coord.Submit(PatchProposal{
 		Patch:    patch.RuntimePatch{Type: patch.PatchInsertNode, Target: "test"},
 		Priority: 5,
@@ -377,7 +377,7 @@ func (e *recordingExecutor) CanApply(_ context.Context, _ patch.RuntimePatch) er
 // itself. The snapshot must reflect updates made after construction.
 func TestCoordinator_Policy(t *testing.T) {
 	patchReg := patch.NewRegistry()
-	coord := NewEvolutionCoordinator(DefaultPolicy(), patchReg)
+	coord := NewUngatedPatcher(DefaultPolicy(), patchReg)
 	p := coord.Policy()
 	assert.Equal(t, 70.0, p.ApplyFitnessThreshold)
 	assert.Equal(t, 30.0, p.MinFitnessThreshold)
@@ -391,7 +391,7 @@ func TestCoordinator_Evaluate_DefaultPolicyAppliesHighFitness(t *testing.T) {
 	exec := &recordingExecutor{}
 	require.NoError(t, patchReg.Register("high-fit", exec))
 
-	coord := NewEvolutionCoordinator(DefaultPolicy(), patchReg)
+	coord := NewUngatedPatcher(DefaultPolicy(), patchReg)
 	coord.Submit(PatchProposal{
 		Patch:    patch.RuntimePatch{Type: patch.PatchInsertNode, Target: "high-fit"},
 		Source:   SourceGA,
@@ -429,7 +429,7 @@ func TestCoordinator_Bug_RejectReasonUsesPolicyMinFitness(t *testing.T) {
 		MinFitnessThreshold:   25.0,
 		ApplyFitnessThreshold: 70.0,
 	}
-	coord := NewEvolutionCoordinator(policy, patchReg)
+	coord := NewUngatedPatcher(policy, patchReg)
 	coord.Submit(PatchProposal{
 		Patch:    patch.RuntimePatch{Type: patch.PatchInsertNode, Target: "ga-low"},
 		Source:   SourceGA,
@@ -457,7 +457,7 @@ func TestCoordinator_Bug_ApplyErrorObservableOnDecision(t *testing.T) {
 	exec := &failingExecutor{}
 	require.NoError(t, patchReg.Register("fails", exec))
 
-	coord := NewEvolutionCoordinator(PolicyGenome{
+	coord := NewUngatedPatcher(PolicyGenome{
 		AutoApplyThreshold:    8,
 		MaxPatchesPerMinute:   100,
 		MinFitnessThreshold:   30.0,
@@ -497,7 +497,7 @@ func TestCoordinator_Bug_DropOnRetryExhaustionIsObservable(t *testing.T) {
 	exec := &recordingExecutor{}
 	require.NoError(t, patchReg.Register("stuck", exec))
 
-	coord := NewEvolutionCoordinator(PolicyGenome{
+	coord := NewUngatedPatcher(PolicyGenome{
 		AutoApplyThreshold:    8,
 		MaxPatchesPerMinute:   100, // disable rate-limit so we exercise the fitness delay band
 		MinFitnessThreshold:   30.0,
@@ -539,6 +539,53 @@ func TestCoordinator_Bug_DropOnRetryExhaustionIsObservable(t *testing.T) {
 		"the last decision must be the drop, not a Delay that silently disappeared")
 	assert.Len(t, exec.applied, 0,
 		"a dropped proposal must never have been applied")
+}
+
+// ── Additional mock executors ───────────────
+
+// TestCoordinator_B5_BaselineFitnessInGrayZoneIsDropped pins the B5 contract:
+// a GA patch with no FitnessGenome backing gets fitness=50 (baseline 0.5 × 100),
+// which lands in the [30,70) gray zone → DecisionDelay → retry exhaustion →
+// DecisionDrop. The drop must be observable in DecisionHistory (not a silent
+// disappearance). This test documents the current behavior so a future change
+// to the baseline or threshold is visible.
+func TestCoordinator_B5_BaselineFitnessInGrayZoneIsDropped(t *testing.T) {
+	patchReg := patch.NewRegistry()
+	exec := &recordingExecutor{}
+	require.NoError(t, patchReg.Register("baseline", exec))
+
+	coord := NewUngatedPatcher(PolicyGenome{
+		AutoApplyThreshold:    8,
+		MaxPatchesPerMinute:   100, // disable rate-limit
+		MinFitnessThreshold:   30.0,
+		ApplyFitnessThreshold: 70.0,
+	}, patchReg)
+	coord.Submit(PatchProposal{
+		Patch:    patch.RuntimePatch{Type: patch.PatchInsertNode, Target: "baseline"},
+		Source:   SourceGA,
+		Priority: 5,
+		Fitness:  50.0, // baseline 0.5 × 100 → gray zone [30,70)
+	})
+
+	// Evaluate enough times to exhaust maxProposalRetries.
+	for i := 0; i <= maxProposalRetries; i++ {
+		coord.Evaluate(context.Background())
+	}
+
+	var lastDecision Decision
+	drops := 0
+	for _, d := range coord.DecisionHistory() {
+		if d.Decision == DecisionDrop {
+			drops++
+		}
+		lastDecision = d.Decision
+	}
+	assert.GreaterOrEqual(t, drops, 1,
+		"baseline fitness in gray zone must be observable as DecisionDrop (not silent)")
+	assert.Equal(t, DecisionDrop, lastDecision,
+		"final decision must be Drop — the gray zone must not silently disappear")
+	assert.Len(t, exec.applied, 0,
+		"a gray-zone proposal must never be auto-applied")
 }
 
 // ── Additional mock executors ───────────────

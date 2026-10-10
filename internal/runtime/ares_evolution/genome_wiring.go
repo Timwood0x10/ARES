@@ -102,7 +102,7 @@ type GenomePopulationAdapter struct {
 
 	// Coordinator bridge — when set, Run() submits evolution results
 	// to the new system's coordinator for decision and deployment.
-	coordinator *coordinator.EvolutionCoordinator
+	coordinator *coordinator.UngatedPatcher
 	diffReg     *diff.Registry
 	genomeReg   *evogenome.Registry
 
@@ -337,7 +337,7 @@ func WithActiveStrategyManager(mgr *ActiveStrategyManager) GenomeAdapterOption {
 // Returns:
 //
 //	GenomeAdapterOption - the configuration function.
-func WithAdapterCoordinator(coord *coordinator.EvolutionCoordinator, diffReg *diff.Registry, genomeReg *evogenome.Registry) GenomeAdapterOption {
+func WithAdapterCoordinator(coord *coordinator.UngatedPatcher, diffReg *diff.Registry, genomeReg *evogenome.Registry) GenomeAdapterOption {
 	return func(a *GenomePopulationAdapter) {
 		a.coordinator = coord
 		a.diffReg = diffReg

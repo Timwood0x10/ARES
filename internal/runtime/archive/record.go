@@ -17,7 +17,7 @@ var allowedActions = map[string]bool{
 //
 // Mirrors git-log-per-commit (not git-squash): rounds are never merged, so a
 // later round can reference "round N's conclusion" rather than a compacted
-// fragment. JSON tags match plan/context_compression_strategy.md section 3.1.
+// fragment. JSON tags match §3.1 of the retention scheme documented in doc.go.
 type RoundRecord struct {
 	// Round is the 1-based round number. Must be > 0.
 	//

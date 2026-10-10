@@ -537,6 +537,12 @@ func (o *Orchestrator) Adopt(ctx context.Context, c Component, mode Mode) error 
 // not cancel every other managed goroutine (the process-wide teardown is
 // driven by Shutdown, not by a single loop's death).
 //
+// The bool return reports admission: false means the loop was NOT started
+// (the orchestrator is already shutting down), so a caller that would
+// otherwise report success — ask_agent answering "pending" for a request
+// that never launched — can fail loud instead. Callers that are fine with a
+// shutdown-time silent skip ignore it.
+//
 // Status marking is skipped while the orchestrator is shutting down: loops
 // exiting on the cancelled root context is the normal teardown path, not a
 // failure. Loops whose name matches no registered component still get the
@@ -549,13 +555,13 @@ func (o *Orchestrator) Adopt(ctx context.Context, c Component, mode Mode) error 
 // errgroup.Go opened a window where a loop joined the group after Wait had
 // already returned, which the errgroup contract forbids and which left the
 // loop running with nobody waiting on it.
-func (o *Orchestrator) GoBackground(name string, fn func(ctx context.Context) error) {
+func (o *Orchestrator) GoBackground(name string, fn func(ctx context.Context) error) bool {
 	o.mu.Lock()
 	if o.stopped {
 		o.mu.Unlock()
 		log.Warn("kernel: background loop not started (orchestrator shutting down)",
 			"component", name)
-		return
+		return false
 	}
 	o.eg.Go(func() error {
 		err := o.runBackground(o.rootCtx, name, fn)
@@ -576,6 +582,7 @@ func (o *Orchestrator) GoBackground(name string, fn func(ctx context.Context) er
 		return nil
 	})
 	o.mu.Unlock()
+	return true
 }
 
 // runBackground invokes fn with a recover boundary so a panicking loop is

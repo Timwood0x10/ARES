@@ -150,13 +150,17 @@ func DefaultPopulationConfig() PopulationConfig {
 }
 
 // PopulationStats holds statistical information about a population's state.
+// All fields are captured under a single read lock (see Population.Stats), so
+// the snapshot is internally consistent: StagnantGens always belongs to the
+// same Generation as the score fields.
 type PopulationStats struct {
-	Generation int
-	Size       int
-	BestScore  float64
-	AvgScore   float64
-	WorstScore float64
-	Diversity  DiversityReport
+	Generation   int
+	Size         int
+	BestScore    float64
+	AvgScore     float64
+	WorstScore   float64
+	Diversity    DiversityReport
+	StagnantGens int
 }
 
 // ScorerFunc is a function that assigns a fitness score to a strategy.
@@ -165,10 +169,16 @@ type ScorerFunc func(agent *mutation.Strategy) float64
 // MultiObjectiveScorerFunc scores an agent across multiple dimensions.
 type MultiObjectiveScorerFunc func(agent *mutation.Strategy) (dims map[string]float64, aggregate float64)
 
+// NoopScorer is a pass-through scorer that returns the strategy's existing
+// Score unchanged. Use when scores are computed externally (e.g. by the task
+// runtime) and the GA only needs to preserve them through selection.
 func NoopScorer(agent *mutation.Strategy) float64 {
 	return agent.Score
 }
 
+// ConstantScorer returns a scorer that assigns the same fixed score to every
+// strategy. Intended for testing and for bootstrapping a population before a
+// real scorer is wired — never use in production evolution paths.
 func ConstantScorer(score float64) ScorerFunc {
 	return func(*mutation.Strategy) float64 { return score }
 }

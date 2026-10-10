@@ -15,11 +15,11 @@ import (
 // The Coordinator treats Chaos as one of 7 equal PatchSources. No special
 // privileges; the same DecisionPolicy applies to all sources.
 type EvolutionBridge struct {
-	coordinator *coordinator.EvolutionCoordinator
+	coordinator *coordinator.UngatedPatcher
 }
 
 // NewEvolutionBridge creates a bridge between arena and the evolution Coordinator.
-func NewEvolutionBridge(coord *coordinator.EvolutionCoordinator) *EvolutionBridge {
+func NewEvolutionBridge(coord *coordinator.UngatedPatcher) *EvolutionBridge {
 	if coord == nil {
 		log.Warn("NewEvolutionBridge: nil coordinator, evolution bridge disabled")
 	}
@@ -124,9 +124,16 @@ func arenaActionToPatch(action Action) (patch.PatchType, string, string) {
 	case ActionKillAgent, ActionKillLeader:
 		return patch.PatchReplaceNode, action.TargetID, "fallback-" + action.TargetID
 
-	// ── Performance faults → change scheduler ─────────
+	// ── Performance faults ─────────────────────────────
+	// Not actionable: the scheduler dimension is retired (ordering schedulers
+	// have no execution decision left once ready batches run fully parallel)
+	// and a scheduler patch can no longer be applied from here — this branch
+	// used to emit PatchChangeScheduler with an empty value, which the graph
+	// applier rejects ("value must be a Scheduler"), i.e. a proposal that could
+	// only ever fail. Returning -1 keeps the fault visible in the arena report
+	// without manufacturing a dead patch. See PatchChangeScheduler.
 	case ActionSlowAgent, ActionToolTimeout:
-		return patch.PatchChangeScheduler, "graph.scheduler", ""
+		return -1, "", ""
 
 	// ── Infrastructure faults → change recovery strategy ──
 	case ActionLLMFailure, ActionMemoryCorrupt, ActionMCPDisconnect:

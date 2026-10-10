@@ -22,7 +22,7 @@
 //   - diff.NewWorkflowDiffer / Registry / DiffAll
 //     (internal/evolution/diff)
 //   - patch.NewRegistry / RuntimePatch (internal/evolution/patch)
-//   - coordinator.NewEvolutionCoordinator / Submit / Evaluate / PatchHistory /
+//   - coordinator.NewUngatedPatcher / Submit / Evaluate / PatchHistory /
 //     DecisionHistory (internal/evolution/coordinator)
 //   - engine.NewMutableDAG (internal/fabric/task/workflow/engine)
 //   - graph.NewGraphPatchExecutor (internal/fabric/task/workflow/graph)
@@ -65,7 +65,7 @@ func main() {
 	// genome mutates this topology.
 	dag := buildDAG()
 	genomeReg, diffReg, patchReg := registerComponents(dag)
-	coord := coordinator.NewEvolutionCoordinator(coordinator.DefaultPolicy(), patchReg)
+	coord := coordinator.NewUngatedPatcher(coordinator.DefaultPolicy(), patchReg)
 	fmt.Println("5. Created coordinator")
 
 	// ── Step 2: Run one evolution cycle and apply the patches ──
@@ -254,7 +254,7 @@ foundMutation:
 
 // applyPatches submits every patch to the coordinator as a GA-source proposal
 // with a fitness score.
-func applyPatches(coord *coordinator.EvolutionCoordinator, patches []patch.RuntimePatch) {
+func applyPatches(coord *coordinator.UngatedPatcher, patches []patch.RuntimePatch) {
 	for _, p := range patches {
 		coord.Submit(coordinator.PatchProposal{
 			Patch:     p,
@@ -270,7 +270,7 @@ func applyPatches(coord *coordinator.EvolutionCoordinator, patches []patch.Runti
 
 // printSummary evaluates the coordinator and prints the apply + decision
 // history — the audit trail of the evolution loop.
-func printSummary(coord *coordinator.EvolutionCoordinator) {
+func printSummary(coord *coordinator.UngatedPatcher) {
 	coord.Evaluate(context.Background())
 	history := coord.PatchHistory()
 	fmt.Printf("9. Applied %d patches\n", len(history))

@@ -48,6 +48,77 @@ func TestValidate_NegativeDistillationThresholdRejects(t *testing.T) {
 	}
 }
 
+func TestValidate_NegativeSessionMaxHistoryRejects(t *testing.T) {
+	cfg := &ConfigFile{
+		Memory: MemoryFileConfig{
+			Enabled: true,
+			Session: SessionFileConfig{MaxHistory: -1},
+		},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error for negative memory.session.max_history")
+	}
+}
+
+func TestLoadConfigFile_SessionMaxHistorySlot(t *testing.T) {
+	content := `
+llm:
+  provider: ollama
+memory:
+  enabled: true
+  max_history: 100
+  session:
+    max_history: 60
+`
+	path, cleanup := tmpConfigFile(t, content)
+	defer cleanup()
+
+	cfg, err := LoadConfigFile(path)
+	if err != nil {
+		t.Fatalf("LoadConfigFile error: %v", err)
+	}
+	if cfg.Memory.Session.MaxHistory != 60 {
+		t.Errorf("session.max_history = %d, want 60", cfg.Memory.Session.MaxHistory)
+	}
+
+	opts, optErr := cfg.ToOptions()
+	if optErr != nil {
+		t.Fatalf("ToOptions error: %v", optErr)
+	}
+	// newTestConfig seeds llmCfg etc.; a bare &config{} panics on provider
+	// options that write c.llmCfg without a nil check.
+	applied := newTestConfig()
+	for _, opt := range opts {
+		if err := opt(applied); err != nil {
+			t.Fatalf("apply option: %v", err)
+		}
+	}
+	if applied.memCfg.SessionMaxHistory != 60 {
+		t.Errorf("memCfg.SessionMaxHistory = %d, want 60 after ToOptions", applied.memCfg.SessionMaxHistory)
+	}
+	if applied.memCfg.MaxHistory != 100 {
+		t.Errorf("memCfg.MaxHistory = %d, want 100", applied.memCfg.MaxHistory)
+	}
+}
+
+func TestWithSessionMaxHistory_NegativeRejects(t *testing.T) {
+	err := WithSessionMaxHistory(-1)(&config{})
+	if err == nil {
+		t.Fatal("expected error for negative session max history")
+	}
+}
+
+func TestBuildMemoryConfig_ClampsSessionCapToReadWindow(t *testing.T) {
+	mc := buildMemoryConfig(memoryCfg{
+		Enabled:           true,
+		MaxHistory:        100,
+		SessionMaxHistory: 50,
+	}, 0)
+	if mc.SessionMaxHistory != 100 {
+		t.Errorf("SessionMaxHistory = %d, want clamped-up 100", mc.SessionMaxHistory)
+	}
+}
+
 func TestValidate_ThresholdZeroFallsBackOK(t *testing.T) {
 	cfg := &ConfigFile{
 		Memory: MemoryFileConfig{
@@ -486,3 +557,46 @@ func TestWithRAG(t *testing.T) {
 
 // boolPtr is a test helper for tri-state *bool config fields.
 func boolPtr(b bool) *bool { return &b }
+
+// TestValidateTasksWait locks the sdk-side tasks.wait_timeout contract:
+// empty is fine (surface defaults apply), unparseable/non-positive are
+// rejected through Validate.
+func TestValidateTasksWait(t *testing.T) {
+	ok := &ConfigFile{Tasks: TasksFileConfig{WaitTimeout: "90s"}}
+	if err := ok.Validate(); err != nil {
+		t.Fatalf("valid tasks.wait_timeout rejected: %v", err)
+	}
+	empty := &ConfigFile{}
+	if err := empty.validateTasksWait(); err != nil {
+		t.Fatalf("empty tasks.wait_timeout must pass: %v", err)
+	}
+	bad := &ConfigFile{Tasks: TasksFileConfig{WaitTimeout: "soon"}}
+	if err := bad.validateTasksWait(); err == nil {
+		t.Fatal("unparseable tasks.wait_timeout must be rejected")
+	}
+	neg := &ConfigFile{Tasks: TasksFileConfig{WaitTimeout: "-5s"}}
+	if err := neg.validateTasksWait(); err == nil {
+		t.Fatal("non-positive tasks.wait_timeout must be rejected")
+	}
+}
+
+// TestConfigFileTasksYamlRoundtrip pins that the tasks section actually
+// parses from ares.yaml through the sdk loader (it used to be dropped
+// silently — no field existed).
+func TestConfigFileTasksYamlRoundtrip(t *testing.T) {
+	content := `
+llm:
+  provider: ollama
+tasks:
+  wait_timeout: 75s
+`
+	path, cleanup := tmpConfigFile(t, content)
+	defer cleanup()
+	cfg, err := LoadConfigFile(path)
+	if err != nil {
+		t.Fatalf("LoadConfigFile: %v", err)
+	}
+	if cfg.Tasks.WaitTimeout != "75s" {
+		t.Fatalf("Tasks.WaitTimeout = %q, want 75s", cfg.Tasks.WaitTimeout)
+	}
+}
