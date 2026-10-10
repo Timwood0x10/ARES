@@ -358,7 +358,8 @@ func TestReplaceNodeMigratesSuccessors(t *testing.T) {
 	c, err := fabric.Task("c")
 	require.NoError(t, err)
 	assert.Equal(t, []string{"new"}, c.Dependencies)
-	// depsCompletedLocked only checks existence + COMPLETED, never who
+	// depsSatisfiedLocked checks existence and dependency satisfaction
+	// (COMPLETED, or a degraded input an AllowPartial task declared), never who
 	// compiled a task — the migrated edge is a real scheduling edge.
 	assert.NotContains(t, fabric.ReadyTasks(), "c")
 }

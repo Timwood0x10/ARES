@@ -206,7 +206,7 @@ func completeTask(t *testing.T, f *Fabric, id, agent string) {
 
 // TestReaperSkipsReferencedCompletedTasks pins #7: a COMPLETED task that
 // another task still lists in Dependencies must NOT be harvested —
-// depsCompletedLocked treats a missing dependency as unsatisfied forever, so
+// depsSatisfiedLocked treats a missing dependency as unsatisfied forever, so
 // deleting the predecessor would strand the dependent permanently. The
 // harvest converges over sweeps: once the dependent itself is terminal and
 // harvested, a later sweep reclaims the predecessor.

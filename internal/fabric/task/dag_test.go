@@ -91,7 +91,7 @@ func TestFabricReadyTasksDAG(t *testing.T) {
 
 // TestFailCascadesToDependents is the failure-propagation contract: a terminal
 // FAILED task must not strand its downstream subgraph in READY forever.
-// Pre-fix, depsCompletedLocked only accepted COMPLETED, so one exhausted task
+// Pre-fix, depsSatisfiedLocked only accepted COMPLETED, so one exhausted task
 // made every transitive dependent permanently unschedulable (never in
 // ReadyTasks, protected from the reaper, and PlanLoop.round active forever).
 func TestFailCascadesToDependents(t *testing.T) {
@@ -231,7 +231,7 @@ func completeSimple(f *Fabric, t *testing.T, id string) error {
 
 // TestFabricFanoutReadyTasks: the DAG supports fan-out — one
 // parent with three children that all become READY simultaneously after the
-// parent completes. depsCompletedLocked checks ALL dependencies, and
+// parent completes. depsSatisfiedLocked checks ALL dependencies, and
 // ReadyTasks returns every READY task whose deps are done, with no "one at a
 // time" limit. This pins the structural capability the planner could use
 // (today it chains serially by choice, not by architectural constraint).

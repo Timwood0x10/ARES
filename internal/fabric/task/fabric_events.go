@@ -172,6 +172,15 @@ func (f *Fabric) recordWithExtrasLocked(t *Task, typ EventType, extras map[strin
 		if max := backoffMillis(t.BackoffMax); max > 0 {
 			payload[restoreKeyBackoffMaxMS] = max
 		}
+		// Degradation: AllowPartial is creation-time policy, DegradedInputs is
+		// the recorded gaps. Written only when set, so the default path keeps its
+		// exact payload.
+		if t.AllowPartial {
+			payload[restoreKeyAllowPartial] = true
+		}
+		if len(t.DegradedInputs) > 0 {
+			payload[restoreKeyDegradedInputs] = append([]string(nil), t.DegradedInputs...)
+		}
 		payload[restoreKeyRetryAttempts] = t.RetryPolicy.Attempts
 		payload[restoreKeyRetryMax] = t.RetryPolicy.MaxRetries
 		payload[restoreKeyCreatedAt] = t.CreatedAt.Format(time.RFC3339)

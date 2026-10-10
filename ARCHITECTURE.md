@@ -316,7 +316,7 @@ HTTP 此时返回 **202 Accepted** + `task_id`（`agent_routes_tasks.go:77`）�
 | 22 | `quantum.go:58` `RunQuantum` | `Start` → `t.Quantum++` → `runStepRecovered`（panic 边界）→ planner 返回 `Done:false` → `Yield` 保存 checkpoint 回 READY |
 | 23 | 下一轮 drain | 新的 `tool/web_search` 任务被调度 → `l2graph.go:415` `toolCognition.ExecuteStep` → `:420` 盖 `WithCallerID`（**身份来自 ctx，不信 LLM 参数**）→ `binder.CallTool` → DONE |
 
-循环 21→23 直到 planner 长出 answer 节点。answer 量子：`l2graph.go:510` 读 `content` → 成功 → `:527` `ReleaseSession` → `submitThroughL2` 的轮询扫到 COMPLETED answer（`l2_submit.go:126`）→ 返回终答。
+循环 21→23 直到 planner 长出 answer 节点。answer 量子：`l2graph.go:510` 读 `content` → 成功 → `:527` `ReleaseSession` → `submitThroughL2` 的轮询扫到 COMPLETED answer（`l2_submit.go:186`）→ 返回终答。
 
 ### 全程的旁路写入
 
@@ -370,7 +370,7 @@ task.completed → skill_outcome_writer → Experience（下轮置信先验）
 |---|---|---|
 | `Sessions` | `session.go:33` | 三字段注入后只读，并发安全。`Admit:51`（四步：拒斜杠 → 幂等查 → InitSession+订阅 → 编译 root，终态 root 先 Harvest）· `Release:126` · `ReleaseQuietly:136` · `Harvest:144` · `KeepSet:165` · `ReleaseOnAnswerFailure:185` |
 | `Submitter` | `submit.go:34` | **实例级** seq（不再是包级全局）。`Submit:118` · `Seed:54` grow-only CAS · `MaxRestoredSeq:81` 四族 ID 扫描 |
-| `Execution` | `execution.go:54` | `NewExecution:73` 是 serve（`agent_kernel.go:319`）与 SDK（`l2.go:153`）的共同构造点。字段：`Sessions:56` `Compile:58` `Router:60` `Reaper:63` `Submitter:66` `SessionIdleTTL:68` |
+| `Execution` | `execution.go:54` | `NewExecution:73` 是 serve（`peer_assembly.go:334`）与 SDK（`l2.go:153`）的共同构造点。字段：`Sessions:56` `Compile:58` `Router:60` `Reaper:63` `Submitter:66` `SessionIdleTTL:68` |
 
 ### 5.3 调度 `internal/kernel`
 

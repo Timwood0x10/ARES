@@ -30,7 +30,7 @@ const (
 // READY → FAILED is taken by the cascade in Fail (a terminal predecessor
 // failed): the task never acquired an owner, so there is no agent that could
 // drive it through RUNNING → FAILED. Without it the downstream subgraph stays
-// READY forever — depsCompletedLocked can never see a COMPLETED predecessor
+// READY forever — depsSatisfiedLocked can never see a COMPLETED predecessor
 // again. It is also taken by the deadline sweep (ExpireDeadlines), which stops
 // a READY task that never got an owner in time; the sweep can enter FAILED from
 // any live state for the same reason (the Runtime owns the deadline, not the

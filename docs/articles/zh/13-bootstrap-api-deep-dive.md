@@ -28,7 +28,7 @@ comp, err := ares_bootstrap.Bootstrap(ctx, cfg, &ares_bootstrap.BootstrapDeps{..
 func Bootstrap(ctx context.Context, cfg *ares_config.Config, deps *BootstrapDeps) (*Components, error)
 ```
 
-`cmd/ares/serve.go` 就是调用方：它构造一个带归档能力的 EventStore 通过 `deps` 注入，剩下的接线交给 Bootstrap（serve.go:168 附近）。`cfg` 来自 `ares_config.Load(path)`（待核实调用细节，但 `Config` 结构体真实存在，见下文）。
+`cmd/ares/serve.go` 就是调用方：它构造一个带归档能力的 EventStore 通过 `deps` 注入，剩下的接线交给 Bootstrap（serve_wiring.go:125 附近）。`cfg` 来自 `ares_config.Load(path)`（待核实调用细节，但 `Config` 结构体真实存在，见下文）。
 
 ---
 

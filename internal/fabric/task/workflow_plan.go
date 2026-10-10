@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 )
 
 // planDefaultMaxRetries is the retry budget CompilePlan stamps when a
@@ -32,6 +33,15 @@ type PlanStep struct {
 	// <= 0 means "unset": CompilePlan resolves it to planDefaultMaxRetries
 	// (2), it never reaches the fabric as a literal zero.
 	MaxRetries int
+	// AllowPartial lets this step run when a dependency fails permanently: the
+	// failed predecessor is recorded as a degraded input instead of failing the
+	// step. False (zero value) is strict — a failed dependency fails this step.
+	AllowPartial bool
+	// BackoffBase and BackoffMax configure this step's retry backoff: the delay
+	// before the first retry doubles per further attempt, capped by Max. A zero
+	// BackoffBase disables backoff, so a requeued step is immediately runnable.
+	BackoffBase time.Duration
+	BackoffMax  time.Duration
 	// Payload carries the step's input metadata (surfaced via the checkpoint
 	// envelope to the executor).
 	Payload map[string]any
@@ -142,6 +152,9 @@ func (f *Fabric) CompilePlan(ctx context.Context, steps []PlanStep) ([]string, e
 			Priority:     s.Priority,
 			Origin:       s.Origin,
 			RetryPolicy:  RetryPolicy{MaxRetries: maxRetries},
+			AllowPartial: s.AllowPartial,
+			BackoffBase:  s.BackoffBase,
+			BackoffMax:   s.BackoffMax,
 		}
 		if s.Payload != nil || s.SessionID != "" || s.TenantID != "" {
 			env := NewCheckpointEnvelope(s.Payload)
@@ -195,7 +208,7 @@ func (f *Fabric) CompilePlan(ctx context.Context, steps []PlanStep) ([]string, e
 //
 // The dependency rules are CompilePlan's, so a node may depend on a task
 // compiled by an earlier batch (typically an already-COMPLETED plan node);
-// depsCompletedLocked then reports it READY on the spot.
+// depsSatisfiedLocked then reports it READY on the spot.
 //
 // Args:
 //   - ctx: bounds the compile (see CompilePlan).

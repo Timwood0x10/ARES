@@ -336,7 +336,7 @@ if tenantID == "" || len(taskText) < 10 || len(resultText) < 20 {
 
 ---
 
-### 4.7 `assembleEvolutionDAG` — `bootstrap_builder.go:228`
+### 4.7 `assembleEvolutionDAG` — `bootstrap_builder.go:231`
 
 建四样东西：进化 DAG、live memory store、KnowledgeRuntime、EvidenceStore。
 
@@ -412,7 +412,7 @@ if comp.EventStore != nil {
 
 ---
 
-### 4.9 `assembleLegacyEvolution` — `bootstrap_builder.go:359`
+### 4.9 `assembleLegacyEvolution` — `bootstrap_builder.go:362`
 
 旧进化系统，三重门控（`bootstrap.go:401`）：
 
@@ -442,7 +442,7 @@ comp.bgGroup.Go(func() error {
 
 ---
 
-### 4.10 `wireEvolutionWiring` — `bootstrap_builder.go:399`
+### 4.10 `wireEvolutionWiring` — `bootstrap_builder.go:402`
 
 三件事：注入检索器、接部署管线、注册最小 DAG。这一步**没有 error 返回**，全部 best-effort。
 
@@ -1499,7 +1499,7 @@ for _, taskID := range tasks {
 wg.Wait()
 ```
 
-`ResumableTasks`（`fabric/task/dag.go:56`）：
+`ResumableTasks`（`fabric/task/dag.go:70`）：
 
 ```go
 for id, t := range f.tasks {

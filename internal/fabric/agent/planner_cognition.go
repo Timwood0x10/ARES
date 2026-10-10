@@ -717,7 +717,7 @@ func (c *plannerCognition) growToolNodes(
 		//
 		// This serial chaining is an intentional design choice, not an
 		// architectural limitation. The DAG supports fan-out:
-		// depsCompletedLocked checks every dependency, and ReadyTasks
+		// depsSatisfiedLocked checks every dependency, and ReadyTasks
 		// returns all ready tasks at once (see TestFabricFanoutReadyTasks).
 		// PlanStep.DependsOn is []string and ProjectStep copies it as-is,
 		// so multi-predecessor topologies are reachable.

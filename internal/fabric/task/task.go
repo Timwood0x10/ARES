@@ -51,13 +51,27 @@ type Task struct {
 	Origin string
 	// FailedDependency names the prerequisite task whose terminal FAILED
 	// cascaded into this one ("" = this task failed on its own, or is not
-	// failed). It exists because a FAILED prerequisite can never satisfy
-	// depsCompletedLocked: without cascading the whole downstream subgraph
-	// would sit READY forever — unschedulable, invisible to the reaper and a
-	// permanent "round still active" for PlanLoop. Provenance is recorded so
-	// operators can tell a subgraph that died of a root cause from one that
-	// executed and failed. Guarded by f.mu like every other Task field.
+	// failed). It exists because a FAILED prerequisite satisfies no dependency
+	// unless the dependent explicitly opted in (see AllowPartial): without
+	// cascading, the whole downstream subgraph would sit READY forever —
+	// unschedulable, invisible to the reaper and a permanent "round still
+	// active" for PlanLoop. Provenance is recorded so operators can tell a
+	// subgraph that died of a root cause from one that executed and failed.
+	// Guarded by f.mu like every other Task field.
 	FailedDependency string
+	// AllowPartial is the creation-time policy that lets this task run when a
+	// dependency fails permanently, instead of being failed by the cascade. The
+	// gap is not hidden: the failed predecessor's ID is recorded in
+	// DegradedInputs and mirrored into the task's payload as degraded_inputs, so
+	// "not checked" stays distinguishable from "checked, nothing found". False
+	// (the zero value) is strict: a failed dependency fails this task too.
+	AllowPartial bool
+	// DegradedInputs lists the predecessors this task proceeds without. It is
+	// runtime state, filled the moment a cascade reaches an AllowPartial
+	// dependent, and it is also what unlocks scheduling: only IDs recorded here
+	// satisfy dependencySatisfied, so an AllowPartial task whose OTHER
+	// dependency is still running keeps waiting. Guarded by f.mu.
+	DegradedInputs []string
 	// Quantum counts how many execution quanta (agent steps) this task has
 	// run across ALL lease holders (accumulated across yield→resume cycles,
 	// preemptions and chaos-recovery replacements). It is the "semantic step"

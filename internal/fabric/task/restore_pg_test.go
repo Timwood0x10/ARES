@@ -2,6 +2,7 @@ package taskfabric
 
 import (
 	"context"
+	"errors"
 	"net/url"
 	"os"
 	"strconv"
@@ -57,6 +58,64 @@ func pgCleanupEvents(t *testing.T, pool *postgres.Pool) {
 	t.Helper()
 	_, err := pool.Exec(context.Background(), "DELETE FROM events")
 	require.NoError(t, err, "cleanup events table")
+}
+
+// TestRestoreFromStorePostgresPartialDependency is the M3 acceptance ④ contract
+// over real Postgres: an AllowPartial task degraded by a permanently failed
+// predecessor folds back with its policy, its recorded gaps, and still
+// schedulable. The restart must not turn a gap the cascade recorded back into
+// "waiting on a dependency that can never complete".
+func TestRestoreFromStorePostgresPartialDependency(t *testing.T) {
+	pool := pgRestoreTestPool(t)
+	pgCleanupEvents(t, pool)
+	ctx := context.Background()
+
+	store1, err := ares_events.NewPostgresEventStore(pool)
+	require.NoError(t, err)
+	f1 := NewFabric().WithEventStore(store1)
+
+	require.NoError(t, f1.Create(&Task{ID: "t2", Capability: "rust", RetryPolicy: RetryPolicy{MaxRetries: 0}}))
+	require.NoError(t, f1.Create(&Task{ID: "t3", Capability: "rust"}))
+	require.NoError(t, f1.Create(&Task{
+		ID:           "t4",
+		Capability:   "rust",
+		Dependencies: []string{"t2", "t3"},
+		AllowPartial: true,
+		BackoffBase:  time.Second,
+		BackoffMax:   4 * time.Second,
+	}))
+
+	// t2 dies for good; t3 lands. t4 is left degraded but fully satisfied.
+	epoch2, err := f1.Acquire("t2", "agent-a", time.Minute)
+	require.NoError(t, err)
+	require.NoError(t, f1.Start("t2", "agent-a", epoch2))
+	require.NoError(t, f1.Fail("t2", "agent-a", epoch2, errors.New("root cause: tool unavailable")))
+	epoch3, err := f1.Acquire("t3", "agent-a", time.Minute)
+	require.NoError(t, err)
+	require.NoError(t, f1.Start("t3", "agent-a", epoch3))
+	require.NoError(t, f1.Complete("t3", "agent-a", epoch3))
+	require.Contains(t, f1.ResumableTasks(), "t4", "fixture sanity: schedulable before the restart")
+
+	// "Restart": fresh store instance over the same pool, fresh fabric.
+	store2, err := ares_events.NewPostgresEventStore(pool)
+	require.NoError(t, err)
+	f2 := NewFabric().WithEventStore(store2)
+	require.NoError(t, f2.RestoreFromStore(ctx))
+
+	got, err := f2.Task("t4")
+	require.NoError(t, err)
+	require.True(t, got.AllowPartial, "AllowPartial must survive the PG round-trip")
+	require.Equal(t, []string{"t2"}, got.DegradedInputs, "recorded gaps must survive the PG round-trip")
+	require.Equal(t, time.Second, got.BackoffBase, "the retry policy rides the same events")
+	require.Equal(t, 4*time.Second, got.BackoffMax)
+	require.Equal(t, StateReady, got.State)
+	require.Contains(t, f2.ResumableTasks(), "t4", "the rebuilt fabric must still schedule the degraded task")
+	require.True(t, mustIsReady(t, f2, "t4"), "IsReady must agree with the scheduler's view")
+
+	// The failed root stays terminal: a restart never revives it.
+	root, err := f2.Task("t2")
+	require.NoError(t, err)
+	require.Equal(t, StateFailed, root.State)
 }
 
 // TestRestoreFromStorePostgresRoundTrip is the M4.1 persistence contract,

@@ -50,8 +50,9 @@ func TestCompilePlan_CrossBatchDependencyLetsTaskBecomeReady(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// depsCompletedLocked only asks "does the dep exist and is it COMPLETED"
-	// — it never cares which batch compiled it.
+	// depsSatisfiedLocked only asks whether the dep exists and is satisfied
+	// (COMPLETED, or — for an opted-in task — a recorded degraded input); it
+	// never cares which batch compiled it.
 	ready, err := f.IsReady("grep")
 	require.NoError(t, err)
 	assert.True(t, ready)

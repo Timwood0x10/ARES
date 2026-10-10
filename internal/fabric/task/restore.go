@@ -50,9 +50,15 @@ const (
 	// must be folded back, or a restart would run a backed-off task immediately
 	// and the next failure would lose its escalation. Durations travel as whole
 	// milliseconds (see backoffMillis).
-	restoreKeyNextAttemptAt  = "next_attempt_at"
-	restoreKeyBackoffBaseMS  = "backoff_base_ms"
-	restoreKeyBackoffMaxMS   = "backoff_max_ms"
+	restoreKeyNextAttemptAt = "next_attempt_at"
+	restoreKeyBackoffBaseMS = "backoff_base_ms"
+	restoreKeyBackoffMaxMS  = "backoff_max_ms"
+	// Degradation: restoreKeyAllowPartial is creation-time policy,
+	// restoreKeyDegradedInputs the recorded gaps. Both must fold back, or a
+	// restart would put an opted-in task back to "waiting on a dependency that
+	// can never complete" — stranded exactly as if AllowPartial did not exist.
+	restoreKeyAllowPartial   = "allow_partial"
+	restoreKeyDegradedInputs = "degraded_inputs"
 	restoreKeyCreatedAt      = "created_at"
 	restoreKeyCheckpointJSON = "checkpoint_json"
 	// restoreKeyFailedDependency names the predecessor whose terminal failure
@@ -247,6 +253,7 @@ func (f *Fabric) foldRestoreEvent(ev *ares_events.Event) error {
 		// budget itself: without it a restored task would compute an immediate
 		// (or unescalated) retry for its next failure.
 		foldRetryScheduling(p, t)
+		foldDegradation(p, t)
 		if s, ok := p[restoreKeyCreatedAt].(string); ok {
 			if ts, err := time.Parse(time.RFC3339, s); err == nil {
 				t.CreatedAt = ts
@@ -293,6 +300,7 @@ func (f *Fabric) foldRestoreEvent(ev *ares_events.Event) error {
 		// must-persist carrier, so folding it here is what keeps a pending
 		// backoff pending across a restart instead of letting it retry early.
 		foldRetryScheduling(p, t)
+		foldDegradation(p, t)
 		// Cascade provenance is durable: a task that was failed by a
 		// predecessor's cascade must stay distinguishable after a restart.
 		if fd := restoreString(p, restoreKeyFailedDependency); fd != "" {
@@ -372,6 +380,37 @@ func foldRetryScheduling(p map[string]any, t *Task) {
 			t.NextAttemptAt = ts
 		}
 	}
+}
+
+// foldDegradation folds the AllowPartial policy and the recorded degraded inputs
+// out of a payload. Both fold branches call it: the policy rides the creation
+// event (like the retry budget), the gaps ride the cascade's task.checkpointed
+// event.
+func foldDegradation(p map[string]any, t *Task) {
+	if restoreBool(p, restoreKeyAllowPartial) {
+		t.AllowPartial = true
+	}
+	// Degraded inputs may arrive as []string (in-process store) or []any (JSON
+	// round-tripped store) — accept both, like Dependencies. Each payload carries
+	// the full list, so this REPLACES rather than appends.
+	switch gaps := p[restoreKeyDegradedInputs].(type) {
+	case []string:
+		t.DegradedInputs = append([]string(nil), gaps...)
+	case []any:
+		out := make([]string, 0, len(gaps))
+		for _, g := range gaps {
+			if s, ok := g.(string); ok {
+				out = append(out, s)
+			}
+		}
+		t.DegradedInputs = out
+	}
+}
+
+// restoreBool extracts a boolean payload field (false when absent/wrong type).
+func restoreBool(p map[string]any, key string) bool {
+	b, _ := p[key].(bool)
+	return b
 }
 
 // restoreString extracts a string payload field ("" when absent/wrong type).

@@ -1,4 +1,4 @@
-# ARES System Internals (v0.3.2)
+# ARES System Internals (v0.3.3)
 
 > A reference walkthrough of how the ARES (goagent) v0.3.x AgentOS works,
 > covering 15 core modules, each with a Mermaid diagram and source
@@ -46,6 +46,9 @@
 20. [SDK / CLI Usage](#20-sdk--cli-usage)
 21. [Security Model (SSRF / sandbox / tenant boundaries)](#21-security-model)
 22. [Where ReAct Went: Dynamic DAG and the Think-Do-Evolve Layers](#22-where-react-went-dynamic-dag-and-the-think-do-evolve-layers)
+23. [L1 / L2 Dual Graphs & Data Splitting (Postgres / pgvector)](#23-l1--l2-dual-graphs--data-splitting)
+24. [Retrieval Denoising (Vector-Search Noise and How to Fight It)](#24-retrieval-denoising)
+25. [Checkpoint & Recovery (fields + 7 steps + two modes)](#25-checkpoint--recovery)
 
 ---
 
@@ -232,6 +235,44 @@ ares/root    -> rootCognition    (session admission, zero work)
 
 **"Grow-as-you-go" decomposition**: each tool node becomes a new fabric task
 back in the drain; the `answer` node completing = session ends.
+
+### 4.1 Failure semantics (0.3.3)
+
+A failure is three decisions, not one event: **is it worth retrying**, **when**,
+and **what happens to everything downstream**.
+
+```mermaid
+flowchart TD
+    fail[Fail: cause + budget] --> cls{classifyFailure}
+    cls -- permanent --> term[FAILED: terminal, no requeue]
+    cls -- retryable --> budget{budget left?}
+    budget -- no --> term
+    budget -- yes --> ready[READY at NextAttemptAt = now + backoff]
+    term --> casc{cascade READY dependents}
+    casc -- AllowPartial --> deg[stay READY, record the gap]
+    casc -- strict --> kill[their own task.failed, transitive]
+```
+
+| Decision | Where | Rule |
+|---|---|---|
+| Retryable? | `classifyFailure` | `internal/fabric/task/failure.go:77` — explicit markers win (`MarkPermanent` / `MarkRetryable`: the producing layer knows best), a cause past the task's deadline is terminal, and **everything else is retryable**, exactly as in 0.3.2 (a bare `context.DeadlineExceeded` included). The verdict is recorded as `retryable` on the `task.failed` event, so "why did it try again" is answerable from the log alone. |
+| When? | `Fail` | `internal/fabric/task/fabric_lifecycle.go:242` — requeue only when the cause is retryable **and** budget remains. `BackoffBase` is the first delay and doubles per attempt, capped by `BackoffMax` (`internal/fabric/task/backoff.go:19`); unset means an immediate requeue, which is 0.3.2's behaviour. A waiting task is hidden from `ReadyTasks`/`ResumableTasks` and refused by `Acquire`, and `NextAttemptAt` is persisted, so a restart cannot make it retry early. |
+| Downstream? | `cascadeFailureLocked` | `internal/fabric/task/dag.go:160` — a terminal failure fails every transitive READY dependent, unless that dependent opted into `AllowPartial`: it stays READY with the failed predecessor recorded in `DegradedInputs`. That record is what unlocks it (`dependencySatisfied`, `internal/fabric/task/dag.go:113`): only recorded gaps count, so a second dependency that is still running keeps blocking. |
+
+**A deadline is not a lease expiry.** An expired lease means the execution rights
+lapsed: the task returns to READY and a replacement may resume it from its
+checkpoint (§12). `Task.Deadline` is an absolute cut-off — `ExpireDeadlines`
+(`internal/fabric/task/fabric_lifecycle.go:436`) takes it to terminal FAILED
+through its own path (never requeued, even with budget left) and cascades, and
+`Acquire` refuses a task whose deadline has already passed, so nothing can be
+granted in the gap before the sweep runs.
+
+**Partial input is declared, not inferred.** A degraded task carries
+`degraded_inputs` (the missing predecessor ids) in its checkpoint payload and on
+its `task.ready` event, so a reader can tell "not checked" from "checked, nothing
+found". The reason is deliberately *not* copied: the failed task's `LastError` and
+`task.failed` event stay the single source of truth, and the id is the stable key
+to follow back.
 
 ---
 
@@ -551,6 +592,11 @@ sequenceDiagram
 
 **Storm prevention**: a restart budget (lifetime-cumulative, success does not
 refund the count) + exponential backoff.
+
+**Deadlines are not lease expiries**: everything above is about *execution
+rights* lapsing, and a task recovered here resumes with its budget spent but its
+retry budget intact. A passed `Task.Deadline` is a different cut-off — terminal,
+never requeued by this sweep (see §4.1).
 
 | Stage | Function | Source |
 |---|---|---|
@@ -979,10 +1025,10 @@ flowchart TB
 
 | ReAct (0.2.x) | Replacement (0.3.x) | Source |
 |---|---|---|
-| one cognition's `LLM→tool→LLM` tight loop | **plannerCognition**: one LLM call per quantum, grows tool calls as nodes, does not execute | `planner_cognition.go:76` |
+| one cognition's `LLM→tool→LLM` tight loop | **plannerCognition**: one LLM call per quantum, grows tool calls as nodes, does not execute | `planner_cognition.go:84` |
 | tools run inside the cognition | **toolCognition**: a tool node is a first-class fabric task, executed by the scheduler | `internal/fabric/agent/l2graph.go` |
-| unbounded, LLM runs as long as it wants | **maxPlanDepth** (default 10) forces convergence | `planner_cognition.go:24` |
-| loop state = in-memory Messages, lost on crash | state = L2 graph + fabric tasks (durable), checkpoint-resume | see §6 |
+| unbounded, LLM runs as long as it wants | **maxPlanDepth** (default 10) forces convergence | `planner_cognition.go:25` |
+| loop state = in-memory Messages, lost on crash | tasks + `CheckpointEnvelope` are durable (checkpoint-resume); the **L2 graph itself is in-process only** — after a restart the session is re-admitted with a freshly built (empty) graph | see §6, §25.1 |
 
 ### 22.3 What "dynamic" actually means (grow-as-you-go)
 
@@ -1022,14 +1068,15 @@ flowchart TB
 | Complexity explosion | ReAct is one loop; 0.3.x is planner + L2 graph + incremental compile + scheduler + toolCognition + checkpoint |
 | More latency | tool results must "go into the fabric → next plan quantum reads", several hops more than ReAct's immediate feed-back; **unfriendly to rapid trial-and-error** |
 | Token cost | every plan quantum re-assembles context and re-calls the LLM, burning more than ReAct |
-| Wiring fragility | `PlannerDeps` needs 7 deps (`planner_cognition.go:60`); miss any and it degrades |
+| Wiring fragility | `PlannerDeps` has 9 fields (`planner_cognition.go:31`); miss any and it degrades |
 
 ### 22.5 There is also an "outer round" (evolution)
 
-`LoopConfig` (`internal/runtime/loop.go:13`, comment verbatim: "Unlike a fixed
-ReAct loop, drives the outer round loop that re-executes the entire DAG with
-mutations applied between rounds"). This is what the GA cold path uses — **a
-mutation is injected between rounds, then the whole DAG is re-executed**.
+`LoopConfig` (`internal/runtime/loop.go:11`; the verbatim comment sits at `:8`:
+"Unlike a fixed ReAct loop, drives the outer round loop that re-executes the
+entire DAG with mutations applied between rounds"). This is what the GA cold
+path uses — **a mutation is injected between rounds, then the whole DAG is
+re-executed**.
 
 So the full replacement = **planner (think) + scheduler/toolCognition (do) +
 the outer round loop (evolve): three pieces together**.
@@ -1043,6 +1090,213 @@ the outer round loop (evolve): three pieces together**.
 > goals (resilience, evolvability, multi-agent collaboration); but used for
 > "single-agent real-time interactive trial-and-error" it is heavier, slower,
 > and more token-hungry than classic ReAct.
+
+---
+
+## 23. L1 / L2 Dual Graphs & Data Splitting
+
+### 23.1 L1 vs L2: rule layer vs instance layer
+
+The system has **two graphs at different levels**, not "two copies of the
+same kind":
+
+| | L1 ToolClass graph (`injectToolClassDAG`) | L2 session graph (`L2Graph` / `MutableDAG`) |
+|---|---|---|
+| Node is | a **tool class** (grep, web_search…) | a **tool instance** (3rd grep of this session) |
+| Built by | boot scan of `toolBinder.GetToolSchemas()` | LLM grows it **live** in planner quanta |
+| Carries | `enabled`/`budget`/`prior` metadata | `payload` / dependency edges / results |
+| Lifetime | shared system-wide, long-stable | one per session, reaped at session end |
+| Changed by | **GA evolution** (patch on metadata) | **LLM** (grow nodes while running) |
+| Compiled to tasks? | **No** (constraint catalog only) | **Yes** → fabric tasks, run by the scheduler |
+
+Source: L1 built at `cmd/ares/serve_peer.go:515`; L2 at
+`internal/fabric/agent/l2graph.go`; the L1→L2 gating in
+`planner_cognition.go growToolNodes` (checks `isToolEnabled` /
+`toolBudgetRemaining` / `l1Priors` before growing a node).
+
+**L1 sets the rules, L2 produces the instances.** The cleanest proof:
+`budget=N` sits on an L1 tool-class node; when the planner grows an L2 node it
+calls `CountToolClass` to count "how many instances of this class this L2
+session already has", blocking past N — **the rule lives in L1, the counted
+instances live in L2.**
+
+### 23.2 Why two graphs are mandatory (three breaks with one)
+
+```mermaid
+flowchart TB
+    one[If L1/L2 were one graph] --> a[sharing: the catalog is copied per session]
+    one --> b[evolution safety: a GA patch to 'rules'<br/>would corrupt in-flight session work-orders]
+    one --> c[update cadence: stable(evolved) vs volatile(LLM-grown)<br/>in one object, locks/versions/rebuild all clash]
+```
+
+1. **Sharing**: the tool catalog is naturally "one for the whole system"; mix it
+   with session work-orders and every session gets a copy.
+2. **Evolution safety**: GA patches L1 metadata; **in-flight L2 sessions are
+   unaffected** (their nodes are already grown; the patch only governs
+   "next time").
+3. **Cadence**: L1 is stable (occasionally evolved), L2 is volatile
+   (growing every quantum). One object = broken locking.
+
+> Analogy: a DB schema (table structure) is never the same thing as its rows
+> — L1 is the schema, L2 is the rows.
+
+### 23.3 Data splitting: structured vs semantic (Postgres / pgvector)
+
+| Data class | Where | Why |
+|---|---|---|
+| **Structured**: task state machine, lease/epoch, checkpoints, event ledger | Postgres tables — **only when `storage` is enabled**; otherwise the event store falls back to an in-memory archive (`cmd/ares/serve_wiring.go:338`) | needs transactions, exact queries, event sourcing, multi-node sharing |
+| **Semantic**: knowledge objects, distilled experiences (Problem/Solution/Constraints) | pgvector columns (`VECTOR(1024)`) | needs recall by *meaning*, not by word |
+
+Agent-fabric runtime state (the agent population, `CognitiveState`) is
+**process-local**, not in Postgres: the `agent_checkpoints` table exists, but
+`migrate.go:128` notes it currently has **no production query**.
+
+"Same Postgres + pgvector instance" is deliberate: relational data
+(experience rows) + vectors (`embedding` column) live in **one DB, one
+transaction** — no separate Milvus/Pinecone. Multi-node clusters share one
+PG. (`migrate.go:97` creates the generic `embeddings` table as
+`VECTOR(1024)`; the real pgvector tables are `knowledge_chunks_1024` /
+`experiences_1024`, whose `ivfflat` indexes live in `migrate_storage.go:72`.)
+
+---
+
+## 24. Retrieval Denoising
+
+Vector search gets **noisier as data grows** — four sources:
+
+```mermaid
+flowchart LR
+    q[query vector] --> n1[1 curse of dimensionality<br/>tens of thousands cluster in cosine 0.7~0.9, no separation]
+    q --> n2[2 ivfflat approximate index<br/>scans only the nearest 'buckets', misses/mixes]
+    q --> n3[3 long-tail cold data<br/>short/vague/low-quality vectors]
+    q --> n4[4 pure cosine, no rerank<br/>can't tell 'title near but content wrong']
+```
+
+### 24.1 What the project actually does (source-backed)
+
+| Technique | Fixes | Source |
+|---|---|---|
+| Hard filter first (`WHERE tenant_id AND embedding IS NOT NULL`) | ①③ | `internal/storage/postgres/vector.go:91` |
+| **HybridSearch** (vector cosine + lexical keyword, fused) | ①④ | `internal/knowledge/store.go:55` |
+| TopK + MinScore gates (default `RAGTopK:5 / MinScore:0.4`) | ①③ | `internal/runtime/memory/manager.go:411-412` |
+| Quality metadata in scoring (Extraction/Consistency/Freshness/Usage) | ③ | `internal/knowledge/object.go:96` (weights in `quality.go:31`) |
+| Experience dedup / conflict merge (similarity threshold) | ③ | `internal/runtime/memory/experience/conflict_resolver.go:15` |
+
+**What it does NOT do (the highest-value gap)**: a **model-based** second pass
+— there is no cross-encoder / learned reranker anywhere in the tree. What does
+exist is *heuristic* re-weighting, not semantic re-ranking:
+`internal/storage/postgres/services/retrieval_search.go:652 rerankResults`
+(plus `:598 mergeAndRerank`).
+
+### 24.2 The right denoising posture at scale (wide recall + precise rank)
+
+```mermaid
+flowchart LR
+    q[query] --> r1[1 wide recall<br/>vector/hybrid top-50<br/>better to over-include]
+    r1 --> r2[2 precise rank (rerank)<br/>cross-encoder scores each pair<br/>or an LLM decides 'which are truly relevant']
+    r2 --> top[3 take top-5 to inject]
+```
+
+Plus three (by cost-effectiveness):
+
+1. **ivfflat → tune probes, or switch to HNSW** (ivfflat recall degrades at
+   scale; HNSW is higher, at the cost of memory + build time)
+2. **metadata pre-filter**: narrow by type/time-window/tags/capability-domain
+   before recall — cheaper than post-hoc rerank
+3. **embedding versioning + full re-embed**: on model upgrade, the
+   `embedding_version` column re-embeds old vectors to the new version
+
+> Interview one-liner: "At scale I denoise in three layers — **before**
+> recall: hard filter + pre-filter; **during**: hybrid retrieval
+> (vector + keyword); **after**: wide recall top-50 + cross-encoder rerank to
+> top-5 + quality/freshness weighting."
+>
+> **Keep the tenses straight when you use this line**: the project *today* is
+> `ivfflat(lists=100)` + *heuristic* re-weighting. HNSW + cross-encoder is
+> where it should go, not what it does — say "I'd move it to HNSW" and you
+> stay defensible.
+
+---
+
+## 25. Checkpoint & Recovery
+
+### 25.1 Two layers of "memory" (the first follow-up question)
+
+| Layer | Stored in | What | Plain |
+|---|---|---|---|
+| **Task progress** | `Task.Checkpoint` (fabric ledger, durable) | `CheckpointEnvelope` | "how far the task got" |
+| **Agent brain** | `CognitiveState` (the agent's own state) | LLM context + tool-call history | "what's in this agent's head" |
+
+### 25.2 `CheckpointEnvelope` field table (`checkpoint_schema.go`, SchemaVersion=v5)
+
+| Field | What it does | Note |
+|---|---|---|
+| `SchemaVersion` | format version (v5) | a rollback must not force-read a newer version |
+| `StepCheckpoint` | **quantum progress** (nil = not run yet) | the core field; the resume landing point |
+| `Payload` | task's raw data (task_desc) | "what the task is" |
+| `SessionID` / `TenantID` | owning session / tenant | stable across yield→resume; restored into tenantctx at exec |
+| `StrategyID` | GA strategy at SUBMIT time | **stamped once, never re-read** (attribution is task-granular; a mid-flight promote must not mis-credit the new strategy) |
+| `UsedExperienceID` | which distilled experience was borrowed | bandit-feedback linkage |
+| `InputTokens` / `OutputTokens` | **cumulative** LLM token spend | accumulated across quanta (not the last step); GA sees total task cost |
+| `LastError` | "why it died" on terminal FAILED | agent death does NOT set this (that's `Task.FailedDependency`) |
+| `UserProfile` | extra user profile (opaque to fabric) | the executor restores it |
+
+### 25.3 Agent recovery: in-place revival (7 steps inside `aresrecovery.RestartAgent`)
+
+Loading the death snapshot, binding task-X and resuming from `StepCheckpoint`
+happen **outside** `RestartAgent` — in the caller (`runKernelRecoveryLoop`,
+`cmd/ares/kernel_loop.go:336`) and in the scheduler.
+
+```mermaid
+sequenceDiagram
+    participant S as Scheduler
+    participant R as Recovery (RestartAgent)
+    participant F as AgentFabric
+    participant B as Agent B(replacement)
+    S->>R: agent A is gone, task-X still RUNNING
+    R->>R: 1 check restartBudget (lifetime-cumulative, default 5; a successful revival does not reset it)
+    alt over budget
+        R--xS: refuse; task-X FAILED
+    else within budget
+        R->>R: 2 atomic reserve (claim the slot, then sleep)
+        R->>R: 3 exponential backoff (1s, 2s, 4s ... 30s cap)
+        R->>R: 4 same-ID arbitration (one reviver wins)
+        R->>F: 5 spawn B via CognitionFactory (a real cognition, not an empty shell)
+        F->>B: 6 load A's CognitiveState into B
+        R->>R: 7 release the death snapshot
+    end
+    S->>B: caller side (NOT in RestartAgent): bind task-X, resume from StepCheckpoint
+```
+
+| Step | Key point | Source |
+|---|---|---|
+| budget check (lifetime-cumulative) | "5 total", not "5 consecutive" — prevents the reset-loop | `recovery.go:277` |
+| atomic reserve | check+increment in one shot; claim the slot before the sleep | `recovery.go:283` |
+| exponential backoff | prevents a crash-restart storm | `recovery.go:310` |
+| same-ID arbitration | death snapshot drives same-ID in-place revival; provenance/audit continuous | `recovery.go:326` |
+| spawn via CognitionFactory | builds a "real cognition", not an empty shell | `recovery.go:151` |
+| load the brain | A's LLM context/tool history moves into B | `recovery.go:340` |
+| bind + resume (**caller side**) | *not* in `RestartAgent`: `runKernelRecoveryLoop` binds task-X, the scheduler resumes from `StepCheckpoint` | `kernel_loop.go:336` |
+
+> `RecoverTaskCheckpoint` (`recovery.go:193`) and `RecoverFromAgentDeath`
+> (`recovery.go:371`) are marked TEST/CHAOS-ONLY; `RestartAgent` is the
+> production path.
+
+### 25.4 Two recovery modes
+
+| Mode | Trigger | Result |
+|---|---|---|
+| **requeue (swap-in)** | lease expiry → task back to READY → scheduler assigns another agent | new agent resumes from `Task.Checkpoint`; **does not necessarily reuse A's brain** |
+| **in-place revival (RestartAgent)** | agent panic / chaos kill → recovery finds a death snapshot | **same-ID revival**; A's brain (CognitiveState) is moved into a "new body" |
+
+**requeue is the default path; in-place revival is the enhanced path**
+(only when a death snapshot exists).
+
+> One-liner: lease expiry just **requeues the task to swap in a new holder**
+> (it does not kill the task); the lease guard rejects the old holder's late
+> writes — **`ErrNotOwner` once it no longer holds the lease, and
+> `ErrEpochMismatch` when it still holds it at a stale epoch** — so at any
+> instant there is exactly one valid writer.
 
 ---
 

@@ -5,6 +5,46 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.3] - Unreleased
+
+Task execution becomes explainable and selectively tolerant: a failure carries a
+retry verdict, retries can back off, and a task can opt into running with a
+recorded input gap instead of being killed by a failed dependency. Tasks that use
+none of this execute and persist exactly as before — pinned by
+`TestDefaultPathPayloadHasNoNewKeys`.
+
+### Added
+
+- **Failure classification** (`internal/fabric/task/failure.go`): `Fail`
+  classifies the cause, records `retryable` on the `task.failed` event, and
+  requeues only when the cause is retryable AND the budget allows it — previously
+  any failure with budget left was requeued. Unclassified causes fall back to
+  retryable, so a misclassification costs a retry rather than a task.
+
+- **Task deadlines** (`Task.Deadline`, `Fabric.ExpireDeadlines`): a deadline is
+  an absolute cut-off enforced through its own terminal path (`task.failed` with
+  `ErrTaskDeadlineExceeded`, then the normal cascade) rather than through `Fail`,
+  which would have pushed an expired task back into READY while a retry budget
+  remained. `Acquire` refuses a task whose deadline has already passed, closing
+  the window between expiry and the recovery tick.
+
+- **Retry backoff** (`BackoffBase` / `BackoffMax` / `NextAttemptAt`): the delay
+  before the first retry doubles per attempt, capped by `BackoffMax` and computed
+  so a huge attempt count saturates instead of overflowing. A waiting task is
+  hidden from `ReadyTasks`/`ResumableTasks` and refused by `Acquire`, and its due
+  time is persisted, so a restart cannot make it retry early. A zero `BackoffBase`
+  keeps the previous immediate requeue.
+
+- **Partial input** (`AllowPartial` + `DegradedInputs`): a task that opts in is
+  no longer failed by the cascade when a dependency dies permanently. The failed
+  predecessor is recorded as a gap, and that record is what unblocks scheduling —
+  so a second dependency still outstanding keeps blocking, and strict tasks
+  cascade exactly as before. The gap is exposed as `degraded_inputs` in the
+  task's checkpoint payload and on its `task.ready` event; the failure reason is
+  deliberately not copied, because the failed task's own `LastError` and
+  `task.failed` event stay the single source of truth. `PlanStep.AllowPartial`,
+  `.BackoffBase` and `.BackoffMax` carry the policy into a compiled plan.
+
 ## [0.3.2] - 2026-10-09
 
 ### Added

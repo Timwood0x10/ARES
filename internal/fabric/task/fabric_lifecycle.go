@@ -67,6 +67,14 @@ func (f *Fabric) createLocked(t *Task, strategyID string, pending *[]*pendingApp
 // concurrent or repeated acquire is rejected, so two agents competing for the
 // same task see exactly one winner.
 //
+// It also enforces the two time-based constraints, because it is a public grant
+// point: a passed deadline (ErrTaskDeadlineExceeded) and an unserved retry
+// backoff (ErrTaskNotReady) refuse the lease, closing the gap between a sweep and
+// the grant. Dependencies are deliberately NOT checked here — "what may run" is
+// the scheduler's question (ResumableTasks/ReadyTasks go through
+// dependencySatisfied), and Acquire stays the ownership claim so callers such as
+// recovery can re-acquire a task without re-litigating its DAG position.
+//
 // Args:
 //   - id: the task id.
 //   - agentID: the acquiring agent.
@@ -75,7 +83,7 @@ func (f *Fabric) createLocked(t *Task, strategyID string, pending *[]*pendingApp
 // Returns:
 //   - uint64: the fencing token (lease epoch) the agent must present on every
 //     subsequent ownership-carrying operation.
-//   - error: ErrTaskNotFound / ErrTaskNotReady.
+//   - error: ErrTaskNotFound / ErrTaskNotReady / ErrTaskDeadlineExceeded.
 func (f *Fabric) Acquire(id, agentID string, ttl time.Duration) (uint64, error) {
 	pending := make([]*pendingAppend, 0, 1)
 	f.mu.Lock()

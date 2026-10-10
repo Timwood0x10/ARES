@@ -2,6 +2,7 @@ package taskfabric
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 )
 
@@ -42,6 +43,65 @@ func (f *Fabric) SetDependencies(id string, deps []string) error {
 	t.Dependencies = append([]string(nil), deps...)
 	pending = append(pending, f.recordLocked(t, EventTaskUpdated))
 	return nil
+}
+
+// payloadKeyDegradedInputs is the output-contract key carrying the ids of the
+// predecessors a task ran without (plan §3.3 ④). One concept, one wire name: it
+// matches restoreKeyDegradedInputs, which carries the same list on the event
+// payload that a restart folds.
+const payloadKeyDegradedInputs = "degraded_inputs"
+
+// recordDegradedInputLocked marks missing as an input the dependent is
+// proceeding without. It is the AllowPartial branch's whole action: the task
+// stays READY, the gap is recorded durably, and scheduling is unlocked because
+// dependencySatisfied accepts exactly the ids recorded here.
+//
+// The event is task.checkpointed rather than task.updated on purpose:
+// task.updated is observability-only and is never folded by RestoreFromStore, so
+// a gap recorded through it would be forgotten by a restart — re-stranding the
+// very task the cascade just unblocked.
+//
+// Returns true when the gap was newly recorded, false when it was already known
+// (the cascade can reach one dependent through two failed predecessors).
+// Callers must hold f.mu.
+func (f *Fabric) recordDegradedInputLocked(t *Task, missing string, pending *[]*pendingAppend) bool {
+	if slices.Contains(t.DegradedInputs, missing) {
+		return false
+	}
+	t.DegradedInputs = append(t.DegradedInputs, missing)
+	f.mirrorDegradedInputsLocked(t)
+	*pending = append(*pending, f.recordLocked(t, EventTaskCheckpointed))
+	// task.ready carries the gap too: the event stream alone must distinguish
+	// "waiting on a retry", "waiting on a dependency" and "runnable with a hole
+	// in its input".
+	*pending = append(*pending, f.recordWithExtrasLocked(t, EventTaskReady, map[string]any{
+		restoreKeyDegradedInputs: append([]string(nil), t.DegradedInputs...),
+	}))
+	return true
+}
+
+// mirrorDegradedInputsLocked writes t.DegradedInputs into the task's checkpoint
+// payload under degraded_inputs, so whoever consumes this task's output can tell
+// "not checked" from "checked, nothing found" (ADR-1 option (a)). It reuses the
+// same decode → patch → encode path as UpdatePayload, so every other envelope
+// field (StrategyID, SessionID, StepCheckpoint) survives; a task with no
+// envelope gets one, because the gap IS checkpoint content.
+//
+// The mirror is best-effort: DegradedInputs and the event log stay the
+// authoritative record, so an undecodable envelope is logged rather than
+// failing the cascade.
+func (f *Fabric) mirrorDegradedInputsLocked(t *Task) {
+	dc, err := DecodeCheckpoint(t.Checkpoint)
+	if err != nil {
+		log.Warn("taskfabric: cannot mirror degraded_inputs into payload",
+			"task", t.ID, "error", err)
+		return
+	}
+	if dc.Payload == nil {
+		dc.Payload = make(map[string]any, 1)
+	}
+	dc.Payload[payloadKeyDegradedInputs] = append([]string(nil), t.DegradedInputs...)
+	t.Checkpoint = EncodeCheckpoint(dc)
 }
 
 // UpdatePayload replaces the Payload inside a task's checkpoint envelope
@@ -128,7 +188,7 @@ func (f *Fabric) Dependents(id string) []string {
 // ReferencedDependencies returns the set of every task id that appears in at
 // least one other task's Dependencies — the union of the dependency graph's
 // "targets". Housekeeping sweeps (the reaper) use it to avoid deleting a
-// terminal task that live tasks still reference: depsCompletedLocked treats
+// terminal task that live tasks still reference: depsSatisfiedLocked treats
 // a missing dependency as unsatisfied forever, so deleting a referenced
 // predecessor would strand its dependents permanently. One O(n·d) pass under
 // a single lock instead of a per-candidate Dependents scan.

@@ -1,5 +1,7 @@
 package taskfabric
 
+import "slices"
+
 // IsReady reports whether a task's dependencies are all satisfied — every
 // dependency task is COMPLETED — and the task itself is currently READY.
 // This is the DAG-as-scheduling-source primitive (design of
@@ -24,7 +26,7 @@ func (f *Fabric) IsReady(id string) (bool, error) {
 	if t.State != StateReady {
 		return false, nil
 	}
-	return depsCompletedLocked(f.tasks, t.Dependencies), nil
+	return depsSatisfiedLocked(f.tasks, t), nil
 }
 
 // ReadyTasks returns the ids of every task whose dependencies are satisfied
@@ -45,7 +47,7 @@ func (f *Fabric) ReadyTasks() []string {
 		if !f.retryDueLocked(t) {
 			continue
 		}
-		if depsCompletedLocked(f.tasks, t.Dependencies) {
+		if depsSatisfiedLocked(f.tasks, t) {
 			out = append(out, id)
 		}
 	}
@@ -75,7 +77,7 @@ func (f *Fabric) ResumableTasks() []string {
 			if !f.retryDueLocked(t) {
 				continue
 			}
-			if depsCompletedLocked(f.tasks, t.Dependencies) {
+			if depsSatisfiedLocked(f.tasks, t) {
 				out = append(out, id)
 			}
 		case StateSuspended:
@@ -94,12 +96,39 @@ func (f *Fabric) retryDueLocked(t *Task) bool {
 	return t.NextAttemptAt.IsZero() || !t.NextAttemptAt.After(f.now())
 }
 
-// depsCompletedLocked reports whether every dependency task exists and is
-// COMPLETED. Caller must hold f.mu.
-func depsCompletedLocked(tasks map[string]*Task, deps []string) bool {
-	for _, dep := range deps {
+// dependencySatisfied reports whether one dependency is satisfied for the given
+// dependent. It is the single place the AllowPartial policy is read, and every
+// scheduler-facing query (IsReady, ReadyTasks, ResumableTasks) goes through it,
+// so "let through by the policy" and "handed to a scheduler" are the same
+// question. Acquire deliberately does NOT consult it: Acquire is the CAS
+// ownership claim (state + owner + deadline + backoff), and the scheduler's work
+// source — the thing that decides what may run — is ResumableTasks. Adding a
+// dependency guard there was tried and reverted (2026-10-10): four harnesses
+// drive a specific node directly, which is the contract, not an oversight.
+//
+// The rule: COMPLETED satisfies. A FAILED dependency satisfies only when the
+// dependent opted in AND that exact dependency was recorded as missing (see
+// recordDegradedInputLocked). AllowPartial alone is deliberately not enough: an
+// opted-in task with a second dependency still RUNNING must keep waiting for it.
+func dependencySatisfied(dep, dependent *Task) bool {
+	if dep == nil {
+		return false
+	}
+	if dep.State == StateCompleted {
+		return true
+	}
+	if dependent.AllowPartial && dep.State == StateFailed && slices.Contains(dependent.DegradedInputs, dep.ID) {
+		return true
+	}
+	return false
+}
+
+// depsSatisfiedLocked reports whether every dependency of t exists and is
+// satisfied (see dependencySatisfied). Caller must hold f.mu.
+func depsSatisfiedLocked(tasks map[string]*Task, t *Task) bool {
+	for _, dep := range t.Dependencies {
 		d, ok := tasks[dep]
-		if !ok || d.State != StateCompleted {
+		if !ok || !dependencySatisfied(d, t) {
 			return false
 		}
 	}
@@ -108,11 +137,18 @@ func depsCompletedLocked(tasks map[string]*Task, deps []string) bool {
 
 // cascadeFailureLocked fails every transitive READY dependent of the task
 // that just reached terminal FAILED. A FAILED predecessor can never satisfy
-// depsCompletedLocked again, so leaving its dependents READY would strand the
-// whole downstream subgraph forever: never in ReadyTasks (unschedulable),
-// protected from the reaper (READY is live), and a permanent "round still
-// active" for PlanLoop. Terminal failure therefore propagates — one exhausted
-// root kills the branch that can no longer run.
+// depsSatisfiedLocked again — unless the dependent opted into AllowPartial and
+// recorded the gap — so leaving its dependents READY would strand the whole
+// downstream subgraph forever: never in ReadyTasks (unschedulable), protected
+// from the reaper (READY is live), and a permanent "round still active" for
+// PlanLoop. Terminal failure therefore propagates — one exhausted root kills the
+// branch that can no longer run.
+//
+// An AllowPartial dependent is deliberately NOT killed: it stays READY with the
+// failed predecessor recorded in its DegradedInputs, which is precisely what
+// makes it schedulable (dependencySatisfied). It is also not queued for further
+// cascade — it has not failed, so its own dependents keep waiting for it to
+// complete.
 //
 // Only READY dependents are cascaded. A LEASED/RUNNING/SUSPENDED dependent
 // cannot exist in practice (it could only be acquired while its dependencies
@@ -137,6 +173,13 @@ func (f *Fabric) cascadeFailureLocked(rootID string, pending *[]*pendingAppend) 
 		for _, taskID := range dependents[cur] {
 			t := f.tasks[taskID]
 			if t == nil || t.State != StateReady {
+				continue
+			}
+			if t.AllowPartial {
+				// Declared degradation: record the gap instead of dying. The
+				// task stays READY and becomes schedulable as soon as its
+				// remaining dependencies complete.
+				f.recordDegradedInputLocked(t, cur, pending)
 				continue
 			}
 			if err := t.transition(StateFailed); err != nil {

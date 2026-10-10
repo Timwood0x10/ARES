@@ -482,7 +482,7 @@ graph TD
 | 编号 | 宣称 | 代码真相 |
 |---|---|---|
 | **E1 时间锚** | `Evaluate` 同一时间锚取 shadow 与 baseline | ❌ **没实现**。判决 `delta = shadow - baseline`（`deployment.go:236`），两侧来自 `agg.Window(ctx, 候选ID)` 与 `agg.Window(ctx, 活跃ID)`（`deployment_wiring.go:120/127`），但 `evidence.Filter` 的 `Since/Until` **从不被赋值**（`fitness_aggregator.go:346`），窗口按条数、两次独立 `store.Query`。两处注释（`deployment.go:109-112`、`deployment_wiring.go:88-91`）声称了代码没提供的性质。 |
-| **E2 生产回滚** | 晋升后自动回归回滚 | ❌ **不可达**。`MonitorAndRollback`（`deployment.go:294`）存在且读 `RollbackThreshold`，但**零生产调用方**——全部调用点在 `deployment_test.go`。`deploymentAdapter.Deploy`（`deployment_wiring.go:216`）调完 `dp.Deploy` 就返回。回滚支点不缺（`patch.go` Snapshot/Restore 已就绪），只是没接上。 |
+| **E2 生产回滚** | 晋升后自动回归回滚 | ❌ **不可达**。`MonitorAndRollback`（`deployment.go:294`）存在且读 `RollbackThreshold`，但**零生产调用方**——全部调用点在 `deployment_test.go`。`deploymentAdapter.Deploy`（`deployment_wiring.go:229`）调完 `dp.Deploy` 就返回。回滚支点不缺（`patch.go` Snapshot/Restore 已就绪），只是没接上。 |
 | **E3 StrictMode** | G3 评测门配置完好 | ⚠️ **未配置即放行且无告警**。`StrictMode`（`gate_eval.go:36`）生产从不置真（`eval_gate_wiring.go:113` 只覆盖 `MinScore`）；registry/runner/suite 缺失时 `Check` 返回 `true`（`:135/:176`），跳过计数只进字符串、程序连 logger 都没 import。 |
 
 对应措辞结论（直接引用设计文档）：**不得写"有自动回滚保护"**（E2 未接线）、**不得写"四道门全程有效"**（E3 未配置即放行）。

@@ -144,7 +144,7 @@ func (r *Reaper) scopeFor(taskID string) *reaperScope {
 // and skipped — they finish naturally and become harvestable on the next
 // sweep.
 //
-// Referenced tasks are skipped: depsCompletedLocked treats a missing
+// Referenced tasks are skipped: depsSatisfiedLocked treats a missing
 // dependency as unsatisfied forever, so harvesting a terminal predecessor
 // while another task still lists it in Dependencies would strand that
 // dependent permanently. The skip converges: once the referencing tasks
