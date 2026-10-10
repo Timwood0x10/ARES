@@ -27,11 +27,14 @@ const (
 //	RUNNING → COMPLETED, FAILED, SUSPENDED (yield), READY (preempt/release)
 //	SUSPENDED → LEASED (re-acquire with preserved checkpoint), READY (release)
 //
-// READY → FAILED is only ever taken by the cascade in Fail (a terminal
-// predecessor failed): the task never acquired an owner, so there is no
-// agent that could drive it through RUNNING → FAILED. Without it the
-// downstream subgraph stays READY forever — depsCompletedLocked can never
-// see a COMPLETED predecessor again.
+// READY → FAILED is taken by the cascade in Fail (a terminal predecessor
+// failed): the task never acquired an owner, so there is no agent that could
+// drive it through RUNNING → FAILED. Without it the downstream subgraph stays
+// READY forever — depsCompletedLocked can never see a COMPLETED predecessor
+// again. It is also taken by the deadline sweep (ExpireDeadlines), which stops
+// a READY task that never got an owner in time; the sweep can enter FAILED from
+// any live state for the same reason (the Runtime owns the deadline, not the
+// holder, so no execution right is required).
 func canTransition(from, to TaskState) bool {
 	switch from {
 	case StateReady:

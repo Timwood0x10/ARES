@@ -23,10 +23,26 @@ type Task struct {
 	Checkpoint any
 	// Dependencies are prerequisite task IDs; is_ready = all completed.
 	Dependencies []string
-	// Deadline is the latest acceptable completion time.
+	// Deadline is the latest acceptable completion time. It is enforced by the
+	// fabric, not advisory: ExpireDeadlines fails any live task past it
+	// (terminal, retry budget unspent), and Acquire refuses to grant execution
+	// rights to a task whose deadline already passed. Zero means "no deadline".
 	Deadline time.Time
 	// RetryPolicy carries the retry budget.
 	RetryPolicy RetryPolicy
+	// BackoffBase is the delay before the first retry; every further retry
+	// doubles it, capped by BackoffMax. Zero disables backoff, which keeps a
+	// requeued task immediately runnable — the pre-0.3.3 behaviour, so an
+	// unconfigured task is unaffected by this field existing.
+	BackoffBase time.Duration
+	// BackoffMax caps the doubling of BackoffBase. Zero means "no cap".
+	BackoffMax time.Duration
+	// NextAttemptAt is the earliest instant this task may be granted execution
+	// rights again after a requeue under backoff. Zero means "no delay". It is
+	// scheduling state rather than policy, and is persisted with the retry
+	// budget so a restart cannot make a task retry earlier than the running
+	// fabric intended.
+	NextAttemptAt time.Time
 	// Origin is the agent ID that created the task ("" = root: user-submitted
 	// or system-bootstrapped, no agent caller). It is Kernel-validated: the
 	// create_task syscall stamps the caller from the tool context

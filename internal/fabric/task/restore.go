@@ -34,17 +34,25 @@ import (
 // payload keys written by recordLocked and consumed by foldRestoreEvent.
 // Declared once so goconst stays quiet and the contract is grep-able.
 const (
-	restoreKeyTaskID         = "task_id"
-	restoreKeyAgentID        = "agent_id"
-	restoreKeyOrigin         = "origin"
-	restoreKeyState          = "state"
-	restoreKeyEpoch          = "epoch"
-	restoreKeyCapability     = "capability"
-	restoreKeyPriority       = "priority"
-	restoreKeyDependencies   = "dependencies"
-	restoreKeyDeadline       = "deadline"
-	restoreKeyRetryAttempts  = "retry_attempts"
-	restoreKeyRetryMax       = "retry_max"
+	restoreKeyTaskID        = "task_id"
+	restoreKeyAgentID       = "agent_id"
+	restoreKeyOrigin        = "origin"
+	restoreKeyState         = "state"
+	restoreKeyEpoch         = "epoch"
+	restoreKeyCapability    = "capability"
+	restoreKeyPriority      = "priority"
+	restoreKeyDependencies  = "dependencies"
+	restoreKeyDeadline      = "deadline"
+	restoreKeyRetryAttempts = "retry_attempts"
+	restoreKeyRetryMax      = "retry_max"
+	// Retry scheduling. restoreKeyNextAttemptAt is runtime state (when the
+	// pending retry may run); the two policy keys are what produced it. Both
+	// must be folded back, or a restart would run a backed-off task immediately
+	// and the next failure would lose its escalation. Durations travel as whole
+	// milliseconds (see backoffMillis).
+	restoreKeyNextAttemptAt  = "next_attempt_at"
+	restoreKeyBackoffBaseMS  = "backoff_base_ms"
+	restoreKeyBackoffMaxMS   = "backoff_max_ms"
 	restoreKeyCreatedAt      = "created_at"
 	restoreKeyCheckpointJSON = "checkpoint_json"
 	// restoreKeyFailedDependency names the predecessor whose terminal failure
@@ -235,6 +243,10 @@ func (f *Fabric) foldRestoreEvent(ev *ares_events.Event) error {
 				t.Deadline = ts
 			}
 		}
+		// The retry policy travels with the creation event, like the retry
+		// budget itself: without it a restored task would compute an immediate
+		// (or unescalated) retry for its next failure.
+		foldRetryScheduling(p, t)
 		if s, ok := p[restoreKeyCreatedAt].(string); ok {
 			if ts, err := time.Parse(time.RFC3339, s); err == nil {
 				t.CreatedAt = ts
@@ -277,6 +289,10 @@ func (f *Fabric) foldRestoreEvent(ev *ares_events.Event) error {
 		if n := restoreInt(p, restoreKeyRetryAttempts); n > 0 {
 			t.RetryPolicy.Attempts = n
 		}
+		// Retry scheduling state: the requeue's task.failed event is its
+		// must-persist carrier, so folding it here is what keeps a pending
+		// backoff pending across a restart instead of letting it retry early.
+		foldRetryScheduling(p, t)
 		// Cascade provenance is durable: a task that was failed by a
 		// predecessor's cascade must stay distinguishable after a restart.
 		if fd := restoreString(p, restoreKeyFailedDependency); fd != "" {
@@ -337,6 +353,25 @@ func restoreCheckpoint(p map[string]any, t *Task) error {
 	}
 	t.Checkpoint = decoded
 	return nil
+}
+
+// foldRetryScheduling folds the retry policy and the due time of a pending retry
+// out of a payload. Both fold branches call it: the policy rides the creation
+// event (like the retry budget), the due time rides the requeue's task.failed
+// event. Keeping it out of foldRestoreEvent is also what holds that function
+// under the repo's cyclomatic-complexity gate.
+func foldRetryScheduling(p map[string]any, t *Task) {
+	if ms := restoreInt(p, restoreKeyBackoffBaseMS); ms > 0 {
+		t.BackoffBase = time.Duration(ms) * time.Millisecond
+	}
+	if ms := restoreInt(p, restoreKeyBackoffMaxMS); ms > 0 {
+		t.BackoffMax = time.Duration(ms) * time.Millisecond
+	}
+	if s := restoreString(p, restoreKeyNextAttemptAt); s != "" {
+		if ts, err := time.Parse(time.RFC3339, s); err == nil {
+			t.NextAttemptAt = ts
+		}
+	}
 }
 
 // restoreString extracts a string payload field ("" when absent/wrong type).

@@ -383,6 +383,13 @@ func runKernelRecoveryLoop(
 				return
 			default:
 			}
+			// Deadline expiry runs BEFORE the lease requeue: a task past its
+			// absolute deadline must fail terminally, not be handed to a
+			// replacement executor by the lease path (see ExpireTaskDeadlines).
+			expired := recovery.ExpireTaskDeadlines()
+			if len(expired) > 0 {
+				log.Info("kernel recovery loop: task(s) past deadline failed", "count", len(expired))
+			}
 			// Recovery closed loop: requeue the tasks whose lease expired THIS
 			// sweep (not all READY tasks — a brand-new task is never a
 			// recovery candidate), then give each one an execution body.

@@ -44,6 +44,18 @@ type pendingAppend struct {
 // deferred flushAppends) once unlocked. Returns nil when there is nothing to
 // persist (no store, or an unmapped event type).
 func (f *Fabric) recordLocked(t *Task, typ EventType) *pendingAppend {
+	return f.recordWithExtrasLocked(t, typ, nil)
+}
+
+// recordWithExtrasLocked is recordLocked plus event-payload annotations that
+// describe WHY a transition happened (e.g. whether a failure is retryable).
+// They are event-only: read from the durable event and never folded back into a
+// task on restore, so they need no restore key. Annotations are merged last so
+// they can refine, never replace, the standard payload.
+//
+// Same contract as recordLocked: caller must hold f.mu, no I/O happens here, and
+// the returned pendingAppend must be flushed after unlock.
+func (f *Fabric) recordWithExtrasLocked(t *Task, typ EventType, extras map[string]any) *pendingAppend {
 	ev := TaskEvent{
 		Type:       typ,
 		TaskID:     t.ID,
@@ -146,6 +158,20 @@ func (f *Fabric) recordLocked(t *Task, typ EventType) *pendingAppend {
 		if !t.Deadline.IsZero() {
 			payload[restoreKeyDeadline] = t.Deadline.Format(time.RFC3339)
 		}
+		// Retry scheduling: the due time and the policy that produced it must
+		// survive a restart, otherwise a pending backoff collapses into an
+		// immediate retry and the next failure loses its escalation. Written
+		// only when configured/pending, so the default path keeps its exact
+		// payload.
+		if !t.NextAttemptAt.IsZero() {
+			payload[restoreKeyNextAttemptAt] = t.NextAttemptAt.UTC().Format(time.RFC3339)
+		}
+		if base := backoffMillis(t.BackoffBase); base > 0 {
+			payload[restoreKeyBackoffBaseMS] = base
+		}
+		if max := backoffMillis(t.BackoffMax); max > 0 {
+			payload[restoreKeyBackoffMaxMS] = max
+		}
 		payload[restoreKeyRetryAttempts] = t.RetryPolicy.Attempts
 		payload[restoreKeyRetryMax] = t.RetryPolicy.MaxRetries
 		payload[restoreKeyCreatedAt] = t.CreatedAt.Format(time.RFC3339)
@@ -158,6 +184,10 @@ func (f *Fabric) recordLocked(t *Task, typ EventType) *pendingAppend {
 				log.Error("taskfabric: checkpoint marshal failed (restore will lose progress)", "task_id", t.ID, "error", err)
 			}
 		}
+	}
+	// Caller annotations last: they refine, never replace, the standard payload.
+	for k, v := range extras {
+		payload[k] = v
 	}
 	return &pendingAppend{
 		store:  f.store,

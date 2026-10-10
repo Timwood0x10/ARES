@@ -172,6 +172,15 @@ func (r *Recovery) RequeueExpiredLeases() []string {
 	return r.tasks.CheckExpiredLeases()
 }
 
+// ExpireTaskDeadlines fails every task whose absolute deadline has passed and
+// returns their ids. The kernel recovery sweep calls it BEFORE
+// RequeueExpiredLeases: a task past its deadline must stop (Agent death is a
+// recoverable execution fault, a passed deadline is a task-level stop), so the
+// lease path must not hand it to a replacement executor first.
+func (r *Recovery) ExpireTaskDeadlines() []string {
+	return r.tasks.ExpireDeadlines()
+}
+
 // RecoverTaskCheckpoint resumes a task's preserved checkpoint with a new
 // agent (checkpoint recovery). The task must be in a state where its
 // checkpoint is preserved (SUSPENDED or READY after lease expiry). The

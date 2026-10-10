@@ -30,12 +30,19 @@ func (f *Fabric) IsReady(id string) (bool, error) {
 // ReadyTasks returns the ids of every task whose dependencies are satisfied
 // and that is currently READY — the scheduler's work source. No leader
 // decides "B is done, now run C"; the completed states make C ready.
+//
+// A task waiting out a retry backoff (NextAttemptAt in the future) is excluded:
+// it is READY in state but not runnable yet, and reporting it as ready would
+// hand callers work they cannot acquire.
 func (f *Fabric) ReadyTasks() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	var out []string
 	for id, t := range f.tasks {
 		if t.State != StateReady {
+			continue
+		}
+		if !f.retryDueLocked(t) {
 			continue
 		}
 		if depsCompletedLocked(f.tasks, t.Dependencies) {
@@ -53,6 +60,11 @@ func (f *Fabric) ReadyTasks() []string {
 // are intentionally excluded: the crash-recovery path (CheckExpiredLeases)
 // requeues them to READY, and including them here too would let two drains
 // race the same task.
+//
+// A READY task whose retry backoff has not elapsed is excluded for the same
+// reason ReadyTasks excludes it: the scheduler must not be handed work it cannot
+// acquire. SUSPENDED tasks never carry a backoff (Fail requeues to READY, never
+// to SUSPENDED), so only the READY branch needs the gate.
 func (f *Fabric) ResumableTasks() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -60,6 +72,9 @@ func (f *Fabric) ResumableTasks() []string {
 	for id, t := range f.tasks {
 		switch t.State {
 		case StateReady:
+			if !f.retryDueLocked(t) {
+				continue
+			}
 			if depsCompletedLocked(f.tasks, t.Dependencies) {
 				out = append(out, id)
 			}
@@ -70,6 +85,13 @@ func (f *Fabric) ResumableTasks() []string {
 		}
 	}
 	return out
+}
+
+// retryDueLocked reports whether a requeued task has served its retry backoff.
+// Caller must hold f.mu. A zero NextAttemptAt means "no backoff configured, or
+// none pending", i.e. immediately runnable.
+func (f *Fabric) retryDueLocked(t *Task) bool {
+	return t.NextAttemptAt.IsZero() || !t.NextAttemptAt.After(f.now())
 }
 
 // depsCompletedLocked reports whether every dependency task exists and is

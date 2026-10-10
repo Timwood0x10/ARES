@@ -1,6 +1,7 @@
 package taskfabric
 
 import (
+	"fmt"
 	"time"
 )
 
@@ -89,6 +90,20 @@ func (f *Fabric) Acquire(id, agentID string, ttl time.Duration) (uint64, error) 
 	}
 	if t.State != StateReady && t.State != StateSuspended {
 		return 0, ErrTaskNotReady
+	}
+	if !t.Deadline.IsZero() && f.now().After(t.Deadline) {
+		// Race guard for ExpireDeadlines: the scan runs on the recovery tick, so
+		// a task can pass its deadline between two ticks. Granting it a lease
+		// here would hand out execution rights the deadline has already revoked.
+		return 0, fmt.Errorf("task %s deadline %s passed: %w",
+			t.ID, t.Deadline.UTC().Format(time.RFC3339), ErrTaskDeadlineExceeded)
+	}
+	if !t.NextAttemptAt.IsZero() && t.NextAttemptAt.After(f.now()) {
+		// Backoff guard: the query gates (ReadyTasks/ResumableTasks) already hide
+		// the task, but Acquire is a public grant point, so a direct caller must
+		// not be able to start the retry early either.
+		return 0, fmt.Errorf("task %s is in retry backoff until %s: %w",
+			t.ID, t.NextAttemptAt.UTC().Format(time.RFC3339), ErrTaskNotReady)
 	}
 	f.epoch++
 	// Build the lease on the FABRIC's clock (f.now), not wall time: expiry is
@@ -226,20 +241,64 @@ func (f *Fabric) Fail(id, agentID string, epoch uint64, cause error) error {
 		return err
 	}
 	t.RetryPolicy.Attempts++
-	if t.CanRetry() {
+	// A retry needs BOTH budget and a cause worth retrying: a permanent cause
+	// goes terminal even with budget left (see classifyFailure). Unclassified
+	// causes stay retryable, so tasks that never mark their causes keep 0.3.2
+	// behaviour exactly.
+	retryable := classifyFailure(cause)
+	if retryable && t.CanRetry() {
 		if err := t.transition(StateReady); err != nil {
 			return err
 		}
+		// Schedule the next attempt before recording: task.failed is the
+		// must-persist carrier of NextAttemptAt (task.ready is
+		// observability-only), so the restore fold recovers the due time from it
+		// — a restart must not turn a pending backoff into an immediate retry.
+		// A zero delay leaves NextAttemptAt zero: immediately runnable, exactly
+		// as before backoff existed.
+		t.NextAttemptAt = nextAttemptAt(f.now(), t.RetryPolicy.Attempts, t.BackoffBase, t.BackoffMax)
 		// Record the failure while the failing agent is still attached —
 		// the terminal/requeue event must not lose the actor. Ownership is
 		// cleared only after the event is captured, so the following
 		// task.ready event reflects the unowned task.
-		pending = append(pending, f.recordLocked(t, EventTaskFailed))
+		pending = append(pending, f.failedEventLocked(t, retryable))
 		t.Owner = ""
 		t.Lease = nil
-		pending = append(pending, f.recordLocked(t, EventTaskReady))
+		// task.ready is observability-only (never folded), but it is the event an
+		// operator watches: carrying the due time is what distinguishes "a retry
+		// is scheduled" from "the task is stuck". Absent when no delay applies,
+		// so the default path keeps its exact payload.
+		var readyExtras map[string]any
+		if !t.NextAttemptAt.IsZero() {
+			readyExtras = map[string]any{
+				restoreKeyNextAttemptAt: t.NextAttemptAt.UTC().Format(time.RFC3339),
+			}
+		}
+		pending = append(pending, f.recordWithExtrasLocked(t, EventTaskReady, readyExtras))
 		return nil
 	}
+	return f.failTerminalLocked(t, cause, retryable, &pending)
+}
+
+// failedEventLocked records task.failed carrying the retry classification that
+// produced it, so the event stream alone answers "will this be retried?".
+// Caller must hold f.mu.
+func (f *Fabric) failedEventLocked(t *Task, retryable bool) *pendingAppend {
+	return f.recordWithExtrasLocked(t, EventTaskFailed, map[string]any{
+		payloadKeyRetryable: retryable,
+	})
+}
+
+// failTerminalLocked drives a task to terminal FAILED: transition, stamp the
+// cause into the checkpoint, record the failure, then propagate to the READY
+// dependents that can never run again. It is the single terminal-failure path,
+// shared by Fail and ExpireDeadlines — the latter has no owning agent, so it
+// cannot pass Fail's ownership check.
+//
+// Caller must hold f.mu. Ownership deliberately stays attached (as before the
+// split): the terminal event must identify who held the task, and a FAILED task
+// can no longer be acquired, so the stale lease is inert provenance.
+func (f *Fabric) failTerminalLocked(t *Task, cause error, retryable bool, pending *[]*pendingAppend) error {
 	if err := t.transition(StateFailed); err != nil {
 		return err
 	}
@@ -247,11 +306,11 @@ func (f *Fabric) Fail(id, agentID string, epoch uint64, cause error) error {
 	// readers of the previous envelope stay race-free — the fabric's
 	// documented checkpoint ownership rule.
 	t.Checkpoint = checkpointWithCause(t.Checkpoint, cause)
-	pending = append(pending, f.recordLocked(t, EventTaskFailed))
+	*pending = append(*pending, f.failedEventLocked(t, retryable))
 	// Terminal failure propagates: every transitive READY dependent can never
 	// become schedulable again, so fail it here instead of stranding the
 	// subgraph (see cascadeFailureLocked).
-	f.cascadeFailureLocked(t.ID, &pending)
+	f.cascadeFailureLocked(t.ID, pending)
 	return nil
 }
 
@@ -347,6 +406,52 @@ func (f *Fabric) CheckExpiredLeases() []string {
 		requeued = append(requeued, t.ID)
 	}
 	return requeued
+}
+
+// ExpireDeadlines fails every task whose absolute Deadline has passed,
+// regardless of who holds it, and returns their ids so the recovery sweep can
+// report exactly what it stopped.
+//
+// It deliberately does NOT reuse Fail: Fail begins with ownerLocked, which
+// requires a matching Owner and lease epoch — a READY task has neither, and a
+// LEASED/RUNNING task's lease may already have been requeued by
+// CheckExpiredLeases. A deadline is the Runtime's constraint on the task's
+// lifetime, not an agent's action, so it needs a terminal path that does not
+// depend on holding execution rights (see failTerminalLocked).
+//
+// Two consequences worth keeping in mind:
+//   - The retry budget is not spent: a task past its deadline is not retried,
+//     even while Attempts < MaxRetries.
+//   - Owner/Lease stay attached for provenance; the holder's next
+//     Complete/Yield/Fail is rejected by ownerLocked, so a late writer cannot
+//     race the expiry.
+func (f *Fabric) ExpireDeadlines() []string {
+	pending := make([]*pendingAppend, 0, 1)
+	f.mu.Lock()
+	defer f.flushAppends(&pending)
+	defer f.mu.Unlock()
+	now := f.now()
+	var expired []string
+	for _, t := range f.tasks {
+		if t.Deadline.IsZero() || !now.After(t.Deadline) {
+			continue
+		}
+		// Only live states can be stopped. Terminal tasks are history: their
+		// deadline passing later must not rewrite the outcome.
+		switch t.State {
+		case StateReady, StateLeased, StateRunning, StateSuspended:
+		default:
+			continue
+		}
+		if err := f.failTerminalLocked(t, ErrTaskDeadlineExceeded, false, &pending); err != nil {
+			// An illegal transition means the state moved under us in this
+			// tick (e.g. the holder completed): the deadline no longer applies,
+			// so skip this task instead of failing the whole sweep.
+			continue
+		}
+		expired = append(expired, t.ID)
+	}
+	return expired
 }
 
 // Delete removes a task from the fabric entirely (submitted

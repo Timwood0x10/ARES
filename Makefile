@@ -59,7 +59,7 @@ LINT_CONCURRENCY ?= $(shell echo $$(( $(NPROC) / 2 )))
 ci-lint:
 	@echo "Running golangci-lint..."
 	@if command -v golangci-lint >/dev/null 2>&1; then \
-		golangci-lint run --timeout=10m -j $(LINT_CONCURRENCY); \
+		golangci-lint run --timeout=10m -j $(LINT_CONCURRENCY) && \
 		echo "Linting: OK"; \
 	else \
 		echo "ERROR: golangci-lint not installed. Install with: brew install golangci-lint"; \
