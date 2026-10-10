@@ -9,6 +9,12 @@ on:
 permissions:
   contents: read
 
+# Same one-toolchain policy as ci.yml: Go comes from go.mod, and GOTOOLCHAIN=local
+# fails loudly instead of silently downloading a second toolchain. Keep in sync
+# with ci.yml if the policy changes.
+env:
+  GOTOOLCHAIN: local
+
 jobs:
   # Chaos-recovery e2e: exercises the arena→injector→resurrection wiring. This
   # is the P2 milestone's "fault injection + recovery" gate: it runs on every PR
@@ -24,7 +30,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.26'
+          go-version-file: go.mod
           cache: true
 
       - name: Chaos recovery e2e (arena + runtime resurrection)

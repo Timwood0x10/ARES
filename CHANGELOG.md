@@ -103,7 +103,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   runs the same `-tags=integration` suite), and `ci.yml` stops triggering on
   `master`, a branch that never carried the v0.3.1 release. `make` targets that
   pointed at moved packages (`internal/ares_memory`, `internal/eval`,
-  `internal/integration`, `internal/events`) were repointed too.
+  `internal/integration`, `internal/events`) were repointed too. `cd.yml` now
+  triggers on `main` — it was `master`-only, a branch that never carried the
+  release line, so the image was only ever published from a tag.
+
+- **CI toolchain policy: one Go, pinned tools, no third-party toolchain install**
+  (2026-10-09). Every job now takes its Go from `go.mod` (`go-version-file:`),
+  replacing five hardcoded `go-version: '1.26'` pins and a single-entry matrix —
+  the module declares 1.26.1, so those pins were a standing drift vector — and
+  `GOTOOLCHAIN: local` turns any silent second-toolchain download into a loud
+  failure. The lint job's staticcheck step no longer uses
+  `dominikh/staticcheck-action@v1`, whose default `install-go: true` carried a
+  second Go toolchain (and its own cache) beside setup-go's: the two disagreed on
+  export data and staticcheck died importing the standard library with
+  `internal error in importing "internal/byteorder" (export data version 5 is
+  greater than maximum supported version 4)`. Staticcheck (v0.8.1) and
+  golangci-lint (v2.14.0) are now built by the job's own Go and pinned in the
+  workflow env, so neither can drift with an upstream release; the full lint
+  sequence was re-verified under go1.26.1 (the version go.mod declares).
 
 - **SSRF dial control** names the dialled host instead of printing `<nil>`, and
   the control-layer contract (IP literals are classified by address, hostnames
@@ -126,6 +143,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `arena: score run N: <cause>`, and a bare cancellation is reported only when no
   scorer error was observed; the defect is pinned deterministically by
   `TestRunStrategy_ReportsScorerFailureOverCancellation`.
+
+- **An event burst larger than one page delivers in a single wake-up**: the two
+  subscriber wake-up sources are a LISTEN notification and a 10s fallback tick,
+  and each used to drain exactly one read-limit-sized page — a single `Append` of
+  250 events raises one notification (Postgres collapses identical notifications
+  raised inside one transaction), so pages 2..n waited for the ticker and
+  delivery lagged `(pages-1) × 10s` behind. `drainBacklog` now pages through the
+  backlog inside the wake-up (bounded at `maxPagesPerWake`, stopping at the first
+  short page); a drain that stops on the budget re-arms the loop instead of
+  waiting for the next tick, LISTEN is armed before the initial drain so that
+  drain can no longer delay it, and a context cancellation is no longer reported
+  as a poll failure on shutdown. The burst integration test that stalled at
+  199/250 is pinned by `TestDrainBacklog_MultiPageBurstInOneWakeUp` plus
+  companions covering the page budget, the re-arm signal, the cancellation path
+  and the tied-timestamp window; the dead `lastBatch` field (written, never read)
+  is gone.
 
 ### Removed
 

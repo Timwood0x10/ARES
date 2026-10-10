@@ -179,13 +179,19 @@ lint-vet:
 	@go vet ./...
 	@echo "go vet: PASSED"
 
+# staticcheck's importer cannot read export data written by a Go minor newer
+# than it supports — 2026.2.1 stops at Go 1.26 and fails on a Go 1.27 tree with
+# "export data version 5 is greater than maximum supported version 4" (the exact
+# Lint failure of 2026-10-09). The target therefore runs it under the Go version
+# go.mod declares: the same single toolchain CI uses, so a dev box on a newer Go
+# cannot produce a failure CI would not.
 lint-staticcheck:
 	@echo "Running staticcheck..."
 	@if command -v staticcheck >/dev/null 2>&1; then \
-		staticcheck ./... && \
+		GOTOOLCHAIN="go$$(awk '/^go /{print $$2; exit}' go.mod)" staticcheck ./... && \
 		echo "staticcheck: PASSED"; \
 	else \
-		echo "WARNING: staticcheck not installed. Install with: go install honnef.co/go/tools/cmd/staticcheck@latest"; \
+		echo "WARNING: staticcheck not installed. Install with: go install honnef.co/go/tools/cmd/staticcheck@v0.8.1"; \
 	fi
 
 lint-golangci:

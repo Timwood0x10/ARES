@@ -480,10 +480,11 @@ type pgSubscription struct {
 	cursorID  string
 	delivered map[string]bool // event ids already sent on ch (bounded)
 
-	// lastBatch records the events delivered in the most recent pollOnce
-	// call, so the poll loop can emit latency diagnostics (A6). Empty
-	// when the last poll returned no new events.
-	lastBatch []*Event
+	// lastPageLen records the raw size of the most recent query page, BEFORE
+	// delivered-id filtering. drainBacklog uses it as the "is anything left
+	// behind this page?" signal: a page shorter than defaultEventReadLimit
+	// means the backlog is drained.
+	lastPageLen int
 }
 
 const maxDeliveredIDs = 8192
@@ -518,11 +519,12 @@ func (s *PostgresEventStore) queryEventPage(
 }
 
 // subscribeLoop runs the hybrid LISTEN + poll-fallback event delivery loop.
-// It starts a dedicated LISTEN goroutine on a separate
-// connection and a slow (10s) polling ticker. When LISTEN delivers a
-// notification, the loop immediately runs pollOnce — cutting latency from
-// ~1s to milliseconds. The 10s ticker catches any events that slip through
-// (LISTEN reconnection gap, trigger disabled, etc.).
+// It starts a dedicated LISTEN goroutine on a separate connection and a slow
+// (10s) polling ticker. When LISTEN delivers a notification the loop drains the
+// whole backlog (drainBacklog) rather than a single page, so delivery latency
+// follows the notification instead of the tick. The 10s ticker catches events
+// that slip through a LISTEN gap (reconnection, trigger disabled, etc.) and any
+// pages left over the per-wake-up budget.
 func (s *PostgresEventStore) subscribeLoop(
 	ctx context.Context,
 	filter EventFilter,
@@ -540,19 +542,24 @@ func (s *PostgresEventStore) subscribeLoop(
 		sub.cursor = time.Now()
 	}
 
-	// Immediate poll on startup so events written before Subscribe are
-	// delivered without waiting for the first ticker or LISTEN.
-	if err := pollOnce(ctx, sub, s.queryEventPage); err != nil {
-		log.Error("event subscription initial poll failed", "error", err)
-	}
-
 	// notifyCh receives a signal when LISTEN gets a notification.
 	// CONNECTION NOTE: each Subscribe call opens one dedicated PG connection
 	// for LISTEN (held until ctx cancels). In high-subscriber deployments this
 	// can consume multiple connections from the pool — ensure MaxOpenConns
 	// has headroom, or consider a shared LISTEN broadcaster (future work).
 	notifyCh := make(chan struct{}, 1)
+
+	// LISTEN is armed BEFORE the initial drain: that drain can now cover many
+	// pages and block on a slow consumer, and arming it first would leave a
+	// window with nothing listening — events written in that window would wait
+	// for the 10s fallback tick instead of riding the next notification.
 	go s.listenEvents(ctx, notifyCh)
+
+	// Immediate drain on startup so events written before Subscribe are
+	// delivered without waiting for the first ticker or LISTEN.
+	if err := s.drainAndRearm(ctx, sub, notifyCh); err != nil {
+		log.Error("event subscription initial poll failed", "error", err)
+	}
 
 	// A6: the poll fallback interval is 10s (was 1s pre-LISTEN). LISTEN
 	// handles the common case in milliseconds; the ticker only catches
@@ -565,13 +572,16 @@ func (s *PostgresEventStore) subscribeLoop(
 		case <-ctx.Done():
 			return
 		case <-notifyCh:
-			// LISTEN fired: drain immediately.
-			if err := pollOnce(ctx, sub, s.queryEventPage); err != nil {
+			// LISTEN fired (or a drain re-armed itself): drain the whole
+			// backlog, not just one page — a burst raises a single
+			// notification (see drainBacklog).
+			if err := s.drainAndRearm(ctx, sub, notifyCh); err != nil {
 				log.Error("event subscription poll after LISTEN failed", "error", err)
 			}
 		case <-ticker.C:
-			// Fallback poll.
-			if err := pollOnce(ctx, sub, s.queryEventPage); err != nil {
+			// Fallback drain: catches events that slipped through a LISTEN
+			// gap, plus any pages left over by a stopped consumer.
+			if err := s.drainAndRearm(ctx, sub, notifyCh); err != nil {
 				log.Error("event subscription fallback poll failed", "error", err)
 			}
 		}
@@ -657,6 +667,7 @@ func pollOnce(
 	if err != nil {
 		return err
 	}
+	sub.lastPageLen = len(events)
 
 	var batch []*Event
 	for _, evt := range events {
@@ -673,12 +684,83 @@ func pollOnce(
 
 	sub.markDelivered(batch)
 
-	// A6: record the batch for latency diagnostics in the poll loop.
-	sub.lastBatch = batch
-
 	if nextTS, nextID, ok := nextPollCursor(events); ok {
 		sub.cursor = nextTS
 		sub.cursorID = nextID
+	}
+	return nil
+}
+
+// drainBacklog empties a subscription's backlog within one wake-up: it keeps
+// polling page after page until a page comes back shorter than the read limit
+// (nothing left behind the page tail) or the per-wake-up page budget is spent.
+//
+// This is the latency half of the 1.4 burst fix. Keyset pagination alone
+// (nextPollCursor) made a burst larger than the LIMIT *eventually* deliverable,
+// but only one page per wake-up — and a wake-up happens either on a LISTEN
+// notification or on the 10s fallback tick. A single Append of 250 events
+// raises its notifications inside one transaction, which Postgres collapses
+// into one notification, so pages 2..n had to wait for the ticker: delivery of
+// an N-page burst lagged (N-1)×10s, and the burst integration test stalled at
+// 199 of 250 events (100 from the notification, 99 from the next tick).
+// Draining inside the wake-up makes delivery latency independent of the tick.
+//
+// Returns more=true when it stopped only because the page budget ran out while
+// the last page was still full: rows may remain right now, so the caller should
+// come straight back (drainAndRearm) instead of waiting for the next
+// notification or the 10s tick. A cancelled context is NOT reported as an error
+// — the owning loop leaves through its own ctx.Done case, so surfacing it would
+// log a fake "poll failed" on every shutdown that lands mid-drain.
+func drainBacklog(ctx context.Context, sub *pgSubscription, query eventPageQuery) (bool, error) {
+	for page := 0; page < maxPagesPerWake; page++ {
+		if err := pollOnce(ctx, sub, query); err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return false, nil
+			}
+			return false, err
+		}
+		if sub.lastPageLen < defaultEventReadLimit {
+			return false, nil
+		}
+		if ctx.Err() != nil {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+// maxPagesPerWake bounds how many pages one wake-up drains. Without a bound, a
+// writer sustaining more than a page per notification would keep this loop busy
+// and starve the ctx/notify select that owns it. Rows left over are picked up
+// immediately through rearmNotify, or by the next notification.
+const maxPagesPerWake = 20
+
+// rearmNotify asks the owning loop to come back immediately. It never blocks: a
+// pending notification already means "drain again", so a dropped signal loses
+// nothing.
+func rearmNotify(notifyCh chan struct{}) {
+	select {
+	case notifyCh <- struct{}{}:
+	default:
+	}
+}
+
+// drainAndRearm drains the backlog and, when the per-wake-up page budget ran out
+// with a still-full page, re-arms the wake-up. A single Append raises one LISTEN
+// notification (Postgres collapses identical notifications raised in one
+// transaction), so without the re-arm a burst larger than one budget would still
+// advance a budget per notification — tick-sized steps again.
+func (s *PostgresEventStore) drainAndRearm(
+	ctx context.Context,
+	sub *pgSubscription,
+	notifyCh chan struct{},
+) error {
+	more, err := drainBacklog(ctx, sub, s.queryEventPage)
+	if err != nil {
+		return err
+	}
+	if more && ctx.Err() == nil {
+		rearmNotify(notifyCh)
 	}
 	return nil
 }

@@ -45,6 +45,7 @@
 19. [MCP Integration & Tool Discovery (progressive disclosure)](#19-mcp-integration--tool-discovery)
 20. [SDK / CLI Usage](#20-sdk--cli-usage)
 21. [Security Model (SSRF / sandbox / tenant boundaries)](#21-security-model)
+22. [Where ReAct Went: Dynamic DAG and the Think-Do-Evolve Layers](#22-where-react-went-dynamic-dag-and-the-think-do-evolve-layers)
 
 ---
 
@@ -940,6 +941,108 @@ HITL / MCP / full-app — the living documentation of "how to use the system."
 **The one through-line**: fail closed wherever it can, never trust the LLM or
 the model where the kernel can enforce, and have context stamp every
 tenant / origin / provenance.
+
+---
+
+## 22. Where ReAct Went: Dynamic DAG and the Think-Do-Evolve Layers
+
+v0.3.x **deletes the ReAct tool loop** (many source comments state
+"the ReAct tool loop is deleted" — see `internal/agents/sub/agent.go:55` /
+`internal/fabric/agent/l2graph.go:22`). Its replacement is not "another
+loop" but the **dynamic DAG + splitting "do" into two node kinds + an outer
+evolution round** working together.
+
+### 22.1 A metaphor
+
+| Mode | Metaphor |
+|---|---|
+| **ReAct** | One cook thinks while doing, all in their head; if the cook collapses, the recipe is lost |
+| **Dynamic DAG** | A recipe flow-chart + a line of station cooks; a cook fills one box and hands it off, the head cook watches the chart and assigns work; the chart is a durable asset, the cook is swappable |
+
+### 22.2 "Think" and "Do" are split into two node kinds
+
+ReAct's chain (think→do→think→do) is split into **boxes** on the DAG:
+
+```mermaid
+flowchart TB
+    subgraph think[Think - plannerCognition<br/>the ReAct chatStep replacement]
+        p[each quantum: one LLM call<br/>read predecessor output -> decide which tool nodes to grow<br/>* grows nodes only, never executes tools]
+    end
+    subgraph do[Do - scheduler + toolCognition]
+        s[tool node -> compiled to a fabric task]
+        s --> d[scheduler drains -> assigned to a capable agent]
+        d --> tc[toolCognition runs a single tool]
+    end
+    p -->|grow nodes into the L2 graph| s
+    tc -->|result stored in the fabric envelope| p
+```
+
+| ReAct (0.2.x) | Replacement (0.3.x) | Source |
+|---|---|---|
+| one cognition's `LLM→tool→LLM` tight loop | **plannerCognition**: one LLM call per quantum, grows tool calls as nodes, does not execute | `planner_cognition.go:76` |
+| tools run inside the cognition | **toolCognition**: a tool node is a first-class fabric task, executed by the scheduler | `internal/fabric/agent/l2graph.go` |
+| unbounded, LLM runs as long as it wants | **maxPlanDepth** (default 10) forces convergence | `planner_cognition.go:24` |
+| loop state = in-memory Messages, lost on crash | state = L2 graph + fabric tasks (durable), checkpoint-resume | see §6 |
+
+### 22.3 What "dynamic" actually means (grow-as-you-go)
+
+The same DAG at three moments — **it is not drawn up front; it grows while it runs**:
+
+```mermaid
+flowchart TB
+    subgraph T0["T0 - just submitted (skeleton only)"]
+        r0[root session] --> p0[plan-1]
+    end
+    subgraph T1["T1 - plan-1 thinks, grows tools (graph changed)"]
+        p0x[plan-1] --> g1[tool: grep]
+        p0x --> r1[tool: read]
+        g1 --> p1[plan-2]
+        r1 --> p1
+    end
+    subgraph T2["T2 - plan-2 sees results, keeps growing / answers"]
+        p2[plan-2] --> a[answer: emit final result]
+    end
+    T0 --> T1 --> T2
+```
+
+- **T0**: only root + the first plan box.
+- **T1**: plan-1 calls the LLM; the LLM says "I need grep + read", so two tool boxes + a plan-2 (depending on them) are **grown** at the tail. The scheduler runs the tool boxes.
+- **T2**: plan-2 reads the grep/read results; the LLM says "enough", so an **answer** box is grown → session ends. If it says "need to check one more thing", plan-2 grows another batch of tool boxes.
+
+**"Dynamic" = for every plan box run, the DAG grows a segment, and the scheduler drains the newly grown part.**
+
+### 22.4 What this buys vs what it costs
+
+**Gained (not in ReAct):** tools are first-class tasks with checkpoint-resume; unified kernel scheduling; a `maxPlanDepth` convergence bound; an explicit, replayable plan; evolvable steering.
+
+**Paid (where ReAct was simpler):**
+
+| Cost | Detail |
+|---|---|
+| Complexity explosion | ReAct is one loop; 0.3.x is planner + L2 graph + incremental compile + scheduler + toolCognition + checkpoint |
+| More latency | tool results must "go into the fabric → next plan quantum reads", several hops more than ReAct's immediate feed-back; **unfriendly to rapid trial-and-error** |
+| Token cost | every plan quantum re-assembles context and re-calls the LLM, burning more than ReAct |
+| Wiring fragility | `PlannerDeps` needs 7 deps (`planner_cognition.go:60`); miss any and it degrades |
+
+### 22.5 There is also an "outer round" (evolution)
+
+`LoopConfig` (`internal/runtime/loop.go:13`, comment verbatim: "Unlike a fixed
+ReAct loop, drives the outer round loop that re-executes the entire DAG with
+mutations applied between rounds"). This is what the GA cold path uses — **a
+mutation is injected between rounds, then the whole DAG is re-executed**.
+
+So the full replacement = **planner (think) + scheduler/toolCognition (do) +
+the outer round loop (evolve): three pieces together**.
+
+> **One-line verdict**: ReAct is "one person thinking while doing" — a single
+> chain, lost entirely on crash. The dynamic DAG splits that chain into "plan
+> boxes (think) + tool boxes (do) + answer boxes (end)"; the skeleton (the
+> graph) is durable while the cook (the agent) is swappable; it grows as it
+> runs, the head cook (scheduler) assigns work, and the outer loop can evolve.
+> It is a "trade structure for robustness" choice — **positive** for 0.3.x's
+> goals (resilience, evolvability, multi-agent collaboration); but used for
+> "single-agent real-time interactive trial-and-error" it is heavier, slower,
+> and more token-hungry than classic ReAct.
 
 ---
 

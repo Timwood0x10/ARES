@@ -144,6 +144,190 @@ func TestPollOnce_CursorEscapesFullWindow(t *testing.T) {
 	}
 }
 
+// TestDrainBacklog_MultiPageBurstInOneWakeUp is the deterministic guard for the
+// CI failure of 2026-10-09: the burst integration test stalled at 199/250
+// events because a wake-up delivered exactly one page — 100 events from the
+// LISTEN notification, 99 more from the next 10s tick, with page 3 another 10s
+// away. One drainBacklog call must leave nothing behind.
+func TestDrainBacklog_MultiPageBurstInOneWakeUp(t *testing.T) {
+	all := make([]*Event, 0, 250)
+	for i := 1; i <= 250; i++ {
+		all = append(all, &Event{ID: newTestEventID(i), Timestamp: time.Unix(int64(i), 0).UTC()})
+	}
+
+	ch := make(chan *Event, 512)
+	sub := &pgSubscription{
+		cursor:    time.Unix(0, 0).UTC(),
+		ch:        ch,
+		delivered: make(map[string]bool, 1024),
+	}
+
+	// Pages mirror the production LIMIT: 100 / 100 / 50, then exhausted.
+	scripted := scriptedPageQuery(all[:100], all[100:200], all[200:])
+	calls := 0
+	query := func(ctx context.Context, f EventFilter, cursor time.Time, cursorID string) ([]*Event, error) {
+		calls++
+		return scripted(ctx, f, cursor, cursorID)
+	}
+
+	more, err := drainBacklog(context.Background(), sub, query)
+	require.NoError(t, err)
+	assert.False(t, more, "a short page means the backlog is drained")
+
+	delivered := drainEvents(ch)
+	assert.Len(t, delivered, 250, "one wake-up must drain the whole burst")
+	assert.Equal(t, 3, calls, "the short page ends the drain: exactly one query per page")
+	assert.Equal(t, time.Unix(250, 0).UTC(), sub.cursor)
+
+	counts := make(map[string]int, 250)
+	for _, e := range delivered {
+		counts[e.ID]++
+	}
+	assert.Len(t, counts, 250)
+	for id, n := range counts {
+		assert.Equal(t, 1, n, "event %s delivered %d times", id, n)
+	}
+}
+
+// TestDrainBacklog_StopsAtPageBudget pins the bound on one wake-up: a stream
+// that always answers with a full page must not keep the drain loop forever.
+func TestDrainBacklog_StopsAtPageBudget(t *testing.T) {
+	full := make([]*Event, 0, defaultEventReadLimit)
+	for i := 1; i <= defaultEventReadLimit; i++ {
+		full = append(full, &Event{ID: newTestEventID(i), Timestamp: time.Unix(int64(i), 0).UTC()})
+	}
+
+	calls := 0
+	query := func(context.Context, EventFilter, time.Time, string) ([]*Event, error) {
+		calls++
+		return full, nil
+	}
+
+	sub := &pgSubscription{
+		cursor:    time.Unix(0, 0).UTC(),
+		ch:        make(chan *Event, 4096),
+		delivered: make(map[string]bool, 1024),
+	}
+
+	more, err := drainBacklog(context.Background(), sub, query)
+	require.NoError(t, err)
+	assert.Equal(t, maxPagesPerWake, calls, "one wake-up is capped by the page budget")
+	assert.True(t, more, "budget spent with a full page: the caller must come back immediately")
+}
+
+// TestDrainBacklog_StopsOnCancel pins two things at once: the drain obeys
+// cancellation instead of paging through its whole budget, and a cancelled
+// context is not reported as an error — the owning loop leaves through its own
+// ctx.Done case, so an error here would log a fake poll failure on every
+// shutdown that lands mid-drain.
+func TestDrainBacklog_StopsOnCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	full := make([]*Event, 0, defaultEventReadLimit)
+	for i := 1; i <= defaultEventReadLimit; i++ {
+		full = append(full, &Event{ID: newTestEventID(i), Timestamp: time.Unix(int64(i), 0).UTC()})
+	}
+
+	// Unbuffered with no reader: the send cannot proceed, so the only ready
+	// case in pollOnce's select is ctx.Done() — the assertion is deterministic.
+	sub := &pgSubscription{
+		cursor:    time.Unix(0, 0).UTC(),
+		ch:        make(chan *Event),
+		delivered: make(map[string]bool, 1024),
+	}
+
+	more, err := drainBacklog(ctx, sub, scriptedPageQuery(full))
+	require.NoError(t, err, "cancellation is shutdown, not a poll failure")
+	assert.False(t, more, "a cancelled drain must not ask for an immediate re-run")
+}
+
+// TestDrainBacklog_TieWindowInOneWakeUp is the unit-level stand-in for the burst
+// integration test: the production SQL window semantics (inclusive
+// `(created_at, id) >= cursor`, ASC, LIMIT 100) over 250 events whose timestamps
+// tie in pairs across the page boundary. One wake-up — one drainBacklog call —
+// must deliver all of it exactly once, which is what the integration test needs
+// from the LISTEN notification it got (it stalled at 199/250 before).
+func TestDrainBacklog_TieWindowInOneWakeUp(t *testing.T) {
+	const shared = int64(500)
+
+	// 250 events, pairs sharing a timestamp so ties span every page cut.
+	var table []*Event
+	for i := 1; i <= 250; i++ {
+		sec := shared + int64(i/2)
+		table = append(table, &Event{ID: newTestEventID(i), Timestamp: time.Unix(sec, 0).UTC()})
+	}
+
+	query := func(_ context.Context, _ EventFilter, cursor time.Time, cursorID string) ([]*Event, error) {
+		var page []*Event
+		for _, e := range table { // table is already (created_at, id) ASC
+			if e.Timestamp.After(cursor) || (e.Timestamp.Equal(cursor) && e.ID >= cursorID) {
+				page = append(page, e)
+				if len(page) == defaultEventReadLimit {
+					break
+				}
+			}
+		}
+		return page, nil
+	}
+
+	ch := make(chan *Event, 512)
+	sub := &pgSubscription{
+		cursor:    time.Unix(shared, 0).UTC(),
+		ch:        ch,
+		delivered: make(map[string]bool, 1024),
+	}
+
+	more, err := drainBacklog(context.Background(), sub, query)
+	require.NoError(t, err)
+	assert.False(t, more)
+
+	delivered := drainEvents(ch)
+	assert.Len(t, delivered, 250, "a single wake-up must drain the tied burst")
+	counts := make(map[string]int, 250)
+	for _, e := range delivered {
+		counts[e.ID]++
+	}
+	assert.Len(t, counts, 250, "no event lost")
+	for id, n := range counts {
+		assert.Equal(t, 1, n, "event %s delivered %d times", id, n)
+	}
+	assert.Equal(t, table[len(table)-1].Timestamp, sub.cursor, "cursor reaches the tail")
+}
+
+// TestRearmNotify pins the re-arm contract: it must signal an idle loop without
+// ever blocking, and must not displace a notification that is already pending
+// (a pending signal already means "drain again", so a dropped re-arm loses
+// nothing).
+func TestRearmNotify(t *testing.T) {
+	t.Run("signals an idle loop", func(t *testing.T) {
+		ch := make(chan struct{}, 1)
+		rearmNotify(ch)
+		select {
+		case <-ch:
+		default:
+			t.Fatal("re-arm signal was not delivered")
+		}
+	})
+
+	t.Run("never blocks when one is already pending", func(t *testing.T) {
+		ch := make(chan struct{}, 1)
+		ch <- struct{}{} // a real LISTEN notification is waiting
+
+		done := make(chan struct{})
+		go func() {
+			rearmNotify(ch)
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Fatal("rearmNotify blocked")
+		}
+		assert.Len(t, ch, 1, "the pending notification must not be displaced")
+	})
+}
+
 // TestPollOnce_TieWindowNoLoss models the exact SQL window semantics
 // (created_at >= cursor, ASC, LIMIT) over a table with timestamp ties that
 // straddle the page boundary, then replays the poll loop until drained.

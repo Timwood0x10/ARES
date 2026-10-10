@@ -1,12 +1,15 @@
 name: CD
 
 on:
+  # `main` is the release line (v0.3.1 was tagged there); `master` never carried
+  # it — see the 0.3.2 CI notes in CHANGELOG.md. Branching this on master meant
+  # the image was only ever published from a tag.
   push:
-    branches: [master]
+    branches: [main]
     tags:
       - 'v*'
   pull_request:
-    branches: [master]
+    branches: [main]
 
 permissions:
   contents: read
@@ -16,7 +19,7 @@ jobs:
   docker:
     name: Build & Push Docker Image
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v'))
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
     steps:
       - name: Checkout code
         uses: actions/checkout@v4

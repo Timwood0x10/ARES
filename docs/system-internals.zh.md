@@ -41,6 +41,7 @@
 19. [MCP 集成与工具发现（渐进披露）](#19-mcp-集成与工具发现)
 20. [SDK / CLI 用法](#20-sdk--cli-用法)
 21. [安全模型（SSRF / 沙箱 / 租户三条边界）](#21-安全模型)
+22. [ReAct 去哪了：动态 DAG + 想/做/进化三层](#22-react-去哪了动态-dag--想做进化三层)
 
 ---
 
@@ -867,6 +868,100 @@ tool-calling / DAG / multi-agent / evolution / chaos / HITL / MCP / full-app，
 
 **一条主线**：能 fail-closed 的地方都 fail-closed，能内核强制的地方不信 LLM/模型，
 租户/归属/provenance 全部由 context 盖章。
+
+---
+
+## 22. ReAct 去哪了：动态 DAG + 想/做/进化三层
+
+v0.3.x **删除了 ReAct 工具循环**（源码多处注释明说 "the ReAct tool loop is deleted"，
+见 `internal/agents/sub/agent.go:55` / `internal/fabric/agent/l2graph.go:22`）。
+替代它的不是"另一个循环"，而是**动态 DAG + 想把"做"拆成两类节点 + 外层进化轮**三者配合。
+
+### 22.1 一个比喻
+
+| 模式 | 比喻 |
+|---|---|
+| **ReAct** | 一个厨师自己边做边想，全在脑子里；厨师晕倒，做法全丢 |
+| **动态 DAG** | 一张菜谱流程图 + 一群工位厨师；厨师只填一个格子就交出去，总厨盯着图派活；图是活资产，厨师可换 |
+
+### 22.2 "想"和"做"被拆成两类节点
+
+ReAct 那条链（想→做→想→做）被拆成 DAG 上的**格子**：
+
+```mermaid
+flowchart TB
+    subgraph think[想 · plannerCognition<br/>替代 ReAct 的 chatStep]
+        p[每个 quantum: 调 LLM 一次<br/>读前驱输出 → 决定长哪些工具节点<br/>★ 只长节点, 从不执行工具]
+    end
+    subgraph do[做 · scheduler + toolCognition]
+        s[工具节点 → 编译成 fabric task]
+        s --> d[scheduler drain → 派给有能力 agent]
+        d --> tc[toolCognition 执行单个工具]
+    end
+    p -->|长节点进 L2 图| s
+    tc -->|结果存 fabric envelope| p
+```
+
+| ReAct（0.2.x） | 替代（0.3.x） | 源码 |
+|---|---|---|
+| 一个 cognition 内 `LLM→工具→LLM` 死循环 | **plannerCognition**：每 quantum 只调 LLM 一次，把工具调用长成品节点，不执行 | `planner_cognition.go:76` |
+| 工具在 cognition 里直接跑 | **toolCognition**：工具节点是一等 fabric task，内核调度执行 | `internal/fabric/agent/l2graph.go` |
+| 无上限，LLM 爱调多久调多久 | **maxPlanDepth**（默认 10）强制收敛 | `planner_cognition.go:24` |
+| 循环状态=内存 Messages，挂了就丢 | 状态=L2 图 + fabric 任务（持久），断点续跑 | 见 §6 |
+
+### 22.3 "动态"到底动态在哪（边跑边长）
+
+同一个 DAG 在三个时刻——**它不是一开始画好的，是边跑边长**：
+
+```mermaid
+flowchart TB
+    subgraph T0["T0 · 刚提交（只有骨架）"]
+        r0[root 会话] --> p0[plan①]
+    end
+    subgraph T1["T1 · plan① 想完，长出工具（图变了）"]
+        p0x[plan①] --> g1[tool: grep]
+        p0x --> r1[tool: read]
+        g1 --> p1[plan②]
+        r1 --> p1
+    end
+    subgraph T2["T2 · plan② 看结果，继续长 / 出答案"]
+        p2[plan②] --> a[answer 出最终答案]
+    end
+    T0 --> T1 --> T2
+```
+
+- **T0**：只有 root + 第一个 plan 格子。
+- **T1**：plan① 调 LLM，LLM 说"我需要 grep + read"，就在图末尾**长**出这两个 tool 格子 + 一个 plan②（依赖它们）。调度器把 tool 格子跑掉。
+- **T2**：plan② 读 grep/read 结果，LLM 说"够了"，长出 **answer** 格子 → 会话结束；说"还得再查"就再长一批 tool 格子。
+
+**"动态" = 每跑一个 plan 格子，DAG 就长一截，调度器接着 drain 新长出的部分。**
+
+### 22.4 为什么这样比 ReAct 好（与不好）
+
+**换来的（ReAct 没有）：** 工具是一等任务可断点续跑；内核统一调度；`maxPlanDepth` 收敛上界；计划显式可回放；可被进化 steer。
+
+**付出的（ReAct 反而更简单的地方）：**
+
+| 代价 | 说明 |
+|---|---|
+| 复杂度爆炸 | ReAct 一个循环；0.3.x 是 planner + L2 图 + 增量编译 + 调度 + toolCognition + checkpoint 六件套 |
+| 延迟变大 | tool 结果要"存 fabric → 下个 plan 量子读"，比 ReAct 即时喂回绕几圈，**快速试错不友好** |
+| token 成本 | 每个 plan 量子都重新组 context、重新调 LLM，比 ReAct 烧得多 |
+| 装配脆弱面 | `PlannerDeps` 要 7 个依赖（`planner_cognition.go:60`），任一没接好就降级 |
+
+### 22.5 还有一层"外层轮"（进化）
+
+`LoopConfig`（`internal/runtime/loop.go:13`，注释原话："Unlike a fixed ReAct loop,
+drives the outer round loop that re-executes the entire DAG with mutations applied
+between rounds"）。这是 GA 冷路径用的——**每轮之间注入变异，重跑整个 DAG**。
+
+所以完整替代 = **planner（想）+ scheduler/toolCognition（做）+ 外层 round loop（进化）三件套**。
+
+> **一句话判断**：ReAct 是"一个人边想边做"的一条链，挂了全丢；动态 DAG 把这条链拆成
+> "plan 格子（想）+ tool 格子（做）+ answer 格子（终）"，骨架（图）持久、厨师（agent）可换，
+> 边跑边长、总厨（调度器）派活、外圈还能进化。这是"用结构化换鲁棒性"的取舍——
+> 对 0.3.x 的定位（耐活、可进化、多 agent 协作）是**正向的**；但若拿它做"单 agent 实时
+> 交互式快速试错"，它会比经典 ReAct 笨重、慢、烧钱。
 
 ---
 
