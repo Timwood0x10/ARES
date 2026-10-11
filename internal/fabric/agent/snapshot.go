@@ -25,6 +25,12 @@ type AgentSnapshot struct {
 	// the freshest cognition is the safest revival seed (map-iteration
 	// order must not choose arbitrarily).
 	DiedAt time.Time
+	// StopReason is WHY the agent left (see StopReason): Kill records
+	// StopCrashed. Recovery carries it into the restart decision and the
+	// revival log, so "died because it was killed" is distinguishable from
+	// "died and the restart budget refused to revive it" — two very different
+	// operator stories that used to render identically.
+	StopReason StopReason
 }
 
 // snapshotStore keeps the LAST snapshot per agent identity. Entries are
@@ -131,7 +137,7 @@ func (s *snapshotStore) findByCapability(capability string) (string, AgentSnapsh
 // additionally guarded by the agent's own lock, so we take it briefly to get
 // a consistent copy (shared-state ownership documented at
 // the field).
-func captureFromAgent(a *Agent, diedAt time.Time) AgentSnapshot {
+func captureFromAgent(a *Agent, diedAt time.Time, reason StopReason) AgentSnapshot {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	cog := a.cognitive
@@ -139,7 +145,13 @@ func captureFromAgent(a *Agent, diedAt time.Time) AgentSnapshot {
 		cog.SchemaVersion = CognitiveStateSchemaVersion
 	}
 	caps := append([]string(nil), a.Capabilities...)
-	return AgentSnapshot{Cognitive: cog, Capabilities: caps, Parent: a.Parent, DiedAt: diedAt}
+	return AgentSnapshot{
+		Cognitive:    cog,
+		Capabilities: caps,
+		Parent:       a.Parent,
+		DiedAt:       diedAt,
+		StopReason:   reason,
+	}
 }
 
 // LastSnapshot returns the snapshot captured when agentID died, if any.

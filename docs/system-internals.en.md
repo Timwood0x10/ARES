@@ -202,8 +202,8 @@ flowchart TD
     create --> drain{drain<br/>event-driven + 500ms poll}
     drain --> sched[Schedule<br/>capability score: load/conf/priority + experience prior]
     sched --> acq[Acquire<br/>lease + epoch fencing]
-    acq --> gate{budgetOK<br/>has budget?}
-    gate -- no --> yield[yield: back to READY<br/>retry next round]
+    acq --> gate{admissible<br/>budget/deadline/reserve ok?}
+    gate -- no --> reclaim[Reclaim: ReleaseReason<br/>READY + reason, next drain]
     gate -- yes --> run[RunQuantum]
     run --> router[routerCognition<br/>dispatch by capability]
     router --> tool[tool node: run one tool]
@@ -277,6 +277,72 @@ found". The reason is deliberately *not* copied: the failed task's `LastError` a
 `task.failed` event stay the single source of truth, and the id is the stable key
 to follow back.
 
+### 4.2 Capability Scoring (how the best agent is picked)
+
+`Schedule` does not "pick any agent"; it scores every candidate 0–1 and takes
+the highest.
+
+**Formula (`internal/fabric/task/scheduler.go:44`)**:
+
+```
+score = capability_overlap × (1 - load) × confidence × (1 + priority)
+```
+
+| Factor | Range | Intent | Source |
+|---|---|---|---|
+| `capability_overlap` | [0,1] | **Gate**: can't do this capability → 0, never chosen (overlap *fraction*, not "any overlap counts") | `CapabilityOverlap` |
+| `1 - load` | [0,1] | idle scores higher; `load=1` (fully busy) → 0, yield. This is what makes "parallel if possible" work | `LoadTracker` (`load_tracker.go`) |
+| `confidence` | [0,1] | experience prior / measured: "has it succeeded at this before?" | `ConfidenceForMeasured` (`scheduler_execute.go:192`) |
+| `1 + priority` | ≥1 | priority boost; at `priority=0` the boost is 1. A busy high-priority agent can outscore an idle low-priority one, so the boost is deliberately un-capped | `scheduler.go:75` |
+
+**The three confidence tiers (most-asked, `scheduler_execute.go:176`)**:
+
+```
+for each candidate (agentID, task capability):
+  ① has a MEASURED value (evolution feedback / GA override) → use it  ★ measured always wins
+  ② is NEUTRAL (no history, no override) and a prior exists → zero it so the fabric fills the prior
+  ③ no prior → the neutral value stands (historical default)
+```
+
+This is where GA lands on the hot path: `SetAgentConfidence` (`load_tracker.go:15`) lets the
+evolution feedback loop **override an agent's per-capability confidence in real time**,
+effective from the next drain — GA does not change code, it changes "how trustworthy this
+agent is for this kind of task".
+
+**Candidate pool and two non-obvious points (`buildCandidates`, `scheduler_execute.go:97`)**:
+
+```
+candidates = registered + unbound + capability-overlapping + idle executors
+             ∪  live IDLE fabric agents
+   → first pass the governance budget filter (:159, drop those over token/tool/deadline budget)
+   → score each → take the highest
+```
+
+| Point | Why | Source |
+|---|---|---|
+| **Budget filter before schedule** | distinguishes "no agent matched" (`ErrNoCapableCandidate`, should alert) vs "matching agents are all over budget" (should wait for budget recovery) | `scheduler_execute.go:159` |
+| **`TryBegin` admission gate** | the candidate snapshot is built *before* `Schedule`, so two concurrent goroutines can both read `load=0`; `TryBegin` uses the load counter as an atomic gate, preventing "two tasks both think they got the same idle agent" | `load_tracker.go:82` |
+
+**Winner (`Pick`) and explainability (`ScheduleDecision`)**:
+
+```
+all candidates sorted by score descending (ties broken stably by capability-overlap, no flapping) → highest wins
+each Schedule records one ScheduleDecision: every candidate + four-factor breakdown + winner + epoch
+   stored in a DecisionRecorder (ring of 200, decision_recorder.go:26/58)
+```
+
+> The panel can show "TASK-184 ↓ agent-7f21 ↓ Acquire ↓ epoch=42" plus each candidate's
+> `Overlap/Load/Confidence/PriorityBoost/Score` — **not a black box; it can say why this
+> agent was chosen.**
+
+| Location | Line |
+|---|---|
+| Score formula `Score`/`ScoreBreakdown` | `internal/fabric/task/scheduler.go:44/71` |
+| Candidate scoring `scoreCandidates` | `internal/kernel/decision_recorder.go:107` |
+| Budget filter + confidence resolution | `internal/kernel/scheduler_execute.go:159/192` |
+| `LoadTracker` (Begin/End/TryBegin/SetAgentConfidence) | `internal/kernel/load_tracker.go` |
+| Decision record `ScheduleDecision` | `internal/kernel/decision_recorder.go:42` |
+
 ---
 
 ## 5. Quantization & Resource Budgets
@@ -297,24 +363,71 @@ flowchart LR
 
 | Concept | Mechanism | Source |
 |---|---|---|
-| Pre-gate (has budget to run) | `budgetOK` | `internal/kernel/scheduler_governance.go:30` |
-| Post bookkeeping | `consumeBudget` | `internal/kernel/scheduler_governance.go:53` |
+| Admission gate (budget/deadline/reserve) | `admissible` → `agentfabric.Admissibility` | `internal/kernel/scheduler_governance.go` |
+| Post bookkeeping | `consumeBudget` | `internal/kernel/scheduler_governance.go` |
+| Reclaim (attributed release) | `fabric.ReleaseReason` → `task.released{reason}` | `internal/fabric/task/fabric_lifecycle.go` |
 | One concurrent quantum per agent | `maxConcurrentPerAgent` | architectural invariant |
 | Reject expired holder | epoch fencing | validated at drain |
 
 **The agent wallet** = `kernel.agent_budget` (`config.go:141`): `tokens` /
-`tools` / `deadline`, all-zero = unlimited. A syscall-spawned agent carries
-this wallet from birth (`SpawnAgent`'s `Governance: k.governance` in
+`tools` / `deadline` / `reserve_ratio`; the first three are all-zero =
+unlimited. A syscall-spawned agent carries this wallet from birth
+(`SpawnAgent`'s `Governance: k.governance` in
 `internal/agentsyscall/syscall.go`).
 
+**The reserve threshold (`reserve_ratio`, 0.3.3)**: "stop taking work while
+there is still headroom". With `reserve_ratio=0.4` and `tokens=500`, an agent
+admits a new quantum only while ≥200 tokens remain; below that, the task it
+holds is **reclaimed** at the quantum boundary (`ReleaseReason` → READY,
+checkpoint preserved, `task.released` event carrying
+`reason=budget_reserved`) so a fresher agent resumes it from the checkpoint.
+Two invariants: admission has **one** implementation (`Admissibility`) shared
+by the pre-schedule candidate filter and the post-acquire gate, so the two
+gates cannot disagree; and this is **admission control, not preemption** — a
+running quantum is never interrupted. Budget counters reset only on respawn,
+so when every agent is drained the task parks in the "no admissible
+candidate" wait state (`ErrNoAffordableCandidate` — a distinct sentinel and a
+distinct log-throttle slot from `ErrNoCapableCandidate`, "nobody matches the
+capability").
+
+**Agent stop reasons (`agentfabric.StopReason`, 0.3.3)**: answers "why is this
+agent not taking work / why is it gone". A budget-drained agent is NOT dead
+(it stays IDLE with its cognition intact); only truly gone agents get the
+terminal codes. Every code has a production producer:
+
+| Code | Meaning | Producer |
+|---|---|---|
+| `budget_reserved` | remaining budget below the reserve (soft stop) | admission gate |
+| `budget_exhausted` | a budget dimension fully spent (hard stop) | admission gate |
+| `deadline_exceeded` | wall-clock deadline passed | admission gate |
+| `capability_unfit` | scheduled winner has no live executor body | `handleStaleWinner` |
+| `crashed` | killed (panic / operator / chaos) | `Kill` |
+| `recovery_exhausted` | restart budget spent, revival refused | recovery loop |
+| `retired` | graceful decommission | `Retire` |
+
+They land in two places: the task's `task.released{reason}` event, and the
+agent's `agent.killed`/`agent.retired` events plus its death snapshot
+(`AgentSnapshot.StopReason`). Note `task.released` is not must-persist: the
+event stream carries the record and the introspect panel can subscribe to it,
+but restore does not fold it back into task state.
+
 **Token budget semantics (0.3.1+)**: `WithMaxTokens` is **enforced**, not a
-no-op — it bridges into the same governance budget (`sdk/sdk.go:441`), and
-`budgetOK` refuses a quantum for an agent whose `tokenUsed` has reached
+no-op — it bridges into the same governance budget (`sdk/sdk.go:441`), and the
+admission gate refuses a quantum for an agent whose `tokenUsed` has reached
 `TokenBudget`, so an over-budget task yields instead of burning tokens. Two
 caveats before quoting it as a hard cap: the value is the **L2 peer's lifetime
 total** (the first positive `WithMaxTokens`/`WithAgentGovernance` wins; a later
 agent's value does not tighten it), and enforcement is **cooperative** — it
 stops at a quantum boundary, never mid-LLM-call (`sdk/options.go:703-717`).
+
+**Permanent failures (0.3.3)**: `taskfabric.MarkPermanent` finally has a
+production caller — `markPermanentStepCause`
+(`internal/kernel/scheduler_quantum.go`) classifies
+`errors.ErrInvalidArgument` (empty prompt / empty message list / over-length
+prompt, as stamped by the LLM client) as "retrying reproduces it exactly", so
+the task goes terminal **FAILED on the first attempt** instead of burning the
+retry budget on attempts that cannot succeed. Every other, unclassified cause
+keeps the 0.3.2 retryable behaviour.
 
 ---
 
@@ -1603,7 +1716,43 @@ lifecycle events**", not "any event drives anything".
 | Planning | implicit, one-shot | explicit L2 graph, grow-as-you-go, recoverable | ✅ positive |
 | Self-healing | two external heartbeat supervisors | event-driven unified recovery chain + in-place revive | ✅ positive |
 | Evolution | early DreamMode | GA + G1/G2/G3 gates + rollback net | ✅ stronger |
-| Cost | — | complexity up; no equivalent of centralized-owner semantics; HITL not wired in production | ⚠️ |
+| Cost | — | complexity up; no equivalent of centralized-owner semantics; HITL wired in fabric (0.3.3) | ⚠️ |
+
+---
+
+## 16. HITL Approval Gate (0.3.3)
+
+A workflow step can declare `interrupt: { message: "..." }` (YAML) or set
+`engine.Step.Interrupt` (Go) to require human approval **before execution**.
+The compiled task enters READY but is blocked by an approval gate — a third
+gate alongside the existing backoff and deadline gates.
+
+**Three gates, all enforced:**
+1. `ReadyTasks` / `ResumableTasks` exclude pending-approval tasks (they are
+   not handed to the scheduler).
+2. `Acquire` returns `ErrTaskAwaitingApproval` (a direct caller cannot bypass
+   the gate).
+
+**Resolve path** (`ResolveApproval`, no ownership required — same as
+`ExpireDeadlines`):
+- **Approve**: task stays READY, gate opens. `approvalCleared` now returns
+  true, scheduler picks it up next tick.
+- **Reject**: task driven to FAILED via `failTerminalLocked` (READY→FAILED is
+  a legal transition), with the existing cascade to strict dependents.
+  `AllowPartial` dependents are not cascaded (they record the gap).
+
+**Persistence**: the approval policy (`requires_approval`, `approval_message`)
+and the runtime decision (`approval_decision`, `approval_feedback`) are
+persisted in the event payload and folded back on restore. A restart cannot
+silently open a pending gate (security) or lose a resolved decision.
+
+**HTTP surface**: `GET /api/interrupts` (authRead) lists pending approvals;
+`POST /api/interrupts/{id}/resolve` (authWrite) resolves one. The approver's
+principal is recorded as `ApprovalBy` for audit.
+
+**Default compatibility**: a task without `RequiresApproval` executes and
+persists byte-for-byte identically to 0.3.2/0.3.3 — pinned by
+`TestDefaultPathPayloadHasNoNewKeys`.
 
 > **Source-location note**: line numbers are a v0.3.2 snapshot and may drift as
 > the dev branch moves. Function names / file paths are more stable than line

@@ -286,7 +286,9 @@ func (f *Fabric) Retire(ctx context.Context, agentID string) error {
 	// cycle of this identity must not resurrect later.
 	f.snapshots.clear(agentID)
 	f.mu.Unlock()
-	f.record(ctx, a, EventAgentRetired, nil)
+	f.record(ctx, a, EventAgentRetired, map[string]any{
+		PayloadKeyStopReason: StopRetired.String(),
+	})
 	return nil
 }
 
@@ -313,7 +315,12 @@ func (f *Fabric) Kill(ctx context.Context, agentID string) error {
 	// Capture the revival record BEFORE the registry entry disappears —
 	// after this delete the agent is unreadable, so the recovery subsystem's
 	// in-place-revival decision depends on this snapshot existing.
-	snap := captureFromAgent(a, f.now())
+	//
+	// Kill is the non-graceful path (panic, operator kill, chaos), so the
+	// death is recorded as StopCrashed. The reason rides the snapshot into the
+	// recovery decision and the agent.killed event, which is what separates
+	// "died and was revived" from "died and recovery refused" in the log.
+	snap := captureFromAgent(a, f.now(), StopCrashed)
 	delete(f.agents, agentID)
 	f.releaseLocked(a.resources)
 	a.resources = nil
@@ -323,7 +330,9 @@ func (f *Fabric) Kill(ctx context.Context, agentID string) error {
 	// even after the parent is gone (invariant #1 + #7).
 	f.mu.Unlock()
 	f.snapshots.save(agentID, snap)
-	f.record(ctx, a, EventAgentKilled, nil)
+	f.record(ctx, a, EventAgentKilled, map[string]any{
+		PayloadKeyStopReason: StopCrashed.String(),
+	})
 	return nil
 }
 

@@ -181,6 +181,25 @@ func (f *Fabric) recordWithExtrasLocked(t *Task, typ EventType, extras map[strin
 		if len(t.DegradedInputs) > 0 {
 			payload[restoreKeyDegradedInputs] = append([]string(nil), t.DegradedInputs...)
 		}
+		// HITL approval-gate events . Published by
+		// HITL approval gate : the policy
+		// and the runtime decision state are persisted so a restart does not
+		// turn a pending gate into an open one (security: a pending task
+		// must remain blocked) or lose a resolved decision. Written only
+		// when RequiresApproval is true, so the default path keeps its exact
+		// payload (byte-for-byte compatible).
+		if t.RequiresApproval {
+			payload[restoreKeyRequiresApproval] = true
+			if t.ApprovalMessage != "" {
+				payload[restoreKeyApprovalMessage] = t.ApprovalMessage
+			}
+			if t.ApprovalDecision != "" {
+				payload[restoreKeyApprovalDecision] = t.ApprovalDecision
+			}
+			if t.ApprovalFeedback != "" {
+				payload[restoreKeyApprovalFeedback] = t.ApprovalFeedback
+			}
+		}
 		payload[restoreKeyRetryAttempts] = t.RetryPolicy.Attempts
 		payload[restoreKeyRetryMax] = t.RetryPolicy.MaxRetries
 		payload[restoreKeyCreatedAt] = t.CreatedAt.Format(time.RFC3339)
@@ -190,7 +209,9 @@ func (f *Fabric) recordWithExtrasLocked(t *Task, typ EventType, extras map[strin
 			} else {
 				// The rebuilt task will resume without this checkpoint. Log
 				// so the divergence is detectable; do not fail the transition.
-				log.Error("taskfabric: checkpoint marshal failed (restore will lose progress)", "task_id", t.ID, "error", err)
+				log.Error(context.Background(), "recordWithExtrasLocked",
+					"taskfabric: checkpoint marshal failed (restore will lose progress)",
+					err, "task_id", t.ID)
 			}
 		}
 	}
@@ -282,12 +303,14 @@ func (f *Fabric) flushAppends(pending *[]*pendingAppend) {
 			if !isMustPersistEvent(p.typ) {
 				f.flushCond.L.Unlock()
 				f.flushCond.Broadcast()
-				log.Error("taskfabric: durable append ordering timed out; skipping causal barrier",
-					"event_type", p.typ, "task_id", p.taskID, "seq", p.seq, "flushed_seq", flushed)
+				log.Error(context.Background(), "flushAppends",
+					"taskfabric: durable append ordering timed out; skipping causal barrier",
+					nil, "event_type", p.typ, "task_id", p.taskID, "seq", p.seq, "flushed_seq", flushed)
 				continue
 			}
-			log.Error("taskfabric: durable append ordering timed out; persisting must-persist event out of causal order",
-				"event_type", p.typ, "task_id", p.taskID, "seq", p.seq, "flushed_seq", flushed)
+			log.Error(context.Background(), "flushAppends",
+				"taskfabric: durable append ordering timed out; persisting must-persist event out of causal order",
+				nil, "event_type", p.typ, "task_id", p.taskID, "seq", p.seq, "flushed_seq", flushed)
 		}
 		var appendErr error
 		if p.store != nil {
@@ -305,7 +328,9 @@ func (f *Fabric) flushAppends(pending *[]*pendingAppend) {
 		f.flushCond.Broadcast()
 		if appendErr != nil {
 			if isMustPersistEvent(p.typ) {
-				log.Error("taskfabric: must-persist event append failed (durable log diverges from memory)", "event_type", p.typ, "task_id", p.taskID, "error", appendErr)
+				log.Error(context.Background(), "flushAppends",
+					"taskfabric: must-persist event append failed (durable log diverges from memory)",
+					appendErr, "event_type", p.typ, "task_id", p.taskID)
 			}
 		}
 	}
@@ -350,6 +375,15 @@ func isMustPersistEvent(typ EventType) bool {
 		EventTaskFailed, EventTaskExpired, EventTaskDeleted:
 		return true
 	default:
+		// HITL interrupt.resolved is must-persist: the approval decision is
+		// runtime state that must survive a restart. Without it, an approved
+		// task would revert to pending (blocked) after restore — a silent
+		// security regression. interrupt.created is also must-persist so the
+		// gate exists even if task.created's payload was somehow trimmed.
+		if et := taskEventType(typ); et == ares_events.EventInterruptCreated ||
+			et == ares_events.EventInterruptResolved {
+			return true
+		}
 		return false
 	}
 }
@@ -383,6 +417,16 @@ func taskEventType(typ EventType) ares_events.EventType {
 	case EventTaskDeleted:
 		return ares_events.EventTaskDeleted
 	default:
+		// HITL interrupt events are not in the EventType const block —
+		// they are created by casting ares_events.EventInterruptCreated/
+		// Resolved to EventType. Map them back here so they get published
+		// to the durable store.
+		if typ == EventType(ares_events.EventInterruptCreated) {
+			return ares_events.EventInterruptCreated
+		}
+		if typ == EventType(ares_events.EventInterruptResolved) {
+			return ares_events.EventInterruptResolved
+		}
 		return ""
 	}
 }

@@ -363,5 +363,11 @@ func (c *Config) validateKernel() error {
 			return fmt.Errorf("kernel: agent_budget.deadline must be non-negative, got %s", c.Kernel.AgentBudget.Deadline)
 		}
 	}
+	// A ratio above 1 can never be satisfied (remaining is at most the whole
+	// budget), so every agent would be refused every quantum from birth — a
+	// silent total outage configurable by one typo. Reject it at load.
+	if r := c.Kernel.AgentBudget.ReserveRatio; r < 0 || r > 1 {
+		return fmt.Errorf("kernel: agent_budget.reserve_ratio must be within [0,1] (0 = disabled), got %g", r)
+	}
 	return nil
 }

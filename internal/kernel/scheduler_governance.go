@@ -1,6 +1,8 @@
 package kernel
 
 import (
+	"context"
+
 	agentfabric "github.com/Timwood0x10/ares/internal/fabric/agent"
 	taskfabric "github.com/Timwood0x10/ares/internal/fabric/task"
 )
@@ -15,30 +17,43 @@ func (s *Scheduler) WithGovernance(g *agentfabric.Fabric) *Scheduler {
 	return s
 }
 
-// budgetOK reports whether the winning agent may start a new quantum. It is
-// the pre-quantum gate: deadline first (a deadline-expired agent is dead
-// weight), then the budgets for this quantum. A denial is a cooperative
-// yield — the scheduler returns the task to READY instead of burning a
-// quantum the agent cannot afford.
+// admissible reports whether the winning agent may start a new quantum and,
+// when it may not, why (agentfabric.StopReason). It is the pre-quantum gate:
+// deadline first (a deadline-expired agent is dead weight), then the budgets
+// for this quantum, then the agent's budget RESERVE (the headroom it must keep
+// to finish what it starts). A denial is a cooperative yield — the scheduler
+// reclaims the task to READY instead of burning a quantum the agent cannot
+// afford, and the reason travels with the release event so "why did this task
+// stop moving" is answerable from the log.
 //
-// The token request is 1, not 0: CheckResource's contract is
-// `used + request <= budget`, so a 0-token probe can never observe an
-// exhausted token budget. Asking for 1 nominal token makes an agent whose
-// tokenUsed has reached TokenBudget fail the gate (its next quantum can only
-// spend more), which is what stops a long task from running forever. The tool
-// request stays 1 (the quantum's expected one tool round).
-func (s *Scheduler) budgetOK(winner string) bool {
+// All of that lives in agentfabric.Admissibility, deliberately: the
+// pre-schedule candidate filter (filterBudgetAffordable) and the post-acquire
+// gate below call the SAME predicate, so a candidate can never pass one and
+// fail the other — the drift that once turned a sole exhausted candidate into
+// an acquire/release livelock.
+func (s *Scheduler) admissible(winner string) (bool, agentfabric.StopReason) {
 	if s.governance == nil {
-		return true
+		return true, agentfabric.StopUnknown
 	}
-	if over, err := s.governance.DeadlineExceeded(winner); err == nil && over {
-		return false
-	}
-	ok, err := s.governance.CheckResource(winner, 1, 1)
+	ok, reason, err := s.governance.Admissibility(winner)
 	if err != nil {
-		return true // unknown agent (not spawned via fabric) → don't block
+		// Unknown agent (not spawned via the fabric) → don't block. Debug,
+		// not Error: an ungoverned candidate is a legitimate wiring mode
+		// (static SDK registry), not a fault.
+		log.Debug(context.Background(), "admissible",
+			"kernel scheduler: agent not governed by the fabric, admitting",
+			"agent", winner, "error", err)
+		return true, agentfabric.StopUnknown
 	}
-	return ok
+	if !ok {
+		// The per-candidate detail behind the aggregated
+		// no_affordable_candidate line: WHICH agent was refused and WHY.
+		// Debug because this runs per candidate per drain.
+		log.Debug(context.Background(), "admissible",
+			"kernel scheduler: agent inadmissible for the next quantum",
+			"agent", winner, "reason", reason.String())
+	}
+	return ok, reason
 }
 
 // consumeBudget records the winning agent's quantum consumption — the
@@ -55,26 +70,32 @@ func (s *Scheduler) consumeBudget(winner string, tokens int) {
 		return
 	}
 	if err := s.governance.ConsumeResource(winner, tokens, 1); err != nil {
-		log.Warn("kernel scheduler: agent budget consumption", "agent", winner, "tokens", tokens, "error", err)
+		// The overshoot is clamped inside the fabric, so this is not fatal —
+		// but it is the moment the agent crossed its budget, and the next
+		// quantum will be refused. Logged with the agent and the spend so the
+		// denial that follows is attributable to this line.
+		log.Warn(context.Background(), "consumeBudget",
+			"kernel scheduler: agent budget consumption overshot (clamped)",
+			"agent", winner, "tokens", tokens, "error", err)
 	}
 }
 
-// filterBudgetAffordable drops candidates whose governance budget or
-// deadline is exhausted. Filtering happens BEFORE Schedule acquires a lease:
-// the post-acquire budget gate releases the task back to READY, and with a
-// sole exhausted candidate that release loop became a silent acquire/release
-// livelock — every drain re-acquired the lease, hit the gate, released, and
-// repeated, appending two durable events per poll for a task that could not
-// run. Filtering first leaves the task in the throttled "no capable
-// candidate" wait state until another capable agent appears or the
-// exhausted one is replaced (budget counters reset only on respawn).
+// filterBudgetAffordable drops candidates the agentfabric admission predicate
+// rejects — deadline, hard exhaustion, or reserve. Filtering happens BEFORE
+// Schedule acquires a lease: the post-acquire gate releases the task back to
+// READY, and with a sole excluded candidate that release loop became a silent
+// acquire/release livelock — every drain re-acquired the lease, hit the gate,
+// released, and repeated, appending two durable events per poll for a task
+// that could not run. Filtering first leaves the task in the throttled "no
+// admissible candidate" wait state until another agent appears or the excluded
+// one is replaced (budget counters reset only on respawn).
 func (s *Scheduler) filterBudgetAffordable(cands []taskfabric.Candidate) []taskfabric.Candidate {
 	if s.governance == nil {
 		return cands
 	}
 	affordable := make([]taskfabric.Candidate, 0, len(cands))
 	for _, cand := range cands {
-		if s.budgetOK(cand.AgentID) {
+		if ok, _ := s.admissible(cand.AgentID); ok {
 			affordable = append(affordable, cand)
 		}
 	}

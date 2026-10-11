@@ -148,6 +148,13 @@ type AgentBudgetConfig struct {
 	// Deadline caps the agent's wall-clock lifetime ("" or "0" = none).
 	// Parsed with time.ParseDuration; an invalid value fails Validate.
 	Deadline string `yaml:"deadline"`
+	// ReserveRatio is the share of a limited budget an agent must still have
+	// unspent to accept another quantum, as a fraction (0 < r <= 1; 0 =
+	// disabled). At tokens=500 and reserve_ratio=0.4 an agent stops taking
+	// new work once fewer than 200 tokens remain, and the task it holds is
+	// reclaimed to READY for a fresher agent to resume from its checkpoint.
+	// Values outside [0,1] fail Validate.
+	ReserveRatio float64 `yaml:"reserve_ratio"`
 }
 
 // DAGExecutionConfig configures the L2 session-graph execution path.

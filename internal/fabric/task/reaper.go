@@ -1,6 +1,7 @@
 package taskfabric
 
 import (
+	"context"
 	"strings"
 	"time"
 )
@@ -70,8 +71,9 @@ func NewReaperWithKeep(fabric *Fabric, prefix string, gracePeriod time.Duration,
 	// forgot the prefix does not silently get a reaper that sweeps every task
 	// family in the process.
 	if prefix == "" {
-		log.Error("taskfabric: reaper created with an empty prefix; harvesting disabled " +
-			"(an empty prefix would match every task family)")
+		log.Error(context.Background(), "NewReaperWithKeep",
+			"taskfabric: reaper created with an empty prefix; harvesting disabled "+
+				"(an empty prefix would match every task family)", nil)
 		return &Reaper{fabric: fabric, keep: keep}
 	}
 	return &Reaper{
@@ -219,7 +221,8 @@ func (r *Reaper) Run(done <-chan struct{}, interval time.Duration) {
 				for _, sc := range r.scopes {
 					prefixes = append(prefixes, sc.prefix)
 				}
-				log.Info("taskfabric: reaper harvested terminal tasks",
+				log.Info(context.Background(), "Run",
+					"taskfabric: reaper harvested terminal tasks",
 					"count", n, "prefixes", prefixes)
 			}
 		}

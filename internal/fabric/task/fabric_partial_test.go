@@ -259,6 +259,8 @@ func TestDefaultPathPayloadHasNoNewKeys(t *testing.T) {
 	newKeys := []string{
 		restoreKeyNextAttemptAt, restoreKeyBackoffBaseMS, restoreKeyBackoffMaxMS,
 		restoreKeyAllowPartial, restoreKeyDegradedInputs, restoreKeyDeadline,
+		restoreKeyRequiresApproval, restoreKeyApprovalMessage,
+		restoreKeyApprovalDecision, restoreKeyApprovalFeedback,
 	}
 	for _, ev := range events {
 		for _, key := range newKeys {

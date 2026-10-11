@@ -29,6 +29,17 @@ var (
 	// ErrNoCapableCandidate: no candidate scored > 0 for the task's required
 	// capability, so Schedule could not pick an executor.
 	ErrNoCapableCandidate = errors.New("taskfabric: no capable candidate")
+	// ErrNoAffordableCandidate: capable candidates existed but every one was
+	// rejected by the agent admission predicate (deadline passed, budget
+	// spent, or budget reserve reached) — see agentfabric.Admissibility.
+	//
+	// Deliberately NOT a wrapper of ErrNoCapableCandidate: the two are
+	// different incidents ("nobody can do this" vs "everybody who could is
+	// out of budget"), and anything keying on errors.Is — the scheduler's log
+	// throttle, most immediately — must be able to tell them apart. Collapsing
+	// them made a governance budget that was simply too small for the LLM look
+	// exactly like a missing executor.
+	ErrNoAffordableCandidate = errors.New("taskfabric: no affordable candidate")
 	// ErrTaskIDRequired: Create was called without an id.
 	ErrTaskIDRequired = errors.New("taskfabric: task id required")
 	// ErrAgentIDRequired: Acquire was called without an owning agent id.
@@ -48,6 +59,24 @@ var (
 	// graph change is still real — only its projection onto this one task
 	// has to wait for the task to reach a mutable state.
 	ErrTaskNotMutable = errors.New("taskfabric: task is not mutable in its current state")
+	// ErrTaskAwaitingApproval: the task requires human approval before
+	// execution but the approval gate has not been opened yet. Acquire
+	// refuses the lease so a pending task cannot be executed.
+	ErrTaskAwaitingApproval = errors.New("taskfabric: task is awaiting human approval")
+	// ErrApprovalNotRequired: ResolveApproval was called on a task that was
+	// never marked as requiring approval.
+	ErrApprovalNotRequired = errors.New("taskfabric: task does not require approval")
+	// ErrInvalidApprovalDecision: ResolveApproval was called with a decision
+	// value outside the allowed set {"approved", "rejected"}.
+	ErrInvalidApprovalDecision = errors.New("taskfabric: invalid approval decision")
+	// ErrApprovalAlreadyResolved: ResolveApproval was called on a task whose
+	// approval gate was already resolved with a different decision, or whose
+	// state no longer permits resolution (e.g. already terminal).
+	ErrApprovalAlreadyResolved = errors.New("taskfabric: approval already resolved")
+	// ErrInterruptRejected is the cause stamped into a task's checkpoint when
+	// a human rejects its approval gate — the task is driven to FAILED via
+	// failTerminalLocked.
+	ErrInterruptRejected = errors.New("taskfabric: interrupt rejected by human")
 )
 
 // Fabric owns Tasks and their leases (ares-runtime.md:

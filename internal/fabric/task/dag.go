@@ -47,6 +47,9 @@ func (f *Fabric) ReadyTasks() []string {
 		if !f.retryDueLocked(t) {
 			continue
 		}
+		if !approvalCleared(t) {
+			continue
+		}
 		if depsSatisfiedLocked(f.tasks, t) {
 			out = append(out, id)
 		}
@@ -77,16 +80,31 @@ func (f *Fabric) ResumableTasks() []string {
 			if !f.retryDueLocked(t) {
 				continue
 			}
+			if !approvalCleared(t) {
+				continue
+			}
 			if depsSatisfiedLocked(f.tasks, t) {
 				out = append(out, id)
 			}
 		case StateSuspended:
+			if !approvalCleared(t) {
+				continue
+			}
 			if t.Lease != nil && !t.Lease.IsExpired(f.now()) {
 				out = append(out, id)
 			}
 		}
 	}
 	return out
+}
+
+// approvalCleared reports whether a task's HITL approval gate has been
+// opened. A task that does not require approval is always cleared. A task
+// that requires approval is cleared only when the decision is "approved".
+// Pending ("") and rejected both return false — pending is blocked, rejected
+// is driven to FAILED by the resolve path so it never lingers.
+func approvalCleared(t *Task) bool {
+	return !t.RequiresApproval || t.ApprovalDecision == ApprovalDecisionApproved
 }
 
 // retryDueLocked reports whether a requeued task has served its retry backoff.

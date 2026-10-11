@@ -94,7 +94,8 @@ func createAndServeAgents(
 	if comp.NewEvolution != nil {
 		strategySrc = ares_bootstrap.NewStrategySource(comp.NewEvolution.StrategyStore)
 		if strategySrc != nil {
-			log.Info("serve: evolution strategy source wired into agents (GA deploy → runtime read)")
+			log.Info(ctx, "createAndServeAgents",
+				"serve: evolution strategy source wired into agents (GA deploy → runtime read)")
 		}
 	}
 
@@ -117,7 +118,8 @@ func createAndServeAgents(
 		factory := func() base.Agent { return sa }
 		mgr.RegisterAgent(sa, factory)
 	}
-	log.Info("serve: peer agents registered directly to Kernel", "count", len(subAgents))
+	log.Info(ctx, "createAndServeAgents",
+		"serve: peer agents registered directly to Kernel", "count", len(subAgents))
 
 	wireLiveDAGAndCompile(ctx, cfg, comp, peerKernel, mgr)
 	wireEvolutionLoops(ctx, cfg, comp, peerKernel)
@@ -215,7 +217,8 @@ func wireEvolutionLoops(
 				runKernelQuotaLoop(loopCtx, quotaMgr, parseKernelLoopConfig(cfg))
 				return nil
 			})
-			log.Info("serve: evolution quota loop wired (GA budget → fabric P5 admission)")
+			log.Info(ctx, "wireEvolutionLoops",
+				"serve: evolution quota loop wired (GA budget → fabric P5 admission)")
 		}
 
 		// Evolution-aware spawn gate: "Evolution decides; Kernel enforces". The GA strategy store publishes
@@ -231,7 +234,8 @@ func wireEvolutionLoops(
 			if spawnSrc != nil {
 				spawner := aresrecovery.NewEvolutionAwareSpawner(peerKernel.agents, spawnSrc)
 				peerKernel.recovery.WithSpawner(spawner)
-				log.Info("serve: evolution spawn gate wired (GA policy → recovery spawn enforcement)")
+				log.Info(ctx, "wireEvolutionLoops",
+					"serve: evolution spawn gate wired (GA policy → recovery spawn enforcement)")
 			}
 		}
 
@@ -251,7 +255,8 @@ func wireEvolutionLoops(
 				aresrecovery.RunKernelEvolutionLoop(loopCtx, popAdapter, 0, 0)
 				return nil
 			})
-			log.Info("serve: evolution population loop wired (GA topology → fabric spawn/retire)")
+			log.Info(ctx, "wireEvolutionLoops",
+				"serve: evolution population loop wired (GA topology → fabric spawn/retire)")
 		}
 	}
 }
@@ -314,7 +319,8 @@ func wireIntrospectPanel(
 				}
 			}
 		})
-		log.Info("serve: introspect panel wired (GET /introspect)")
+		log.Info(ctx, "wireIntrospectPanel",
+			"serve: introspect panel wired (GET /introspect)")
 	}
 	return chaosStatus
 }
@@ -399,7 +405,7 @@ func setupPeerRegistry(
 		// (channel not armed — the default) leaves the bus unobserved.
 		if rec := comp.NewEvolution.ChannelFeedback; rec.CollaborationArmed() {
 			bridge.ipc.Bus().WithCollaborationObserver(rec)
-			log.Info("serve: collaboration feedback channel armed (evolution reads collaboration receipts)")
+			log.InfoContext(context.Background(), "serve: collaboration feedback channel armed (evolution reads collaboration receipts)")
 		}
 		// Wire ask_agent to ipc.Request (C-1 fix: background launch). The
 		// syscall Kernel is built in peer_mode before the bridge exists, so
@@ -439,14 +445,14 @@ func setupPeerRegistry(
 					defer cancel()
 					reply, err := ipc.Request(ctx, from, to, topic, payload, askAgentTimeout)
 					if err != nil {
-						log.Warn("ask_agent: background request failed", "from", from, "to", to, "topic", topic, "error", err)
+						log.WarnContext(context.Background(), "ask_agent: background request failed", "from", from, "to", to, "topic", topic, "error", err)
 						return nil // nil = clean exit (GoBackground swallows non-nil as a restartable error)
 					}
 					if reply == nil {
-						log.Warn("ask_agent: background request returned no reply", "from", from, "to", to, "topic", topic)
+						log.WarnContext(context.Background(), "ask_agent: background request returned no reply", "from", from, "to", to, "topic", topic)
 						return nil
 					}
-					log.Info("ask_agent: background reply received", "from", from, "to", to, "topic", topic)
+					log.InfoContext(context.Background(), "ask_agent: background reply received", "from", from, "to", to, "topic", topic)
 					return nil
 				})
 				if !launched {
@@ -458,9 +464,9 @@ func setupPeerRegistry(
 				}
 				return nil, agentsyscall.ErrAskAgentYielding
 			})
-			log.Info("serve: ask_agent syscall wired to evolution-aware IPC (background launch, no drain deadlock)", "count", len(reg.IDs()))
+			log.InfoContext(context.Background(), "serve: ask_agent syscall wired to evolution-aware IPC (background launch, no drain deadlock)", "count", len(reg.IDs()))
 		}
-		log.Info("peer registry wired through evolution-aware IPC: agents registered", "count", len(reg.IDs()))
+		log.InfoContext(context.Background(), "peer registry wired through evolution-aware IPC: agents registered", "count", len(reg.IDs()))
 	default:
 		reg = buildPeerRegistry(subAgents)
 		// The ask_agent tool is advertised on the binder in every serve
@@ -488,9 +494,9 @@ func setupPeerRegistry(
 				}
 				return nil, ErrAskAgentNoReply // plain registry has no reply path
 			})
-			log.Info("serve: ask_agent syscall wired to plain peer registry (agents)", "count", len(reg.IDs()))
+			log.InfoContext(context.Background(), "serve: ask_agent syscall wired to plain peer registry (agents)", "count", len(reg.IDs()))
 		}
-		log.Info("peer registry wired: agents registered", "count", len(reg.IDs()))
+		log.InfoContext(context.Background(), "peer registry wired: agents registered", "count", len(reg.IDs()))
 	}
 	// Retain the registry on the kernel handle at construction time (the
 	// return value was previously discarded by callers). serve.go also assigns
@@ -516,11 +522,11 @@ func injectToolClassDAG(comp *ares_bootstrap.Components, toolBinder sub.ToolBind
 	switch {
 	case err == nil:
 		comp.NewEvolution.SetToolClassDAG(l1DAG)
-		log.Info("serve: L1 ToolClass DAG injected into evolution (nodes)", "count", len(l1DAG.Steps()))
+		log.InfoContext(context.Background(), "serve: L1 ToolClass DAG injected into evolution (nodes)", "count", len(l1DAG.Steps()))
 	case errors.Is(err, errNoToolSchemas):
-		log.Info("serve: no tool schemas; L1 ToolClass DAG skipped (constraints default to permissive)")
+		log.InfoContext(context.Background(), "serve: no tool schemas; L1 ToolClass DAG skipped (constraints default to permissive)")
 	default:
-		log.Warn("serve: L1 ToolClass DAG build failed (constraints default to permissive)", "err", err)
+		log.WarnContext(context.Background(), "serve: L1 ToolClass DAG build failed (constraints default to permissive)", "err", err)
 	}
 }
 

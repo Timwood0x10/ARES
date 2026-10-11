@@ -216,7 +216,7 @@ func (k *kernelHandle) adopt(ctx context.Context, orch *kernel.Orchestrator) err
 		return nil
 	}
 	if orch == nil {
-		log.Info("serve: system runtime not wired; kernel components not adopted (unmanaged lifecycle)")
+		log.Info(ctx, "adopt", "serve: system runtime not wired; kernel components not adopted (unmanaged lifecycle)")
 		return nil
 	}
 
@@ -305,7 +305,11 @@ func (k *kernelHandle) adopt(ctx context.Context, orch *kernel.Orchestrator) err
 			return fmt.Errorf("serve: adopt kernel component %q: %w", c.name, err)
 		}
 	}
-	log.Info("serve: kernel components adopted into system runtime (scheduler/taskfabric/agentfabric/recovery/dispatcher/pluginbus)")
+	// The pillar list is the ADOPTED set, not the historical six: the agentipc
+	// dispatcher pillar was removed in v0.3.3 (no production caller), so the
+	// line must not advertise a component that no longer joins the graph.
+	log.Info(ctx, "adopt",
+		"serve: kernel components adopted into system runtime (scheduler/taskfabric/agentfabric/recovery/pluginbus)")
 	return nil
 }
 
@@ -347,7 +351,8 @@ func (k *kernelHandle) componentPresent(name string) bool {
 // it, where a shutdown-time skip is the expected path.
 func runBackground(ctx context.Context, comp *ares_bootstrap.Components, name string, fn func(ctx context.Context) error) bool {
 	if comp == nil {
-		log.Info("serve: background loop skipped (no component container)", "name", name)
+		log.Info(ctx, "runBackground",
+			"serve: background loop skipped (no component container)", "name", name)
 		return false
 	}
 	if comp.SystemRuntime != nil {

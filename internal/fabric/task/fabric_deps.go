@@ -1,6 +1,7 @@
 package taskfabric
 
 import (
+	"context"
 	"fmt"
 	"slices"
 	"sort"
@@ -95,7 +96,8 @@ func (f *Fabric) recordDegradedInputLocked(t *Task, missing string, pending *[]*
 func (f *Fabric) mirrorDegradedInputsLocked(t *Task) {
 	dc, err := DecodeCheckpoint(t.Checkpoint)
 	if err != nil {
-		log.Warn("taskfabric: cannot mirror degraded_inputs into payload",
+		log.Warn(context.Background(), "mirrorDegradedInputsLocked",
+			"taskfabric: cannot mirror degraded_inputs into payload",
 			"task", t.ID, "error", err)
 		return
 	}

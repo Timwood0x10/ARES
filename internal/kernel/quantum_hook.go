@@ -66,7 +66,8 @@ func (s *Scheduler) beforeQuantum(ctx context.Context, taskID, agentID string) {
 		return
 	}
 	if err := h.BeforeQuantum(ctx, taskID, agentID); err != nil {
-		log.Error("kernel scheduler: beforeQuantum hook error (continuing)", "task_id", taskID, "agent", agentID, "error", err)
+		log.Error(ctx, "beforeQuantum", "kernel scheduler: beforeQuantum hook error (continuing)",
+			err, "task_id", taskID, "agent", agentID)
 	}
 }
 

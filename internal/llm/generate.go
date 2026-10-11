@@ -32,8 +32,16 @@ func (c *Client) validatePrompt(ctx context.Context, prompt string, start time.T
 	}
 	// Count runes, not bytes: CJK and other multi-byte characters would
 	// otherwise be wrongly rejected against a character-based limit.
+	//
+	// Wrapped in ErrInvalidArgument like the two checks above: an over-length
+	// prompt is the same class of failure — a property of the request, not of
+	// the provider or the network — so a retry re-sends the same over-length
+	// prompt. Leaving it unwrapped made it indistinguishable from a transient
+	// upstream error, and the kernel's permanent-cause classification
+	// (markPermanentStepCause) could not see it.
 	if utf8.RuneCountInString(prompt) > c.promptMaxLength() {
-		err := fmt.Errorf("prompt exceeds maximum length of %d characters", c.promptMaxLength())
+		err := fmt.Errorf("%w: prompt exceeds maximum length of %d characters",
+			errors.ErrInvalidArgument, c.promptMaxLength())
 		c.recordLLMCall(ctx, prompt, "", llmcore.TokenUsage{}, start, err)
 		return err
 	}

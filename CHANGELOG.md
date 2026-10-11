@@ -70,6 +70,23 @@ none of this execute and persist exactly as before — pinned by
   as an approximation rather than a tokenizer, so it can only trim more, never
   less. Budget first, then cleaning; `0` is a no-op.
 
+- **HITL approval gate** (`internal/fabric/task`, `cmd/ares/agent_routes_interrupts.go`):
+  a workflow step can now declare `interrupt: { message: "..." }` in YAML (or
+  set `engine.Step.Interrupt` in Go) to mark it as requiring human approval
+  before execution. The compiled task enters READY but is blocked by an approval
+  gate — it must not be scheduled (`ReadyTasks`/`ResumableTasks` exclude it) or
+  acquired (`Acquire` returns `ErrTaskAwaitingApproval`). A human resolves the
+  gate via `POST /api/interrupts/{id}/resolve` (authWrite) or the Fabric API
+  (`ResolveApproval`). Approve opens the gate (task stays READY, scheduler picks
+  it up next tick); reject drives it to FAILED via the existing `READY→FAILED`
+  transition with cascade. The approval policy and decision are persisted in the
+  event stream and folded back on restore, so a restart cannot silently open a
+  pending gate. Default (no `interrupt` declared) is byte-for-byte compatible
+  with 0.3.3. Two event constants (`interrupt.created` / `interrupt.resolved`)
+  were moved from `internal/runtime` to `internal/ares_events` so the fabric
+  core can reference them without violating the layering gate
+  (`TestFabricCoreMustNotImportRuntime`).
+
 ### Fixed
 
 - **Deterministic L1 priors ordering**

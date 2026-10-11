@@ -88,7 +88,8 @@ func wiringServeSignalWatch(
 		// Record the pre-shutdown component snapshot for shutdown diagnostics
 		// (which components were still running before background exit).
 		if snapJSON, snapErr := comp.Snapshot().JSON(); snapErr == nil {
-			log.Info("system_runtime snapshot (shutdown)", "snap_json", string(snapJSON))
+			log.Info(ctx, "wiringServeSignalWatch",
+				"system_runtime snapshot (shutdown)", "snap_json", string(snapJSON))
 		}
 		// Wait for Bootstrap's background goroutines (distillation subscriber,
 		// GA evolution ticker, LLM suggestion ticker) to exit after the
@@ -168,9 +169,11 @@ func wiringServeCfgStoreWatch(ctx context.Context, g *errgroup.Group, cfg *ares_
 	// (names, modes, lifecycle states) so operators can confirm which
 	// components were assembled and reached Ready at startup.
 	if snapJSON, snapErr := comp.Snapshot().JSON(); snapErr == nil {
-		log.Info("system_runtime snapshot (startup)", "snap_json", string(snapJSON))
+		log.Info(ctx, "wiringServeCfgStoreWatch",
+			"system_runtime snapshot (startup)", "snap_json", string(snapJSON))
 	} else {
-		log.Warn("system_runtime snapshot unavailable", "err", snapErr)
+		log.Warn(ctx, "wiringServeCfgStoreWatch",
+			"system_runtime snapshot unavailable", "error", snapErr)
 	}
 	return cfgStore
 }
@@ -233,19 +236,22 @@ func wiringServeToolchain(ctx context.Context, cfg *ares_config.Config, comp *ar
 	if comp.SkillCatalog != nil {
 		for _, t := range ares_skills.CatalogTools(comp.SkillCatalog) {
 			if err := internalReg.Register(t); err != nil {
-				log.Warn("serve: register skill tool skipped", "tool", t.Name(), "err", err)
+				log.Warn(ctx, "wiringServeToolchain",
+					"serve: register skill tool skipped", "tool", t.Name(), "error", err)
 			}
 		}
-		log.Info("serve: skill catalog tools registered (progressive disclosure active)")
+		log.Info(ctx, "wiringServeToolchain",
+			"serve: skill catalog tools registered (progressive disclosure active)")
 	}
 
 	toolBinder = newToolBinder(internalReg)
-	log.Info("tools registered", "count", len(toolBinder.ListTools()))
+	log.Info(ctx, "wiringServeToolchain",
+		"tools registered", "count", len(toolBinder.ListTools()))
 
 	// --- Capability Planner bridge for agent tool fallback ---
 	if bridge := newPlannerBridge(internalReg); bridge != nil {
 		toolBinder.WithPlannerBridge(bridge)
-		log.Info("planner bridge: attached")
+		log.Info(ctx, "wiringServeToolchain", "planner bridge: attached")
 	}
 
 	// Step Y.3: arm the tool-call perception channel. The decorator wraps the
@@ -256,7 +262,8 @@ func wiringServeToolchain(ctx context.Context, cfg *ares_config.Config, comp *ar
 	// recorder (channel not armed — the default) returns the binder untouched.
 	if comp.NewEvolution != nil && comp.NewEvolution.ChannelFeedback.ToolCallsArmed() {
 		toolBinder = sub.ObserveToolCalls(toolBinder, comp.NewEvolution.ChannelFeedback)
-		log.Info("serve: tool-call feedback channel armed (evolution reads tool outcomes)")
+		log.Info(ctx, "wiringServeToolchain",
+			"serve: tool-call feedback channel armed (evolution reads tool outcomes)")
 	}
 
 	return toolBinder, registry, internalReg, nil
@@ -277,10 +284,12 @@ func wiringServeAKFTools(comp *ares_bootstrap.Components, internalReg *core_tool
 			t := akfTool // capture
 			adapted := &akfToolAdapter{name: t.Name, desc: t.Description, fn: t.Execute}
 			if err := internalReg.Register(adapted); err != nil {
-				log.Warn("AKF: failed to register tool", "name", t.Name, "err", err)
+				log.Warn(context.Background(), "wiringServeAKFTools",
+					"AKF: failed to register tool", "name", t.Name, "error", err)
 			}
 		}
-		log.Info("AKF tools registered with shared KnowledgeRuntime", "count", len(akfSvc.Tools()))
+		log.Info(context.Background(), "wiringServeAKFTools",
+			"AKF tools registered with shared KnowledgeRuntime", "count", len(akfSvc.Tools()))
 	}
 }
 
@@ -332,7 +341,8 @@ func newServeEventStore(cfg *ares_config.Config) (ares_events.EventStore, func()
 			_ = pool.Close() // best-effort: the pool must not leak when store construction fails
 			return nil, nil, fmt.Errorf("event store: create postgres store: %w", err)
 		}
-		log.Info("serve: event store = postgres (task/event stream persists across restarts; task fabric restores on boot)")
+		log.Info(context.Background(), "newServeEventStore",
+			"serve: event store = postgres (task/event stream persists across restarts; task fabric restores on boot)")
 		return store, store.Close, nil
 	}
 	compactable, _, err := archive.NewCompactableStoreWithArchive(cfg.Memory.Archive)
@@ -373,7 +383,9 @@ func setupServeControlPlane(
 	// dedicated goroutine below, migrated from dashboard.EventBridge) to
 	// score health / detect anomalies.
 	intelEngine := introspect.NewEngine(nil)
-	log.Info("intelligence engine started", "level", intelEngine.SystemHealth().Level, "count", len(intelEngine.Anomalies()))
+	log.Info(ctx, "setupServeControlPlane",
+		"intelligence engine started",
+		"level", intelEngine.SystemHealth().Level, "count", len(intelEngine.Anomalies()))
 
 	// Feed the intelligence engine from the shared event store. Independent of
 	// the introspect panel sink: this subscription only powers
@@ -383,7 +395,8 @@ func setupServeControlPlane(
 		g.Go(func() error {
 			ch, err := store.Subscribe(ctx, ares_events.EventFilter{})
 			if err != nil {
-				log.Warn("[intel] event subscribe failed", "err", err)
+				log.Warn(ctx, "setupServeControlPlane",
+					"[intel] event subscribe failed", "error", err)
 				return nil
 			}
 			for {
@@ -496,7 +509,8 @@ func startServeHTTPAndHooks(
 	// M-S1: the control plane's exposure state is printed on every startup —
 	// bind address, credential layers, introspect token — so the effective
 	// security posture is visible, not implied by defaults.
-	log.Info("serve: control-plane exposure state",
+	log.Info(ctx, "startServeHTTPAndHooks",
+		"serve: control-plane exposure state",
 		"bind", addr,
 		"wildcard_bind", isWildcardHost(cfg.Server.Host),
 		"auth", authConfigured,
@@ -504,7 +518,8 @@ func startServeHTTPAndHooks(
 		"introspect_token", cfg.Introspect.Token != "",
 	)
 	if cfg.Introspect.Token == "" {
-		log.Warn("introspect read side: localhost only, no token — set introspect.token to require a bearer token from non-loopback clients")
+		log.Warn(ctx, "startServeHTTPAndHooks",
+			"introspect read side: localhost only, no token — set introspect.token to require a bearer token from non-loopback clients")
 	}
 	// M-S2: the endpoint registry is the control-plane inventory — print its
 	// auth-level distribution so the startup log answers "how many endpoints
@@ -513,7 +528,8 @@ func startServeHTTPAndHooks(
 	for _, spec := range actionRoutes {
 		routeLevels[spec.Auth]++
 	}
-	log.Info("serve: control-plane endpoint registry",
+	log.Info(ctx, "startServeHTTPAndHooks",
+		"serve: control-plane endpoint registry",
 		"routes", len(actionRoutes),
 		"none", routeLevels[authNone],
 		"read", routeLevels[authRead],
@@ -525,7 +541,8 @@ func startServeHTTPAndHooks(
 	// the operator either enabled auth, set a token, or bound loopback. The
 	// remaining Info line records which posture is live for the audit trail.
 	if isWildcardHost(cfg.Server.Host) && !authConfigured {
-		log.Info("serve: wildcard bind is gated by introspect.token (security.auth_enabled is false)",
+		log.Info(ctx, "startServeHTTPAndHooks",
+			"serve: wildcard bind is gated by introspect.token (security.auth_enabled is false)",
 			"host", cfg.Server.Host)
 	}
 

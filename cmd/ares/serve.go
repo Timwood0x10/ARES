@@ -30,7 +30,11 @@ import (
 )
 
 // log is the package-level structured logger for the ares serve command.
-var log = logger.Module("ares")
+// log is the module-scoped structured logger for the CLI/composition layer.
+// logger.New (not logger.Module) so every entry carries the METHOD that
+// produced it: the serve path is a long assembly sequence, and "which step
+// logged this" is the first thing an operator needs.
+var log = logger.New("ares")
 
 var serveCmd = &cobra.Command{
 	Use:   "serve",
@@ -110,7 +114,8 @@ func runServe() error {
 	// (potentially long) Bootstrap, abort the startup instead of proceeding
 	// to wire components and start the runtime on a canceled context.
 	if err := ctx.Err(); err != nil {
-		log.Info("serve: shutdown was requested during assembly; aborting startup", "err", err)
+		log.Info(context.Background(), "runServe",
+			"serve: shutdown was requested during assembly; aborting startup", "error", err)
 		return normalizeShutdownErr(err)
 	}
 
@@ -129,7 +134,8 @@ func runServe() error {
 	if err != nil {
 		return fmt.Errorf("create chat client: %w", err)
 	}
-	log.Info("chat client created", "provider", cfg.LLM.Provider, "model", cfg.LLM.Model)
+	log.Info(context.Background(), "runServe",
+		"chat client created", "provider", cfg.LLM.Provider, "model", cfg.LLM.Model)
 
 	// --- Tools + MCP + binder ---
 	toolBinder, registry, internalReg, err := wiringServeToolchain(ctx, cfg, comp)
@@ -154,7 +160,8 @@ func runServe() error {
 	}
 	if peerKernel != nil {
 		peerKernel.peerRegistry = reg
-		log.Info("serve: peer registry retained on kernel (agents)", "count", len(reg.IDs()))
+		log.Info(context.Background(), "runServe",
+			"serve: peer registry retained on kernel (agents)", "count", len(reg.IDs()))
 	}
 
 	// --- Runtime introspection control plane:
@@ -240,7 +247,8 @@ func loadServeConfig() (*ares_config.Config, error) {
 		if servePort > 0 {
 			cfg.Server.Port = servePort
 		}
-		log.Info("serve: minimal config (llm-url only); runtime defaults for all subsystems")
+		log.Info(context.Background(), "loadServeConfig",
+			"serve: minimal config (llm-url only); runtime defaults for all subsystems")
 		return cfg, nil
 	}
 

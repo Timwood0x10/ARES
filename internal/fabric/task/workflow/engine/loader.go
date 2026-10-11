@@ -181,6 +181,13 @@ func convertStep(f *StepFile) (*Step, error) {
 		}
 	}
 
+	if f.Interrupt != nil {
+		step.Interrupt = &InterruptConfig{
+			Message: f.Interrupt.Message,
+			Payload: f.Interrupt.Payload,
+		}
+	}
+
 	return step, nil
 }
 
@@ -207,14 +214,24 @@ type WorkflowFile struct {
 // wired for operators yet — add explicit *_ms fields or a custom unmarshaler
 // before exposing them (tracked as the C3 YAML-author follow-up).
 type StepFile struct {
-	ID          string            `json:"id" yaml:"id"`
-	Name        string            `json:"name" yaml:"name"`
-	AgentType   string            `json:"agent_type" yaml:"agent_type"`
-	Input       string            `json:"input" yaml:"input"`
-	DependsOn   []string          `json:"depends_on" yaml:"depends_on"`
-	Timeout     time.Duration     `json:"timeout" yaml:"timeout"` // nanoseconds if a bare number — see UNIT CAVEAT above
-	RetryPolicy *RetryPolicyFile  `json:"retry_policy" yaml:"retry_policy"`
-	Metadata    map[string]string `json:"metadata" yaml:"metadata"`
+	ID          string               `json:"id" yaml:"id"`
+	Name        string               `json:"name" yaml:"name"`
+	AgentType   string               `json:"agent_type" yaml:"agent_type"`
+	Input       string               `json:"input" yaml:"input"`
+	DependsOn   []string             `json:"depends_on" yaml:"depends_on"`
+	Timeout     time.Duration        `json:"timeout" yaml:"timeout"` // nanoseconds if a bare number — see UNIT CAVEAT above
+	RetryPolicy *RetryPolicyFile     `json:"retry_policy" yaml:"retry_policy"`
+	Interrupt   *InterruptConfigFile `json:"interrupt,omitempty" yaml:"interrupt,omitempty"`
+	Metadata    map[string]string    `json:"metadata" yaml:"metadata"`
+}
+
+// InterruptConfigFile is the YAML/JSON author-facing mirror of
+// InterruptConfig. When StepFile.Interrupt is non-nil the loader maps it
+// onto engine.Step.Interrupt so ProjectStep can forward the approval gate
+// to the fabric .
+type InterruptConfigFile struct {
+	Message string         `json:"message" yaml:"message"`
+	Payload map[string]any `json:"payload,omitempty" yaml:"payload,omitempty"`
 }
 
 // RetryPolicyFile represents retry policy from a file. InitialDelay/MaxDelay

@@ -85,6 +85,33 @@ type Task struct {
 	CreatedAt time.Time
 	// UpdatedAt is the last state transition or quantum boundary time.
 	UpdatedAt time.Time
+
+	// --- HITL approval gate ---
+	//
+	// RequiresApproval is the creation-time policy: when true the task enters
+	// READY but is blocked by an approval gate — it must not be scheduled or
+	// acquired until a human resolves the approval. False (the zero value) is
+	// the default: no gate, pre-HITL behaviour, byte-for-byte compatible.
+	RequiresApproval bool
+	// ApprovalMessage is the human-facing prompt shown to the approver (from
+	// InterruptConfig.Message). Empty when RequiresApproval is false.
+	ApprovalMessage string
+	// ApprovalPayload carries optional context for the approver (from
+	// InterruptConfig.Payload). Nil when RequiresApproval is false.
+	ApprovalPayload map[string]any
+	// ApprovalDecision is the runtime state of the gate:
+	//   ""         — pending (not yet resolved)
+	//   "approved" — gate opened, task is schedulable
+	//   "rejected" — gate closed, task is driven to FAILED
+	ApprovalDecision string
+	// ApprovalFeedback is the human's feedback text (reject reason / approve
+	// note). Empty until resolved.
+	ApprovalFeedback string
+	// ApprovalBy is the principal identifier of the person who resolved the
+	// gate, for audit. Empty until resolved.
+	ApprovalBy string
+	// ApprovalAt is when the gate was resolved. Zero until resolved.
+	ApprovalAt time.Time
 }
 
 // RetryPolicy bounds re-queueing after failures.

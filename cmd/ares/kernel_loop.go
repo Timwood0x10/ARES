@@ -2,12 +2,14 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/ares_config"
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/aresrecovery"
+	agentfabric "github.com/Timwood0x10/ares/internal/fabric/agent"
 )
 
 // recoverySweepInterval is how often the event-driven recovery loop also
@@ -115,7 +117,8 @@ func newRecoveryKick() (<-chan string, func(taskID string)) {
 		default:
 			// Buffer full: drop rather than block the drain. The task stays
 			// READY and is picked up as soon as any capable executor appears.
-			log.Warn("kernel recovery loop: nomination buffer full, dropping task", "task_id", taskID)
+			log.Warn(context.Background(), "newRecoveryKick",
+				"kernel recovery loop: nomination buffer full, dropping task", "task_id", taskID)
 		}
 	}
 }
@@ -158,7 +161,9 @@ func parseKernelLoopConfig(cfg *ares_config.Config) kernelLoopConfig {
 		}
 		d, err := time.ParseDuration(raw)
 		if err != nil {
-			log.Info("kernel: invalid duration, using default", "raw", raw, "fallback", fallback, "err", err)
+			log.Info(context.Background(), "parseKernelLoopConfig",
+				"kernel: invalid duration, using default",
+				"raw", raw, "fallback", fallback, "err", err)
 			return fallback
 		}
 		return d
@@ -168,7 +173,8 @@ func parseKernelLoopConfig(cfg *ares_config.Config) kernelLoopConfig {
 		if d, err := time.ParseDuration(raw); err == nil && d > 0 {
 			leaseTTL = d
 		} else {
-			log.Info("kernel: invalid lease_ttl, using scheduler default", "raw", raw)
+			log.Info(context.Background(), "parseKernelLoopConfig",
+				"kernel: invalid lease_ttl, using scheduler default", "raw", raw)
 		}
 	}
 	return kernelLoopConfig{
@@ -205,13 +211,15 @@ func runKernelQuotaLoop(ctx context.Context, mgr *aresrecovery.EvolutionAwareQuo
 		// running.
 		defer func() {
 			if r := recover(); r != nil {
-				log.Error("kernel: quota apply panic", "phase", phase, "panic", r)
+				log.Error(ctx, "runKernelQuotaLoop",
+					"kernel: quota apply panic", nil, "phase", phase, "panic", r)
 			}
 		}()
 		applyCtx, cancel := context.WithTimeout(ctx, cfg.QuotaApplyTimeout)
 		defer cancel()
 		if err := mgr.Apply(applyCtx); err != nil {
-			log.Warn("kernel: quota apply failed", "phase", phase, "err", err)
+			log.Warn(ctx, "runKernelQuotaLoop",
+				"kernel: quota apply failed", "phase", phase, "error", err)
 		}
 	}
 	apply("startup")
@@ -298,7 +306,8 @@ func runKernelRecoveryLoop(
 		if err == nil {
 			events = ch
 		} else {
-			log.Warn("kernel recovery loop: subscribe failed, periodic sweep only", "err", err)
+			log.Warn(ctx, "runKernelRecoveryLoop",
+				"kernel recovery loop: subscribe failed, periodic sweep only", "error", err)
 		}
 	}
 	ticker := time.NewTicker(cfg.RecoverySweepInterval)
@@ -337,22 +346,46 @@ func runKernelRecoveryLoop(
 					exec := executorFactory(revived.Identity, rt.Capability)
 					if exec != nil {
 						registerExecutor(taskID, revived.Identity, exec)
-						log.Info("kernel recovery loop: revived agent in place (cognition restored)", "identity", revived.Identity, "task_id", taskID)
+						log.Info(ctx, "runKernelRecoveryLoop",
+							"kernel recovery loop: revived agent in place (cognition restored)",
+							"identity", revived.Identity, "task_id", taskID,
+							"capability", rt.Capability)
 						continue
 					}
 				} else {
-					log.Info("kernel recovery loop: in-place revival unavailable; using replacement", "snap_id", snapID, "err", err)
+					// Separate "the restart budget is spent" from every other
+					// reason a revival did not happen. The first is a
+					// deliberate governance decision — an operator sees
+					// stop_reason=recovery_exhausted and knows there is nothing
+					// to fix — while the rest are faults. Both used to render as
+					// one generic "unavailable" line. The dead agent's own
+					// death reason rides along from the snapshot, so the pair
+					// ("why it died" / "why it was not revived") is complete.
+					reason := agentfabric.StopUnknown
+					if errors.Is(err, aresrecovery.ErrRecoveryExhausted) {
+						reason = agentfabric.StopRecoveryExhausted
+					}
+					log.Info(ctx, "runKernelRecoveryLoop",
+						"kernel recovery loop: in-place revival unavailable; using replacement",
+						"snap_id", snapID,
+						"stop_reason", reason.String(),
+						"death_reason", snap.StopReason.String(),
+						"error", err)
 				}
 			}
 
 			replacementID := fmt.Sprintf("recovery-%s-%d", taskID, time.Now().UnixNano())
 			executor := executorFactory(replacementID, rt.Capability)
 			if executor == nil {
-				log.Warn("kernel recovery loop: executor factory returned nil", "replacement_id", replacementID, "capability", rt.Capability)
+				log.Warn(ctx, "runKernelRecoveryLoop",
+					"kernel recovery loop: executor factory returned nil",
+					"replacement_id", replacementID, "capability", rt.Capability, "task_id", taskID)
 				continue
 			}
 			registerExecutor(taskID, replacementID, executor)
-			log.Info("kernel recovery loop: replacement executor bound", "replacement_id", replacementID, "task_id", taskID)
+			log.Info(ctx, "runKernelRecoveryLoop",
+				"kernel recovery loop: replacement executor bound",
+				"replacement_id", replacementID, "task_id", taskID, "capability", rt.Capability)
 		}
 	}
 	// sem (capacity 1) guards against overlapping sweeps: a sweep that is
@@ -370,7 +403,8 @@ func runKernelRecoveryLoop(
 			defer func() { <-sem }()
 			defer func() {
 				if r := recover(); r != nil {
-					log.Error("kernel recovery loop: panic in recovery sweep", "panic", r)
+					log.Error(ctx, "runKernelRecoveryLoop",
+						"kernel recovery loop: panic in recovery sweep", nil, "panic", r)
 				}
 			}()
 			sweepCtx, cancel := context.WithTimeout(ctx, cfg.RecoverySweepTimeout)
@@ -388,7 +422,9 @@ func runKernelRecoveryLoop(
 			// replacement executor by the lease path (see ExpireTaskDeadlines).
 			expired := recovery.ExpireTaskDeadlines()
 			if len(expired) > 0 {
-				log.Info("kernel recovery loop: task(s) past deadline failed", "count", len(expired))
+				log.Info(ctx, "runKernelRecoveryLoop",
+					"kernel recovery loop: task(s) past deadline failed",
+					"count", len(expired), "task_ids", expired)
 			}
 			// Recovery closed loop: requeue the tasks whose lease expired THIS
 			// sweep (not all READY tasks — a brand-new task is never a
@@ -397,7 +433,9 @@ func runKernelRecoveryLoop(
 			if len(requeued) == 0 {
 				return
 			}
-			log.Info("kernel recovery loop: requeued expired task(s)", "count", len(requeued))
+			log.Info(ctx, "runKernelRecoveryLoop",
+				"kernel recovery loop: requeued expired task(s)",
+				"count", len(requeued), "task_ids", requeued)
 			bindReplacements(requeued)
 		}()
 	}
@@ -426,7 +464,9 @@ func runKernelRecoveryLoop(
 		go func() {
 			defer func() {
 				if r := recover(); r != nil {
-					log.Error("kernel recovery loop: panic binding nominated task", "task_id", taskID, "panic", r)
+					log.Error(ctx, "runKernelRecoveryLoop",
+						"kernel recovery loop: panic binding nominated task", nil,
+						"task_id", taskID, "panic", r)
 				}
 			}()
 			select {
@@ -477,7 +517,8 @@ func parseKernelPollInterval(raw string) time.Duration {
 	}
 	d, err := time.ParseDuration(raw)
 	if err != nil || d <= 0 {
-		log.Info("kernel: invalid poll_interval, using scheduler default", "raw", raw)
+		log.Info(context.Background(), "parseKernelPollInterval",
+			"kernel: invalid poll_interval, using scheduler default", "raw", raw)
 		return 0
 	}
 	return d

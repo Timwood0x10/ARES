@@ -64,14 +64,18 @@ func TestBudgetExhaustedSoleCandidateDoesNotChurnLeases(t *testing.T) {
 	}
 
 	// Budget is exhausted: the sole candidate must be filtered BEFORE
-	// Schedule, so the execute call fails with the (throttled) no-capable-
-	// candidate sentinel and the fabric records no lease churn.
+	// Schedule, so the execute call fails with the (throttled) no-affordable-
+	// candidate sentinel and the fabric records no lease churn. The sentinel
+	// is deliberately NOT ErrNoCapableCandidate: "everybody capable is out of
+	// budget" and "nobody is capable" are different incidents, and a shared
+	// sentinel made the scheduler's per-cause log throttle swallow one behind
+	// the other.
 	err = sched.execute(ctx, "t-budget")
 	if err == nil {
-		t.Fatal("execute with an exhausted budget must report no capable candidate, got nil")
+		t.Fatal("execute with an exhausted budget must report no affordable candidate, got nil")
 	}
-	if !errors.Is(err, taskfabric.ErrNoCapableCandidate) {
-		t.Fatalf("execute error = %v, want ErrNoCapableCandidate", err)
+	if !errors.Is(err, taskfabric.ErrNoAffordableCandidate) {
+		t.Fatalf("execute error = %v, want ErrNoAffordableCandidate", err)
 	}
 	for _, ev := range fabric.Events() {
 		if ev.Type == taskfabric.EventTaskAcquired || ev.Type == taskfabric.EventTaskReleased {

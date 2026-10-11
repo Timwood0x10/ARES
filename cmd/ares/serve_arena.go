@@ -830,13 +830,15 @@ func buildArenaInjector() (*arena.Injector, *runtime.Manager) {
 	// appearing to act on agents that are not running.
 	var rt arena.RuntimeProvider
 	if err := mgr.Start(context.Background()); err != nil {
-		log.Info("arena serve: demo agent pool start failed; agent injections disabled", "err", err)
+		log.Info(context.Background(), "buildArenaInjector",
+			"arena serve: demo agent pool start failed; agent injections disabled", "error", err)
 	} else {
 		rt = &arenaRuntimeProvider{mgr: mgr}
 	}
 	dag, err := engine.NewMutableDAG(nil)
 	if err != nil {
-		log.Info("arena serve: mutable DAG unavailable; DAG injections disabled", "err", err)
+		log.Info(context.Background(), "buildArenaInjector",
+			"arena serve: mutable DAG unavailable; DAG injections disabled", "error", err)
 		return arena.NewInjector(rt, nil), mgr
 	}
 	return arena.NewInjector(rt, &arenaDAGProvider{dag: dag}), mgr
@@ -881,7 +883,8 @@ func (a *arenaDemoAgent) ProcessStream(ctx context.Context, input any) (<-chan b
 		defer func() {
 			close(ch)
 			if r := recover(); r != nil {
-				log.Error("arena: demo agent stream panicked (recovered)", "panic", r)
+				log.Error(ctx, "ProcessStream",
+					"arena: demo agent stream panicked (recovered)", nil, "agent", a.id, "panic", r)
 			}
 		}()
 		out, _ := a.Process(ctx, input)

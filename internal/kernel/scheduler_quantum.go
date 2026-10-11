@@ -23,6 +23,30 @@ type quantumUsage struct {
 	tokens int
 }
 
+// markPermanentStepCause wraps a step failure the fabric must NOT retry: the
+// cause is a property of the REQUEST, not of the agent or the environment, so
+// every further attempt — same agent or another — reproduces it exactly.
+//
+// This is the production entry point for taskfabric.MarkPermanent, whose only
+// reference used to be its own definition. Without a caller, "a failure with
+// budget left that must still go terminal" was a documented capability with
+// zero traffic: such a task spent its entire retry budget on attempts that
+// could never succeed, and the delay hid the real cause behind N repeats.
+//
+// The classification is deliberately narrow. errors.ErrInvalidArgument is the
+// codebase's marker for "the request as constructed is invalid" — the LLM
+// client stamps it on an empty prompt, an empty message list, and a prompt
+// past the configured length. A rejected request is deterministic for a given
+// task payload, so retrying cannot help. Everything else (timeouts, upstream
+// status, transport, unclassified) stays retryable, which preserves 0.3.2
+// behaviour exactly.
+func markPermanentStepCause(err error) error {
+	if err == nil || !errors.Is(err, apperrors.ErrInvalidArgument) {
+		return err
+	}
+	return taskfabric.MarkPermanent(err)
+}
+
 // buildQuantumStep constructs the QuantumStep closure RunQuantum executes:
 // it runs the executor's step and translates the outcome into fabric state
 // transitions (error → Fail, !Done → Yield with checkpoint, Done → Complete
@@ -88,7 +112,12 @@ func (s *Scheduler) buildQuantumStep(
 			// what the ctx.Done case above produces on scheduler shutdown —
 			// is RELEASED instead, so it neither burns Attempts nor cascades
 			// FAILED downstream (see taskfabric.isCancellation).
-			return nil, false, stepErr
+			//
+			// A cause that is a property of the REQUEST rather than of the
+			// agent or the environment is marked permanent here, so Fail
+			// finalizes the task instead of spending the retry budget on
+			// attempts that provably reproduce it (see markPermanentStepCause).
+			return nil, false, markPermanentStepCause(stepErr)
 		}
 		if out == nil {
 			return nil, false, apperrors.Kernel("run_quantum", "nil_step_outcome", tk.ID, executor.ID(), ErrNilStepOutcome)
@@ -228,7 +257,9 @@ func quantumRetries(err error) int {
 func (s *Scheduler) endQuantumOutcome(winner, capability, taskID string, err error, latency time.Duration, retries int) {
 	if errors.Is(err, taskfabric.ErrNotOwner) || errors.Is(err, taskfabric.ErrEpochMismatch) {
 		s.tracker.EndNeutral(winner)
-		log.Debug("kernel scheduler: quantum ended by preemption fencing (benign); outcome not attributed", "task_id", taskID)
+		log.Debug(context.Background(), "endQuantumOutcome",
+			"kernel scheduler: quantum ended by preemption fencing (benign); outcome not attributed",
+			"task_id", taskID, "winner", winner)
 		return
 	}
 	// Fabric start-stage sentinels and scheduler-shutdown cancellation are
@@ -241,8 +272,9 @@ func (s *Scheduler) endQuantumOutcome(winner, capability, taskID string, err err
 	if errors.Is(err, taskfabric.ErrIllegalState) || errors.Is(err, taskfabric.ErrTaskNotFound) ||
 		errors.Is(err, context.Canceled) {
 		s.tracker.EndNeutral(winner)
-		log.Debug("kernel scheduler: quantum ended by a non-executor condition; outcome not attributed",
-			"task_id", taskID, "error", err)
+		log.Debug(context.Background(), "endQuantumOutcome",
+			"kernel scheduler: quantum ended by a non-executor condition; outcome not attributed",
+			"task_id", taskID, "winner", winner, "error", err)
 		return
 	}
 	s.tracker.End(winner, err == nil)
@@ -276,7 +308,8 @@ func (s *Scheduler) ToModelTask(tk *taskfabric.Task) *models.Task {
 	}
 	dc, err := taskfabric.DecodeCheckpoint(tk.Checkpoint)
 	if err != nil {
-		log.Warn("kernel scheduler: toModelTask decode checkpoint failed", "task_id", tk.ID, "error", err)
+		log.Warn(context.Background(), "ToModelTask",
+			"kernel scheduler: toModelTask decode checkpoint failed", "task_id", tk.ID, "error", err)
 		t.Payload = map[string]any{"checkpoint": tk.Checkpoint}
 		return t
 	}

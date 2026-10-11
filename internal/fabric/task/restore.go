@@ -97,6 +97,15 @@ const (
 	// stamp on a post-restore task) would otherwise silently drop tenant
 	// attribution.
 	restoreKeyTenantID = "tenant_id"
+	// HITL approval gate keys . The policy
+	// (requires_approval + approval_message) rides the creation event; the
+	// runtime decision (approval_decision + approval_feedback) rides the
+	// event that recorded the resolution. Both fold back so a restart does
+	// not turn a pending gate into an open one or lose a resolved decision.
+	restoreKeyRequiresApproval = "requires_approval"
+	restoreKeyApprovalMessage  = "approval_message"
+	restoreKeyApprovalDecision = "approval_decision"
+	restoreKeyApprovalFeedback = "approval_feedback"
 )
 
 // RestoreFromStore rebuilds the in-memory task set from the attached event
@@ -153,7 +162,13 @@ func (f *Fabric) RestoreFromStore(ctx context.Context) error {
 			// The tombstone folds in the SAME pass as the other post-create
 			// events, so it lands after the task.created folded in pass one:
 			// a deleted task is created and then removed, never resurrected.
-			ares_events.EventTaskDeleted:
+			ares_events.EventTaskDeleted,
+			// HITL interrupt events carry the approval decision (runtime
+			// state that must survive a restart). They fold in the same
+			// post-create pass so the decision is applied AFTER the task
+			// is registered.
+			ares_events.EventInterruptCreated,
+			ares_events.EventInterruptResolved:
 			rest = append(rest, ev)
 		default:
 			// Observability-only event: never trusted for state rebuild
@@ -169,12 +184,15 @@ func (f *Fabric) RestoreFromStore(ctx context.Context) error {
 	f.events = nil
 	for _, ev := range created {
 		if err := f.foldRestoreEvent(ev); err != nil {
-			log.Warn("taskfabric: restore skipped unusable task.created event", "error", err)
+			log.Warn(ctx, "RestoreFromStore",
+				"taskfabric: restore skipped unusable task.created event", "error", err)
 		}
 	}
 	for _, ev := range rest {
 		if err := f.foldRestoreEvent(ev); err != nil {
-			log.Warn("taskfabric: restore skipped unusable event", "event_type", ev.Type, "error", err)
+			log.Warn(ctx, "RestoreFromStore",
+				"taskfabric: restore skipped unusable event",
+				"event_type", ev.Type, "error", err)
 		}
 	}
 	// Epoch must dominate every token the pre-crash fabric ever handed out.
@@ -254,6 +272,7 @@ func (f *Fabric) foldRestoreEvent(ev *ares_events.Event) error {
 		// (or unescalated) retry for its next failure.
 		foldRetryScheduling(p, t)
 		foldDegradation(p, t)
+		foldApproval(p, t)
 		if s, ok := p[restoreKeyCreatedAt].(string); ok {
 			if ts, err := time.Parse(time.RFC3339, s); err == nil {
 				t.CreatedAt = ts
@@ -301,6 +320,7 @@ func (f *Fabric) foldRestoreEvent(ev *ares_events.Event) error {
 		// backoff pending across a restart instead of letting it retry early.
 		foldRetryScheduling(p, t)
 		foldDegradation(p, t)
+		foldApproval(p, t)
 		// Cascade provenance is durable: a task that was failed by a
 		// predecessor's cascade must stay distinguishable after a restart.
 		if fd := restoreString(p, restoreKeyFailedDependency); fd != "" {
@@ -338,6 +358,25 @@ func (f *Fabric) foldRestoreEvent(ev *ares_events.Event) error {
 			t.Owner = ""
 			t.Lease = nil
 		}
+		return nil
+
+	case ares_events.EventInterruptCreated, ares_events.EventInterruptResolved:
+		// HITL approval gate events fold the approval policy/decision onto
+		// the task. The task must already exist (created in pass one).
+		t, ok := f.tasks[id]
+		if !ok {
+			return fmt.Errorf("unknown task %q (created event missing?)", id)
+		}
+		t.UpdatedAt = ev.Timestamp
+		foldApproval(p, t)
+		// interrupt.resolved carries the decision in its extras payload
+		// (approved/feedback), but the canonical decision state is also
+		// written via the must-persist payload keys (approval_decision etc.)
+		// by recordWithExtrasLocked — so foldApproval already reads them.
+		// If the event says approved=false and the task is not yet terminal,
+		// the reject path already drove it to FAILED in the pre-crash fabric;
+		// the task.failed event (also must-persist) carries the terminal
+		// state. Here we only need to ensure the decision fields are set.
 		return nil
 
 	default:
@@ -404,6 +443,26 @@ func foldDegradation(p map[string]any, t *Task) {
 			}
 		}
 		t.DegradedInputs = out
+	}
+}
+
+// foldApproval folds the HITL approval gate policy and decision state out of a
+// payload. Both fold branches call it: the policy rides the creation event, the
+// decision rides the resolve event. Without this, a restart would turn a
+// pending gate into an open one (security: the task would be immediately
+// schedulable) or lose a resolved decision.
+func foldApproval(p map[string]any, t *Task) {
+	if restoreBool(p, restoreKeyRequiresApproval) {
+		t.RequiresApproval = true
+	}
+	if s := restoreString(p, restoreKeyApprovalMessage); s != "" {
+		t.ApprovalMessage = s
+	}
+	if s := restoreString(p, restoreKeyApprovalDecision); s != "" {
+		t.ApprovalDecision = s
+	}
+	if s := restoreString(p, restoreKeyApprovalFeedback); s != "" {
+		t.ApprovalFeedback = s
 	}
 }
 

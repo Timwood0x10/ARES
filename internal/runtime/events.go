@@ -25,10 +25,14 @@ const EventToolCalled ares_events.EventType = "tool.called"
 const EventMemoryHit ares_events.EventType = "memory.hit"
 
 // EventInterruptCreated is emitted when a HITL interrupt is created.
-const EventInterruptCreated ares_events.EventType = "interrupt.created"
+// Alias for ares_events.EventInterruptCreated — the canonical definition
+// was moved to ares_events so the fabric core can reference it without
+// importing internal/runtime (TestFabricCoreMustNotImportRuntime).
+const EventInterruptCreated = ares_events.EventInterruptCreated
 
 // EventInterruptResolved is emitted when a HITL interrupt is resolved.
-const EventInterruptResolved ares_events.EventType = "interrupt.resolved"
+// Alias for ares_events.EventInterruptResolved — see EventInterruptCreated.
+const EventInterruptResolved = ares_events.EventInterruptResolved
 
 // Plugin lifecycle event types emitted by the PluginBus.
 const (

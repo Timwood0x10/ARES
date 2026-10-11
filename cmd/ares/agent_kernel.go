@@ -116,7 +116,9 @@ func createPeerAgents(
 	a.injectPriorities()
 	a.startLoops()
 
-	log.Info("peer mode: peer agents registered, Kernel scheduler started (no leader)", "count", len(a.subAgents))
+	log.Info(context.Background(), "runPeerKernel",
+		"peer mode: peer agents registered, Kernel scheduler started (no leader)",
+		"count", len(a.subAgents))
 	return a.subAgents, a.kernel, nil
 }
 

@@ -1,6 +1,8 @@
 package kernel
 
 import (
+	"context"
+
 	taskfabric "github.com/Timwood0x10/ares/internal/fabric/task"
 )
 
@@ -59,7 +61,9 @@ func (s *Scheduler) unbindRecoveryExecutorAfterTerminal(taskID string) {
 	if boundID := s.unbindFor(taskID); boundID != "" {
 		s.UnregisterExecutor(boundID)
 		s.tracker.Forget(boundID)
-		log.Info("kernel scheduler: unregistered recovery executor after task reached state", "executor", boundID, "task_id", taskID, "state", tk2.State)
+		log.Info(context.Background(), "unbindRecoveryExecutorAfterTerminal",
+			"kernel scheduler: unregistered recovery executor after task reached state",
+			"executor", boundID, "task_id", taskID, "state", tk2.State)
 	}
 }
 
@@ -95,7 +99,9 @@ func (s *Scheduler) reconcileFabricDeaths() {
 			continue // recovery replacements are unregistered at terminal state
 		}
 		if _, err := s.agents.Get(id); err != nil {
-			log.Info("kernel scheduler: unregistering executor — agent no longer in fabric (killed or retired)", "executor", id)
+			log.Info(context.Background(), "reconcileFabricDeaths",
+				"kernel scheduler: unregistering executor — agent no longer in fabric (killed or retired)",
+				"executor", id)
 			s.UnregisterExecutor(id)
 			// Forget only when the tracker shows no in-flight quantum
 			// (Forget's contract: load > 0 must not be forgotten). A

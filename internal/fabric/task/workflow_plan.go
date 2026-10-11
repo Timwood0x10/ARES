@@ -54,6 +54,17 @@ type PlanStep struct {
 	// resume/restart does NOT reset it. So Deadline is a wall-clock budget
 	// from when the plan was compiled, not a per-attempt or per-quantum timer.
 	Deadline time.Duration
+	// RequiresApproval marks this step as requiring human approval before
+	// execution. When true the compiled task enters READY but is blocked by an
+	// approval gate — it must not be scheduled or acquired until a human
+	// resolves the approval. False (zero value) is the default: no gate.
+	RequiresApproval bool
+	// ApprovalMessage is the human-facing prompt shown to the approver.
+	// Empty when RequiresApproval is false.
+	ApprovalMessage string
+	// ApprovalPayload carries optional context for the approver. Nil when
+	// RequiresApproval is false.
+	ApprovalPayload map[string]any
 	// Payload carries the step's input metadata (surfaced via the checkpoint
 	// envelope to the executor).
 	Payload map[string]any
@@ -167,6 +178,10 @@ func (f *Fabric) CompilePlan(ctx context.Context, steps []PlanStep) ([]string, e
 			AllowPartial: s.AllowPartial,
 			BackoffBase:  s.BackoffBase,
 			BackoffMax:   s.BackoffMax,
+			// HITL approval gate
+			RequiresApproval: s.RequiresApproval,
+			ApprovalMessage:  s.ApprovalMessage,
+			ApprovalPayload:  s.ApprovalPayload,
 		}
 		// A positive relative Deadline resolves to an absolute wall-clock
 		// instant at creation; zero leaves Task.Deadline zero ("no deadline").

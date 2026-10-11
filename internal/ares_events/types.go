@@ -85,6 +85,13 @@ const (
 	// by the flight recorder / introspection feed — nothing subscribes with
 	// a filter on it, so the emitter contract is unaffected.
 	EventComponentFailed EventType = "component.failed"
+
+	// HITL approval-gate events . Published by
+	// the task fabric so the approval lifecycle is observable on the shared
+	// event bus. These live here (not in internal/runtime) because the fabric
+	// core must not import internal/runtime (TestFabricCoreMustNotImportRuntime).
+	EventInterruptCreated  EventType = "interrupt.created"
+	EventInterruptResolved EventType = "interrupt.resolved"
 )
 
 // Event payload keys for enriched task-lifecycle events.

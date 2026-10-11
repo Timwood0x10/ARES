@@ -116,8 +116,8 @@ func (o *Orchestrator) Start(ctx context.Context) error {
 		started = append(started, name)
 	}
 
-	log.Info("kernel: all components started",
-		"count", len(started))
+	log.Info(ctx, "Start",
+		"kernel: all components started", "count", len(started))
 	return nil
 }
 
@@ -134,8 +134,8 @@ func (o *Orchestrator) startComponent(ctx context.Context, name string) error {
 	// Check if component is disabled (by config gate in Stage 2).
 	status, _ := o.registry.GetStatus(name)
 	if status.State == StateDisabled {
-		log.Info("kernel: skipping disabled component",
-			"component", name)
+		log.Info(ctx, "startComponent",
+			"kernel: skipping disabled component", "component", name)
 		return nil
 	}
 
@@ -163,8 +163,8 @@ func (o *Orchestrator) startComponent(ctx context.Context, name string) error {
 			// For Degraded mode, a Ready failure enters Degraded state.
 			if mode == ModeDegraded {
 				o.setStatus(name, StateDegraded, err.Error())
-				log.Warn("kernel: component degraded",
-					"component", name, "reason", err)
+				log.Warn(ctx, "startComponent",
+					"kernel: component degraded", "component", name, "reason", err)
 			} else {
 				o.setStatus(name, StateFailed, err.Error())
 				return fmt.Errorf("ready: %w", err)
@@ -178,8 +178,8 @@ func (o *Orchestrator) startComponent(ctx context.Context, name string) error {
 		o.setStatus(name, StateReady, "")
 	}
 
-	log.Info("kernel: component ready",
-		"component", name, "state", currentStatus.State)
+	log.Info(ctx, "startComponent",
+		"kernel: component ready", "component", name, "state", currentStatus.State)
 	return nil
 }
 
@@ -251,7 +251,8 @@ func (o *Orchestrator) Shutdown(ctx context.Context) error {
 	if len(notStopped) > 0 {
 		errs = append(errs, fmt.Errorf(
 			"kernel: components did not reach Stopped: %s", strings.Join(notStopped, ", ")))
-		log.Warn("kernel: shutdown left components unstopped",
+		log.Warn(ctx, "Shutdown",
+			"kernel: shutdown left components unstopped",
 			"components", strings.Join(notStopped, ", "))
 	}
 
@@ -275,7 +276,7 @@ func (o *Orchestrator) Shutdown(ctx context.Context) error {
 	if len(errs) > 0 {
 		return errors.Join(errs...)
 	}
-	log.Info("kernel: shutdown complete")
+	log.Info(ctx, "Shutdown", "kernel: shutdown complete")
 	return nil
 }
 
@@ -317,18 +318,18 @@ func (o *Orchestrator) stopComponent(ctx context.Context, name string) error {
 		select {
 		case waitErr := <-waitCh:
 			if waitErr != nil {
-				log.Warn("kernel: wait error",
-					"component", name, "error", waitErr)
+				log.Warn(ctx, "stopComponent",
+					"kernel: wait error", "component", name, "error", waitErr)
 			}
 		case <-waitTimer.C:
 			// The buffered channel lets the waiter goroutine send and exit as
 			// soon as Wait() returns (N-5): no leak, only a bounded overshoot
 			// for this component's bookkeeping.
-			log.Warn("kernel: wait timed out",
-				"component", name, "timeout", stopTimeout)
+			log.Warn(ctx, "stopComponent",
+				"kernel: wait timed out", "component", name, "timeout", stopTimeout)
 		case <-ctx.Done():
-			log.Warn("kernel: wait aborted by shutdown context",
-				"component", name)
+			log.Warn(ctx, "stopComponent",
+				"kernel: wait aborted by shutdown context", "component", name)
 		}
 	}
 
@@ -348,8 +349,8 @@ func (o *Orchestrator) cleanupComponent(ctx context.Context, name string) {
 		stopCtx, stopCancel := context.WithTimeout(ctx, stopTimeout)
 		defer stopCancel()
 		if err := stopper.Stop(stopCtx); err != nil {
-			log.Warn("kernel: cleanup stop error",
-				"component", name, "error", err)
+			log.Warn(ctx, "cleanupComponent",
+				"kernel: cleanup stop error", "component", name, "error", err)
 		}
 	}
 	if waiter, ok := comp.(Waiter); ok {
@@ -362,15 +363,15 @@ func (o *Orchestrator) cleanupComponent(ctx context.Context, name string) {
 		select {
 		case waitErr := <-waitCh:
 			if waitErr != nil {
-				log.Warn("kernel: cleanup wait error",
-					"component", name, "error", waitErr)
+				log.Warn(ctx, "cleanupComponent",
+					"kernel: cleanup wait error", "component", name, "error", waitErr)
 			}
 		case <-cleanupTimer.C:
-			log.Warn("kernel: cleanup wait timed out",
-				"component", name, "timeout", stopTimeout)
+			log.Warn(ctx, "cleanupComponent",
+				"kernel: cleanup wait timed out", "component", name, "timeout", stopTimeout)
 		case <-ctx.Done():
-			log.Warn("kernel: cleanup wait aborted by context",
-				"component", name)
+			log.Warn(ctx, "cleanupComponent",
+				"kernel: cleanup wait aborted by context", "component", name)
 		}
 	}
 }
@@ -378,13 +379,13 @@ func (o *Orchestrator) cleanupComponent(ctx context.Context, name string) {
 // rollback stops already-started components in reverse order after a
 // startup failure. This ensures no goroutine or resource leaks.
 func (o *Orchestrator) rollback(ctx context.Context, started []string) {
-	log.Warn("kernel: rolling back startup",
-		"started_count", len(started))
+	log.Warn(ctx, "rollback",
+		"kernel: rolling back startup", "started_count", len(started))
 	for i := len(started) - 1; i >= 0; i-- {
 		name := started[i]
 		if err := o.stopComponent(ctx, name); err != nil {
-			log.Warn("kernel: rollback stop error",
-				"component", name, "error", err)
+			log.Warn(ctx, "rollback",
+				"kernel: rollback stop error", "component", name, "error", err)
 		}
 	}
 }
@@ -498,8 +499,8 @@ func (o *Orchestrator) Adopt(ctx context.Context, c Component, mode Mode) error 
 		if err := checker.Ready(ctx); err != nil {
 			if mode == ModeDegraded {
 				o.setStatus(name, StateDegraded, err.Error())
-				log.Warn("kernel: adopted component degraded",
-					"component", name, "reason", err)
+				log.Warn(ctx, "Adopt",
+					"kernel: adopted component degraded", "component", name, "reason", err)
 				return nil
 			}
 			o.setStatus(name, StateFailed, err.Error())
@@ -520,8 +521,8 @@ func (o *Orchestrator) Adopt(ctx context.Context, c Component, mode Mode) error 
 		}
 	})
 	final, _ := o.registry.GetStatus(name)
-	log.Info("kernel: component adopted",
-		"component", name, "state", final.State)
+	log.Info(ctx, "Adopt",
+		"kernel: component adopted", "component", name, "state", final.State)
 	return nil
 }
 
@@ -559,7 +560,8 @@ func (o *Orchestrator) GoBackground(name string, fn func(ctx context.Context) er
 	o.mu.Lock()
 	if o.stopped {
 		o.mu.Unlock()
-		log.Warn("kernel: background loop not started (orchestrator shutting down)",
+		log.Warn(context.Background(), "GoBackground",
+			"kernel: background loop not started (orchestrator shutting down)",
 			"component", name)
 		return false
 	}
@@ -571,12 +573,13 @@ func (o *Orchestrator) GoBackground(name string, fn func(ctx context.Context) er
 			// marking Failed here would corrupt the final snapshot.
 		default:
 			if err != nil {
-				log.Warn("kernel: background loop exited with error",
+				log.Warn(o.rootCtx, "GoBackground",
+					"kernel: background loop exited with error",
 					"component", name, "error", err)
 				o.markBackgroundFailed(name, err.Error())
 			} else {
-				log.Info("kernel: background loop exited",
-					"component", name)
+				log.Info(o.rootCtx, "GoBackground",
+					"kernel: background loop exited", "component", name)
 			}
 		}
 		return nil
@@ -590,7 +593,8 @@ func (o *Orchestrator) GoBackground(name string, fn func(ctx context.Context) er
 func (o *Orchestrator) runBackground(ctx context.Context, name string, fn func(ctx context.Context) error) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			log.Error("system_runtime: background loop panicked",
+			log.Error(ctx, "runBackground",
+				"system_runtime: background loop panicked", nil,
 				"component", name, "panic", r)
 			o.markBackgroundFailed(name, fmt.Sprintf("panic: %v", r))
 			err = nil // contained: do not crash the process
@@ -639,7 +643,8 @@ func (o *Orchestrator) markBackgroundFailed(name, reason string) {
 		Timestamp:  time.Now(),
 	}
 	if err := events.Append(ctx, "system_runtime/"+name, []*ares_events.Event{evt}, 0); err != nil {
-		log.Warn("kernel: component failure event not recorded",
+		log.Warn(ctx, "markBackgroundFailed",
+			"kernel: component failure event not recorded",
 			"component", name, "error", err)
 	}
 }

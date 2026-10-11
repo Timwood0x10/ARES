@@ -158,7 +158,8 @@ func (h *pluginBusHook) driveLoopRound(ctx context.Context) {
 	// scheduler") airtight.
 	defer func() {
 		if r := recover(); r != nil {
-			log.Error("kernel loop: round-end processing panicked (recovered)", "panic", r)
+			log.Error(ctx, "driveLoopRound",
+				"kernel loop: round-end processing panicked (recovered)", nil, "panic", r)
 		}
 	}()
 	h.loop.OnRoundEnd(ctx, int(round), executionID)
@@ -166,7 +167,9 @@ func (h *pluginBusHook) driveLoopRound(ctx context.Context) {
 	vars := map[string]any{"round": int(round)}
 	if !h.loop.ShouldExecuteRound(int(round)+1, vars) {
 		h.loopStop.Store(true)
-		log.Info("kernel loop: round budget exhausted; round clock stopped (scheduler task flow unaffected)", "max_rounds", h.maxRounds, "round", round)
+		log.Info(ctx, "driveLoopRound",
+			"kernel loop: round budget exhausted; round clock stopped (scheduler task flow unaffected)",
+			"max_rounds", h.maxRounds, "round", round)
 	}
 }
 
@@ -217,19 +220,25 @@ func startPluginBus(ctx context.Context, store ares_events.EventStore, sched *ke
 		log.
 			// Downgrade to log + continue scheduling: a registration metadata
 			// problem must never block the kernel.
-			Info("peer mode: loop plugin registration skipped (scheduling continues without the round clock):", "err", err)
+			Info(ctx, "startPluginBus",
+				"peer mode: loop plugin registration skipped (scheduling continues without the round clock)",
+				"error", err)
 		loop = nil
 	}
 	if err := bus.Start(ctx); err != nil {
-		log.Warn("peer mode: plugin bus start failed (scheduling continues without plugins)", "err", err)
+		log.Warn(ctx, "startPluginBus",
+			"peer mode: plugin bus start failed (scheduling continues without plugins)", "error", err)
 		// Stop the bus so any plugins that DID start before the failure
 		// are torn down; otherwise they are orphaned with no handle.
 		if stopErr := bus.Stop(ctx); stopErr != nil {
-			log.Warn("peer mode: plugin bus stop after failed start", "err", stopErr)
+			log.Warn(ctx, "startPluginBus",
+				"peer mode: plugin bus stop after failed start", "error", stopErr)
 		}
 		return nil
 	}
 	sched.WithQuantumHook(newPluginBusHook(bus, loop, loopCfg))
-	log.Info("peer mode: plugin bus wired to kernel quantum boundary (loop clock)", "loop_round_quanta", loopCfg.LoopRoundQuanta, "loop_max_iterations", loopCfg.LoopMaxIterations)
+	log.Info(ctx, "startPluginBus",
+		"peer mode: plugin bus wired to kernel quantum boundary (loop clock)",
+		"loop_round_quanta", loopCfg.LoopRoundQuanta, "loop_max_iterations", loopCfg.LoopMaxIterations)
 	return bus
 }

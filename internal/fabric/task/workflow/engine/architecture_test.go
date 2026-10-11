@@ -38,7 +38,6 @@ import (
 // outside types.go to the reason they are still allowed to exist. Every entry
 // is a debt marker: the goal state is an EMPTY allowlist.
 var deadTypeAllowlist = map[string]string{
-	"InterruptConfig":   "HITL interrupt config; engine has no interrupt executor — NewInterruptPlugin is the future home (ares_runtime)",
 	"WorkflowExecution": "legacy whole-run state container; execution lives in StepResult + kernel scheduling",
 	"StepState":         "superseded by StepResult fields (status/started/finished)",
 	"WorkflowStatus":    "only referenced by dead types (WorkflowExecution/WorkflowResult fields); orphaned once those are digested",

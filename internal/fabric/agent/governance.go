@@ -34,6 +34,21 @@ type Governance struct {
 	ToolBudget int
 	// Deadline is the wall-clock lifetime from spawn. Zero = no deadline.
 	Deadline time.Duration
+	// MinRemainingRatio is the share of a budget that must STILL be unspent
+	// before the agent will accept another quantum, expressed as a fraction
+	// of that dimension's budget (0 < r <= 1; 0 = disabled).
+	//
+	// It exists so an agent stops taking work while it still has room, rather
+	// than spending its last tokens on a quantum it cannot finish: at
+	// TokenBudget=500 and MinRemainingRatio=0.4 the agent accepts work only
+	// while 200+ tokens remain, and at the boundary the task it holds is
+	// reclaimed (released to READY) for a fresher agent to resume from the
+	// preserved checkpoint. This is admission control, not execution
+	// preemption — a running quantum is never interrupted.
+	//
+	// Dimensions with a zero budget are unlimited and never reserve. The
+	// ratio applies to whichever limited dimension is closest to its floor.
+	MinRemainingRatio float64
 }
 
 // ErrResourceExceeded is returned by ConsumeResource when a budget is
@@ -71,6 +86,86 @@ func (f *Fabric) CheckResource(agentID string, token, tool int) (ok bool, err er
 		return false, nil
 	}
 	return true, nil
+}
+
+// Admissibility reports whether the agent may start another quantum and, when
+// it may not, WHY (see StopReason). It is the SINGLE admission predicate: the
+// scheduler's pre-schedule candidate filter and its post-acquire quantum gate
+// both call it, so the two cannot disagree about who may run. Before this
+// existed the two gates each re-derived affordability, and the reserve was
+// expressible in neither — a budget-starved agent was indistinguishable from a
+// missing executor.
+//
+// Precedence, and why:
+//  1. Deadline — an agent past its wall-clock lifetime is dead weight; its
+//     remaining budget is irrelevant.
+//  2. Hard exhaustion — a dimension is fully spent (used + 1 > budget). The
+//     request is 1 token, not 0: CheckResource's contract is
+//     `used + request <= budget`, so a 0-token probe can never observe an
+//     exhausted budget.
+//  3. Reserve — the remaining fraction of a limited dimension dropped below
+//     Governance.MinRemainingRatio.
+//
+// An error means "cannot decide" (unknown agent, unreadable governance): the
+// fabric does not govern that body, so callers must ADMIT rather than block.
+// ok is true in that case, so a caller that ignores err still behaves as
+// before.
+func (f *Fabric) Admissibility(agentID string) (ok bool, reason StopReason, err error) {
+	if over, dErr := f.DeadlineExceeded(agentID); dErr != nil {
+		return true, StopUnknown, dErr
+	} else if over {
+		return false, StopDeadlineExceeded, nil
+	}
+	if affordable, cErr := f.CheckResource(agentID, 1, 1); cErr != nil {
+		return true, StopUnknown, cErr
+	} else if !affordable {
+		return false, StopBudgetExhausted, nil
+	}
+	exhausted, reason, rErr := f.reserveExhausted(agentID)
+	if rErr != nil {
+		return true, StopUnknown, rErr
+	}
+	if exhausted {
+		return false, reason, nil
+	}
+	return true, StopUnknown, nil
+}
+
+// reserveExhausted reports whether the agent's REMAINING budget on any limited
+// dimension has fallen below its configured reserve (MinRemainingRatio): the
+// agent could still afford one more quantum, but only by spending headroom it
+// needs to finish what it would start.
+//
+// A disabled reserve (ratio <= 0) and unlimited dimensions (budget == 0) never
+// trip — the legacy behaviour is exactly preserved when the knob is unset.
+func (f *Fabric) reserveExhausted(agentID string) (bool, StopReason, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	a, found := f.agents[agentID]
+	if !found {
+		return false, StopUnknown, ErrAgentNotFound
+	}
+	g, err := a.governanceLocked()
+	if err != nil {
+		return false, StopUnknown, err
+	}
+	ratio := g.cfg.MinRemainingRatio
+	if ratio <= 0 {
+		return false, StopUnknown, nil
+	}
+	if g.cfg.TokenBudget > 0 {
+		remaining := float64(g.cfg.TokenBudget - g.tokenUsed)
+		if remaining < ratio*float64(g.cfg.TokenBudget) {
+			return true, StopBudgetReserved, nil
+		}
+	}
+	if g.cfg.ToolBudget > 0 {
+		remaining := float64(g.cfg.ToolBudget - g.toolUsed)
+		if remaining < ratio*float64(g.cfg.ToolBudget) {
+			return true, StopBudgetReserved, nil
+		}
+	}
+	return false, StopUnknown, nil
 }
 
 // ConsumeResource records token/tool consumption. It returns

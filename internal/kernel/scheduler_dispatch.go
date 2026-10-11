@@ -25,7 +25,7 @@ func (s *Scheduler) preemptInterval() time.Duration {
 func (s *Scheduler) safeDrain(ctx context.Context) {
 	defer func() {
 		if r := recover(); r != nil {
-			log.Error("kernel scheduler: panic in drain, continuing", "panic", r)
+			log.Error(ctx, "safeDrain", "kernel scheduler: panic in drain, continuing", nil, "panic", r)
 		}
 	}()
 	s.drain(ctx)
@@ -97,7 +97,7 @@ drainLoop:
 			defer func() { <-sem }()
 			defer func() {
 				if recover() != nil {
-					log.Error("kernel scheduler: panic executing task, continuing", "task_id", id)
+					log.Error(ctx, "drain", "kernel scheduler: panic executing task, continuing", nil, "task_id", id)
 				}
 			}()
 			if err := s.execute(ctx, id); err != nil {
@@ -250,7 +250,9 @@ func (s *Scheduler) PreemptLowerPriority(ready []string) {
 			continue
 		}
 		preempted++
-		log.Info("kernel scheduler: preempted for higher-priority work", "task_id", rt.ID, "priority", rt.Priority, "max_ready", maxReady)
+		log.Info(context.Background(), "PreemptLowerPriority",
+			"kernel scheduler: preempted for higher-priority work",
+			"task_id", rt.ID, "priority", rt.Priority, "max_ready", maxReady)
 	}
 }
 

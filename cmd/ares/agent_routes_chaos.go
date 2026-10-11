@@ -197,7 +197,9 @@ func chaosKillRandomFabric(ctx context.Context, k *kernelHandle) (string, error)
 	if err := k.agents.Kill(ctx, target); err != nil {
 		return "", fmt.Errorf("peer mode: kill %s: %w", target, err)
 	}
-	log.Info("peer mode: chaos killed agent — lease expiry + replacement recovery will follow", "target", target)
+	log.Info(ctx, "chaosKillRandomFabric",
+		"peer mode: chaos killed agent — lease expiry + replacement recovery will follow",
+		"target", target, "death_reason", agentfabric.StopCrashed.String())
 	return target, nil
 }
 
@@ -214,7 +216,8 @@ func chaosKillAllFabric(ctx context.Context, k *kernelHandle) (killed, failed []
 	failed = make([]string, 0)
 	for _, id := range liveFabricAgents(k.agents) {
 		if kerr := k.agents.Kill(ctx, id); kerr != nil {
-			log.Warn("peer mode: chaos kill-all failed", "id", id, "err", kerr)
+			log.Warn(ctx, "chaosKillAllFabric",
+				"peer mode: chaos kill-all failed", "agent", id, "error", kerr)
 			failed = append(failed, id)
 			continue
 		}
@@ -239,7 +242,9 @@ func chaosRecoverSweep(k *kernelHandle) ([]string, error) {
 	}
 	requeued := k.recovery.RequeueExpiredLeases()
 	if len(requeued) > 0 {
-		log.Info("peer mode: chaos recover sweep requeued expired task(s)", "count", len(requeued))
+		log.Info(context.Background(), "chaosRecoverSweep",
+			"peer mode: chaos recover sweep requeued expired task(s)",
+			"count", len(requeued), "task_ids", requeued)
 	}
 	return requeued, nil
 }

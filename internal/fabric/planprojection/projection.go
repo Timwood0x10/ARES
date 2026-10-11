@@ -13,7 +13,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/fabric/task"
+	taskfabric "github.com/Timwood0x10/ares/internal/fabric/task"
 	"github.com/Timwood0x10/ares/internal/fabric/task/workflow/engine"
 )
 
@@ -52,8 +52,8 @@ type CompileRecord struct {
 // engine step is therefore not honoured at execution — see ADR-C1 in
 // plan/0.3.3_task.md for why the two retry models are mapped, not merged.
 //
-// Explicitly discarded (HITL frozen or execution-time state):
-//   - Interrupt, RecoveryPolicy, Name,
+// Explicitly discarded (execution-time state only, no fabric mapping):
+//   - RecoveryPolicy, Name,
 //     Status/Output/Error/StartedAt/FinishedAt
 func ProjectStep(s *engine.Step) taskfabric.PlanStep {
 	if s == nil {
@@ -62,6 +62,18 @@ func ProjectStep(s *engine.Step) taskfabric.PlanStep {
 
 	deps := make([]string, len(s.DependsOn))
 	copy(deps, s.DependsOn)
+
+	// HITL approval gate: map engine.Step.Interrupt → PlanStep approval
+	// fields so the fabric can enforce the gate.
+	// Previously Interrupt was explicitly discarded; it is now wired.
+	var requiresApproval bool
+	var approvalMessage string
+	var approvalPayload map[string]any
+	if s.Interrupt != nil {
+		requiresApproval = true
+		approvalMessage = s.Interrupt.Message
+		approvalPayload = s.Interrupt.Payload
+	}
 
 	maxRetries := 0
 	var backoffBase, backoffMax time.Duration
@@ -91,6 +103,10 @@ func ProjectStep(s *engine.Step) taskfabric.PlanStep {
 		Payload:      payload,
 		SessionID:    parseSessionID(s.Metadata),
 		TenantID:     parseTenantID(s.Metadata),
+		// HITL approval gate
+		RequiresApproval: requiresApproval,
+		ApprovalMessage:  approvalMessage,
+		ApprovalPayload:  approvalPayload,
 	}
 }
 

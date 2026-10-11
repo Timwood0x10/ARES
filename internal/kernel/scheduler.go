@@ -57,6 +57,12 @@ type Scheduler struct {
 	// scheduled counts successfully executed tasks (for observability).
 	// atomic: incremented from concurrent drain goroutines (work stealing).
 	Scheduled atomic.Int64
+	// lastNoAffordableLog is the sibling slot for ErrNoAffordableCandidate.
+	// The two causes get their own slot: sharing one let a steady stream of
+	// "no capable candidate" silently swallow every "no affordable candidate"
+	// line, so the distinct attribution code existed but never reached the
+	// log.
+	lastNoAffordableLog time.Time
 	// noCandidateMu guards lastNoCandidateLog for throttling unschedulable-task
 	// logs.
 	noCandidateMu      sync.Mutex
@@ -252,7 +258,7 @@ func (s *Scheduler) WithTTL(ttl time.Duration) *Scheduler {
 //   - ctx: lifetime of the scheduling loop.
 func (s *Scheduler) Run(ctx context.Context) {
 	if s.fabric == nil {
-		log.Warn("kernel scheduler: fabric nil, scheduler disabled")
+		log.Warn(ctx, "Run", "kernel scheduler: fabric nil, scheduler disabled")
 		return
 	}
 	// The readiness flag goes up before the loop blocks so an Adopt-time
@@ -297,7 +303,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 				func() {
 					defer func() {
 						if r := recover(); r != nil {
-							log.Error("kernel scheduler: panic in preemption sweep, continuing", "panic", r)
+							log.Error(ctx, "Run", "kernel scheduler: panic in preemption sweep, continuing", nil, "panic", r)
 						}
 					}()
 					s.PreemptLowerPriority(s.fabric.ResumableTasks())
@@ -324,10 +330,10 @@ func (s *Scheduler) Run(ctx context.Context) {
 			},
 		})
 		if err != nil {
-			log.Warn("kernel scheduler: event subscribe failed, polling only", "error", err)
+			log.Warn(ctx, "Run", "kernel scheduler: event subscribe failed, polling only", "error", err)
 		} else {
 			events = ch
-			log.Info("kernel scheduler: event-driven drain enabled (task lifecycle events)")
+			log.Info(ctx, "Run", "kernel scheduler: event-driven drain enabled (task lifecycle events)")
 		}
 	}
 
@@ -344,7 +350,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 			// loop falls back to pure polling instead of busy-spinning on a
 			// closed channel.
 			if !ok {
-				log.Info("kernel scheduler: event subscription closed, polling only")
+				log.Info(ctx, "Run", "kernel scheduler: event subscription closed, polling only")
 				events = nil
 				continue
 			}

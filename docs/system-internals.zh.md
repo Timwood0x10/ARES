@@ -194,8 +194,8 @@ flowchart TD
     create --> drain{drain<br/>事件驱动 + 500ms 轮询}
     drain --> sched[Schedule<br/>能力评分: load/conf/priority + experience prior]
     sched --> acq[Acquire<br/>租约 + epoch fencing]
-    acq --> gate{budgetOK<br/>预算够吗}
-    gate -- 不够 --> yield[yield: 任务回 READY<br/>下轮再试]
+    acq --> gate{admissible<br/>预算/时限/保留够吗}
+    gate -- 不够 --> reclaim[回收: ReleaseReason<br/>READY + reason 下轮换人]
     gate -- 够 --> run[RunQuantum]
     run --> router[routerCognition<br/>按 capability 分派]
     router --> tool[tool 节点: 执行一个工具]
@@ -265,6 +265,68 @@ flowchart TD
 "没查"与"查了、没有发现"。**原因刻意不复制**：失败任务自己的 `LastError` 与
 `task.failed` 事件是唯一事实来源，ID 是回查的稳定主键。
 
+### 4.2 能力评分（怎么挑最合适的 agent）
+
+`Schedule` 不是"随便挑一个"，而是把每个候选 agent 打一个 0~1 分、取最高者。
+
+**公式（`internal/fabric/task/scheduler.go:44`）**：
+
+```
+score = capability_overlap × (1 - load) × confidence × (1 + priority)
+```
+
+| 因子 | 范围 | 意图 | 源码 |
+|---|---|---|---|
+| `capability_overlap` | [0,1] | **门控**：做不了这个能力 → 0 分，绝不被选中（重叠比例，非"有一点就算"） | `CapabilityOverlap` |
+| `1 - load` | [0,1] | 越闲越高；`load=1`（满负荷）→ 归零、让位。这是"能并行的并行"的底层 | `LoadTracker`（`load_tracker.go`） |
+| `confidence` | [0,1] | 经验先验/实测："它以前干这事成不成" | `ConfidenceForMeasured`（`scheduler_execute.go:192`） |
+| `1 + priority` | ≥1 | 优先级加成；`priority=0` 时加成 1。**忙的高优先级能胜过闲的低优先级**，故 boost 故意不封顶 | `scheduler.go:75` |
+
+**confidence 三档（最容易被追问，`scheduler_execute.go:176`）**：
+
+```
+对每个候选 (agentID, 任务 capability):
+  ① 有实测值（经验反馈 / GA 覆盖）→ 用它 ★ 实测永远赢
+  ② 是中性（没历史+没覆盖）且有 prior → 置 0，让 fabric 填 prior
+  ③ 没 prior → 中性值维持（历史默认）
+```
+
+这就是"GA 落到热路径"的点：`SetAgentConfidence`（`load_tracker.go:15`）让进化反馈循环
+**实时覆盖**某 agent 对某类任务的置信度，下个 drain 立即生效——GA 不改代码，改的是
+"某个 agent 做某类任务的可信度"。
+
+**候选池与两个非显而易见点（`buildCandidates`，`scheduler_execute.go:97`）**：
+
+```
+候选 = 已注册 + 未绑定 + 能力重叠 + 空闲 的 executor  ∪  线上 IDLE 的 fabric agent
+   → 先过 governance 预算过滤（:159，钱包 token/工具/deadline 不够的直接剔除）
+   → 每个算 score → 取最高分
+```
+
+| 点 | 说明 | 源码 |
+|---|---|---|
+| **预算过滤先于 schedule** | 区分"没有 agent 匹配"（`ErrNoCapableCandidate`，该报警）vs"匹配的 agent 都超预算"（该等钱包恢复） | `scheduler_execute.go:159` |
+| **`TryBegin` 准入闸** | 候选快照在 `Schedule` 前构建，两个并发 goroutine 可能都读 `load=0`；`TryBegin` 用 load counter 当原子闸，防"两个任务都以为抢到同一空闲 agent" | `load_tracker.go:82` |
+
+**谁赢（`Pick`）与可解释（`ScheduleDecision`）**：
+
+```
+所有候选按 score 降序（同分按 capability-overlap 稳定排序，不抖动）→ 最高者赢
+每次 Schedule 记一条 ScheduleDecision：全部候选 + 四因子分解 + winner + epoch
+   存进 DecisionRecorder（环形 200 条, decision_recorder.go:26/58）
+```
+
+> 面板能直接看到 "TASK-184 ↓ agent-7f21 ↓ Acquire ↓ epoch=42" 加每个候选的
+> `Overlap/Load/Confidence/PriorityBoost/Score` 明细——**不是黑盒，是"能说出为什么选它"**。
+
+| 位置 | 行号 |
+|---|---|
+| 评分公式 `Score`/`ScoreBreakdown` | `internal/fabric/task/scheduler.go:44/71` |
+| 候选评分 `scoreCandidates` | `internal/kernel/decision_recorder.go:107` |
+| 预算过滤 + 置信度解析 | `internal/kernel/scheduler_execute.go:159/192` |
+| `LoadTracker`（Begin/End/TryBegin/SetAgentConfidence） | `internal/kernel/load_tracker.go` |
+| 决策记录 `ScheduleDecision` | `internal/kernel/decision_recorder.go:42` |
+
 ---
 
 ## 5. 量子化与资源预算
@@ -284,21 +346,56 @@ flowchart LR
 
 | 概念 | 机制 | 源码 |
 |---|---|---|
-| 前置门（预算够才做） | `budgetOK` | `internal/kernel/scheduler_governance.go:30` |
-| 后置记账 | `consumeBudget` | `internal/kernel/scheduler_governance.go:53` |
+| 受理门（预算/时限够才做） | `admissible` → `agentfabric.Admissibility` | `internal/kernel/scheduler_governance.go` |
+| 后置记账 | `consumeBudget` | `internal/kernel/scheduler_governance.go` |
+| 回收（带原因的让出） | `fabric.ReleaseReason` → `task.released{reason}` | `internal/fabric/task/fabric_lifecycle.go` |
 | 单 agent 并发=1 | `maxConcurrentPerAgent` | 架构不变量 |
 | 拒绝过期持有者 | epoch fencing | 调度器 drain 时校验 |
 
 **agent 钱包** = `kernel.agent_budget`（`config.go:141`）：`tokens`/`tools`/`deadline`
-三格，全零不限。syscall spawn 的 agent 也从出生就带这个钱包
+/`reserve_ratio` 四格，前三格全零不限。syscall spawn 的 agent 也从出生就带这个钱包
 （`internal/agentsyscall/syscall.go` `SpawnAgent` 的 `Governance: k.governance`）。
 
+**保留阈值（reserve_ratio，0.3.3）**："剩不到 X% 就不接新活了"。`reserve_ratio=0.4`
++`tokens=500` 表示 agent 只在剩余 ≥200 token 时受理新量子；跌到阈值之下，
+它持有的任务在量子边界被**回收**（`ReleaseReason` → READY，checkpoint 保留，
+`task.released` 事件带 `reason=budget_reserved`），交给更新的 agent 从断点续跑。
+要点：受理判定只有**一个**实现（`Admissibility`），预调度候选过滤与量子门共用它，
+两边不可能各说各话；这是**准入门控**不是抢占——进行中的量子不会被拦腰打断；
+预算计数只在 respawn 时清零，所以全部 agent 耗尽时任务停在"无可调度候选"等待态
+（`no_affordable_candidate`，与"没有匹配能力"的 `no_capable_candidate` 是两个哨兵、
+两个独立日志节流槽）。
+
+**agent 停止原因码（`agentfabric.StopReason`，0.3.3）**：回答"这个 agent 为什么
+不接活了/为什么没了"——预算耗尽的 agent **没有死**（仍 IDLE、认知完好），
+只是不再受理；死了的 agent 则另有编码。每个码都有真实生产者：
+
+| 码 | 语义 | 生产者 |
+|---|---|---|
+| `budget_reserved` | 剩余低于保留阈值（软停） | 受理门 |
+| `budget_exhausted` | 预算耗尽（硬停） | 受理门 |
+| `deadline_exceeded` | 墙钟时限已过 | 受理门 |
+| `capability_unfit` | 中签者无可执行体 | `handleStaleWinner` |
+| `crashed` | 被杀（panic/运维/chaos） | `Kill` |
+| `recovery_exhausted` | 重启预算耗尽，拒绝复活 | 恢复循环 |
+| `retired` | 优雅退役 | `Retire` |
+
+落在两处：任务的 `task.released{reason}` 事件、agent 的 `agent.killed/retired`
+事件与死亡快照（`AgentSnapshot.StopReason`）。注意 `task.released` 不是
+must-persist：事件流里有记录、可被 introspect 面板订阅，但不参与 restore 折叠。
+
 **token 预算的真实语义（0.3.1+）**：`WithMaxTokens` **已经生效**，不是 no-op——
-它桥接进同一个 governance 预算（`sdk/sdk.go:441`），`budgetOK` 会拒绝
+它桥接进同一个 governance 预算（`sdk/sdk.go:441`），受理门会拒绝
 `tokenUsed` 已达 `TokenBudget` 的 agent 的下一个量子，于是超预算的任务是"让出"
 而不是继续烧 token。当硬上限引用前要知道两点：该值是 **L2 peer 的生命周期总量**
 （第一个正值生效，后续 agent 不能收紧），执行是**协作式**的——在量子边界停下，
 不会打断进行中的 LLM 调用（`sdk/options.go:703-717`）。
+
+**永久性失败（0.3.3）**：`taskfabric.MarkPermanent` 有了生产入口——
+`markPermanentStepCause`（`internal/kernel/scheduler_quantum.go`）把
+`errors.ErrInvalidArgument`（空 prompt/空消息列表/超长 prompt，LLM 客户端打的标）
+判为"重试必然复现"，任务**第一次失败即 FAILED**，不再把重试预算烧在注定失败的
+尝试上。其余未分类原因保持 0.3.2 的可重试行为。
 
 ---
 
@@ -1423,7 +1520,34 @@ agent 钱包   = 【任务级】一个 agent 一生能烧多少 token/工具
 | 计划 | 隐式一次性 | L2 显式图，边做边长，可恢复 | ✅ 正向 |
 | 自愈 | 两套外部心跳 supervisor | 事件驱动统一恢复链 + 原地复活 | ✅ 正向 |
 | 进化 | DreamMode（早期） | GA + G1/G2/G3 门 + 回滚网 | ✅ 增强 |
-| 代价 | — | 复杂度上升；中心化 owner 语义无等价替代；HITL 生产未接线 | ⚠️ |
+| 代价 | — | 复杂度上升；中心化 owner 语义无等价替代；HITL 已在 fabric 层接线 (0.3.3) | ⚠️ |
+
+---
+
+## 16. HITL 审批门 (0.3.3)
+
+workflow step 可通过 YAML `interrupt: { message: "..." }` 或 Go 侧
+`engine.Step.Interrupt` 声明"需人工批准"。编译后的任务进入 READY 但被审批闸门挡住——
+与既有的 backoff 闸门、deadline 闸门同构的第三道闸门。
+
+**三处闸门同时生效：**
+1. `ReadyTasks` / `ResumableTasks` 排除待批任务（不交给调度器）。
+2. `Acquire` 返回 `ErrTaskAwaitingApproval`（直接调用方无法绕过）。
+
+**解决路径** (`ResolveApproval`，无需 ownership，与 `ExpireDeadlines` 一致)：
+- **批准**：任务保持 READY，闸门打开。`approvalCleared` 返回 true，调度器下一轮取走。
+- **拒绝**：通过 `failTerminalLocked` 推至 FAILED（READY→FAILED 合法迁移），
+  严格下游级联失败。`AllowPartial` 下游不级联（记录 gap）。
+
+**持久化**：审批策略（`requires_approval`、`approval_message`）和运行态决定
+（`approval_decision`、`approval_feedback`）写入事件 payload，restore 时折回。
+重启后不会静默打开待批闸门（安全）或丢失已解决的决定。
+
+**HTTP 端点**：`GET /api/interrupts`（authRead）列出待批；`POST /api/interrupts/{id}/resolve`
+（authWrite）解决。审批人 principal 记录为 `ApprovalBy` 供审计。
+
+**缺省兼容**：未声明 `RequiresApproval` 的任务执行与持久化与 0.3.2/0.3.3 逐字节一致
+——由 `TestDefaultPathPayloadHasNoNewKeys` 锁定。
 
 > 源码定位说明：本文行号基于 v0.3.2 快照，随 dev 分支演进可能漂移；
 > 函数名/文件路径比行号更稳定，定位时以符号为准。

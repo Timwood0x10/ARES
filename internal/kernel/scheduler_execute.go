@@ -9,27 +9,45 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	apperrors "github.com/Timwood0x10/ares/internal/errors"
+	agentfabric "github.com/Timwood0x10/ares/internal/fabric/agent"
 	taskfabric "github.com/Timwood0x10/ares/internal/fabric/task"
 )
 
-// logFailure logs a task failure, throttling ErrNoCapableCandidate: an
-// unschedulable task is a legitimate "waiting for a capable agent" state that
-// the scheduler re-polls every interval, so it must not spam the log. Other
-// errors are logged every time (they are transient and need attention).
+// logFailure logs a task failure, throttling the two "still waiting" states:
+// ErrNoCapableCandidate (nobody matches the capability) and
+// ErrNoAffordableCandidate (every capable agent is out of budget/deadline/
+// reserve). Both are legitimate waits the scheduler re-polls every interval,
+// so they must not spam the log; other errors are logged every time (they are
+// transient and need attention).
+//
+// Each cause owns its own throttle slot. One shared slot was a real
+// observability hole: with a steady stream of "no capable candidate" the
+// budget incident — the one an operator must act on, because the fix is a
+// bigger budget, not a new agent — was suppressed for as long as the other
+// kept firing.
 func (s *Scheduler) logFailure(taskID string, err error) {
-	// errors.Is, not ==: the empty-candidate path returns the sentinel wrapped
-	// in an apperrors.Kernel attribution (see executeWithCandidates), so an
-	// identity comparison never matches and the throttle silently dies.
-	if errors.Is(err, taskfabric.ErrNoCapableCandidate) {
-		now := time.Now()
-		s.noCandidateMu.Lock()
-		defer s.noCandidateMu.Unlock()
+	// errors.Is, not ==: both paths return their sentinel wrapped in an
+	// apperrors.Kernel attribution (see executeWithCandidates), so an identity
+	// comparison never matches and the throttle silently dies.
+	now := time.Now()
+	s.noCandidateMu.Lock()
+	switch {
+	case errors.Is(err, taskfabric.ErrNoAffordableCandidate):
+		if now.Sub(s.lastNoAffordableLog) < noCandidateLogInterval {
+			s.noCandidateMu.Unlock()
+			return
+		}
+		s.lastNoAffordableLog = now
+	case errors.Is(err, taskfabric.ErrNoCapableCandidate):
 		if now.Sub(s.lastNoCandidateLog) < noCandidateLogInterval {
+			s.noCandidateMu.Unlock()
 			return
 		}
 		s.lastNoCandidateLog = now
 	}
-	log.Error("kernel scheduler: execute task failed", "task_id", taskID, "error", err)
+	s.noCandidateMu.Unlock()
+	log.Error(context.Background(), "logFailure",
+		"kernel scheduler: execute task failed", err, "task_id", taskID)
 }
 
 // Submission-time metadata (UserProfile + Payload + UsedExperienceID) rides in
@@ -125,21 +143,33 @@ func (s *Scheduler) executeUnbound(ctx context.Context, taskID string) error {
 // cases 1 and 2.
 func (s *Scheduler) handleStaleWinner(taskID, winner string, epoch uint64) error {
 	if s.HasCapableExecutor(taskID) {
-		if releaseErr := s.fabric.Release(taskID, winner, epoch); releaseErr != nil {
-			log.Error("kernel scheduler: release for stale winner failed", "task_id", taskID, "winner", winner, "error", releaseErr)
+		if releaseErr := s.fabric.ReleaseReason(taskID, winner, epoch, agentfabric.StopUnfit.String()); releaseErr != nil {
+			log.Error(context.Background(), "handleStaleWinner",
+				"kernel scheduler: release for stale winner failed", releaseErr,
+				"task_id", taskID, "winner", winner)
+			return nil
 		}
+		log.Info(context.Background(), "handleStaleWinner",
+			"kernel scheduler: reclaimed task from a winner with no live executor; another capable executor will pick it up",
+			"task_id", taskID, "winner", winner, "reason", agentfabric.StopUnfit.String())
 		return nil
 	}
 	if s.hasRecoveryHint() {
-		if releaseErr := s.fabric.Release(taskID, winner, epoch); releaseErr != nil {
-			log.Error("kernel scheduler: release for stale winner failed", "task_id", taskID, "winner", winner, "error", releaseErr)
+		if releaseErr := s.fabric.ReleaseReason(taskID, winner, epoch, agentfabric.StopUnfit.String()); releaseErr != nil {
+			log.Error(context.Background(), "handleStaleWinner",
+				"kernel scheduler: release for stale winner failed", releaseErr,
+				"task_id", taskID, "winner", winner)
 			return nil
 		}
-		log.Warn("kernel scheduler: winner no longer executable; released to READY and nominated for recovery", "winner", winner, "task_id", taskID)
+		log.Warn(context.Background(), "handleStaleWinner",
+			"kernel scheduler: winner no longer executable; released to READY and nominated for recovery",
+			"winner", winner, "task_id", taskID, "reason", agentfabric.StopUnfit.String())
 		s.notifyRecovery(taskID)
 		return nil
 	}
-	log.Warn("kernel scheduler: winner no longer executable and no capable replacement or recovery loop exists; task stays leased until TTL expiry", "winner", winner, "task_id", taskID)
+	log.Warn(context.Background(), "handleStaleWinner",
+		"kernel scheduler: winner no longer executable and no capable replacement or recovery loop exists; task stays leased until TTL expiry",
+		"winner", winner, "task_id", taskID, "reason", agentfabric.StopUnfit.String())
 	return nil
 }
 
@@ -163,15 +193,15 @@ func (s *Scheduler) executeWithCandidates(ctx context.Context, taskID string, ca
 	// acquire/release livelock).
 	cands = s.filterBudgetAffordable(cands)
 	if len(cands) == 0 {
-		// Distinct code for the budget-filtered empty pool: the sentinel on
-		// the chain stays ErrNoCapableCandidate (the task is still in the
-		// throttled "wait for a capable agent" state and logFailure still
-		// throttles it), but the CODE must differ — "every capable agent is
-		// budget-exhausted" and "no agent ever matched" are different
-		// incidents, and collapsing them into one code made a governance
-		// budget that was simply too small for the LLM look exactly like a
-		// missing executor (07-hil's silent no_capable_candidate hang).
-		return apperrors.Kernel("schedule", "no_affordable_candidate", taskID, "", taskfabric.ErrNoCapableCandidate)
+		// Distinct code AND distinct sentinel for the admission-filtered empty
+		// pool: "every capable agent is budget/deadline/reserve-exhausted" and
+		// "no agent ever matched" are different incidents, and collapsing them
+		// into one code made a governance budget that was simply too small for
+		// the LLM look exactly like a missing executor (07-hil's silent
+		// no_capable_candidate hang). The sentinel — not just the code string —
+		// must differ so errors.Is consumers (the log throttle) can separate
+		// the two.
+		return apperrors.Kernel("schedule", "no_affordable_candidate", taskID, "", taskfabric.ErrNoAffordableCandidate)
 	}
 	// Capability-specific confidence: the candidate builders only know
 	// agentID; the task capability is available here, so re-resolve each
@@ -246,7 +276,8 @@ func (s *Scheduler) executeWithCandidates(ctx context.Context, taskID string, ca
 		// visible instead of silent so a dead agent's lingering static
 		// registration can be spotted in logs.
 		if s.agents != nil {
-			log.Debug("kernel scheduler: peer-mode dispatch fell back to a static registration",
+			log.Debug(ctx, "executeWithCandidates",
+				"kernel scheduler: peer-mode dispatch fell back to a static registration",
 				"task_id", taskID, "winner", winner)
 		}
 	}
@@ -260,17 +291,31 @@ func (s *Scheduler) executeWithCandidates(ctx context.Context, taskID string, ca
 	// alive through an arbitrary number of yield→resume cycles.
 	meta, decodeErr := taskfabric.DecodeCheckpoint(tk.Checkpoint)
 	if decodeErr != nil {
-		log.Warn("kernel scheduler: decode checkpoint failed", "task_id", taskID, "error", decodeErr)
+		log.Warn(ctx, "executeWithCandidates",
+			"kernel scheduler: decode checkpoint failed", "task_id", taskID, "error", decodeErr)
 	}
-	// Pre-quantum gate: if the winner's budget/deadline is exhausted, yield
-	// the task back (release the lease) so another capable agent (or a later
-	// quantum under a replacement agent) can pick it up. This closes the loop at
-	// the scheduler boundary — the fabric's state machine (Release→READY)
-	// drives the requeue ("budget.exceeded → yield()").
-	if !s.budgetOK(winner) {
-		if releaseErr := s.fabric.Release(taskID, winner, epoch); releaseErr != nil {
-			log.Error("kernel scheduler: release for budget-exhausted failed", "task_id", taskID, "winner", winner, "error", releaseErr)
+	// Pre-quantum gate: if the winner is not admissible (deadline passed,
+	// budget spent, or its budget reserve reached), RECLAIM the task — release
+	// the lease so it goes back to READY for a fresher agent, with the reason
+	// recorded on the release event. This closes the loop at the scheduler
+	// boundary — the fabric's state machine (ReleaseReason→READY) drives the
+	// requeue. The checkpoint is preserved, so this is a hand-over, not a
+	// restart.
+	if ok, reason := s.admissible(winner); !ok {
+		if releaseErr := s.fabric.ReleaseReason(taskID, winner, epoch, reason.String()); releaseErr != nil {
+			log.Error(ctx, "executeWithCandidates",
+				"kernel scheduler: reclaim for inadmissible winner failed", releaseErr,
+				"task_id", taskID, "winner", winner, "reason", reason.String())
+			return nil
 		}
+		// The reclaim succeeded: the task is READY again with its checkpoint
+		// intact and the reason is on its task.released event. Logged at Info
+		// because this is the moment an operator watching "why did this task
+		// stop moving" needs — the per-candidate cause sits in admissible's
+		// Debug line, the aggregate in the no_affordable_candidate Error line.
+		log.Info(ctx, "executeWithCandidates",
+			"kernel scheduler: reclaimed task from an inadmissible winner",
+			"task_id", taskID, "winner", winner, "reason", reason.String())
 		return nil
 	}
 	// Admission gate: take the winner's busy slot ATOMICALLY before the quantum
@@ -282,7 +327,9 @@ func (s *Scheduler) executeWithCandidates(ctx context.Context, taskID string, ca
 	// task onto a free agent, exactly like the budget gate above.
 	if !s.tracker.TryBegin(winner, maxConcurrentPerAgent) {
 		if releaseErr := s.fabric.Release(taskID, winner, epoch); releaseErr != nil {
-			log.Error("kernel scheduler: release for busy winner failed", "task_id", taskID, "winner", winner, "error", releaseErr)
+			log.Error(ctx, "executeWithCandidates",
+				"kernel scheduler: release for busy winner failed", releaseErr,
+				"task_id", taskID, "winner", winner)
 		}
 		return nil
 	}
@@ -311,7 +358,9 @@ func (s *Scheduler) executeWithCandidates(ctx context.Context, taskID string, ca
 				// trail for the panic, and the load slot is released so the
 				// agent stays schedulable (the fabric's expired-lease
 				// requeue reclaims the stuck task separately).
-				log.Error("kernel scheduler: panic in executor, releasing load slot", "task_id", taskID, "agent", winner, "panic", r)
+				log.Error(ctx, "executeWithCandidates",
+					"kernel scheduler: panic in executor, releasing load slot", nil,
+					"task_id", taskID, "agent", winner, "panic", r)
 				s.tracker.EndNeutral(winner)
 				slotReleased = true
 			}
@@ -403,7 +452,13 @@ func (s *Scheduler) startLeaseHeartbeat(ctx context.Context, taskID, winner stri
 				return nil
 			case <-ticker.C:
 				if rerr := s.fabric.Renew(taskID, winner, epoch, s.ttl); rerr != nil {
-					log.Error("kernel scheduler: lease renew failed, stopping heartbeat", "task_id", taskID, "winner", winner, "error", rerr)
+					// Ownership was lost (preempted, requeued after expiry,
+					// finalized) or the lease already expired — either way the
+					// holder must stop renewing, so the error is terminal for
+					// this heartbeat, not retried.
+					log.Error(ctx, "startLeaseHeartbeat",
+						"kernel scheduler: lease renew failed, stopping heartbeat", rerr,
+						"task_id", taskID, "winner", winner, "epoch", epoch)
 					return nil
 				}
 			}

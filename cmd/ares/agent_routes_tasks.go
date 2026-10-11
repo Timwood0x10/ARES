@@ -531,7 +531,8 @@ func sweepStaleCollabTasks(f *taskfabric.Fabric) int {
 		}
 	}
 	if removed > 0 {
-		log.Info("peer mode: harvested stale collaboration task(s)", "removed", removed)
+		log.Info(context.Background(), "sweepStaleCollabTasks",
+			"peer mode: harvested stale collaboration task(s)", "removed", removed)
 	}
 	return removed
 }
@@ -597,7 +598,9 @@ func runCollabGraph(ctx context.Context, k *kernelHandle, runID, tenantID string
 		// and finish naturally; their ids are unique so nothing collides.
 		for _, tid := range created {
 			if derr := k.fabric.Delete(tid); derr != nil && derr != taskfabric.ErrTaskNotFound {
-				log.Warn("peer mode: cleanup failed", "task_id", tid, "err", derr)
+				log.Warn(ctx, "runCollabGraph",
+					"peer mode: collaboration node cleanup failed",
+					"task_id", tid, "error", derr)
 			}
 		}
 	}()
@@ -628,7 +631,9 @@ func runCollabGraph(ctx context.Context, k *kernelHandle, runID, tenantID string
 		}
 		created = append(created, tid)
 	}
-	log.Info("peer mode: collaboration graph submitted (nodes)", "run_id", runID, "count", len(nodes))
+	log.Info(ctx, "runCollabGraph",
+		"peer mode: collaboration graph submitted (nodes)",
+		"run_id", runID, "count", len(nodes), "tenant_id", tenantID)
 
 	waitCtx := ctx
 	if _, hasDeadline := ctx.Deadline(); !hasDeadline {

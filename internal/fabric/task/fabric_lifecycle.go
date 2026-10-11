@@ -2,7 +2,10 @@ package taskfabric
 
 import (
 	"fmt"
+	"sort"
 	"time"
+
+	"github.com/Timwood0x10/ares/internal/ares_events"
 )
 
 // Create registers a new READY task. The task is unowned and available for
@@ -59,6 +62,20 @@ func (f *Fabric) createLocked(t *Task, strategyID string, pending *[]*pendingApp
 	stampStrategyAttribution(&cp, strategyID)
 	f.tasks[t.ID] = &cp
 	*pending = append(*pending, f.recordLocked(&cp, EventTaskCreated))
+	// HITL: when the task requires human approval, emit interrupt.created so
+	// the approval lifecycle is observable from creation. The event is
+	// observability-only — the approval POLICY is persisted via the
+	// task.created payload (see fabric_events.go); this event only signals
+	// "a gate exists" to bus subscribers. Default (RequiresApproval=false)
+	// does not emit → non-HITL path unchanged.
+	if cp.RequiresApproval {
+		*pending = append(*pending, f.recordWithExtrasLocked(&cp,
+			EventType(ares_events.EventInterruptCreated), map[string]any{
+				"execution_id": cp.Origin,
+				"step_id":      cp.ID,
+				"message":      cp.ApprovalMessage,
+			}))
+	}
 	return nil
 }
 
@@ -112,6 +129,14 @@ func (f *Fabric) Acquire(id, agentID string, ttl time.Duration) (uint64, error) 
 		// not be able to start the retry early either.
 		return 0, fmt.Errorf("task %s is in retry backoff until %s: %w",
 			t.ID, t.NextAttemptAt.UTC().Format(time.RFC3339), ErrTaskNotReady)
+	}
+	// HITL approval guard: placed after
+	// deadline and backoff so those errors take precedence (D3 decision: a
+	// passed deadline is more actionable than "awaiting approval"). A task
+	// that requires approval but has not been approved must not be acquired —
+	// this is the third gate (the first two are ReadyTasks/ResumableTasks).
+	if t.RequiresApproval && t.ApprovalDecision != ApprovalDecisionApproved {
+		return 0, ErrTaskAwaitingApproval
 	}
 	f.epoch++
 	// Build the lease on the FABRIC's clock (f.now), not wall time: expiry is
@@ -354,11 +379,37 @@ func (f *Fabric) Renew(id, agentID string, epoch uint64, ttl time.Duration) erro
 	return nil
 }
 
+// payloadKeyReleaseReason is the task.released payload key carrying WHY the
+// holder stepped back (an agentfabric.StopReason code such as "budget_reserved"
+// or "capability_unfit"). It is an event-only annotation: the release fold only
+// needs the state transition, so there is deliberately no restore key. Without
+// it a reclaim was indistinguishable from an ordinary release — the exact gap
+// that made a budget-starved agent and a missing executor look identical.
+const payloadKeyReleaseReason = "reason"
+
 // Release returns a LEASED/RUNNING/SUSPENDED task to READY, clearing owner
 // and lease so another agent can acquire it. The epoch fencing guarantees a
 // stale holder (whose lease expired and was re-acquired by another agent)
 // cannot release the task out from under the new owner.
+//
+// It is ReleaseReason with no attributed cause. There is exactly one
+// implementation of the transition, so plain release and reclaim can never
+// drift apart.
 func (f *Fabric) Release(id, agentID string, epoch uint64) error {
+	return f.ReleaseReason(id, agentID, epoch, "")
+}
+
+// ReleaseReason returns a task to READY exactly as Release does, and records
+// the agentfabric.StopReason that caused it on the task.released event. The
+// scheduler's reclaim path calls it when the holder can no longer serve the
+// task (budget reserve/exhaustion, deadline, no executable body): the task
+// keeps its checkpoint and the reason, so "why did this task go back to the
+// queue" is answerable from the event log alone instead of being inferred from
+// a throttled scheduler log line.
+//
+// reason == "" keeps the payload byte-identical to a plain Release, so
+// unattributed callers cost nothing.
+func (f *Fabric) ReleaseReason(id, agentID string, epoch uint64, reason string) error {
 	pending := make([]*pendingAppend, 0, 1)
 	f.mu.Lock()
 	defer f.flushAppends(&pending)
@@ -372,7 +423,13 @@ func (f *Fabric) Release(id, agentID string, epoch uint64) error {
 	}
 	// Record the released event while the releasing agent is still
 	// attached (provenance), then clear ownership so the task is unowned.
-	pending = append(pending, f.recordLocked(t, EventTaskReleased))
+	if reason == "" {
+		pending = append(pending, f.recordLocked(t, EventTaskReleased))
+	} else {
+		pending = append(pending, f.recordWithExtrasLocked(t, EventTaskReleased, map[string]any{
+			payloadKeyReleaseReason: reason,
+		}))
+	}
 	t.Owner = ""
 	t.Lease = nil
 	return nil
@@ -460,6 +517,124 @@ func (f *Fabric) ExpireDeadlines() []string {
 		expired = append(expired, t.ID)
 	}
 	return expired
+}
+
+// ApprovalDecisionApproved and ApprovalDecisionRejected are the two allowed
+// decision values for ResolveApproval. They are the string forms stored in
+// Task.ApprovalDecision.
+const (
+	ApprovalDecisionApproved = "approved"
+	ApprovalDecisionRejected = "rejected"
+)
+
+// ResolveApproval is the human band-in entry point for the HITL approval gate
+// It does NOT require ownership — like
+// ExpireDeadlines, it is an out-of-band decision that operates under f.mu
+// directly.
+//
+// approve: the task stays READY (no state change) and becomes schedulable on
+// the next scheduler tick (approvalCleared now returns true). An
+// EventInterruptResolved event is recorded with approved=true.
+//
+// reject: the task is driven to FAILED via failTerminalLocked (READY→FAILED is
+// a legal transition), which also fires cascadeFailureLocked for downstream
+// dependents. An EventInterruptResolved event is recorded with approved=false
+// and the feedback text.
+//
+// Idempotency: resolving with the same decision is a no-op. Resolving with a
+// different decision after one is already set returns
+// ErrApprovalAlreadyResolved. Resolving a task that is no longer in a
+// resolvable state (already terminal) also returns ErrApprovalAlreadyResolved.
+//
+// Args:
+//   - id: the task id.
+//   - decision: "approved" or "rejected".
+//   - feedback: optional human feedback text (reject reason / approve note).
+//   - by: the principal identifier of the approver (for audit).
+//
+// Returns:
+//   - error: ErrTaskNotFound / ErrApprovalNotRequired /
+//     ErrInvalidApprovalDecision / ErrApprovalAlreadyResolved.
+func (f *Fabric) ResolveApproval(id, decision, feedback, by string) error {
+	if decision != ApprovalDecisionApproved && decision != ApprovalDecisionRejected {
+		return ErrInvalidApprovalDecision
+	}
+	pending := make([]*pendingAppend, 0, 2)
+	f.mu.Lock()
+	defer f.flushAppends(&pending)
+	defer f.mu.Unlock()
+	t, ok := f.tasks[id]
+	if !ok {
+		return ErrTaskNotFound
+	}
+	if !t.RequiresApproval {
+		return ErrApprovalNotRequired
+	}
+	// Idempotency: same decision → no-op.
+	if t.ApprovalDecision == decision {
+		return nil
+	}
+	// Already resolved with a different decision, or task is terminal.
+	if t.ApprovalDecision != "" ||
+		t.State == StateCompleted || t.State == StateFailed {
+		return ErrApprovalAlreadyResolved
+	}
+	t.ApprovalDecision = decision
+	t.ApprovalFeedback = feedback
+	t.ApprovalBy = by
+	t.ApprovalAt = f.now()
+	if decision == ApprovalDecisionApproved {
+		// No state change: the task stays READY. The approval gate
+		// (approvalCleared) now returns true so the scheduler picks it up.
+		pending = append(pending, f.recordWithExtrasLocked(t,
+			EventType(ares_events.EventInterruptResolved), map[string]any{
+				"approved": true,
+			}))
+		return nil
+	}
+	// Reject: drive to FAILED via failTerminalLocked (READY→FAILED is legal).
+	// failTerminalLocked records task.failed and fires cascadeFailureLocked.
+	// We also record an interrupt.resolved event for observability.
+	pending = append(pending, f.recordWithExtrasLocked(t,
+		EventType(ares_events.EventInterruptResolved), map[string]any{
+			"approved": false,
+			"feedback": feedback,
+		}))
+	return f.failTerminalLocked(t, ErrInterruptRejected, false, &pending)
+}
+
+// ApprovalView is the read-only snapshot of one pending approval gate,
+// returned by PendingApprovals for the HTTP transport layer.
+type ApprovalView struct {
+	TaskID     string         `json:"task_id"`
+	Capability string         `json:"capability"`
+	Message    string         `json:"message"`
+	Payload    map[string]any `json:"payload,omitempty"`
+	CreatedAt  time.Time      `json:"created_at"`
+}
+
+// PendingApprovals returns a snapshot of every task that requires approval and
+// has not yet been resolved (ApprovalDecision == ""). Ordered by TaskID for
+// stable rendering. This is the query the HTTP GET /api/interrupts handler
+// consumes.
+func (f *Fabric) PendingApprovals() []ApprovalView {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []ApprovalView
+	for _, t := range f.tasks {
+		if !t.RequiresApproval || t.ApprovalDecision != "" {
+			continue
+		}
+		out = append(out, ApprovalView{
+			TaskID:     t.ID,
+			Capability: t.Capability,
+			Message:    t.ApprovalMessage,
+			Payload:    t.ApprovalPayload,
+			CreatedAt:  t.CreatedAt,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].TaskID < out[j].TaskID })
+	return out
 }
 
 // Delete removes a task from the fabric entirely (submitted

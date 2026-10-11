@@ -439,8 +439,9 @@ func (a *peerAssembly) wireSessionCleanup() {
 func (a *peerAssembly) computeGovernance() {
 	cfg := a.cfg
 	agentGovernance := agentfabric.Governance{
-		TokenBudget: cfg.Kernel.AgentBudget.Tokens,
-		ToolBudget:  cfg.Kernel.AgentBudget.Tools,
+		TokenBudget:       cfg.Kernel.AgentBudget.Tokens,
+		ToolBudget:        cfg.Kernel.AgentBudget.Tools,
+		MinRemainingRatio: cfg.Kernel.AgentBudget.ReserveRatio,
 	}
 	if cfg.Kernel.AgentBudget.Deadline != "" {
 		if d, dErr := time.ParseDuration(cfg.Kernel.AgentBudget.Deadline); dErr == nil {
@@ -543,7 +544,8 @@ func (a *peerAssembly) wireSyscalls() {
 	// bridge (built later in setupPeerRegistry) can inject ipc.Send into
 	// ask_agent (Step Y.2-ACT).
 	kernel.syscalls = kernelSyscall
-	log.Info("peer mode: spawn_agent / create_task / ask_agent syscalls wired into tool binder")
+	log.Info(context.Background(), "wireSyscalls",
+		"peer mode: spawn_agent / create_task / ask_agent syscalls wired into tool binder")
 }
 
 // injectPriorities injects per-peer thread priorities into the load tracker.
