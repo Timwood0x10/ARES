@@ -15,11 +15,7 @@ import (
 // "every SUBSCRIBED event must have an emitter" — these constants have no
 // subscriber, so they are inert, not silently broken.
 var knownUnwired = map[EventType]bool{
-	EventHandoff:          true, // leader-sub handoff retired
-	EventSubTaskScheduled: true, // superseded by the Task Fabric READY state
-	EventSubTaskStarted:   true, // superseded by EventTaskStarted
-	EventSubAgentFailed:   true, // agent deaths flow through agentfabric events
-	EventMemoryDistilled:  true, // distillation writes via the experience repo
+	EventMemoryDistilled: true, // distillation writes via the experience repo
 }
 
 // TestEventContract_SubscribedMustHaveEmitter is the gate: for every event

@@ -42,6 +42,18 @@ type PlanStep struct {
 	// BackoffBase disables backoff, so a requeued step is immediately runnable.
 	BackoffBase time.Duration
 	BackoffMax  time.Duration
+	// Deadline is the step's RELATIVE completion budget: CompilePlan converts a
+	// positive value to the task's absolute Task.Deadline (f.now()+Deadline),
+	// which ExpireDeadlines then enforces. Zero means "no deadline" — the
+	// pre-0.3.3 behaviour, so an unconfigured step is unaffected. It is a
+	// duration (not an absolute time) because a PlanStep is a compile-time
+	// description: "finish within X", resolved to wall-clock at creation.
+	//
+	// IMPORTANT: the clock starts at COMPILE time (CompilePlan), not at
+	// step-start, and the resolved absolute Task.Deadline is persisted — a
+	// resume/restart does NOT reset it. So Deadline is a wall-clock budget
+	// from when the plan was compiled, not a per-attempt or per-quantum timer.
+	Deadline time.Duration
 	// Payload carries the step's input metadata (surfaced via the checkpoint
 	// envelope to the executor).
 	Payload map[string]any
@@ -155,6 +167,13 @@ func (f *Fabric) CompilePlan(ctx context.Context, steps []PlanStep) ([]string, e
 			AllowPartial: s.AllowPartial,
 			BackoffBase:  s.BackoffBase,
 			BackoffMax:   s.BackoffMax,
+		}
+		// A positive relative Deadline resolves to an absolute wall-clock
+		// instant at creation; zero leaves Task.Deadline zero ("no deadline").
+		// Resolved under f.mu via f.now() so the clock matches ExpireDeadlines
+		// and the Acquire deadline guard (one clock source, no skew).
+		if s.Deadline > 0 {
+			t.Deadline = f.now().Add(s.Deadline)
 		}
 		if s.Payload != nil || s.SessionID != "" || s.TenantID != "" {
 			env := NewCheckpointEnvelope(s.Payload)

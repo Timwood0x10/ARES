@@ -56,6 +56,14 @@ func WithLanguage(lang string) LLMSummarizerOption {
 // concise, fact-preserving summaries from the Normalized/Raw content.
 // Compared to DefaultSummarizer (which just truncates at 200 chars), this
 // preserves key technical terms, names, and relationships.
+//
+// NOTE(tech-debt, plan/0.3.3_task.md C10): this type has no production caller
+// — the knowledge pipeline wires DefaultSummarizer, and the only reference to
+// NewLLMSummarizer is this package's own test. It is retained (not deleted) as
+// the designated prerequisite for Appendix B G3 ("memory-anchor" summarization
+// of out-of-window history): before wiring it into any hot path, its timeout,
+// failure and token-cost behaviour must be evaluated (see Appendix B.6). Until
+// then it is a capability reserve, exercised by tests only.
 type LLMSummarizer struct {
 	generate      LLMGenerateFunc
 	maxSummaryLen int    // Target summary length in characters

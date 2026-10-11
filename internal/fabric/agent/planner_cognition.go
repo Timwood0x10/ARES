@@ -435,7 +435,58 @@ func (c *plannerCognition) assembleContext(ctx context.Context, task *models.Tas
 		messages = append([]*llmcore.LLMMessage{sys}, messages...)
 	}
 
+	// Degraded-inputs disclosure (closure of the AllowPartial contract): when
+	// an AllowPartial task proceeds without a permanently-failed predecessor,
+	// the fabric mirrors that predecessor's ID into the task payload under
+	// degraded_inputs. Surface it to the model so it reasons WITH the gap
+	// ("input X is missing") instead of silently assuming every input is
+	// present — otherwise degraded_inputs is a write-only field and the task
+	// plans on a truncated reality.
+	//
+	// Role: system, appended after the tool history. This matches the planner's
+	// existing convention for trailing system hints (the L1 priors and the
+	// evolution-strategy template that ExecuteStep appends next), so the
+	// prefix stays cache-stable. If a strict system-must-be-first provider is
+	// targeted, fold these trailing hints into the leading system block
+	// together — do not special-case this one message.
+	if gaps := degradedInputsFromPayload(task.Payload); len(gaps) > 0 {
+		messages = append(messages, &llmcore.LLMMessage{
+			Role: roleSystem,
+			Content: "degraded inputs — the following prerequisites failed permanently and are MISSING; " +
+				"reason about their absence, do not assume their output exists:\n- " + strings.Join(gaps, "\n- "),
+		})
+	}
+
 	return messages, nil
+}
+
+// degradedInputsFromPayload extracts the degraded_inputs id list the fabric
+// mirrors into an AllowPartial task's payload. The checkpoint envelope round-
+// trips through JSON, so the slice may arrive as []string (in-process) or
+// []any of strings (after decode); both are handled. A missing key, wrong
+// type or empty list yields nil — the caller then injects nothing.
+func degradedInputsFromPayload(payload map[string]any) []string {
+	if payload == nil {
+		return nil
+	}
+	raw, ok := payload[taskfabric.PayloadKeyDegradedInputs]
+	if !ok {
+		return nil
+	}
+	switch v := raw.(type) {
+	case []string:
+		return v
+	case []any:
+		ids := make([]string, 0, len(v))
+		for _, e := range v {
+			if s, ok := e.(string); ok && s != "" {
+				ids = append(ids, s)
+			}
+		}
+		return ids
+	default:
+		return nil
+	}
 }
 
 // assembleAnswerMessages rebuilds the session's LLM context for the answer

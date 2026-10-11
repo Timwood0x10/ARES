@@ -606,3 +606,68 @@ func TestPlanLoopFailedStartClosesDone(t *testing.T) {
 	}
 	second.Stop() // must not block either
 }
+
+// TestPlanLoopRoundStaysActiveUnderAllowPartial is the C4 regression
+// (plan/0.3.3_task.md §7 risk 3): when an upstream step fails permanently and
+// a downstream AllowPartial step depends on it, the round must NOT finish on
+// the upstream failure. The degraded downstream has to become schedulable and
+// run; only when IT reaches terminal does the round complete. Without the
+// dependencySatisfied closure the downstream would sit READY forever and the
+// loop would never see the round go terminal.
+func TestPlanLoopRoundStaysActiveUnderAllowPartial(t *testing.T) {
+	f := NewFabric()
+	spec := PlanLoopSpec{
+		PlanID:    "plan-degraded",
+		MaxRounds: 1,
+		Steps: []PlanStep{
+			// MaxRetries=1 → one attempt, so the first Fail is terminal.
+			{ID: "up", Capability: "coder", Origin: "test", MaxRetries: 1},
+			{ID: "down", Capability: "coder", Origin: "test", DependsOn: []string{"up"}, AllowPartial: true},
+		},
+	}
+	l := newTestLoop(t, f, spec)
+	if err := l.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer l.Stop()
+
+	upID := PlanTaskID("plan-degraded", 1, "up")
+	downID := PlanTaskID("plan-degraded", 1, "down")
+
+	waitFor(t, "up ready", func() bool {
+		tk, err := f.Task(upID)
+		return err == nil && tk.State == StateReady
+	})
+	failTask(t, f, upID)
+
+	// The round stays live: the cascade spares the AllowPartial downstream,
+	// which becomes schedulable (READY) carrying the degraded input, instead
+	// of being failed.
+	waitFor(t, "down degraded + schedulable", func() bool {
+		tk, err := f.Task(downID)
+		return err == nil && tk.State == StateReady && len(tk.DegradedInputs) == 1
+	})
+	drive(t, f, downID, nil)
+
+	waitFor(t, "loop done", func() bool {
+		select {
+		case <-l.Done():
+			return true
+		default:
+			return false
+		}
+	})
+	if err := l.Err(); err != nil {
+		t.Fatalf("loop ended with error: %v", err)
+	}
+	out, ok := l.LastOutcome()
+	if !ok {
+		t.Fatal("no final outcome")
+	}
+	if out.Status["up"] != StateFailed {
+		t.Fatalf("up status = %q, want FAILED", out.Status["up"])
+	}
+	if out.Status["down"] != StateCompleted {
+		t.Fatalf("down status = %q, want COMPLETED (degraded ran to completion)", out.Status["down"])
+	}
+}

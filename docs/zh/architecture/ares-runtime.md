@@ -146,7 +146,7 @@ Agent 只表达：`我具备 X 能力 / 我空闲 / 我申请 Y / 我执行 Y / 
 
 ## 七、事件升级（全状态可重建）
 
-现有 `EventSubTaskScheduled / EventSubTaskResult` 升级为完整生命周期事件：
+旧的 leader-sub 事件已被下面这组完整的 Task 生命周期事件取代（`EventSubTaskScheduled`/`EventSubTaskStarted` 已于 0.3.3 移除；`EventSubTaskResult` 保留作结果载体）：
 
 ```
 TaskCreated / TaskReady / TaskAcquired / TaskStarted / TaskYielded /

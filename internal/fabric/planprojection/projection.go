@@ -11,6 +11,7 @@ package planprojection
 
 import (
 	"strconv"
+	"time"
 
 	"github.com/Timwood0x10/ares/internal/fabric/task"
 	"github.com/Timwood0x10/ares/internal/fabric/task/workflow/engine"
@@ -31,18 +32,28 @@ type CompileRecord struct {
 //
 // Mapping rules (fixed):
 //
-//	PlanStep.ID         ← Step.ID
+//	PlanStep.ID          ← Step.ID
 //	PlanStep.Capability  ← Step.AgentType
 //	PlanStep.DependsOn   ← Step.DependsOn (copied)
 //	PlanStep.MaxRetries  ← Step.RetryPolicy.MaxAttempts (nil → 0)
+//	PlanStep.BackoffBase ← Step.RetryPolicy.InitialDelay (nil → 0)
+//	PlanStep.BackoffMax  ← Step.RetryPolicy.MaxDelay (nil → 0)
+//	PlanStep.Deadline    ← Step.Timeout (relative budget; CompilePlan resolves
+//	                       it to the absolute Task.Deadline)
+//	PlanStep.AllowPartial ← Step.AllowPartial
 //	PlanStep.Priority    ← Step.Metadata["priority"] parsed as int; parse
 //	                       failure or missing → 0
 //	PlanStep.Payload     ← {"input": Step.Input} merged with Step.Metadata
 //	                       (metadata keys win on conflict)
 //	PlanStep.Origin      ← not filled (json:"-", stamped by the Kernel)
 //
+// RetryPolicy.BackoffMultiplier is NOT forwarded: the fabric backoff always
+// doubles (BackoffBase×2^n capped by BackoffMax). A non-2 multiplier in the
+// engine step is therefore not honoured at execution — see ADR-C1 in
+// plan/0.3.3_task.md for why the two retry models are mapped, not merged.
+//
 // Explicitly discarded (HITL frozen or execution-time state):
-//   - Interrupt, Timeout, RecoveryPolicy, Name,
+//   - Interrupt, RecoveryPolicy, Name,
 //     Status/Output/Error/StartedAt/FinishedAt
 func ProjectStep(s *engine.Step) taskfabric.PlanStep {
 	if s == nil {
@@ -53,8 +64,11 @@ func ProjectStep(s *engine.Step) taskfabric.PlanStep {
 	copy(deps, s.DependsOn)
 
 	maxRetries := 0
+	var backoffBase, backoffMax time.Duration
 	if s.RetryPolicy != nil {
 		maxRetries = s.RetryPolicy.MaxAttempts
+		backoffBase = s.RetryPolicy.InitialDelay
+		backoffMax = s.RetryPolicy.MaxDelay
 	}
 
 	payload := map[string]any{
@@ -65,14 +79,18 @@ func ProjectStep(s *engine.Step) taskfabric.PlanStep {
 	}
 
 	return taskfabric.PlanStep{
-		ID:         s.ID,
-		Capability: s.AgentType,
-		DependsOn:  deps,
-		MaxRetries: maxRetries,
-		Priority:   parsePriority(s.Metadata),
-		Payload:    payload,
-		SessionID:  parseSessionID(s.Metadata),
-		TenantID:   parseTenantID(s.Metadata),
+		ID:           s.ID,
+		Capability:   s.AgentType,
+		DependsOn:    deps,
+		MaxRetries:   maxRetries,
+		BackoffBase:  backoffBase,
+		BackoffMax:   backoffMax,
+		Deadline:     s.Timeout,
+		AllowPartial: s.AllowPartial,
+		Priority:     parsePriority(s.Metadata),
+		Payload:      payload,
+		SessionID:    parseSessionID(s.Metadata),
+		TenantID:     parseTenantID(s.Metadata),
 	}
 }
 

@@ -156,8 +156,9 @@ I release Y`. They don't know "who the leader is".
 
 ## 7. Event Upgrade (full state rebuildable)
 
-The existing `EventSubTaskScheduled / EventSubTaskResult` upgrade to full
-lifecycle events:
+The legacy leader-sub events were superseded by the full Task lifecycle
+events below (`EventSubTaskScheduled` / `EventSubTaskStarted` were removed in
+0.3.3; `EventSubTaskResult` is kept as the result carrier):
 
 ```
 TaskCreated / TaskReady / TaskAcquired / TaskStarted / TaskYielded /

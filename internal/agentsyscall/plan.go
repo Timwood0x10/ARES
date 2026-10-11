@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"time"
 
 	"github.com/Timwood0x10/ares/internal/fabric/agent"
 	"github.com/Timwood0x10/ares/internal/fabric/task"
@@ -38,6 +39,18 @@ type PlanStepArgs struct {
 	Priority int `json:"priority,omitempty"`
 	// MaxRetries is the TOTAL attempt budget (0 = kernel default).
 	MaxRetries int `json:"max_retries,omitempty"`
+	// AllowPartial lets this step run when a dependency fails permanently
+	// (the failed predecessor is recorded as a degraded input instead of
+	// cascading the failure). False (default) is strict.
+	AllowPartial bool `json:"allow_partial,omitempty"`
+	// BackoffBaseMS is the delay before the first retry, in milliseconds; it
+	// doubles per further attempt, capped by BackoffMaxMS. 0 = immediate retry.
+	BackoffBaseMS int `json:"backoff_base_ms,omitempty"`
+	// BackoffMaxMS caps the backoff doubling, in milliseconds. 0 = no cap.
+	BackoffMaxMS int `json:"backoff_max_ms,omitempty"`
+	// DeadlineMS is the relative completion budget in milliseconds; the kernel
+	// resolves it to an absolute task deadline at creation. 0 = no deadline.
+	DeadlineMS int `json:"deadline_ms,omitempty"`
 	// Payload carries opaque step data (task_desc, parameters).
 	Payload map[string]any `json:"payload,omitempty"`
 }
@@ -126,13 +139,21 @@ func (k *Kernel) CreatePlan(ctx context.Context, args CreatePlanArgs) (*CreatePl
 			return nil, fmt.Errorf("agentsyscall: plan step %q: capability %q is not L2-routable (want ares/plan, ares/answer, ares/root, or tool/<name>): %w", s.ID, s.Capability, errUnroutableCapability)
 		}
 		steps = append(steps, taskfabric.PlanStep{
-			ID:         s.ID,
-			Capability: s.Capability,
-			DependsOn:  s.DependsOn,
-			Priority:   s.Priority,
-			MaxRetries: s.MaxRetries,
-			Payload:    s.Payload,
-			Origin:     origin,
+			ID:           s.ID,
+			Capability:   s.Capability,
+			DependsOn:    s.DependsOn,
+			Priority:     s.Priority,
+			MaxRetries:   s.MaxRetries,
+			AllowPartial: s.AllowPartial,
+			// LLM output is untrusted: clamp negative durations to 0 (disabled)
+			// rather than letting a negative BackoffBase compute a past
+			// NextAttemptAt (degenerate "immediate retry") or a negative
+			// deadline slip past CompilePlan's > 0 guard inconsistently.
+			BackoffBase: time.Duration(max(0, s.BackoffBaseMS)) * time.Millisecond,
+			BackoffMax:  time.Duration(max(0, s.BackoffMaxMS)) * time.Millisecond,
+			Deadline:    time.Duration(max(0, s.DeadlineMS)) * time.Millisecond,
+			Payload:     s.Payload,
+			Origin:      origin,
 		})
 	}
 	// A looped plan is compiled by the PlanLoop itself (round 1 compiles
@@ -358,6 +379,26 @@ func CreatePlanToolSchema() ToolSchema {
 							"max_retries": map[string]any{
 								paramType:        paramTypeInteger,
 								paramDescription: "Total attempt budget. 0 = kernel default (first attempt + one retry).",
+							},
+							"allow_partial": map[string]any{
+								paramType: paramTypeBoolean,
+								paramDescription: "When true, this step still runs if a dependency fails permanently; the " +
+									"failed predecessor is recorded as a degraded input instead of failing this step. " +
+									"False (default) is strict.",
+							},
+							"backoff_base_ms": map[string]any{
+								paramType: paramTypeInteger,
+								paramDescription: "Delay before the first retry, in milliseconds; doubles per further " +
+									"attempt, capped by backoff_max_ms. 0 = immediate retry.",
+							},
+							"backoff_max_ms": map[string]any{
+								paramType:        paramTypeInteger,
+								paramDescription: "Caps the retry backoff doubling, in milliseconds. 0 = no cap.",
+							},
+							"deadline_ms": map[string]any{
+								paramType: paramTypeInteger,
+								paramDescription: "Relative completion budget in milliseconds; the kernel resolves it to " +
+									"an absolute deadline at creation. A task past its deadline fails terminally. 0 = no deadline.",
 							},
 							paramPayload: map[string]any{
 								paramType:        paramTypeObject,

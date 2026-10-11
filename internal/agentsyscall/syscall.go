@@ -51,6 +51,7 @@ const (
 	paramTypeObject  = "object"
 	paramTypeArray   = "array"
 	paramTypeInteger = "integer"
+	paramTypeBoolean = "boolean"
 	paramDescription = "description"
 	paramCapability  = "capability"
 

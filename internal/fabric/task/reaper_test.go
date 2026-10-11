@@ -146,3 +146,35 @@ func TestReaper_GracePeriodDefault(t *testing.T) {
 		t.Fatalf("explicit grace = %s, want 5s", got)
 	}
 }
+
+// TestReaper_SparesDegradedPath is the C4 regression (plan/0.3.3_task.md §7
+// risk 3): after an upstream fails permanently and an AllowPartial downstream
+// degrades, the reaper must neither harvest the still-live degraded downstream
+// (t4 is READY, non-terminal) nor the FAILED upstream it still references (t2
+// stays in t4.Dependencies). Harvesting t2 while t4 lists it would strand t4
+// forever — depsSatisfiedLocked reads a missing dependency as unsatisfiable.
+func TestReaper_SparesDegradedPath(t *testing.T) {
+	f, _ := partialFixture(t, true)
+	failPermanently(t, f, "t2", "boom")
+	runToCompletion(t, f, "t3")
+
+	// t4 is now READY (degraded: DegradedInputs=[t2]); t2 is terminal FAILED.
+	t4, err := f.Task("t4")
+	if err != nil || t4.State != StateReady || len(t4.DegradedInputs) != 1 {
+		t.Fatalf("precondition: t4 must be READY+degraded, got state=%v degraded=%v err=%v",
+			t4.State, t4.DegradedInputs, err)
+	}
+
+	// Prefix "t" matches every fixture task; 1ns grace puts the terminal t2
+	// past the window immediately so only the reference guard can protect it.
+	r := NewReaper(f, "t", time.Nanosecond)
+	time.Sleep(2 * time.Millisecond)
+	r.Sweep()
+
+	if _, err := f.Task("t4"); err != nil {
+		t.Fatalf("live degraded downstream t4 was harvested: %v", err)
+	}
+	if _, err := f.Task("t2"); err != nil {
+		t.Fatalf("referenced failed upstream t2 was harvested, stranding t4: %v", err)
+	}
+}

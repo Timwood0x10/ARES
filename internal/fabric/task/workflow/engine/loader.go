@@ -196,18 +196,30 @@ type WorkflowFile struct {
 }
 
 // StepFile represents a step definition from a file.
+//
+// UNIT CAVEAT (plan/0.3.3_task.md §C.9 #5b): Timeout and RetryPolicy's delays
+// are bare time.Duration, so YAML/JSON parse a bare number as NANOSECONDS
+// (`timeout: 30` → 30ns, effectively instant), and a duration string like
+// `30s` fails to parse. Before 0.3.3 these values were dropped at ProjectStep
+// and never reached the fabric, so the footgun was dormant; now Timeout maps
+// to Task.Deadline and the delays to the retry backoff, so a mis-typed value
+// really affects scheduling. Authoring these in YAML is intentionally NOT
+// wired for operators yet — add explicit *_ms fields or a custom unmarshaler
+// before exposing them (tracked as the C3 YAML-author follow-up).
 type StepFile struct {
 	ID          string            `json:"id" yaml:"id"`
 	Name        string            `json:"name" yaml:"name"`
 	AgentType   string            `json:"agent_type" yaml:"agent_type"`
 	Input       string            `json:"input" yaml:"input"`
 	DependsOn   []string          `json:"depends_on" yaml:"depends_on"`
-	Timeout     time.Duration     `json:"timeout" yaml:"timeout"`
+	Timeout     time.Duration     `json:"timeout" yaml:"timeout"` // nanoseconds if a bare number — see UNIT CAVEAT above
 	RetryPolicy *RetryPolicyFile  `json:"retry_policy" yaml:"retry_policy"`
 	Metadata    map[string]string `json:"metadata" yaml:"metadata"`
 }
 
-// RetryPolicyFile represents retry policy from a file.
+// RetryPolicyFile represents retry policy from a file. InitialDelay/MaxDelay
+// are bare time.Duration — see the UNIT CAVEAT on StepFile (bare numbers parse
+// as nanoseconds).
 type RetryPolicyFile struct {
 	MaxAttempts       int           `json:"max_attempts" yaml:"max_attempts"`
 	InitialDelay      time.Duration `json:"initial_delay" yaml:"initial_delay"`

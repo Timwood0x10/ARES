@@ -44,13 +44,10 @@ const (
 	EventStepRecoveryStarted   EventType = "step.recovery.started"
 	EventStepRecoveryCompleted EventType = "step.recovery.completed"
 	EventStepRecoveryFailed    EventType = "step.recovery.failed"
-	EventHandoff               EventType = "handoff.transferred"
 
 	// Leader-sub task collaboration events for event-driven dispatch.
-	EventSubTaskScheduled EventType = "sub_task.scheduled" // leader dispatches task to sub
-	EventSubTaskStarted   EventType = "sub_task.started"   // sub begins execution
-	EventSubTaskResult    EventType = "sub_task.result"    // sub returns result (success or failure)
-	EventSubAgentFailed   EventType = "sub_agent.failed"   // sub crashed (panic captured)
+	EventSubTaskResult  EventType = "sub_task.result"  // sub returns result (success or failure)
+	EventSubAgentFailed EventType = "sub_agent.failed" // sub crashed (panic captured)
 
 	// Task Fabric lifecycle events (ares-runtime): published
 	// by internal/fabric/task on every task state transition so scheduler /

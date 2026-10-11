@@ -45,6 +45,9 @@
 23. [L1 / L2 双图与数据分流（Postgres / pgvector）](#23-l1--l2-双图与数据分流)
 24. [检索降噪（向量检索"噪声"与规避）](#24-检索降噪)
 25. [Checkpoint 与恢复（字段 + 7 步 + 两种模式）](#25-checkpoint-与恢复)
+26. [上下文管理（滑窗截断 + 规则裁剪 + RAG 注入，非 LLM 摘要）](#26-上下文管理)
+27. [LLM 失败切换 + 工具组织（`core.Registry`）](#27-llm-失败切换与工具组织)
+28. [事件驱动总线（谁订阅了什么）](#28-事件驱动总线)
 
 ---
 
@@ -1183,6 +1186,183 @@ sequenceDiagram
 > 一句话：lease 过期只让任务**重新入队换人**（不判死任务）；租约守卫会拒掉旧持有者的迟到写——
 > **已不持有租约时返回 `ErrNotOwner`，持有租约但 epoch 过期时返回 `ErrEpochMismatch`**——
 > 任意时刻只有一个有效写者。
+
+---
+
+## 26. 上下文管理（滑窗截断 + 规则裁剪 + RAG 注入，非 LLM 摘要）
+
+> 本章实事求是说明：项目**没有做 LLM 摘要式压缩**（不是 OpenAI `compact`
+> 那种"把历史总结成一段喂回去"）。它做的是**"滑窗截断 + 规则裁剪 + RAG
+> 注入"**，零 LLM 成本。这是有意的 trade-off，边界也明确。
+
+### 26.1 三层机制（源码核实）
+
+```mermaid
+flowchart TB
+    subgraph store[① 存储层]
+        m[session 消息流]
+        c["SessionMaxHistory=500<br/>AddMessage 满 500 丢最旧的<br/>(session.go:23)"]
+    end
+    subgraph read[② 读取层 BuildContext]
+        w["MaxHistory(默认 10~50)<br/>只取最近 N 条<br/>(manager_impl.go:563)"]
+        cl["ContextCleaner.Clean<br/>规则裁剪(非LLM)"]
+    end
+    subgraph rag[③ 补充层 RAG]
+        r["retrieveContextString<br/>注入相关经验/知识 snippet"]
+    end
+    store -->|读时截断| w
+    w --> cl
+    cl --> out[LLM 上下文]
+    rag -->|prepend| out
+```
+
+| 层 | 做什么 | 源码 |
+|---|---|---|
+| ① 存储上限 | 每个 session 最多存 `SessionMaxHistory=500` 条，满了丢最旧（防长会话 OOM，修过的 bug） | `context/session.go:23` `defaultMaxSessionMessages=500` |
+| ② 读取截断 | `BuildContext` 只取**最近 `MaxHistory`（10~50）条**，不是全量 | `manager_impl.go:563` `messages[len-maxHistory:]` |
+| ② 规则裁剪 | `ContextCleaner.Clean` 对截断后的消息做"角色差异化压缩" | `context/cleaner.go` |
+| ③ RAG 注入 | prepend 检索到的相关经验/知识 snippet（用当前 input 当查询） | `manager_rag.go:17` `retrieveContextString` |
+
+### 26.2 `ContextCleaner` 到底做了什么（不吹）
+
+代码注释写的是 "intelligently cleans / differential compression"——**实际实现
+是纯规则（regex + 截断 + 取首句），零 LLM 调用**。按消息角色区别对待：
+
+| 消息角色 | 处理 | 效果 |
+|---|---|---|
+| `tool_call` / `tool_result` | `extractGist`：去掉代码块，**只留第一句**，再截到 `MaxToolLen` | 工具噪音大幅砍掉 |
+| `assistant` 带 ToolCalls | 当工具类内容，激进砍 | 同上 |
+| `assistant` 纯推理 | `compressCodeBlocks`：代码块 ```...``` 替换成 `<code block [lang]>`，再截到 `MaxAssistantLen` | 长代码塌成占位 |
+| `system` / 其他 | 截到 `MaxSystemLen`/`MaxAssistantLen` | 兜底截断 |
+
+**关键事实（面试别顺着注释吹）**：
+- **没有"总结""提炼要点"的语义动作**——是"砍代码块""取首句""截断"，规则化的。
+- `compressCodeBlocks`（`cleaner.go:128`）就是把 ``` 代码块 整个替换成 `<code block>` 占位，**不读代码内容**。
+- `extractGist`（`cleaner.go:144`）取"第一个句号/叹号/问号前的句子"，取不到就 `WithEllipsis` 硬截。
+- 有 `CleaningMode`（Default/Conservative/Aggressive，`cleaner.go:24`）三档 + `CleanWithTurns`（按"回合"做工具消息的保留/裁剪，`cleaner.go:169`），但**本质仍是规则，不是 LLM**。
+
+### 26.3 三种"压缩"方案的对照（为什么选这个）
+
+| 方案 | 成本 | 效果 | 短板 |
+|---|---|---|---|
+| **滑窗截断（本项目）** | 零（纯切片） | 保最近 N 条连贯 | 丢旧上下文 |
+| **规则裁剪（本项目）** | 零（regex/截断） | 砍工具/代码噪音 | 无脑砍，可能砍掉"不啰嗦但关键"的内容 |
+| RAG 补充（本项目） | 向量检索（便宜，非 LLM） | 召回"不最近但相关"的旧知识 | 精度依赖 embedding 质量（见 §24） |
+| **LLM 摘要（本项目没做）** | 多一次 LLM 调用（贵 + 慢） | 语义压缩最完整 | 烧钱 + 摘要本身有损 + 引入新故障点 |
+
+**为什么选"截断 + 规则裁剪 + RAG"而不用 LLM 摘要**：
+1. **零 LLM 成本**——截断/裁剪/向量检索都不多烧 token，热路径不卡 LLM。
+2. **确定性**——规则裁剪结果稳定，不引入"摘要 LLM 抽风"的变量。
+3. **够用**——"最近 N 条（连贯）+ RAG 相关 snippet（语义）"覆盖了大多数 agent 场景。
+
+### 26.4 明确边界（实事求是，不吹）
+
+- **超长多轮任务是短板**："很久以前第 3 步的一个关键决定"既不在最近 N 条里，RAG 也未必检索到（依赖 embedding 质量）——两头漏。
+- **规则裁剪是有损的**：砍代码块、取首句，**丢了具体细节**；如果 LLM 后续需要"刚才那段代码的变量名"，已经砍没了。
+- **`MaxHistory` 默认 10~50**：窗口很窄，长对话里"稍早几句"就出窗口了（靠 RAG 补，但 RAG 是"相关"不是"时序"）。
+- **如果未来要做超长任务**：正确补法是加一条 **LLM 摘要路径**（把滑窗外的旧历史摘要成一段"记忆锚点"），而不是加大 MaxHistory（那只是更贵的截断）。
+
+### 26.5 面试速答（实事求是版）
+
+> "上下文管理是**滑窗截断 + 规则裁剪 + RAG 注入**，**不是 LLM 摘要压缩**。
+> 存储层 session 存 500 条上限（防 OOM）；读取层 `BuildContext` 只取最近
+> `MaxHistory`（10~50）条，再过一遍 `ContextCleaner`（正则砍代码块、工具
+> 消息取首句，**零 LLM 成本**）；同时 RAG 把相关经验 snippet 注入进去。
+> **为什么不用 LLM 摘要**：截断+规则+向量检索都不多烧 token，热路径不卡
+> LLM，且确定性高。**边界**：超长任务里'不最近也不相关但关键'的信息两头
+> 会漏；要覆盖得加一条 LLM 摘要路径——这是已知短板，不是设计遗漏。"
+
+---
+
+## 27. LLM 失败切换与工具组织
+
+> 本章补足前面只讲了"agent 层 / 任务层"容错、漏掉的**第三层——LLM 供应商层**，
+> 以及一直被简称 "core.Registry" 的工具组织。逐行核实，不吹。
+
+### 27.1 LLM 失败切换（`FailoverClient`，`internal/llm/failover.go`）
+
+三级容错里补上的第三级：前两级是"agent 挂了 / 任务挂了"（§12），
+这级是"**LLM 供应商挂了 / 限流了**"。
+
+**机制（源码核实）**：
+
+```
+NewFailoverClient(configs[0]=primary, configs[1:]=fallbacks, rate, burst)
+  · 只给 primary 挂 token bucket 限流(rate req/s + burst)，fallback 不限 (failover.go:81)
+  · 每个底层 client 关掉单调用重试(MaxAttempts=1)，重试交给 failover 层 (failover.go:76)
+
+Generate / GenerateStream（遍历 provider）:
+  for 每个 client (primary 先, fallback 按序):
+    · callerAborted(ctx)? → 立即停 (不"把锅甩给每个 provider")
+    · isCooledDown(该provider)? → 跳过 (60s 内不碰它)
+    · 带 per-attempt timeout 调 LLM
+    · 成功 → clearCooldown, 返回
+    · 失败/429 → markCooldown, 继续试下一个
+  全挂 → "no provider available (all N cooled down)" (failover.go)
+```
+
+| 细节 | 事实 | 行号 |
+|---|---|---|
+| 默认冷却 | 限流(429)供应商冷却 60s；其它错误只冷却 **1/3**（clamp 100ms~60s） | `failover.go:17`、`:180` |
+| 只限流主 | token bucket 只挂 primary，fallback 不受限 | `failover.go:81` |
+| 关单重试 | 底层 client `MaxAttempts=1` **且熔断也关掉**；切换由 failover 层负责 | `failover.go:76-77` |
+| caller 取消 | `callerAborted` → `coolDown` 返回 0，立即停、不记、不 blame | `failover.go:200-215` |
+| 流式超时 | 首块超时（以及首块带 `Err`、首块前通道关闭）=失败 → 继续 failover | `failover.go:387-436`——**注：`GenerateStream` 目前没有生产调用方**（`:302-304`） |
+
+**和 agent 钱包（§3 `agent_budget`）的区别**：
+
+```
+LLM 失败切换 = 【请求级】这一次 LLM 调用交给哪个供应商
+agent 钱包   = 【任务级】一个 agent 一生能烧多少 token/工具
+两级独立：钱包管"预算天花板"，failover 管"这个请求发给谁"
+```
+
+### 27.2 工具组织（`core.Registry`，`internal/tools/resources/core/registry.go`）
+
+前面 §19 讲"工具怎么**进来**"（discovery + ListTools + 渐进披露），这块讲"进来后怎么**组织**"。
+
+**实际方法（`registry.go`，核实）**：
+
+| 方法 | 干嘛 | 行号 |
+|---|---|---|
+| `Register(tool)` / `Unregister(name)` | 工具进池 / 出池（id 去重、类型校验） | `:97` / `:126` |
+| `SetActiveTools(names)` | 只激活指定工具——渐进披露的开关；**但 serve 默认保持全量 active**，§19 落地的披露是 envcap + skills 目录 | `:52` |
+| `Filter(*ToolFilter)` / `FilterByCategory` | 按条件/类别挑工具 | `:201` / `:243` |
+| `GetSchemas()` / `GetLLMTools()` | 输出 schema（喂 LLM 的就是这两个） | `:250` / `:291` |
+| `Execute(name, params)` | 执行单个工具 | `:177` |
+| `OnChange(fn)` | 池子变化通知（MCP 动态增删同步到这） | `:41` |
+
+**和前面模块的咬合**：L1 工具类图（§7/§23）是启动时从**工具 schema** 构建的——`toolBinder.GetToolSchemas()` → `buildToolClassDAG`（`cmd/ares/serve_peer.go:511-515,622`），节点 id = `工具名#<参数键集合>`（`core/convert.go` 的 `ToolClassID` / `ToolArgShape`）。`core/capability.go` 里的能力标签是**另一套**机制：它驱动 §19 的 envcap 能力检索，与 L1 图无关。
+
+---
+
+## 28. 事件驱动总线（谁订阅了什么）
+
+> §15/§24 讲了事件**账本**（存 + 裁剪），本章讲"事件怎么**驱动**其他模块"。
+> 下表是 **serve/kernel 主链**上的订阅点；全仓生产代码实际有 **20 处**
+> `.Subscribe(`（ObserverPlugin、EvolutionScheduler、flight collectors、记忆蒸馏器、SDK 蒸馏…），
+> 本表是精选子集，不是全集。
+
+### 28.1 主链上的 7 个订阅点（`EventFilter` 精确到类型）
+
+| 订阅点 | 订阅哪些事件 | 干嘛 |
+|---|---|---|
+| **调度器** `scheduler.go:315` | `task.created/ready/completed/failed/yielded`（5 类） | 事件驱动 drain；`yielded` 让 SUSPENDED 任务省掉一个 poll 间隔（§4） |
+| **恢复循环** `kernel_loop.go:290` | `task.expired/failed/acquired/yielded`（4 类） | 租约/失败 → 恢复处理 |
+| **answer 失败释放** `peer_assembly.go:434` | `task.failed` | answer 失败 → 释放会话（idle TTL 是兜底） |
+| **蒸馏** `bootstrap_steps.go:112` | `task.completed/failed` | 蒸经验（§18，**成功失败都蒸**） |
+| **GA 成绩** `ares_evolution/observer.go:216`（+ `scheduler.go:433`） | `task.completed/failed/agent.stopped` | 转成策略样本 / `KindFitness` 证据喂 GA（§14）。注：`ExecutionAttribution` 是内核调度器**内联**写入的（`kernel/scheduler_quantum.go:258`），不是订阅驱动 |
+| **skill 结果写入** `skill_outcome_writer.go:81` | `task.completed/failed` | 把任务结果写进 skills 经验 |
+| **观测** `serve_wiring.go:384`（`EventFilter{}` = match-all） | 所有事件 | 飞行记录 / 面板回放（§15） |
+
+### 28.2 核心认知
+
+> 整个系统是"**一个事件账本驱动三条链**"：任务一完，**同一笔 `task.completed`** 同时——
+> ① 触发调度器拉起后继任务；② 触发蒸馏 + GA 记成绩；③ 被观测面记下来。
+> **热路径（执行）和冷路径（进化）靠这条总线解耦**——事件驱动不只是"drain 加速"，
+> 是整个系统的神经。
+
+**实事求是的边界**：这 7 个主链订阅点里，多数是 `task.completed/failed` 家族（执行结果驱动蒸馏/GA/恢复），真正"多类型"的只有调度器（**5 类**）和恢复（4 类）。所以准确说法是"**以任务生命周期事件为主**"，不是"任意事件都能驱动"。
 
 ---
 

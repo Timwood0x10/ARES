@@ -66,6 +66,96 @@ func TestProjectStep_NilRetryPolicy(t *testing.T) {
 	assert.Equal(t, 0, ps.MaxRetries, "nil RetryPolicy → MaxRetries=0 (kernel default 2)")
 }
 
+// TestProjectStep_MapsClosureFields pins C3 (plan/0.3.3_task.md): the lossy
+// bridge is closed — AllowPartial, the retry backoff timing and the step
+// Timeout now cross from engine.Step into the PlanStep the executor sees.
+func TestProjectStep_MapsClosureFields(t *testing.T) {
+	s := &engine.Step{
+		ID:           "step-1",
+		AgentType:    "code",
+		Timeout:      30 * time.Second,
+		AllowPartial: true,
+		RetryPolicy: &engine.RetryPolicy{
+			MaxAttempts:  3,
+			InitialDelay: 2 * time.Second,
+			MaxDelay:     time.Minute,
+		},
+	}
+
+	ps := ProjectStep(s)
+
+	assert.True(t, ps.AllowPartial, "AllowPartial must cross the bridge")
+	assert.Equal(t, 2*time.Second, ps.BackoffBase, "InitialDelay → BackoffBase")
+	assert.Equal(t, time.Minute, ps.BackoffMax, "MaxDelay → BackoffMax")
+	assert.Equal(t, 30*time.Second, ps.Deadline, "Timeout → Deadline (relative budget)")
+}
+
+// TestProjectStep_ClosureFieldsZeroByDefault guards the compatibility red
+// line: a step that sets none of the new policies projects to zero values, so
+// its task behaves exactly as pre-0.3.3 (strict, no backoff, no deadline).
+func TestProjectStep_ClosureFieldsZeroByDefault(t *testing.T) {
+	ps := ProjectStep(&engine.Step{ID: "s", AgentType: "code"})
+	assert.False(t, ps.AllowPartial)
+	assert.Zero(t, ps.BackoffBase)
+	assert.Zero(t, ps.BackoffMax)
+	assert.Zero(t, ps.Deadline)
+}
+
+// TestBridge_StepThroughCompileToTask is the C3 end-to-end bridge test
+// (plan/0.3.3_task.md §C.8): it crosses the WHOLE seam the lossy bridge used
+// to drop — engine.Step →(ProjectStep)→ PlanStep →(CompilePlan)→ fabric Task —
+// and asserts every degradation/backoff/deadline field survives to the task
+// the scheduler executes. The two half-span unit tests never exercised the
+// join itself, which was exactly the gap C3 closes.
+func TestBridge_StepThroughCompileToTask(t *testing.T) {
+	fixed := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	f := taskfabric.NewFabric().WithClock(func() time.Time { return fixed })
+
+	step := &engine.Step{
+		ID:           "s1",
+		AgentType:    "code",
+		Timeout:      30 * time.Second,
+		AllowPartial: true,
+		RetryPolicy: &engine.RetryPolicy{
+			MaxAttempts:  3,
+			InitialDelay: 2 * time.Second,
+			MaxDelay:     time.Minute,
+		},
+	}
+
+	ids, err := f.CompilePlan(context.Background(), []taskfabric.PlanStep{ProjectStep(step)})
+	require.NoError(t, err)
+	require.Equal(t, []string{"s1"}, ids)
+
+	tk, err := f.Task("s1")
+	require.NoError(t, err)
+	assert.True(t, tk.AllowPartial, "AllowPartial survived Step→PlanStep→Task")
+	assert.Equal(t, 2*time.Second, tk.BackoffBase, "InitialDelay→BackoffBase survived the join")
+	assert.Equal(t, time.Minute, tk.BackoffMax, "MaxDelay→BackoffMax survived the join")
+	assert.Equal(t, 3, tk.RetryPolicy.MaxRetries, "MaxAttempts→MaxRetries survived the join")
+	assert.Equal(t, fixed.Add(30*time.Second), tk.Deadline,
+		"Timeout→relative Deadline resolved to absolute Task.Deadline at compile")
+}
+
+// TestBridge_DefaultStepStaysStrictThroughCompile is the compatibility half of
+// the bridge test: a step carrying none of the new policies compiles to a
+// task that is strict (no AllowPartial), has no backoff and no deadline —
+// byte-for-byte pre-0.3.3 behaviour across the full span.
+func TestBridge_DefaultStepStaysStrictThroughCompile(t *testing.T) {
+	f := taskfabric.NewFabric()
+	ids, err := f.CompilePlan(context.Background(),
+		[]taskfabric.PlanStep{ProjectStep(&engine.Step{ID: "s1", AgentType: "code"})})
+	require.NoError(t, err)
+	require.Equal(t, []string{"s1"}, ids)
+
+	tk, err := f.Task("s1")
+	require.NoError(t, err)
+	assert.False(t, tk.AllowPartial)
+	assert.Zero(t, tk.BackoffBase)
+	assert.Zero(t, tk.BackoffMax)
+	assert.True(t, tk.Deadline.IsZero(), "no Timeout → no Deadline")
+}
+
 // TestProjectStep_MissingPriority verifies missing/invalid priority → 0.
 func TestProjectStep_MissingPriority(t *testing.T) {
 	cases := []struct {

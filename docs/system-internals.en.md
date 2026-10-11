@@ -49,6 +49,9 @@
 23. [L1 / L2 Dual Graphs & Data Splitting (Postgres / pgvector)](#23-l1--l2-dual-graphs--data-splitting)
 24. [Retrieval Denoising (Vector-Search Noise and How to Fight It)](#24-retrieval-denoising)
 25. [Checkpoint & Recovery (fields + 7 steps + two modes)](#25-checkpoint--recovery)
+26. [Context Management (sliding-window truncation + rule-based cleaning + RAG injection, NOT LLM summarization)](#26-context-management)
+27. [LLM Failover + Tool Organization (`core.Registry`)](#27-llm-failover--tool-organization)
+28. [Event-Driven Bus (who subscribes to what)](#28-event-driven-bus)
 
 ---
 
@@ -1297,6 +1300,226 @@ sequenceDiagram
 > writes — **`ErrNotOwner` once it no longer holds the lease, and
 > `ErrEpochMismatch` when it still holds it at a stale epoch** — so at any
 > instant there is exactly one valid writer.
+
+---
+
+## 26. Context Management (sliding-window truncation + rule-based cleaning + RAG injection, NOT LLM summarization)
+
+> This section is deliberately factual: the project does **not** do LLM
+> summarization-style compaction (not OpenAI's `compact` "summarize the
+> history into one paragraph and feed it back"). What it does is
+> **"sliding-window truncation + rule-based cleaning + RAG injection"**,
+> zero LLM cost. This is a deliberate trade-off with a clear boundary.
+
+### 26.1 Three-layer mechanism (source-verified)
+
+```mermaid
+flowchart TB
+    subgraph store[1 storage layer]
+        m[session message stream]
+        c["SessionMaxHistory=500<br/>AddMessage drops the oldest past 500<br/>(session.go:23)"]
+    end
+    subgraph read[2 read layer BuildContext]
+        w["MaxHistory(default 10-50)<br/>take only the most recent N<br/>(manager_impl.go:563)"]
+        cl["ContextCleaner.Clean<br/>rule-based cleaning (NOT LLM)"]
+    end
+    subgraph rag[3 RAG injection]
+        r["retrieveContextString<br/>inject relevant experience/knowledge snippets"]
+    end
+    store -->|truncate at read time| w
+    w --> cl
+    cl --> out[LLM context]
+    rag -->|prepend| out
+```
+
+| Layer | What | Source |
+|---|---|---|
+| ① storage cap | each session stores at most `SessionMaxHistory=500` messages, oldest dropped past the cap (prevents long-session OOM, a bug that was fixed) | `context/session.go:23` `defaultMaxSessionMessages=500` |
+| ② read truncation | `BuildContext` takes only the **most recent `MaxHistory` (10-50)** messages, not the full history | `manager_impl.go:563` `messages[len-maxHistory:]` |
+| ② rule cleaning | `ContextCleaner.Clean` does "role-differential compression" on the truncated messages | `context/cleaner.go` |
+| ③ RAG injection | prepends retrieved relevant experience/knowledge snippets (current input is the query) | `manager_rag.go:17` `retrieveContextString` |
+
+### 26.2 What `ContextCleaner` actually does (no hype)
+
+The code comment says "intelligently cleans / differential compression" —
+**the actual implementation is pure rules (regex + truncation + first-sentence
+extraction), zero LLM calls.** It treats message roles differently:
+
+| Message role | Handling | Effect |
+|---|---|---|
+| `tool_call` / `tool_result` | `extractGist`: strip code blocks, **keep only the first sentence**, truncate to `MaxToolLen` | tool noise cut heavily |
+| `assistant` with ToolCalls | treated as tool-like, aggressive cut | same |
+| `assistant` pure reasoning | `compressCodeBlocks`: ``` blocks → `<code block [lang]>`, truncate to `MaxAssistantLen` | long code collapses to a placeholder |
+| `system` / others | truncate to `MaxSystemLen`/`MaxAssistantLen` | fallback truncation |
+
+**Key facts (do not repeat the comment's hype in an interview)**:
+- **There is no "summarize / extract the key points" semantic action** — it is
+  "cut code blocks", "take the first sentence", "truncate": rule-based.
+- `compressCodeBlocks` (`cleaner.go:128`) just replaces a ``` code block with
+  the placeholder `<code block>`; **it does not read the code's contents.**
+- `extractGist` (`cleaner.go:144`) takes "the sentence before the first
+  period/exclamation/question mark", or `WithEllipsis` hard-truncation as a
+  fallback.
+- There is `CleaningMode` (Default/Conservative/Aggressive, `cleaner.go:24`)
+  and `CleanWithTurns` (turn-aware tool-message keep/cut, `cleaner.go:169`),
+  but **the essence is still rules, not LLM.**
+
+### 26.3 The three "compression" approaches compared (why this one)
+
+| Approach | Cost | Effect | Weakness |
+|---|---|---|---|
+| **Sliding-window truncation (this project)** | zero (pure slice) | keeps recent N coherent | drops older context |
+| **Rule-based cleaning (this project)** | zero (regex/truncate) | cuts tool/code noise | dumber — can cut content that is terse but critical |
+| RAG injection (this project) | vector search (cheap, not LLM) | recalls "not-recent but related" old knowledge | precision depends on embedding quality (see §24) |
+| **LLM summarization (NOT done here)** | an extra LLM call (expensive + slow) | most complete semantic compression | costs tokens + lossy summary + a new failure point |
+
+**Why "truncation + rule cleaning + RAG" instead of LLM summarization**:
+1. **Zero LLM cost** — truncation/cleaning/vector search add no tokens; the hot
+   path never blocks on the LLM.
+2. **Deterministic** — rule-based results are stable; no "summary LLM had a
+   bad day" variance.
+3. **Sufficient** — "recent N (coherent) + RAG relevant snippets (semantic)"
+   covers most agent scenarios.
+
+### 26.4 Clear boundaries (factual, not hype)
+
+- **Very long multi-turn tasks are the weak spot**: "a key decision from step
+  3 long ago" is both outside the recent N and possibly not retrieved by RAG
+  (embedding-dependent) — missed by both.
+- **Rule cleaning is lossy**: cutting code blocks and first-sentences **drops
+  concrete detail**; if the LLM later needs "a variable name in that code
+  block", it is already gone.
+- **`MaxHistory` defaults to 10-50**: the window is narrow; a few turns back is
+  already out of window (RAG compensates, but RAG is "related", not
+  "chronological").
+- **If long-running tasks are needed in the future**: the right fix is to add
+  an **LLM summarization path** (summarize the out-of-window old history into
+  a "memory anchor"), NOT to raise `MaxHistory` (that just makes the
+  truncation more expensive).
+
+### 26.5 Interview one-liner (factual version)
+
+> "Context management is **sliding-window truncation + rule-based cleaning +
+> RAG injection**, **not LLM summarization**. The storage layer caps a
+> session at 500 messages (OOM guard); the read layer, `BuildContext`, takes
+> only the most recent `MaxHistory` (10-50), then runs a `ContextCleaner`
+> (regex-cuts code blocks, tool messages take the first sentence — **zero LLM
+> cost**); RAG simultaneously injects relevant experience snippets.
+> **Why not LLM summarization**: truncation + rules + vector search add no
+> tokens, the hot path never blocks on the LLM, and it's deterministic.
+> **Boundary**: in very long tasks, info that is neither recent nor related
+> but critical gets missed on both sides; covering that needs an added LLM
+> summarization path — a known limitation, not a design oversight."
+
+---
+
+## 27. LLM Failover & Tool Organization
+
+> This chapter fills the third tier of fault tolerance (previously we only covered
+> "agent layer / task layer"; this is the missing **LLM provider layer**) and
+> explains the tool organization previously just called "core.Registry".
+> Line-verified, no hype.
+
+### 27.1 LLM failover (`FailoverClient`, `internal/llm/failover.go`)
+
+The third tier missing from the two already covered in §12: this one is
+"**the LLM provider died / got rate-limited**".
+
+**Mechanism (source-verified)**:
+
+```
+NewFailoverClient(configs[0]=primary, configs[1:]=fallbacks, rate, burst)
+  · token-bucket rate limit attached to primary ONLY; fallbacks are unlimited (failover.go:81)
+  · each underlying client has single-call retry disabled (MaxAttempts=1); the
+    failover layer owns provider switching (failover.go:76)
+
+Generate / GenerateStream (walk the providers):
+  for each client (primary first, fallbacks in order):
+    · callerAborted(ctx)? -> stop immediately (do not "blame every provider")
+    · isCooledDown(provider)? -> skip (leave it alone for 60s)
+    · call LLM under a per-attempt timeout
+    · success -> clearCooldown, return
+    · failure/429 -> markCooldown, try the next
+  all down -> "no provider available (all N cooled down)"
+```
+
+| Detail | Fact | Line |
+|---|---|---|
+| default cooldown | a rate-limited (429) provider is cooled for 60s; other errors get **1/3** of that (clamped 100ms..60s) | `failover.go:17`, `:180` |
+| primary-only limit | token bucket on primary only; fallbacks unlimited | `failover.go:81` |
+| retry off | underlying clients `MaxAttempts=1` **and circuit breaker disabled**; the failover layer owns switching | `failover.go:76-77` |
+| caller cancel | `callerAborted` -> `coolDown` returns 0: stop, record nothing, blame nothing | `failover.go:200-215` |
+| stream timeout | first-chunk timeout (also a first-chunk `Err`, also a pre-chunk channel close) = failure -> keep failing over | `failover.go:387-436` — **note: `GenerateStream` has no production caller yet** (`:302-304`) |
+
+**Difference from the agent wallet (§3 `agent_budget`)**:
+
+```
+LLM failover = REQUEST-level: which provider serves THIS call
+agent wallet = TASK-level: how many tokens/tools an agent may burn in its life
+Independent: the wallet is the "budget ceiling"; failover is "who sends this request"
+```
+
+### 27.2 Tool organization (`core.Registry`, `internal/tools/resources/core/registry.go`)
+
+§19 covered "how tools **enter**" (discovery + ListTools + progressive
+disclosure); this is "how they are **organized** once in".
+
+**Actual methods (`registry.go`, verified)**:
+
+| Method | What | Line |
+|---|---|---|
+| `Register(tool)` / `Unregister(name)` | tool in/out of the pool (id de-dupe, type check) | `:97` / `:126` |
+| `SetActiveTools(names)` | activate only these tools — the progressive-disclosure switch; **but serve keeps the full set active by default**, the live disclosure in §19 is envcap + the skills catalog | `:52` |
+| `Filter(*ToolFilter)` / `FilterByCategory` | pick tools by condition / category | `:201` / `:243` |
+| `GetSchemas()` / `GetLLMTools()` | emit schemas (this is what the LLM is fed) | `:250` / `:291` |
+| `Execute(name, params)` | run one tool | `:177` |
+| `OnChange(fn)` | pool-change notification (MCP dynamic add/remove syncs here) | `:41` |
+
+**How it meshes with earlier modules**: the L1 ToolClass graph (§7/§23) is built
+at boot from **tool schemas** — `toolBinder.GetToolSchemas()` →
+`buildToolClassDAG` (`cmd/ares/serve_peer.go:511-515,622`), with node id =
+`toolName#<argKeySet>` (`core/convert.go` `ToolClassID` / `ToolArgShape`).
+The capability tags in `core/capability.go` are a **different** mechanism: they
+drive §19's envcap capability search, not the L1 graph.
+
+---
+
+## 28. Event-Driven Bus (who subscribes to what)
+
+> §15/§24 covered the event **ledger** (storage + compaction); this chapter
+> covers "how events **drive** other modules". The rows below are the
+> **serve/kernel main-chain** subscription points; the tree actually has **20**
+> production `.Subscribe(` call sites (ObserverPlugin, EvolutionScheduler,
+> flight collectors, memory distiller, SDK distillation, …) — this table is a
+> curated subset, not the full set.
+
+### 28.1 The 7 main-chain subscription points (each `EventFilter` down to its types)
+
+| Subscriber | Subscribes to | Why |
+|---|---|---|
+| **Scheduler** `scheduler.go:315` | `task.created/ready/completed/failed/yielded` (5) | event-driven drain; `yielded` skips the poll interval between quanta (§4) |
+| **Recovery loop** `kernel_loop.go:290` | `task.expired/failed/acquired/yielded` (4) | lease / failure -> recovery |
+| **answer-fail release** `peer_assembly.go:434` | `task.failed` | answer failed -> release the session (idle TTL is the backstop) |
+| **Distillation** `bootstrap_steps.go:112` | `task.completed/failed` | distill experience (§18, success **and** failure) |
+| **GA fitness** `ares_evolution/observer.go:216` (+ `scheduler.go:433`) | `task.completed/failed/agent.stopped` | turn outcomes into strategy samples / `KindFitness` evidence (§14). Note: `ExecutionAttribution` is written **inline** by the kernel scheduler (`kernel/scheduler_quantum.go:258`), not by a subscriber |
+| **skill outcome writer** `skill_outcome_writer.go:81` | `task.completed/failed` | write task outcomes into skills experience |
+| **Observability** `serve_wiring.go:384` (`EventFilter{}` = match-all) | every event | flight record / panel replay (§15) |
+
+### 28.2 The core insight
+
+> The whole system is "**one event ledger driving three chains**": when a task
+> finishes, **the same `task.completed` event** simultaneously — ① pulls the
+> scheduler to launch successors; ② triggers distillation + GA to record
+> fitness; ③ is logged by the observability surface. **The hot path
+> (execution) and the cold path (evolution) are decoupled on this bus** —
+> event-driven is not just "faster drain"; it is the nervous system of the
+> whole system.
+
+**Factual boundary**: of these 7 main-chain points, most are in the
+`task.completed/failed` family (execution outcomes driving distillation/GA/
+recovery); only the scheduler (**5** types) and recovery (4 types) are truly
+"multi-type". So the accurate phrasing is "**driven primarily by task
+lifecycle events**", not "any event drives anything".
 
 ---
 

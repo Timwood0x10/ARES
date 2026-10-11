@@ -105,11 +105,9 @@ EventTaskReleased    = "task.released"
 EventTaskExpired     = "task.expired"
 EventTaskStolen      = "task.stolen"
 // Leader-sub collaboration
-EventSubTaskScheduled = "sub_task.scheduled"
-EventSubTaskStarted   = "sub_task.started"
 EventSubTaskResult    = "sub_task.result"
 EventSubAgentFailed   = "sub_agent.failed"
-// others: step.* / handoff / discovery.* / component.failed
+// others: step.* / discovery.* / component.failed
 ```
 
 ### 2.3 EventStore Interface

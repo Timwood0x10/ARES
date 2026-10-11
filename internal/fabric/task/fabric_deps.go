@@ -45,11 +45,13 @@ func (f *Fabric) SetDependencies(id string, deps []string) error {
 	return nil
 }
 
-// payloadKeyDegradedInputs is the output-contract key carrying the ids of the
+// PayloadKeyDegradedInputs is the output-contract key carrying the ids of the
 // predecessors a task ran without (plan §3.3 ④). One concept, one wire name: it
 // matches restoreKeyDegradedInputs, which carries the same list on the event
-// payload that a restart folds.
-const payloadKeyDegradedInputs = "degraded_inputs"
+// payload that a restart folds. Exported so the planner cognition
+// (internal/fabric/agent) can read the same key it injects into the LLM
+// context — a single source of truth across the producer and consumer.
+const PayloadKeyDegradedInputs = "degraded_inputs"
 
 // recordDegradedInputLocked marks missing as an input the dependent is
 // proceeding without. It is the AllowPartial branch's whole action: the task
@@ -100,7 +102,7 @@ func (f *Fabric) mirrorDegradedInputsLocked(t *Task) {
 	if dc.Payload == nil {
 		dc.Payload = make(map[string]any, 1)
 	}
-	dc.Payload[payloadKeyDegradedInputs] = append([]string(nil), t.DegradedInputs...)
+	dc.Payload[PayloadKeyDegradedInputs] = append([]string(nil), t.DegradedInputs...)
 	t.Checkpoint = EncodeCheckpoint(dc)
 }
 

@@ -100,7 +100,7 @@ func TestAllowPartial_DownstreamRunsWithAQueryableGap(t *testing.T) {
 	require.NoError(t, err)
 	dc, err := DecodeCheckpoint(done.Checkpoint)
 	require.NoError(t, err)
-	assert.Equal(t, []string{"t2"}, dc.Payload[payloadKeyDegradedInputs])
+	assert.Equal(t, []string{"t2"}, dc.Payload[PayloadKeyDegradedInputs])
 
 	// The event stream says it too: the ready event that unblocked t4 carries
 	// the gap, which is what makes the degradation visible without reading state.
@@ -252,7 +252,7 @@ func TestDefaultPathPayloadHasNoNewKeys(t *testing.T) {
 	require.NotEmpty(t, events)
 	newKeys := []string{
 		restoreKeyNextAttemptAt, restoreKeyBackoffBaseMS, restoreKeyBackoffMaxMS,
-		restoreKeyAllowPartial, restoreKeyDegradedInputs,
+		restoreKeyAllowPartial, restoreKeyDegradedInputs, restoreKeyDeadline,
 	}
 	for _, ev := range events {
 		for _, key := range newKeys {

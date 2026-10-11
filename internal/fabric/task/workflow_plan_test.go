@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 )
 
 // TestCompilePlan_Linear covers a straight A→B→C chain: all tasks are created
@@ -122,5 +123,66 @@ func TestCompilePlan_PayloadRidesCheckpoint(t *testing.T) {
 	}
 	if tk.Checkpoint == nil {
 		t.Fatal("payload must ride the checkpoint envelope")
+	}
+}
+
+// TestCompilePlan_DeadlineResolvesToAbsolute pins C3 (plan/0.3.3_task.md): a
+// PlanStep's RELATIVE Deadline becomes an absolute Task.Deadline at creation,
+// resolved through the fabric clock so ExpireDeadlines and the Acquire guard
+// read the same instant. A zero Deadline leaves Task.Deadline zero.
+func TestCompilePlan_DeadlineResolvesToAbsolute(t *testing.T) {
+	fixed := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	f := NewFabric().WithClock(func() time.Time { return fixed })
+	_, err := f.CompilePlan(context.Background(), []PlanStep{
+		{ID: "with-deadline", Capability: "code", Deadline: 30 * time.Second},
+		{ID: "no-deadline", Capability: "code"},
+	})
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	withDL, err := f.Task("with-deadline")
+	if err != nil {
+		t.Fatalf("task with-deadline: %v", err)
+	}
+	if got, want := withDL.Deadline, fixed.Add(30*time.Second); !got.Equal(want) {
+		t.Fatalf("Deadline = %v, want %v (now+30s)", got, want)
+	}
+
+	noDL, err := f.Task("no-deadline")
+	if err != nil {
+		t.Fatalf("task no-deadline: %v", err)
+	}
+	if !noDL.Deadline.IsZero() {
+		t.Fatalf("unset Deadline must stay zero, got %v", noDL.Deadline)
+	}
+}
+
+// TestCompilePlan_BackoffAndAllowPartialLand pins that the degradation/backoff
+// policy carried by a PlanStep reaches the fabric Task verbatim (the fields
+// CompilePlan previously set, now covered so a regression surfaces).
+func TestCompilePlan_BackoffAndAllowPartialLand(t *testing.T) {
+	f := NewFabric()
+	_, err := f.CompilePlan(context.Background(), []PlanStep{
+		{
+			ID:           "a",
+			Capability:   "code",
+			AllowPartial: true,
+			BackoffBase:  time.Second,
+			BackoffMax:   10 * time.Second,
+		},
+	})
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	tk, err := f.Task("a")
+	if err != nil {
+		t.Fatalf("task a: %v", err)
+	}
+	if !tk.AllowPartial {
+		t.Fatal("AllowPartial must land on the task")
+	}
+	if tk.BackoffBase != time.Second || tk.BackoffMax != 10*time.Second {
+		t.Fatalf("backoff = (%v,%v), want (1s,10s)", tk.BackoffBase, tk.BackoffMax)
 	}
 }

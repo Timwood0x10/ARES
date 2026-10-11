@@ -2,7 +2,10 @@ package agentfabric
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -206,4 +209,205 @@ func TestContextIsChronological(t *testing.T) {
 	require.Equal(t, "read", msgs[3].ToolCalls[0].Function.Name)
 	require.Equal(t, "NEWER", msgs[4].Content, "execution order: the first tool comes first")
 	require.Equal(t, msgs[3].ToolCalls[0].ID, msgs[4].ToolCallID)
+}
+
+// TestAssembleContextSurfacesDegradedInputs pins C0′.3 (plan/0.3.3_task.md):
+// when an AllowPartial task carries degraded_inputs in its payload, the
+// planner injects a system message naming the missing predecessors so the LLM
+// reasons WITH the gap instead of assuming every input is present. Closes the
+// "degraded_inputs is write-only" half of the AllowPartial contract.
+func TestAssembleContextSurfacesDegradedInputs(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	fabric := taskfabric.NewFabric()
+	reg := NewSessionRegistry()
+	const sessionID = "degraded-ctx"
+	g, err := reg.InitSession(sessionID, "root prompt", nil, nil)
+	require.NoError(t, err)
+
+	planNode := SessionNodeID(sessionID, 1, "plan", 0)
+	require.NoError(t, g.AddToolNode(ctx, planNode, "plan", nil, g.Root()))
+	require.NoError(t, fabric.Create(&taskfabric.Task{ID: g.Root(), Capability: "x"}))
+	driveTaskToCompleted(t, ctx, fabric, g.Root(), "root prompt")
+
+	planner, err := NewPlannerCognition(PlannerDeps{
+		ChatClient: &l1ChatAlwaysGrep{},
+		ToolBinder: &plannerTestBinder{},
+		Sessions:   reg,
+		Fabric:     fabric,
+		Logger:     slog.Default(),
+	})
+	require.NoError(t, err)
+
+	task := models.NewTask(planNode, planAgentType, nil)
+	task.SessionID = sessionID
+	task.Payload = map[string]any{
+		"input":                             "root prompt",
+		taskfabric.PayloadKeyDegradedInputs: []string{"grep-step-7"},
+	}
+
+	msgs, err := planner.(*plannerCognition).assembleContext(ctx, task, g)
+	require.NoError(t, err)
+
+	var degraded *llmcore.LLMMessage
+	for _, m := range msgs {
+		if m.Role == roleSystem && strings.Contains(m.Content, "degraded inputs") {
+			degraded = m
+			break
+		}
+	}
+	require.NotNil(t, degraded, "a degraded-inputs system message must be injected")
+	require.Contains(t, degraded.Content, "grep-step-7", "the missing predecessor id must be named")
+}
+
+// TestAssembleContextNoDegradedMessageWhenAbsent guards the default path: a
+// task without degraded_inputs gets no degraded-inputs system message, so a
+// non-AllowPartial session's context is byte-identical to pre-0.3.3.
+func TestAssembleContextNoDegradedMessageWhenAbsent(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	fabric := taskfabric.NewFabric()
+	reg := NewSessionRegistry()
+	const sessionID = "no-degraded"
+	g, err := reg.InitSession(sessionID, "root prompt", nil, nil)
+	require.NoError(t, err)
+
+	planNode := SessionNodeID(sessionID, 1, "plan", 0)
+	require.NoError(t, g.AddToolNode(ctx, planNode, "plan", nil, g.Root()))
+	require.NoError(t, fabric.Create(&taskfabric.Task{ID: g.Root(), Capability: "x"}))
+	driveTaskToCompleted(t, ctx, fabric, g.Root(), "root prompt")
+
+	planner, err := NewPlannerCognition(PlannerDeps{
+		ChatClient: &l1ChatAlwaysGrep{},
+		ToolBinder: &plannerTestBinder{},
+		Sessions:   reg,
+		Fabric:     fabric,
+		Logger:     slog.Default(),
+	})
+	require.NoError(t, err)
+
+	task := models.NewTask(planNode, planAgentType, nil)
+	task.SessionID = sessionID
+	task.Payload = map[string]any{"input": "root prompt"}
+
+	msgs, err := planner.(*plannerCognition).assembleContext(ctx, task, g)
+	require.NoError(t, err)
+	for _, m := range msgs {
+		require.NotContains(t, m.Content, "degraded inputs",
+			"no degraded-inputs message without the payload key")
+	}
+}
+
+// TestDegradedInputsFromPayload is a focused table test for the payload
+// extractor: it must survive the checkpoint envelope's JSON round-trip, where
+// the slice arrives as []any of strings rather than []string.
+func TestDegradedInputsFromPayload(t *testing.T) {
+	cases := []struct {
+		name    string
+		payload map[string]any
+		want    []string
+	}{
+		{"nil_payload", nil, nil},
+		{"missing_key", map[string]any{"other": 1}, nil},
+		{"string_slice", map[string]any{taskfabric.PayloadKeyDegradedInputs: []string{"a", "b"}}, []string{"a", "b"}},
+		{"any_slice_from_json", map[string]any{taskfabric.PayloadKeyDegradedInputs: []any{"a", "b"}}, []string{"a", "b"}},
+		{"any_slice_skips_non_string", map[string]any{taskfabric.PayloadKeyDegradedInputs: []any{"a", 7, ""}}, []string{"a"}},
+		{"wrong_type", map[string]any{taskfabric.PayloadKeyDegradedInputs: "not-a-slice"}, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, degradedInputsFromPayload(tc.payload))
+		})
+	}
+}
+
+// TestDegradedInputsFromFabricReachAssembleContext is the C0′.3 end-to-end
+// test (plan/0.3.3_task.md §C.8): it drives the WHOLE degraded-inputs chain
+// with REAL production machinery instead of hand-stuffing the payload —
+//
+//	fabric cascade (records DegradedInputs) → mirrorDegradedInputsLocked
+//	→ checkpoint envelope → DecodeCheckpoint → JSON round-trip ([]any,
+//	the post-restart shape) → assembleContext → system message.
+//
+// The sibling TestAssembleContextSurfacesDegradedInputs hand-writes a
+// []string, skipping the mirror step and the []any decode path; this test
+// closes that realism gap.
+func TestDegradedInputsFromFabricReachAssembleContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// --- Real producer: a cascade records the degraded input and mirrors it
+	// into the dependent's checkpoint payload (no hand-stuffing). ---
+	tf := taskfabric.NewFabric()
+	require.NoError(t, tf.Create(&taskfabric.Task{
+		ID: "up", Capability: "x", RetryPolicy: taskfabric.RetryPolicy{MaxRetries: 1},
+	}))
+	require.NoError(t, tf.Create(&taskfabric.Task{
+		ID: "down", Capability: "ares/plan", Dependencies: []string{"up"}, AllowPartial: true,
+	}))
+	epoch, err := tf.Acquire("up", "w", time.Minute)
+	require.NoError(t, err)
+	require.NoError(t, tf.Start("up", "w", epoch))
+	require.NoError(t, tf.Fail("up", "w", epoch, errors.New("boom")))
+
+	down, err := tf.Task("down")
+	require.NoError(t, err)
+	require.Equal(t, []string{"up"}, down.DegradedInputs, "cascade must record the degraded input")
+
+	// Decode the mirrored checkpoint exactly as the scheduler's ToModelTask
+	// does, then JSON round-trip it to reproduce the post-restart shape where
+	// the slice arrives as []any rather than []string.
+	dc, err := taskfabric.DecodeCheckpoint(down.Checkpoint)
+	require.NoError(t, err)
+	raw, err := json.Marshal(dc.Payload)
+	require.NoError(t, err)
+	var restored map[string]any
+	require.NoError(t, json.Unmarshal(raw, &restored))
+	require.IsType(t, []any{}, restored[taskfabric.PayloadKeyDegradedInputs],
+		"post-restart payload carries degraded_inputs as []any (the path the hand-stuffed test skips)")
+
+	// --- Consumer: feed the production-shape payload into the planner. ---
+	reg := NewSessionRegistry()
+	const sessionID = "degraded-real"
+	sessFabric := taskfabric.NewFabric()
+	g, err := reg.InitSession(sessionID, "root prompt", nil, nil)
+	require.NoError(t, err)
+	planNode := SessionNodeID(sessionID, 1, "plan", 0)
+	require.NoError(t, g.AddToolNode(ctx, planNode, "plan", nil, g.Root()))
+	require.NoError(t, sessFabric.Create(&taskfabric.Task{ID: g.Root(), Capability: "x"}))
+	driveTaskToCompleted(t, ctx, sessFabric, g.Root(), "root prompt")
+
+	planner, err := NewPlannerCognition(PlannerDeps{
+		ChatClient: &l1ChatAlwaysGrep{},
+		ToolBinder: &plannerTestBinder{},
+		Sessions:   reg,
+		Fabric:     sessFabric,
+		Logger:     slog.Default(),
+	})
+	require.NoError(t, err)
+
+	task := models.NewTask(planNode, planAgentType, nil)
+	task.SessionID = sessionID
+	// The degraded value is the REAL one derived above (post-restart []any),
+	// not a literal — this is what exercises degradedInputsFromPayload's
+	// []any branch on the production path.
+	task.Payload = map[string]any{
+		"input":                             "root prompt",
+		taskfabric.PayloadKeyDegradedInputs: restored[taskfabric.PayloadKeyDegradedInputs],
+	}
+
+	msgs, err := planner.(*plannerCognition).assembleContext(ctx, task, g)
+	require.NoError(t, err)
+
+	var degraded *llmcore.LLMMessage
+	for _, m := range msgs {
+		if m.Role == roleSystem && strings.Contains(m.Content, "degraded inputs") {
+			degraded = m
+			break
+		}
+	}
+	require.NotNil(t, degraded, "degraded-inputs system message must reach the LLM via the real chain")
+	require.Contains(t, degraded.Content, "up", "the cascade-recorded predecessor id must be named")
 }
