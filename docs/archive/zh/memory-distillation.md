@@ -287,6 +287,12 @@ CREATE INDEX idx_distilled_embedding ON distilled_memories USING IVFFlat(embeddi
 
 ## 配置项
 
+> **已归档（v0.2.4 快照）。** 下面的 `memory.task_distillation` 与
+> `memory.user_profile` 配置块已于 **v0.3.3 删除**——它们从无运行时消费者
+> （无自定义 prompt 注入点、无多后端选择、无用户画像服务）。当前唯一生效的
+> 蒸馏开关是 `memory.enable_distillation` 与 `memory.distillation_threshold`。
+> 详见 `docs/articles/{en,zh}/22-config-system.md`。
+
 ```yaml
 memory:
   task_distillation:

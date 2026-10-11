@@ -137,8 +137,6 @@ For "default-on" switches, a **`*bool`** expresses a **tri-state** (`nil`=defaul
 type MemoryConfig struct {
     Enabled          *bool         `yaml:"enabled"`             // nil/true = on by default; false = off
     SessionMemory    SessionConfig `yaml:"session"`
-    UserProfile      ProfileConfig `yaml:"user_profile"`
-    TaskDistillation DistillConfig `yaml:"task_distillation"`
     MaxHistory       int           `yaml:"max_history"`         // default 10
     EnableDistillation *bool       `yaml:"enable_distillation"` // nil = on by default
     DistillationThreshold int      `yaml:"distillation_threshold"` // default 3
@@ -156,14 +154,11 @@ func (m *MemoryConfig) DistillationEnabled() bool {
 
 **Honest reflection**: The zero-value philosophy has a cost — you can't tell whether a user set 0 on purpose or didn't configure it. `*bool` narrows that cost to tri-state switches but adds dereferencing. For numeric fields, "unset" and "0" effectively mean the same thing: use the default. We considered `*int` (nil=unset, 0=explicit zero); the added complexity wasn't worth it.
 
-### The Distillation Threshold: Two Fields, Don't Mix
+### The Distillation Threshold: Only `memory.distillation_threshold`
 
-The old article treated `DistillConfig.Threshold` and `memory.distillation_threshold` as one. There are actually **two**:
+`memory.distillation_threshold` (`MemoryConfig.DistillationThreshold`, default `3`) is the **only** live distillation throttle — the closed-loop gate wired through `bootstrap.go`; `0` = ungated, fire every event; negatives rejected by `validateMemory`.
 
-- `memory.task_distillation.threshold` (`DistillConfig.Threshold`, `yaml:"threshold"`): rounds that accumulate before distillation fires in the event-subscription path; `0` = ungated (legacy).
-- `memory.distillation_threshold` (`MemoryConfig.DistillationThreshold`, default `3`): the closed-loop distillation throttle; `0` = ungated, fire every event; negatives rejected.
-
-Validation handles them separately, each with its own non-negative check (`validateMemory`).
+The v0.2.4 leftover `memory.task_distillation.threshold` (`DistillConfig.Threshold`) never had a runtime reader, and the whole `memory.task_distillation` / `memory.user_profile` subtrees have now been **removed outright** — no longer dead-but-whitelisted keys, simply absent from the config struct. Writing them is silently ignored (`ares_config` uses non-strict `yaml.Unmarshal`).
 
 ---
 

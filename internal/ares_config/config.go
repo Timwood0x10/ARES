@@ -31,9 +31,6 @@ func SetAllowedConfigDir(dir string) {
 }
 
 const (
-	// DefaultTaskDistillationPrompt is the default prompt for task distillation
-	DefaultTaskDistillationPrompt = "Please concisely summarize the key information for the following task, including: user needs, preferences, and budget range. Simply return a JSON object. {\"user_needs\": \"...\", \"preferences\": \"...\", \"budget\": \"...\"}"
-
 	// DefaultRecommendationPrompt is the default recommendation template used
 	// when the config omits prompts.recommendation. {{.input}} is the original
 	// task input (planner writes it to the task payload as task_desc) and

@@ -80,16 +80,6 @@ memory:
   session:
     enabled: true
     max_history: 50         # session store window, default 50
-  user_profile:
-    enabled: true
-    storage: memory         # "memory" or "postgres"
-    vector_db: false
-  task_distillation:
-    enabled: true
-    storage: memory
-    vector_store: false
-    prompt: ""              # default DefaultTaskDistillationPrompt when empty
-    threshold: 0            # event-path accumulation rounds, 0 = ungated
   archive:
     enabled: true           # tri-state, on by default
     dir: .context/rounds    # default

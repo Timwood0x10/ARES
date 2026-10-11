@@ -183,11 +183,6 @@ func (c *Config) validateMemory() error {
 	if c.Memory.SessionMemory.MaxHistory < 0 {
 		return fmt.Errorf("invalid session memory max history: %d, must be non-negative", c.Memory.SessionMemory.MaxHistory)
 	}
-	// Distillation threshold semantics: 0 preserves legacy ungated behaviour
-	// (fires on every event), negative is invalid. Positive gates rounds.
-	if c.Memory.TaskDistillation.Threshold < 0 {
-		return fmt.Errorf("invalid task_distillation threshold: %d, must be non-negative", c.Memory.TaskDistillation.Threshold)
-	}
 	// Closed-loop MaxHistory is independent of SessionMemory.MaxHistory.
 	// Negative is invalid; zero is allowed (default applied in setDefaults).
 	if c.Memory.MaxHistory < 0 {

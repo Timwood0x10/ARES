@@ -224,12 +224,6 @@ func (c *Config) setDefaults() {
 	if c.Memory.SessionMemory.MaxHistory == 0 {
 		c.Memory.SessionMemory.MaxHistory = 50
 	}
-	if c.Memory.UserProfile.Storage == "" {
-		c.Memory.UserProfile.Storage = "memory"
-	}
-	if c.Memory.TaskDistillation.Prompt == "" {
-		c.Memory.TaskDistillation.Prompt = DefaultTaskDistillationPrompt
-	}
 	// Closed-loop memory defaults. MaxHistory defaults to 10 when zero — this
 	// is the closed-loop context window, distinct from SessionMemory.MaxHistory.
 	if c.Memory.MaxHistory == 0 {

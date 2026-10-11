@@ -41,8 +41,6 @@ var knownDead = map[string]string{
 	// (internal/ares_bootstrap/bootstrap.go). Only the Enabled leaf stays
 	// dead; keep the exemption leaf-scoped so the G2 gate watches MaxHistory.
 	"Memory.SessionMemory.Enabled": "no consumer reads session.Enabled; wiring gates on the top-level memory.enabled",
-	"Memory.UserProfile":           "C4 backlog (subtree)",
-	"Memory.TaskDistillation":      "C4 backlog (subtree)",
 	"Memory.EnableDistillation":    "read only via MemoryConfig.DistillationEnabled() (tri-state accessor)",
 	"Workflow.AutoReload":          "C4 backlog",
 	"Workflow.DefinitionPath":      "C4 backlog",
@@ -179,8 +177,8 @@ func TestG2ConfigContract(t *testing.T) {
 
 // whitelisted reports whether the access path (no leading dot) is exempt:
 // either directly in knownDead or because a whitelisted ANCESTOR subtree
-// covers it ("Memory.UserProfile" still exempts every leaf under it;
-// SessionMemory is deliberately leaf-scoped — see knownDead).
+// covers it ("Validation" still exempts every leaf under it;
+// Memory.SessionMemory.Enabled is deliberately leaf-scoped — see knownDead).
 func whitelisted(path string) bool {
 	for p := path; p != ""; {
 		if _, ok := knownDead[p]; ok {

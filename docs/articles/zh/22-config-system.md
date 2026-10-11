@@ -137,8 +137,6 @@ ares 有个配置哲学：**零值意味着"用组件默认值"**。三个点：
 type MemoryConfig struct {
     Enabled          *bool         `yaml:"enabled"`            // nil/true = 默认开; false = 关
     SessionMemory    SessionConfig `yaml:"session"`
-    UserProfile      ProfileConfig `yaml:"user_profile"`
-    TaskDistillation DistillConfig `yaml:"task_distillation"`
     MaxHistory       int           `yaml:"max_history"`        // 默认 10
     EnableDistillation *bool       `yaml:"enable_distillation"`// nil=默认开
     DistillationThreshold int      `yaml:"distillation_threshold"` // 默认 3
@@ -156,14 +154,11 @@ func (m *MemoryConfig) DistillationEnabled() bool {
 
 **坦诚反思**：零值哲学有代价——分不清用户是"故意设 0"还是"没配"。`*bool` 把这个代价收窄到三元开关，但它引入了解引用成本。对数值字段，实践中"没设"和"0"往往指向同一件事：用默认值。`*int`（nil=未设、0=显式零）我们也考虑过，复杂度不值当。
 
-### 蒸馏阈值：两个字段，别混
+### 蒸馏阈值：只有 `memory.distillation_threshold`
 
-旧文把 `DistillConfig.Threshold` 和 `memory.distillation_threshold` 当成了同一个。实际有**两个**：
+`memory.distillation_threshold`（`MemoryConfig.DistillationThreshold`，默认 `3`）是**唯一**生效的蒸馏节流键——经 `bootstrap.go` 接线的闭环蒸馏节流，`0` = 不过门、每事件触发；负值被 `validateMemory` 拒绝。
 
-- `memory.task_distillation.threshold`（`DistillConfig.Threshold`，`yaml:"threshold"`）：事件订阅路径里事前累积触发蒸馏的轮数，`0` = 不过门（旧行为）。
-- `memory.distillation_threshold`（`MemoryConfig.DistillationThreshold`，默认 `3`）：闭环 memory 的蒸馏节流，`0` = 不过门、每事件触发；负值被校验拒绝。
-
-看门狗校验也分开处理：`DistillConfig.Threshold` 与 `MemoryConfig.DistillationThreshold` 各自非负校验。
+v0.2.4 遗留的 `memory.task_distillation.threshold`（`DistillConfig.Threshold`）从来没有运行时读取方，已连同整个 `memory.task_distillation` 与 `memory.user_profile` 子树**直接删除**——不再是"白名单豁免的死键"，而是配置结构里根本不存在。写了会被 yaml 解析静默忽略（`ares_config` 用的是非严格 `yaml.Unmarshal`）。
 
 ---
 

@@ -269,9 +269,6 @@ func TestSetDefaults(t *testing.T) {
 	if cfg.Memory.SessionMemory.MaxHistory != 50 {
 		t.Errorf("Memory.SessionMemory.MaxHistory default = %v, want 50", cfg.Memory.SessionMemory.MaxHistory)
 	}
-	if cfg.Memory.UserProfile.Storage != "memory" {
-		t.Errorf("Memory.UserProfile.Storage default = %v, want memory", cfg.Memory.UserProfile.Storage)
-	}
 	if cfg.Validation.SchemaType != "default" {
 		t.Errorf("Validation.SchemaType default = %v, want default", cfg.Validation.SchemaType)
 	}
@@ -665,17 +662,6 @@ func TestConfigStructs(t *testing.T) {
 		SessionMemory: SessionConfig{
 			Enabled:    true,
 			MaxHistory: 100,
-		},
-		UserProfile: ProfileConfig{
-			Enabled:  true,
-			Storage:  "postgres",
-			VectorDB: true,
-		},
-		TaskDistillation: DistillConfig{
-			Enabled:     true,
-			Storage:     "postgres",
-			VectorStore: true,
-			Prompt:      "Test prompt",
 		},
 	}
 	if !memoryCfg.IsEnabled() || memoryCfg.SessionMemory.MaxHistory != 100 {

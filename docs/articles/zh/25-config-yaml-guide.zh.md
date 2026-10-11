@@ -80,16 +80,6 @@ memory:
   session:
     enabled: true
     max_history: 50         # session 存储窗口，默认 50
-  user_profile:
-    enabled: true
-    storage: memory         # "memory"或"postgres"
-    vector_db: false
-  task_distillation:
-    enabled: true
-    storage: memory
-    vector_store: false
-    prompt: ""              # 缺省用 DefaultTaskDistillationPrompt
-    threshold: 0            # 事件订阅路径累积轮数，0 = 不过门
   archive:
     enabled: true           # 三态，默认开
     dir: .context/rounds    # 默认

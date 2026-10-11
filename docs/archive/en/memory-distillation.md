@@ -287,6 +287,13 @@ CREATE INDEX idx_distilled_embedding ON distilled_memories USING IVFFlat(embeddi
 
 ## Configuration
 
+> **Archived (v0.2.4 snapshot).** The `memory.task_distillation` and
+> `memory.user_profile` config blocks shown below were **removed in v0.3.3** —
+> they never had a runtime consumer (no custom-prompt injection point, no
+> multi-backend selection, no user-profile service). The only live distillation
+> knobs today are `memory.enable_distillation` and `memory.distillation_threshold`.
+> See `docs/articles/{en,zh}/22-config-system.md`.
+
 ```yaml
 memory:
   task_distillation:

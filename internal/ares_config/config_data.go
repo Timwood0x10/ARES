@@ -121,10 +121,8 @@ type MemoryConfig struct {
 	// "default on": a minimal config that only specifies the LLM endpoint still
 	// gets memory (the leader contract requires it), while an explicit
 	// `memory.enabled: false` opts out. IsEnabled reports the effective value.
-	Enabled          *bool         `yaml:"enabled"`           // nil/true = enabled (default); false = disabled.
-	SessionMemory    SessionConfig `yaml:"session"`           // Short-term session memory
-	UserProfile      ProfileConfig `yaml:"user_profile"`      // Long-term user profile
-	TaskDistillation DistillConfig `yaml:"task_distillation"` // Task distillation
+	Enabled       *bool         `yaml:"enabled"` // nil/true = enabled (default); false = disabled.
+	SessionMemory SessionConfig `yaml:"session"` // Short-term session memory
 
 	// MaxHistory is the maximum number of turns to keep in the closed-loop
 	// memory context. Defaults to 10 when zero. This is independent of
@@ -221,26 +219,6 @@ type KnowledgeConfig struct {
 type SessionConfig struct {
 	Enabled    bool `yaml:"enabled"`     // Enable session memory
 	MaxHistory int  `yaml:"max_history"` // Max conversation turns to keep
-}
-
-// ProfileConfig holds user profile memory configuration.
-type ProfileConfig struct {
-	Enabled  bool   `yaml:"enabled"`   // Enable persistent user profile
-	Storage  string `yaml:"storage"`   // "memory" or "postgres"
-	VectorDB bool   `yaml:"vector_db"` // Store profile as vectors for similarity search
-}
-
-// DistillConfig holds task distillation configuration.
-type DistillConfig struct {
-	Enabled     bool   `yaml:"enabled"`      // Enable task distillation
-	Storage     string `yaml:"storage"`      // Where to store distilled info: "memory" or "postgres"
-	VectorStore bool   `yaml:"vector_store"` // Store distilled results as vectors in pgvector
-	Prompt      string `yaml:"prompt"`       // Custom prompt for distillation
-	// Threshold is the number of conversation rounds that accumulate before
-	// distillation fires in the event subscription path. 0 preserves legacy
-	// ungated behaviour. Mirrors v0.2.4 examples/knowledge-base config.yaml
-	// distillation_threshold semantics.
-	Threshold int `yaml:"threshold"`
 }
 
 // ToolsConfig holds tool configuration for agents.
