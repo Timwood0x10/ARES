@@ -1240,6 +1240,7 @@ flowchart TB
 - `compressCodeBlocks`（`cleaner.go:128`）就是把 ``` 代码块 整个替换成 `<code block>` 占位，**不读代码内容**。
 - `extractGist`（`cleaner.go:144`）取"第一个句号/叹号/问号前的句子"，取不到就 `WithEllipsis` 硬截。
 - 有 `CleaningMode`（Default/Conservative/Aggressive，`cleaner.go:24`）三档 + `CleanWithTurns`（按"回合"做工具消息的保留/裁剪，`cleaner.go:169`），但**本质仍是规则，不是 LLM**。
+- **（0.3.3 更新）`CleanWithTurns` 已可接进生产读路径**：`memory.turn_aware_cleaning: true`（ares.yaml，映射到 `MemoryConfig.TurnAwareCleaning`）时 `BuildContext` 走 `CleanWithTurns`（tool_call↔tool_result 成对保留），否则（默认）仍走扁平 `Clean`——**开关关闭 = 现状逐字节一致**；两条路径共用同一 `CleanOptions` 预算，开关只改分组、不放宽字符上限。注：结构化路径 `BuildPromptMessages` 本就恒走 `CleanWithTurns`，本开关只影响文本路径 `BuildContext`。**（0.3.3 更新）token 预算（B-G2）已接**：`memory.context_token_budget>0` 时 `BuildContext` 在清理前按保守 token 估算裁剪窗口（丢弃序：系统保底>工具因果>历史），0=关。**仍待做**：记忆锚点 LLM 摘要（B-G3，新增 LLM 调用，默认不做）。
 
 ### 26.3 三种"压缩"方案的对照（为什么选这个）
 

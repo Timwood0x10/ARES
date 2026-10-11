@@ -4,6 +4,7 @@ package memory
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -854,4 +855,103 @@ func TestMemoryManager_SearchSimilarTasksNegativeLimit(t *testing.T) {
 	_, err = mgr.SearchSimilarTasks(ctx, "anything", -1)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "limit must not be negative")
+}
+
+// TestBuildContext_TurnAwareCleaningSwitch is the G1 regression
+// (plan/0.3.3_task.md Appendix B): the TurnAwareCleaning switch routes
+// BuildContext's cleaning through CleanWithTurns when on, keeping the
+// tool_call↔tool_result pair's content intact; when off (default) BuildContext
+// behaves exactly as before. Both paths build a non-empty context from the
+// same history.
+func TestBuildContext_TurnAwareCleaningSwitch(t *testing.T) {
+	ctx := context.Background()
+
+	seed := func(mgr MemoryManager) (string, error) {
+		sid, err := mgr.CreateSession(ctx, "u1")
+		if err != nil {
+			return "", err
+		}
+		_ = mgr.AddMessage(ctx, sid, RoleUser, "analyze main.go for errors")
+		// A tool_call → tool_result pair the turn-aware cleaner must keep paired.
+		_ = mgr.AddStructuredMessage(ctx, sid, Message{
+			Role: RoleToolCall, Content: "grep(error) in main.go", ToolCallID: "c1", Time: time.Now(),
+		})
+		_ = mgr.AddStructuredMessage(ctx, sid, Message{
+			Role: RoleToolResult, Content: "found 3 errors near line 42", ToolCallID: "c1", Time: time.Now(),
+		})
+		return sid, nil
+	}
+
+	// Default (off): legacy flat Clean path.
+	offCfg := DefaultMemoryConfig()
+	offCfg.TurnAwareCleaning = false
+	offMgr, err := NewMemoryManager(offCfg)
+	require.NoError(t, err)
+	defer func() { _ = offMgr.Stop(ctx) }()
+	offSid, err := seed(offMgr)
+	require.NoError(t, err)
+	offCtx, err := offMgr.BuildContext(ctx, "what next?", offSid)
+	require.NoError(t, err)
+	require.NotEmpty(t, offCtx, "default path must still build a context")
+	require.Contains(t, offCtx, "analyze main.go", "history must survive the default path")
+
+	// On: turn-aware CleanWithTurns path. The tool result's gist must survive
+	// (the pair is kept together, not dropped).
+	onCfg := DefaultMemoryConfig()
+	onCfg.TurnAwareCleaning = true
+	onMgr, err := NewMemoryManager(onCfg)
+	require.NoError(t, err)
+	defer func() { _ = onMgr.Stop(ctx) }()
+	onSid, err := seed(onMgr)
+	require.NoError(t, err)
+	onCtx, err := onMgr.BuildContext(ctx, "what next?", onSid)
+	require.NoError(t, err)
+	require.NotEmpty(t, onCtx, "turn-aware path must build a context")
+	require.Contains(t, onCtx, "errors", "the tool_result content must survive the turn-aware pairing")
+}
+
+// TestBuildContext_TokenBudgetTrims is the G2 integration test
+// (plan/0.3.3_task.md Appendix B): with ContextTokenBudget set, BuildContext
+// trims old history to fit the estimated ceiling; with 0 (default) it keeps
+// the full window. Both build a non-empty context.
+func TestBuildContext_TokenBudgetTrims(t *testing.T) {
+	ctx := context.Background()
+	old := "OLD_MARKER " + strings.Repeat("x", 2000)
+
+	seed := func(mgr MemoryManager) (string, error) {
+		sid, err := mgr.CreateSession(ctx, "u1")
+		if err != nil {
+			return "", err
+		}
+		_ = mgr.AddMessage(ctx, sid, RoleUser, old)
+		_ = mgr.AddMessage(ctx, sid, RoleAssistant, "ok")
+		_ = mgr.AddMessage(ctx, sid, RoleUser, "RECENT_MARKER recent question")
+		return sid, nil
+	}
+
+	// Off (default): the full window survives, old content present.
+	offCfg := DefaultMemoryConfig()
+	offCfg.ContextTokenBudget = 0
+	offMgr, err := NewMemoryManager(offCfg)
+	require.NoError(t, err)
+	defer func() { _ = offMgr.Stop(ctx) }()
+	offSid, err := seed(offMgr)
+	require.NoError(t, err)
+	offCtx, err := offMgr.BuildContext(ctx, "next?", offSid)
+	require.NoError(t, err)
+	require.Contains(t, offCtx, "OLD_MARKER", "default path keeps the full window")
+
+	// On with a small budget: the heavy old message is trimmed, the recent one
+	// survives.
+	onCfg := DefaultMemoryConfig()
+	onCfg.ContextTokenBudget = 40 // far smaller than the ~670-token old message
+	onMgr, err := NewMemoryManager(onCfg)
+	require.NoError(t, err)
+	defer func() { _ = onMgr.Stop(ctx) }()
+	onSid, err := seed(onMgr)
+	require.NoError(t, err)
+	onCtx, err := onMgr.BuildContext(ctx, "next?", onSid)
+	require.NoError(t, err)
+	require.NotContains(t, onCtx, "OLD_MARKER", "token budget must trim the heavy old history")
+	require.Contains(t, onCtx, "RECENT_MARKER", "the recent message must survive the budget")
 }

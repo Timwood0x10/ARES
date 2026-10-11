@@ -263,7 +263,13 @@ func TestAssembleContextSurfacesDegradedInputs(t *testing.T) {
 
 // TestAssembleContextNoDegradedMessageWhenAbsent guards the default path: a
 // task without degraded_inputs gets no degraded-inputs system message, so a
-// non-AllowPartial session's context is byte-identical to pre-0.3.3.
+// non-AllowPartial session's context is unchanged by this feature.
+//
+// Scope: the assertion below is a message-level substring guard (no assembled
+// message mentions degraded inputs), not a byte-for-byte diff against a
+// pre-0.3.3 baseline. It does catch the regression that matters — injecting
+// unconditionally — because the banner text is prepended before the id list,
+// so even an empty list would trip it.
 func TestAssembleContextNoDegradedMessageWhenAbsent(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

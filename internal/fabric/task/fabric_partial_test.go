@@ -238,9 +238,15 @@ func TestCompilePlan_PropagatesPartialPolicyAndBackoff(t *testing.T) {
 }
 
 // TestDefaultPathPayloadHasNoNewKeys is the Definition-of-Done evidence that a
-// task which uses none of the 0.3.3 capabilities persists exactly what 0.3.2
-// persisted: every policy/runtime key added by M1–M3 stays out of the payload
-// unless it actually carries information.
+// task which uses none of the 0.3.3 capabilities adds NO new policy/runtime
+// key to any event payload: every key added by M1–M3 (allow_partial,
+// backoff_base_ms/backoff_max_ms, next_attempt_at, degraded_inputs, deadline)
+// stays out unless it actually carries information.
+//
+// Scope: this is a KEY-level guard, not a byte-level one. It proves the new
+// keys are absent; it does not re-verify that every pre-existing key's value is
+// byte-identical to 0.3.2 (that is the M1–M3 compatibility contract's job), so
+// a change to an existing key's *value* would not be caught here.
 func TestDefaultPathPayloadHasNoNewKeys(t *testing.T) {
 	store := ares_events.NewMemoryEventStore()
 	f := NewFabric().WithEventStore(store)

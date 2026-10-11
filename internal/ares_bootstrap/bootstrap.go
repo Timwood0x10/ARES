@@ -358,6 +358,16 @@ func wireMemory(cfg *ares_config.Config, eventStore ares_events.EventStore) (are
 			memCfg.RAGMinScore = cfg.Memory.RAGMinScore
 		}
 	}
+	// Turn-aware cleaning (opt-in): closed-loop from ares.yaml so an operator
+	// can actually enable it. Off (default) keeps BuildContext on the flat
+	// cleaner — identical to pre-0.3.3.
+	if cfg.Memory.TurnAwareCleaning {
+		memCfg.TurnAwareCleaning = true
+	}
+	// Token budget (opt-in): closed-loop from ares.yaml. 0 = disabled.
+	if cfg.Memory.ContextTokenBudget > 0 {
+		memCfg.ContextTokenBudget = cfg.Memory.ContextTokenBudget
+	}
 	mem, err := ProvideMemory(memCfg)
 	if err != nil {
 		return nil, err

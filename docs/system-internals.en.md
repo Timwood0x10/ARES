@@ -1363,6 +1363,19 @@ extraction), zero LLM calls.** It treats message roles differently:
 - There is `CleaningMode` (Default/Conservative/Aggressive, `cleaner.go:24`)
   and `CleanWithTurns` (turn-aware tool-message keep/cut, `cleaner.go:169`),
   but **the essence is still rules, not LLM.**
+- **(0.3.3 update) `CleanWithTurns` can now be wired into the production read
+  path**: with `memory.turn_aware_cleaning: true` (ares.yaml, mapped to
+  `MemoryConfig.TurnAwareCleaning`), `BuildContext` routes through
+  `CleanWithTurns` (tool_call↔tool_result kept paired); otherwise (the
+  default) it stays on the flat `Clean` — **switch off = byte-for-byte the
+  current behaviour**. Both paths share one `CleanOptions` budget, so the
+  switch changes grouping, not how much text survives. Note: the structured
+  path `BuildPromptMessages` already always uses `CleanWithTurns`; this switch
+  only affects the text path `BuildContext`. **(0.3.3 update) the token budget
+  (B-G2) is now wired**: with `memory.context_token_budget>0`, `BuildContext`
+  trims the window by a conservative token estimate BEFORE cleaning (drop
+  order: system floor > tool-causal > history); 0 = off. **Still TODO**: the
+  memory-anchor LLM summary (B-G3) — a new LLM call, intentionally not done.
 
 ### 26.3 The three "compression" approaches compared (why this one)
 

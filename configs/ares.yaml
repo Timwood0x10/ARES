@@ -117,6 +117,14 @@ memory:
   rag_top_k: 5
   # rag_min_score: minimum similarity score for a snippet to be included [0-1]
   rag_min_score: 0.4
+  # turn_aware_cleaning: when true, BuildContext cleans history turn-aware
+  #   (tool_call↔tool_result kept paired) instead of the flat default. Off is
+  #   byte-for-byte the pre-0.3.3 behaviour; it never widens any char budget.
+  turn_aware_cleaning: false
+  # context_token_budget: optional estimated-token ceiling applied to the
+  #   windowed history before cleaning. 0 = disabled. Trims plain history
+  #   before tool-causal pairs, never system. Only trims; never widens.
+  context_token_budget: 0
 
 # ── Knowledge Graph (AKG / AKF Knowledge Fabric) ────────────
 knowledge:

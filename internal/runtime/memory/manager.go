@@ -141,6 +141,24 @@ type MemoryConfig struct {
 	// CleanOptions configures context cleaning behavior. When nil, defaults are used.
 	CleanOptions *llmcore.CleanOptions
 
+	// TurnAwareCleaning routes BuildContext's history cleaning through
+	// ContextCleaner.CleanWithTurns (turn-aware: tool_call↔tool_result pairs
+	// are kept together and summarized per tool type) instead of the flat
+	// Clean. Default: false — BuildContext behaves exactly as pre-0.3.3. The
+	// switch does NOT widen any character budget; both paths use the same
+	// CleanOptions, so turning it on only changes HOW messages are grouped,
+	// not how much text survives (plan/0.3.3_task.md Appendix B G1).
+	TurnAwareCleaning bool
+
+	// ContextTokenBudget is an optional estimated-token ceiling applied to the
+	// windowed history BEFORE cleaning (plan/0.3.3_task.md Appendix B G2). The
+	// MaxHistory window counts messages, so one huge tool result can still
+	// blow the real context window; this gate trims by a CONSERVATIVE token
+	// estimate, dropping plain history before tool-causal pairs and never
+	// system. 0 (default) disables it — BuildContext behaves as before. It
+	// only trims; it never widens anything.
+	ContextTokenBudget int
+
 	// EnableRAG enables retrieval-augmented generation: past experiences and
 	// distilled memories are retrieved and injected into the LLM prompt.
 	// When false, BuildContext/BuildPromptMessages behave as before (history only).

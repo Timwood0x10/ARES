@@ -558,13 +558,32 @@ func (m *memoryManager) BuildContext(ctx context.Context, input string, sessionI
 	// (see BuildPromptMessages) so config patches do not race with the read.
 	m.mu.RLock()
 	maxHistory := m.config.MaxHistory
+	turnAware := m.config.TurnAwareCleaning
+	tokenBudget := m.config.ContextTokenBudget
 	m.mu.RUnlock()
 	if len(messages) > maxHistory {
 		messages = messages[len(messages)-maxHistory:]
 	}
 
-	// Apply intelligent context cleaning: strip tool noise, compress verbose content.
-	cleaned := m.ctxCleaner.Clean(messages)
+	// Token budget (opt-in, G2): trim the windowed history to a conservative
+	// token ceiling BEFORE cleaning (fixed order: budget first, clean second).
+	// 0 = disabled, so the default path is unchanged.
+	if tokenBudget > 0 {
+		messages, _ = trimToTokenBudget(messages, tokenBudget)
+	}
+
+	// Apply intelligent context cleaning: strip tool noise, compress verbose
+	// content. TurnAwareCleaning (opt-in) routes through CleanWithTurns, which
+	// keeps tool_call↔tool_result pairs together and summarizes per tool type;
+	// the default stays the flat Clean (pre-0.3.3 behaviour). Both honour the
+	// same CleanOptions budget — the switch changes grouping, not how much
+	// text survives.
+	var cleaned []memctx.Message
+	if turnAware {
+		cleaned = m.ctxCleaner.CleanWithTurns(messages)
+	} else {
+		cleaned = m.ctxCleaner.Clean(messages)
+	}
 
 	// Build context string.
 	var contextBuilder strings.Builder

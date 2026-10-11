@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -463,8 +464,10 @@ func (c *plannerCognition) assembleContext(ctx context.Context, task *models.Tas
 // degradedInputsFromPayload extracts the degraded_inputs id list the fabric
 // mirrors into an AllowPartial task's payload. The checkpoint envelope round-
 // trips through JSON, so the slice may arrive as []string (in-process) or
-// []any of strings (after decode); both are handled. A missing key, wrong
-// type or empty list yields nil — the caller then injects nothing.
+// []any of strings (after decode); both are handled. A missing key or wrong
+// type yields nil; an empty list yields a zero-length slice, not nil — either
+// way the caller's len>0 check injects nothing, so a task with no gap is never
+// announced as degraded.
 func degradedInputsFromPayload(payload map[string]any) []string {
 	if payload == nil {
 		return nil
@@ -902,6 +905,13 @@ func (c *plannerCognition) l1ToolPrior(toolName string) string {
 // l1Priors collects the non-empty prior hints for every known tool schema,
 // sorted by tool name for determinism. Used to inject evolution guidance
 // into the planner prompt (the prior goes into the prompt only).
+//
+// The sort is load-bearing, not cosmetic: GetToolSchemas() iterates a map in
+// the registry, so its order is unstable across process restarts. An unsorted
+// prompt suffix would change byte-for-byte between runs, defeating the LLM
+// provider's prompt-prefix (KV) cache. Each entry is "<name>: <prior>", so a
+// lexical sort is a sort by tool name (ties broken deterministically by the
+// prior text).
 func (c *plannerCognition) l1Priors() []string {
 	if c.l1 == nil || c.binder == nil {
 		return nil
@@ -912,6 +922,7 @@ func (c *plannerCognition) l1Priors() []string {
 			priors = append(priors, s.Name+": "+p)
 		}
 	}
+	sort.Strings(priors)
 	return priors
 }
 

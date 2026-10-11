@@ -155,3 +155,55 @@ func TestL1HotUpdatedPriorIsPickedUp(t *testing.T) {
 	}))
 	assert.Equal(t, "hot hint", pc.l1ToolPrior("grep"))
 }
+
+// orderedBinder returns tool schemas in a caller-controlled order, to simulate
+// the registry's map-iteration order differing across process restarts.
+type orderedBinder struct{ names []string }
+
+func (b *orderedBinder) CallTool(context.Context, string, map[string]any) (any, error) {
+	return nil, nil
+}
+func (b *orderedBinder) ListTools() []string          { return b.names }
+func (b *orderedBinder) IsToolIdempotent(string) bool { return true }
+func (b *orderedBinder) GetToolSchemas() []resources.ToolSchema {
+	out := make([]resources.ToolSchema, 0, len(b.names))
+	for _, n := range b.names {
+		out = append(out, resources.ToolSchema{Name: n})
+	}
+	return out
+}
+
+// TestL1PriorsDeterministicOrder is the G4 regression (plan/0.3.3_task.md
+// Appendix B): l1Priors must be sorted by tool name so the injected prompt
+// suffix is byte-identical across process restarts (GetToolSchemas iterates a
+// map, whose order is unstable). Two different schema orderings must yield the
+// same sorted output — the prompt-prefix (KV) cache invariant.
+func TestL1PriorsDeterministicOrder(t *testing.T) {
+	names := []string{"zebra", "mango", "apple"}
+	steps := make([]*engine.Step, 0, len(names))
+	for _, n := range names {
+		sc := resources.ToolSchema{Name: n}
+		steps = append(steps, &engine.Step{
+			ID:        resources.ToolClassID(n, resources.ToolArgShape(sc)),
+			Name:      n,
+			AgentType: "tool/" + n,
+			Metadata: map[string]string{
+				l1MetaEnabled: "true",
+				l1MetaBudget:  "0",
+				l1MetaPrior:   "hint-" + n,
+			},
+		})
+	}
+	dag, err := engine.NewMutableDAG(steps)
+	require.NoError(t, err)
+
+	want := []string{"apple: hint-apple", "mango: hint-mango", "zebra: hint-zebra"}
+	for _, order := range [][]string{
+		{"zebra", "mango", "apple"},
+		{"apple", "zebra", "mango"},
+	} {
+		c := &plannerCognition{binder: &orderedBinder{names: order}, l1: dag}
+		assert.Equal(t, want, c.l1Priors(),
+			"l1Priors must be name-sorted regardless of GetToolSchemas order %v", order)
+	}
+}

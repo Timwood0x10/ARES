@@ -1115,3 +1115,54 @@ func TestValidateKernelAgentBudget(t *testing.T) {
 		}
 	})
 }
+
+// TestLoad_TurnAwareCleaning asserts the memory.turn_aware_cleaning key is
+// operator-reachable (plan/0.3.3_task.md Appendix B G1 closure): it must parse
+// from YAML into cfg.Memory.TurnAwareCleaning, and default to false when
+// absent — otherwise the switch would be code-only and unreachable, the same
+// "generation-unreachable" defect C3 fixed for the degradation policy.
+func TestLoad_ContextCleaningKnobs(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	write := func(name, body string) string {
+		p := filepath.Join(tmpDir, name+".yaml")
+		if err := os.WriteFile(p, []byte(body), 0644); err != nil {
+			t.Fatalf("write config: %v", err)
+		}
+		return p
+	}
+
+	base := `
+server:
+  host: "localhost"
+llm:
+  provider: "ollama"
+  model: "llama3.2"
+agents:
+  sub: []
+`
+	t.Run("enabled", func(t *testing.T) {
+		cfg, err := Load(write("enabled", base+"memory:\n  turn_aware_cleaning: true\n  context_token_budget: 2048\n"))
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if !cfg.Memory.TurnAwareCleaning {
+			t.Fatal("turn_aware_cleaning: true must parse into cfg.Memory.TurnAwareCleaning")
+		}
+		if cfg.Memory.ContextTokenBudget != 2048 {
+			t.Fatalf("context_token_budget = %d, want 2048", cfg.Memory.ContextTokenBudget)
+		}
+	})
+	t.Run("absent_defaults_false", func(t *testing.T) {
+		cfg, err := Load(write("absent", base))
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if cfg.Memory.TurnAwareCleaning {
+			t.Fatal("absent key must default to false (opt-in)")
+		}
+		if cfg.Memory.ContextTokenBudget != 0 {
+			t.Fatalf("absent context_token_budget must default to 0, got %d", cfg.Memory.ContextTokenBudget)
+		}
+	})
+}

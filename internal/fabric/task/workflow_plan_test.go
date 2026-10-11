@@ -157,32 +157,3 @@ func TestCompilePlan_DeadlineResolvesToAbsolute(t *testing.T) {
 		t.Fatalf("unset Deadline must stay zero, got %v", noDL.Deadline)
 	}
 }
-
-// TestCompilePlan_BackoffAndAllowPartialLand pins that the degradation/backoff
-// policy carried by a PlanStep reaches the fabric Task verbatim (the fields
-// CompilePlan previously set, now covered so a regression surfaces).
-func TestCompilePlan_BackoffAndAllowPartialLand(t *testing.T) {
-	f := NewFabric()
-	_, err := f.CompilePlan(context.Background(), []PlanStep{
-		{
-			ID:           "a",
-			Capability:   "code",
-			AllowPartial: true,
-			BackoffBase:  time.Second,
-			BackoffMax:   10 * time.Second,
-		},
-	})
-	if err != nil {
-		t.Fatalf("compile: %v", err)
-	}
-	tk, err := f.Task("a")
-	if err != nil {
-		t.Fatalf("task a: %v", err)
-	}
-	if !tk.AllowPartial {
-		t.Fatal("AllowPartial must land on the task")
-	}
-	if tk.BackoffBase != time.Second || tk.BackoffMax != 10*time.Second {
-		t.Fatalf("backoff = (%v,%v), want (1s,10s)", tk.BackoffBase, tk.BackoffMax)
-	}
-}

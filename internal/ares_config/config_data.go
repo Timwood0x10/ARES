@@ -149,6 +149,17 @@ type MemoryConfig struct {
 	// Default: false (opt-in).
 	EnableRAG bool `yaml:"enable_rag"`
 
+	// TurnAwareCleaning routes BuildContext's history cleaning through the
+	// turn-aware cleaner (tool_call↔tool_result kept paired) instead of the
+	// flat default. Default: false (opt-in) — off is byte-for-byte the
+	// pre-0.3.3 behaviour; it never widens any character budget.
+	TurnAwareCleaning bool `yaml:"turn_aware_cleaning"`
+
+	// ContextTokenBudget is an optional estimated-token ceiling applied to the
+	// windowed history before cleaning. 0 (default) disables it. It only
+	// trims (plain history before tool-causal, never system); it never widens.
+	ContextTokenBudget int `yaml:"context_token_budget"`
+
 	// RAGTopK is the maximum number of retrieved snippets to inject.
 	// Defaults to 5 when zero (only applied when EnableRAG is true).
 	RAGTopK int `yaml:"rag_top_k"`
