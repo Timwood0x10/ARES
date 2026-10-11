@@ -103,9 +103,6 @@ memory:
 	if cfg.LLM.Model != "llama3.2" {
 		t.Errorf("LLM.Model = %v, want llama3.2", cfg.LLM.Model)
 	}
-	if cfg.Output.Format != "simple" {
-		t.Errorf("Output.Format = %v, want simple", cfg.Output.Format)
-	}
 	if cfg.Storage.Enabled != true {
 		t.Errorf("Storage.Enabled = %v, want true", cfg.Storage.Enabled)
 	}
@@ -251,45 +248,14 @@ func TestSetDefaults(t *testing.T) {
 	if cfg.LLM.MaxTokens != 4096 {
 		t.Errorf("LLM.MaxTokens default = %v, want 4096", cfg.LLM.MaxTokens)
 	}
-	if cfg.Output.Format != "simple" {
-		t.Errorf("Output.Format default = %v, want simple", cfg.Output.Format)
-	}
 	if cfg.Storage.Type != "postgres" {
 		t.Errorf("Storage.Type default = %v, want postgres", cfg.Storage.Type)
 	}
 	if cfg.Storage.Port != 5432 {
 		t.Errorf("Storage.Port default = %v, want 5432", cfg.Storage.Port)
 	}
-	if cfg.Storage.PGVector.Dimension != 1536 {
-		t.Errorf("Storage.PGVector.Dimension default = %v, want 1536", cfg.Storage.PGVector.Dimension)
-	}
-	if cfg.Storage.PGVector.TableName != "embeddings" {
-		t.Errorf("Storage.PGVector.TableName default = %v, want embeddings", cfg.Storage.PGVector.TableName)
-	}
 	if cfg.Memory.SessionMemory.MaxHistory != 50 {
 		t.Errorf("Memory.SessionMemory.MaxHistory default = %v, want 50", cfg.Memory.SessionMemory.MaxHistory)
-	}
-	if cfg.Validation.SchemaType != "default" {
-		t.Errorf("Validation.SchemaType default = %v, want default", cfg.Validation.SchemaType)
-	}
-	if cfg.Validation.MaxRetries != 3 {
-		t.Errorf("Validation.MaxRetries default = %v, want 3", cfg.Validation.MaxRetries)
-	}
-	// Prompt templates must default so a config that omits the prompts
-	// section still renders a meaningful worker prompt (previously an empty
-	// prompts.recommendation rendered an empty prompt → provider 400 on
-	// empty user content → 20s failover cooldown per worker call).
-	if cfg.Prompts.Recommendation == "" {
-		t.Error("Prompts.Recommendation default = empty, want DefaultRecommendationPrompt")
-	}
-	if cfg.Prompts.ProfileExtraction == "" {
-		t.Error("Prompts.ProfileExtraction default = empty, want DefaultProfileExtractionPrompt")
-	}
-	if cfg.Prompts.StyleAnalysis == "" {
-		t.Error("Prompts.StyleAnalysis default = empty, want DefaultStyleAnalysisPrompt")
-	}
-	if cfg.Prompts.Recommendation != DefaultRecommendationPrompt {
-		t.Errorf("Prompts.Recommendation default = %q, want DefaultRecommendationPrompt", cfg.Prompts.Recommendation)
 	}
 }
 
@@ -316,12 +282,6 @@ func TestValidate(t *testing.T) {
 					MaxRetries: 3,
 				},
 			},
-		},
-		Output: OutputConfig{
-			Format: "simple",
-		},
-		Validation: ValidationConfig{
-			MaxRetries: 3,
 		},
 		Storage: StorageConfig{
 			Enabled:  true,
@@ -359,12 +319,6 @@ func TestValidateInvalidServerPort(t *testing.T) {
 		Agents: AgentsConfig{
 			Sub: []SubAgentConfig{},
 		},
-		Output: OutputConfig{
-			Format: "simple",
-		},
-		Validation: ValidationConfig{
-			MaxRetries: 3,
-		},
 		Memory: MemoryConfig{
 			SessionMemory: SessionConfig{
 				MaxHistory: 50,
@@ -392,12 +346,6 @@ func TestValidateInvalidLLMTimeout(t *testing.T) {
 		},
 		Agents: AgentsConfig{
 			Sub: []SubAgentConfig{},
-		},
-		Output: OutputConfig{
-			Format: "simple",
-		},
-		Validation: ValidationConfig{
-			MaxRetries: 3,
 		},
 		Memory: MemoryConfig{
 			SessionMemory: SessionConfig{
@@ -427,12 +375,6 @@ func TestValidateInvalidLLMProvider(t *testing.T) {
 		Agents: AgentsConfig{
 			Sub: []SubAgentConfig{},
 		},
-		Output: OutputConfig{
-			Format: "simple",
-		},
-		Validation: ValidationConfig{
-			MaxRetries: 3,
-		},
 		Memory: MemoryConfig{
 			SessionMemory: SessionConfig{
 				MaxHistory: 50,
@@ -442,40 +384,6 @@ func TestValidateInvalidLLMProvider(t *testing.T) {
 
 	if err := cfg.Validate(); err == nil {
 		t.Error("Validate() expected error for invalid LLM provider, got nil")
-	}
-}
-
-// TestValidateInvalidOutputFormat tests validation with invalid output format.
-func TestValidateInvalidOutputFormat(t *testing.T) {
-	cfg := &Config{
-		Server: ServerConfig{
-			Host: "localhost",
-			Port: 8080,
-		},
-		LLM: LLMConfig{
-			Provider:  defaultLLMProvider,
-			Model:     "llama3",
-			Timeout:   60,
-			MaxTokens: 4096,
-		},
-		Agents: AgentsConfig{
-			Sub: []SubAgentConfig{},
-		},
-		Output: OutputConfig{
-			Format: "invalid", // Invalid format
-		},
-		Validation: ValidationConfig{
-			MaxRetries: 3,
-		},
-		Memory: MemoryConfig{
-			SessionMemory: SessionConfig{
-				MaxHistory: 50,
-			},
-		},
-	}
-
-	if err := cfg.Validate(); err == nil {
-		t.Error("Validate() expected error for invalid output format, got nil")
 	}
 }
 
@@ -502,12 +410,6 @@ func TestValidateInvalidSubAgent(t *testing.T) {
 					MaxRetries: 3,
 				},
 			},
-		},
-		Output: OutputConfig{
-			Format: "simple",
-		},
-		Validation: ValidationConfig{
-			MaxRetries: 3,
 		},
 		Memory: MemoryConfig{
 			SessionMemory: SessionConfig{
@@ -536,12 +438,6 @@ func TestValidateStorageEnabled(t *testing.T) {
 		},
 		Agents: AgentsConfig{
 			Sub: []SubAgentConfig{},
-		},
-		Output: OutputConfig{
-			Format: "simple",
-		},
-		Validation: ValidationConfig{
-			MaxRetries: 3,
 		},
 		Storage: StorageConfig{
 			Enabled:  true,
@@ -577,12 +473,6 @@ func TestValidateInvalidSessionMaxHistory(t *testing.T) {
 		},
 		Agents: AgentsConfig{
 			Sub: []SubAgentConfig{},
-		},
-		Output: OutputConfig{
-			Format: "simple",
-		},
-		Validation: ValidationConfig{
-			MaxRetries: 3,
 		},
 		Memory: MemoryConfig{
 			SessionMemory: SessionConfig{
@@ -646,11 +536,6 @@ func TestConfigStructs(t *testing.T) {
 		Password: "postgres",
 		Database: "ARES",
 		SSLMode:  "disable",
-		PGVector: PGVectorConfig{
-			Enabled:   true,
-			Dimension: 1536,
-			TableName: "embeddings",
-		},
 	}
 	if storageCfg.Type != "postgres" || storageCfg.Port != 5432 {
 		t.Error("StorageConfig initialization failed")
@@ -660,7 +545,6 @@ func TestConfigStructs(t *testing.T) {
 	memoryCfg := MemoryConfig{
 		Enabled: boolPtr(true),
 		SessionMemory: SessionConfig{
-			Enabled:    true,
 			MaxHistory: 100,
 		},
 	}
@@ -691,12 +575,6 @@ func TestValidLLMProviders(t *testing.T) {
 			Agents: AgentsConfig{
 				Sub: []SubAgentConfig{},
 			},
-			Output: OutputConfig{
-				Format: "simple",
-			},
-			Validation: ValidationConfig{
-				MaxRetries: 3,
-			},
 			Memory: MemoryConfig{
 				SessionMemory: SessionConfig{
 					MaxHistory: 50,
@@ -707,45 +585,6 @@ func TestValidLLMProviders(t *testing.T) {
 
 		if err := cfg.Validate(); err != nil {
 			t.Errorf("Validate() failed for provider %s: %v", provider, err)
-		}
-	}
-}
-
-// TestValidOutputFormats tests all valid output formats.
-func TestValidOutputFormats(t *testing.T) {
-	validFormats := []string{"table", "json", "simple"}
-
-	for _, format := range validFormats {
-		cfg := &Config{
-			Server: ServerConfig{
-				Host: "localhost",
-				Port: 8080,
-			},
-			LLM: LLMConfig{
-				Provider:  defaultLLMProvider,
-				Model:     "llama3",
-				Timeout:   60,
-				MaxTokens: 4096,
-			},
-			Agents: AgentsConfig{
-				Sub: []SubAgentConfig{},
-			},
-			Output: OutputConfig{
-				Format: format,
-			},
-			Validation: ValidationConfig{
-				MaxRetries: 3,
-			},
-			Memory: MemoryConfig{
-				SessionMemory: SessionConfig{
-					MaxHistory: 50,
-				},
-				Archive: ArchiveConfig{Dir: ".context/rounds", MaxRounds: 200},
-			},
-		}
-
-		if err := cfg.Validate(); err != nil {
-			t.Errorf("Validate() failed for format %s: %v", format, err)
 		}
 	}
 }
@@ -810,8 +649,6 @@ func validKernelTestConfig() *Config {
 			Timeout:   60,
 			MaxTokens: 4096,
 		},
-		Output:     OutputConfig{Format: "simple"},
-		Validation: ValidationConfig{MaxRetries: 3},
 		Memory: MemoryConfig{
 			SessionMemory: SessionConfig{MaxHistory: 50},
 			Archive:       ArchiveConfig{Dir: ".context/rounds", MaxRounds: 200},

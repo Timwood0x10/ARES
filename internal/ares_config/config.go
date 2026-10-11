@@ -30,22 +30,6 @@ func SetAllowedConfigDir(dir string) {
 	allowedConfigDir = dir
 }
 
-const (
-	// DefaultRecommendationPrompt is the default recommendation template used
-	// when the config omits prompts.recommendation. {{.input}} is the original
-	// task input (planner writes it to the task payload as task_desc) and
-	// {{.Category}} is the sub-agent type; the executor supplies both.
-	DefaultRecommendationPrompt = "You are a {{.Category}} specialist. Analyze the following task and recommend the best items/actions with clear reasoning.\n\nTask: {{.input}}\n\nReturn a structured list of recommendations with name, description and match reason."
-
-	// DefaultProfileExtractionPrompt is the default template used when the
-	// config omits prompts.profile_extraction.
-	DefaultProfileExtractionPrompt = "Extract the user profile (preferences, style, budget) from: {{.input}}"
-
-	// DefaultStyleAnalysisPrompt is the default template used when the config
-	// omits prompts.style_analysis.
-	DefaultStyleAnalysisPrompt = "Analyze the style of: {{.input}}"
-)
-
 // Config holds all configuration for the server.
 type Config struct {
 	Server     ServerConfig     `yaml:"server"`
@@ -53,10 +37,6 @@ type Config struct {
 	LLM        LLMConfig        `yaml:"llm"`
 	Agents     AgentsConfig     `yaml:"agents"`
 	Tools      ToolsConfig      `yaml:"tools"`
-	Prompts    PromptsConfig    `yaml:"prompts"`
-	Output     OutputConfig     `yaml:"output"`
-	Validation ValidationConfig `yaml:"validation"`
-	Workflow   WorkflowConfig   `yaml:"workflow"`
 	Storage    StorageConfig    `yaml:"storage"`
 	Memory     MemoryConfig     `yaml:"memory"`
 	Knowledge  KnowledgeConfig  `yaml:"knowledge"`
@@ -69,18 +49,19 @@ type Config struct {
 	Introspect IntrospectConfig `yaml:"introspect"`
 }
 
-// KernelConfig controls the dual-track dispatch kernel
-// (parallel + feature flag gradual cutover). When Policy is "taskfabric" (the
-// default), the kernel flips to the Task Fabric path: the shadow scorer is
-// replaced by the real Create→Schedule→Acquire→RunQuantum executor, shadow
-// mode is disabled (to avoid double execution) and the kernelScheduler starts
-// driving ready tasks. When Policy is "legacy", the leader path stays live and
-// the Task Fabric path runs in shadow mode (scores every task, Mismatches
-// observable). The flip is safe to run at startup; flipKernelToTaskFabric is
-// the idempotent live mid-run variant.
+// KernelConfig controls the Task Fabric dispatch kernel. The legacy leader
+// track has been deleted, so there is a single active path: the kernelScheduler
+// drives every READY task through Create→Schedule→Acquire→RunQuantum.
+//
+// `policy` is diagnostic-only: nothing routes on it (the flag it once fed —
+// agentipc.PolicyFlag — was removed together with the dispatch entry that read
+// it). `ares status` reports it and warns unless it is "taskfabric", so
+// "legacy" is accepted for config compatibility but behaves identically.
 type KernelConfig struct {
-	// Policy selects the active dispatch policy: "taskfabric" (default) or
-	// "legacy". Empty selects the default ("taskfabric").
+	// Policy is reported by `ares status`, which warns unless it is
+	// "taskfabric". It does not select a dispatch path — the legacy track and
+	// its policy flag were removed. Empty is reported as the effective default
+	// "taskfabric".
 	Policy string `yaml:"policy"`
 	// PollInterval is the kernelScheduler drain interval (default 500ms).
 	PollInterval string `yaml:"poll_interval"`

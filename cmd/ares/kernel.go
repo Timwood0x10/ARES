@@ -30,11 +30,10 @@ import (
 //   - agents:   Lifecycle pillar (agentfabric: spawn/suspend/resume/retire/kill)
 //   - recovery: Lifecycle recovery surface (aresrecovery: lease-expiry requeue /
 //     checkpoint resume / agent restart)
-//   - dual/flag: IPC pillar (agentipc: single-track Task Fabric dispatch +
-//     execution policy; the legacy leader track was removed)
+//   - dual: IPC pillar (agentipc: single-track Task Fabric dispatch; the
+//     legacy leader track was removed)
 type kernelHandle struct {
 	dual *agentipc.DualTrackDispatcher
-	flag *agentipc.PolicyFlag
 
 	fabric    *taskfabric.Fabric
 	agents    *agentfabric.Fabric

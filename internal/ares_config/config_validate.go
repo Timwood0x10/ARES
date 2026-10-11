@@ -23,10 +23,6 @@ func (c *Config) Validate() error {
 		return err
 	}
 
-	if err := c.validateOutput(); err != nil {
-		return err
-	}
-
 	if err := c.validateStorage(); err != nil {
 		return err
 	}
@@ -144,18 +140,6 @@ func (c *Config) validateSubAgent(i int, subAgent SubAgentConfig) error {
 	}
 	if subAgent.MaxRetries < 0 {
 		return fmt.Errorf("sub-agent %d: max retries must be non-negative", i)
-	}
-	return nil
-}
-
-// validateOutput validates output configuration
-func (c *Config) validateOutput() error {
-	validFormats := map[string]bool{"table": true, "json": true, defaultOutputFormat: true}
-	if !validFormats[c.Output.Format] {
-		return fmt.Errorf("invalid output format: %s, must be 'table', 'json', or 'simple'", c.Output.Format)
-	}
-	if c.Validation.MaxRetries < 0 {
-		return fmt.Errorf("invalid validation max retries: %d, must be non-negative", c.Validation.MaxRetries)
 	}
 	return nil
 }

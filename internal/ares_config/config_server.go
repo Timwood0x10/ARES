@@ -59,13 +59,18 @@ type DiscoveryConfig struct {
 // experience distillation. Distillation requires an embedding client to
 // vectorize distilled experiences; the rest of the system can run without it.
 // When Enabled is false, experience distillation is not wired (graceful skip).
+//
+// There is deliberately no redis_addr key: the embedding cache takes an
+// injected RedisClient (storage/postgres/embedding.NewEmbeddingClient), but the
+// production wiring passes nil and the repo carries no Go redis adapter — the
+// cache lives in the Python embedding service instead. A config key that
+// nothing reads would silently do nothing.
 type EmbeddingConfig struct {
-	Enabled   bool   `yaml:"enabled"`    // Enable embedding client + experience distillation
-	BaseURL   string `yaml:"base_url"`   // Embedding service base URL
-	Model     string `yaml:"model"`      // Embedding model name
-	RedisAddr string `yaml:"redis_addr"` // Optional Redis for embedding cache (empty = no cache)
-	Dimension int    `yaml:"dimension"`  // Vector dimension (0 = use model default)
-	Timeout   int    `yaml:"timeout"`    // Request timeout in seconds (0 = 30s default)
+	Enabled   bool   `yaml:"enabled"`   // Enable embedding client + experience distillation
+	BaseURL   string `yaml:"base_url"`  // Embedding service base URL
+	Model     string `yaml:"model"`     // Embedding model name
+	Dimension int    `yaml:"dimension"` // Vector dimension (0 = use model default)
+	Timeout   int    `yaml:"timeout"`   // Request timeout in seconds (0 = 30s default)
 }
 
 // ServerConfig holds server configuration.
@@ -216,18 +221,4 @@ type SubAgentConfig struct {
 	// higher-priority agents when choosing among capable candidates. Read by
 	// the kernel wiring (thread priority) into the shared load tracker.
 	Priority float64 `yaml:"priority"`
-}
-
-// PromptsConfig holds prompt templates.
-type PromptsConfig struct {
-	ProfileExtraction string `yaml:"profile_extraction"`
-	Recommendation    string `yaml:"recommendation"`
-	StyleAnalysis     string `yaml:"style_analysis"`
-}
-
-// OutputConfig holds output formatting configuration.
-type OutputConfig struct {
-	Format          string `yaml:"format"`           // "table", "json", "simple"
-	ItemTemplate    string `yaml:"item_template"`    // Template for each item
-	SummaryTemplate string `yaml:"summary_template"` // Template for summary
 }

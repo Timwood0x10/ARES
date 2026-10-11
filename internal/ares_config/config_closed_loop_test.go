@@ -119,8 +119,6 @@ func TestValidate_ClosedLoopMemoryAndKnowledge(t *testing.T) {
 			Agents: AgentsConfig{
 				Sub: []SubAgentConfig{},
 			},
-			Output:     OutputConfig{Format: "simple"},
-			Validation: ValidationConfig{MaxRetries: 3},
 			Memory: MemoryConfig{
 				Archive: ArchiveConfig{Dir: ".context/rounds", MaxRounds: 200},
 			},

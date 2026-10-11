@@ -210,18 +210,6 @@ func TestDelegateForwards(t *testing.T) {
 	}
 }
 
-// TestPolicyFlagDefaults verifies the flag defaults and flips correctly.
-func TestPolicyFlagDefaults(t *testing.T) {
-	f := NewPolicyFlag(PolicyLegacy)
-	if !f.IsLegacy() {
-		t.Fatal("default must be legacy")
-	}
-	f.Set(PolicyTaskFabric)
-	if !f.IsTaskFabric() {
-		t.Fatal("after Set, must be task fabric")
-	}
-}
-
 // TestConcurrentRequestsAreSafe verifies concurrent Request/Reply is race-free
 // (verified with go test -race).
 func TestConcurrentRequestsAreSafe(t *testing.T) {

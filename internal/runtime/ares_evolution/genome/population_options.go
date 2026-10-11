@@ -170,20 +170,3 @@ func WithPerLineageElites(enabled bool) PopulationOption {
 		return nil
 	}
 }
-
-func WithPerLineageEliteCount(count int) PopulationOption {
-	return func(cfg *PopulationConfig) error {
-		if count < 1 {
-			return fmt.Errorf("per-lineage elite count must be at least 1, got %d", count)
-		}
-		cfg.PerLineageEliteCount = count
-		return nil
-	}
-}
-
-func WithAdaptiveConfig(ac *AdaptiveConfig) PopulationOption {
-	return func(cfg *PopulationConfig) error {
-		cfg.AdaptiveConfig = ac
-		return nil
-	}
-}

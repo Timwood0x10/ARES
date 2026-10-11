@@ -39,7 +39,7 @@ func TestKernelAdopt_SixPillarsAdoptedAndStopped(t *testing.T) {
 		// only when the pillar itself is absent — here we set the scheduler
 		// below via a real one.
 	}
-	dual, _ := wireKernelDispatcher(nil)
+	dual := wireKernelDispatcher(nil)
 	k.dual = dual
 
 	reg := kernel.NewRegistry()
@@ -93,7 +93,7 @@ func TestKernelAdopt_SixPillarsAdoptedAndStopped(t *testing.T) {
 		recoveryStop:  func() {},
 		recoveryDone:  make(chan struct{}),
 	}
-	dual2, _ := wireKernelDispatcher(nil)
+	dual2 := wireKernelDispatcher(nil)
 	k2.dual = dual2
 	// Real plugin bus so all six pillars are present (full-kernel case).
 	k2.pluginBus = startPluginBus(ctx, ares_events.NewMemoryEventStore(), sched, kernelLoopConfig{})
@@ -148,7 +148,7 @@ func TestKernelAdopt_SchedulerNotRunningReportsDegraded(t *testing.T) {
 		schedulerStop: func() {},
 		schedulerDone: make(chan struct{}),
 	}
-	dual, _ := wireKernelDispatcher(nil)
+	dual := wireKernelDispatcher(nil)
 	k.dual = dual
 
 	if err := k.adopt(ctx, orch); err != nil {

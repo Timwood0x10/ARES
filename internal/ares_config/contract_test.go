@@ -35,24 +35,11 @@ import (
 // field names, what callers write (cfg.Memory.X) — NOT type names. Adding an
 // entry requires a reason comment.
 var knownDead = map[string]string{
-	"Tools.Defaults": "C4 backlog",
-	"Tools.Agents":   "C4 backlog",
-	// SessionMemory.MaxHistory is LIVE — wireMemory consumes it
-	// (internal/ares_bootstrap/bootstrap.go). Only the Enabled leaf stays
-	// dead; keep the exemption leaf-scoped so the G2 gate watches MaxHistory.
-	"Memory.SessionMemory.Enabled": "no consumer reads session.Enabled; wiring gates on the top-level memory.enabled",
-	"Memory.EnableDistillation":    "read only via MemoryConfig.DistillationEnabled() (tri-state accessor)",
-	"Workflow.AutoReload":          "C4 backlog",
-	"Workflow.DefinitionPath":      "C4 backlog",
-	"Workflow.ReloadInterval":      "C4 backlog",
-	"Validation":                   "C4 backlog (subtree): validated + defaulted, no runtime consumer",
-	"Validation.CustomSchema":      "C4 backlog",
-	"Output":                       "C4 backlog (subtree): CLI formatting never wired to a renderer",
-	"Prompts.ProfileExtraction":    "C4 backlog",
-	"Prompts.StyleAnalysis":        "C4 backlog",
-	"Prompts.Recommendation":       "consumer retired with the ReAct executor (M4-D); L2 cognition prompts come from the plan graph",
-	"Storage.PGVector":             "C4 backlog (subtree)",
-	"Embedding.RedisAddr":          "C4 backlog",
+	// EnableDistillation is genuinely live, but only through the tri-state
+	// accessor MemoryConfig.DistillationEnabled(); the textual scan cannot see
+	// through a method call. This is the last remaining exemption — every other
+	// entry was either wired or deleted (see plan/0.3.3_task.md §D.5).
+	"Memory.EnableDistillation": "read only via MemoryConfig.DistillationEnabled() (tri-state accessor)",
 }
 
 // TestG2ConfigContract is the G2 gate: every non-whitelisted config leaf has
@@ -81,6 +68,16 @@ func TestG2ConfigContract(t *testing.T) {
 	}
 	walk("Config", "")
 
+	// Canary: a nested path must be reachable. If a future refactor moves the
+	// sub-structs into a file the scan does not read, every needle collapses to
+	// a top-level leaf, the dotted knownDead keys stop being consulted, and the
+	// gate passes without looking — which is exactly the regression that made
+	// this whitelist self-serving before. Fail loudly instead.
+	if _, ok := needles[".Memory.SessionMemory.MaxHistory"]; !ok {
+		t.Fatal("config scan degraded: nested needle .Memory.SessionMemory.MaxHistory missing " +
+			"(check that parseConfigStructs reads every config*.go that declares a struct)")
+	}
+
 	// Precompute every parent path of each needle (".A.B", ".A.B.C") so a
 	// sub-struct passed WHOLESALE to a helper covers all its leaves. The
 	// wholesale match requires the path to END at the match (allowDot=false),
@@ -89,8 +86,8 @@ func TestG2ConfigContract(t *testing.T) {
 	// Depth-1 roots (".Evolution") ARE included — this codebase really does
 	// hand whole top-level sections to providers (ProvideEvolution(&cfg.
 	// Evolution, ...)) — but only when the receiver is a config value, see
-	// configReceiver. Without that guard a bare ".Output" would match
-	// exp.Output / result.Output and neuter the gate.
+	// configReceiver. Without that guard a bare ".Evolution" would match
+	// comp.Evolution / result.Evolution and neuter the gate.
 	prefixes := map[string][]string{} // needle → ordered parent paths
 	for needle := range needles {
 		parts := strings.Split(strings.TrimPrefix(needle, "."), ".")
@@ -207,10 +204,10 @@ func containsAccess(line, path string, allowDot bool) bool {
 
 // containsWholesale reports whether line passes the sub-struct at path as a
 // WHOLE value off a config receiver, e.g. `ProvideEvolution(&cfg.Evolution)`.
-// The receiver check is what makes depth-1 roots usable: a bare ".Output"
-// match would otherwise be satisfied by `exp.Output` or `result.Output`,
+// The receiver check is what makes depth-1 roots usable: a bare ".Evolution"
+// match would otherwise be satisfied by `comp.Evolution` or `result.Evolution`,
 // which are unrelated struct fields, and would silently exempt every leaf
-// under OutputConfig.
+// under EvolutionConfig.
 func containsWholesale(line, path string) bool {
 	for from := 0; ; {
 		at, ok := findAccess(line, path, false, from)
@@ -225,8 +222,8 @@ func containsWholesale(line, path string) bool {
 }
 
 // configReceivers are the identifiers this codebase uses for an ares_config
-// value. Anything else owning a same-named field (comp.Evolution, exp.Output)
-// is not a config access.
+// value. Anything else owning a same-named field (e.g. comp.Evolution) is not
+// a config access.
 var configReceivers = map[string]bool{
 	"cfg": true, "c": true, "acfg": true, "config": true, "conf": true,
 }
@@ -292,14 +289,48 @@ var fieldDeclRe = regexp.MustCompile(`^\s+([A-Z][A-Za-z0-9_]+)\s+([A-Za-z0-9_\.\
 // structDeclRe matches a type declaration opening a struct block.
 var structDeclRe = regexp.MustCompile(`^type ([A-Za-z0-9_]+) struct`)
 
-// parseConfigStructs scans config.go for `type X struct` blocks and returns
-// type name → ordered fields.
+// parseConfigStructs scans every non-test config*.go source for `type X struct`
+// blocks and returns type name → ordered fields.
+//
+// It must read ALL of them, not just config.go: the config sub-structs were
+// split into config_data.go / config_server.go / config_evolution.go, so a
+// single-file scan degrades every nested access path into a top-level leaf —
+// the walk then only ever produces needles like ".Memory" instead of
+// ".Memory.SessionMemory.Enabled", and every dotted knownDead key silently
+// stops being checked (the gate passes without looking). See plan/0.3.3_task.md
+// §D.1: this gate is the single source of truth for config reachability, so a
+// degraded scan invalidates the whole whitelist.
 func parseConfigStructs(t *testing.T) map[string][]cfgField {
 	t.Helper()
-	out := map[string][]cfgField{}
-	f, err := os.Open("config.go")
+	paths, err := filepath.Glob("config*.go")
 	if err != nil {
-		t.Fatalf("open config.go: %v", err)
+		t.Fatalf("glob config*.go: %v", err)
+	}
+	sort.Strings(paths) // deterministic field order across files
+	out := map[string][]cfgField{}
+	scanned := 0
+	for _, path := range paths {
+		if strings.HasSuffix(path, "_test.go") {
+			continue
+		}
+		parseStructFile(t, path, out)
+		scanned++
+	}
+	if scanned == 0 {
+		t.Fatal("no non-test config*.go sources found; the reachability gate would be vacuous")
+	}
+	return out
+}
+
+// parseStructFile appends the struct declarations of one source file into out.
+// Recursion is not a hazard here: a value-typed self-reference is impossible in
+// Go, and pointer/map/slice forms (`*Property`, `map[string]*Field`) fail the
+// bare-type lookup, so they terminate as leaves.
+func parseStructFile(t *testing.T, path string, out map[string][]cfgField) {
+	t.Helper()
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("open %s: %v", path, err)
 	}
 	defer func() { _ = f.Close() }()
 	sc := bufio.NewScanner(f)
@@ -326,7 +357,6 @@ func parseConfigStructs(t *testing.T) map[string][]cfgField {
 		}
 	}
 	if err := sc.Err(); err != nil {
-		t.Fatalf("scan config.go: %v", err)
+		t.Fatalf("scan %s: %v", path, err)
 	}
-	return out
 }

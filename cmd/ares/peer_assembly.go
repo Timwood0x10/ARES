@@ -129,10 +129,9 @@ func (a *peerAssembly) wireDispatchAndScheduler() {
 	}
 
 	// Assemble the kernel dispatcher with the Task Fabric path as the active
-	// path (no legacy leader track: the flag starts at PolicyTaskFabric).
-	kernelDispatcher, kernelFlag := wireKernelDispatcher(subCaps)
+	// path (no legacy leader track, no execution-policy flag).
+	kernelDispatcher := wireKernelDispatcher(subCaps)
 	kernel.dual = kernelDispatcher
-	kernel.flag = kernelFlag
 
 	// One shared load tracker for the scheduler.
 	tracker := newLoadTracker()

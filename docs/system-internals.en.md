@@ -149,12 +149,12 @@ never leaves live goroutines behind.
 
 ## 3. Configuration Panel (config.yaml)
 
-18 top-level sections (`internal/ares_config/config.go:53` `Config`):
+15 top-level sections (`internal/ares_config/config.go` `Config`):
 
 ```
-server / llm / agents / tools / prompts / output / validation /
-workflow / storage / memory / knowledge / mcp / evolution /
-embedding / discovery / kernel / security / introspect
+server / tasks / llm / agents / tools / storage / memory /
+knowledge / mcp / evolution / embedding / discovery / kernel /
+security / introspect
 ```
 
 **The three sections you actually touch:**

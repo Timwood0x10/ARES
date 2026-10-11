@@ -61,12 +61,6 @@ func (p *Population) History() []GenerationHistoryEntry {
 	return cp
 }
 
-func (p *Population) HistoryCount() int {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	return len(p.history)
-}
-
 func (p *Population) CurrentGeneration() int {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
@@ -118,21 +112,6 @@ func (p *Population) StagnantGenerations() int {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	return p.stagnantGens
-}
-
-func (p *Population) CurrentMutationRate() float64 {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	return p.currentMutationRate
-}
-
-func (p *Population) RecordRecoveryAction(action string) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.recoveryActions == nil {
-		p.recoveryActions = make(map[string]int)
-	}
-	p.recoveryActions[action]++
 }
 
 func (p *Population) RecoveryActions() map[string]int {

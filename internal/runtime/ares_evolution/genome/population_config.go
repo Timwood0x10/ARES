@@ -96,31 +96,35 @@ type EvolveCallbacks struct {
 
 // PopulationConfig holds configuration for creating a population.
 type PopulationConfig struct {
-	Size                        int                   `json:"size"`
-	SurvivalRate                float64               `json:"survival_rate"`
-	MutationRate                float64               `json:"mutation_rate"`
-	EliteCount                  int                   `json:"elite_count"`
-	BreedingPoolRatio           float64               `json:"breeding_pool_ratio"`
-	Seed                        int64                 `json:"seed,omitempty"`
-	MinMutationRate             float64               `json:"min_mutation_rate"`
-	MaxMutationRate             float64               `json:"max_mutation_rate"`
-	MaxStagnantGenerations      int                   `json:"max_stagnant_generations"`
-	DiversityThreshold          float64               `json:"diversity_threshold"`
-	SelectionStrategy           string                `json:"selection_strategy"`
-	TournamentSize              int                   `json:"tournament_size"`
-	DiversityWeights            DiversityWeightConfig `json:"diversity_weights"`
-	DiversitySampleSize         int                   `json:"diversity_sample_size"`
-	FitnessSharingSampleLimit   int                   `json:"fitness_sharing_sample_limit"`
-	FitnessSharingSampleSize    int                   `json:"fitness_sharing_size"`
-	SpatialIndexThreshold       int                   `json:"spatial_index_threshold"`
-	HistoryMaxSize              int                   `json:"history_max_size"`
-	PerLineageElites            bool                  `json:"per_lineage_elites"`
-	PerLineageEliteCount        int                   `json:"per_lineage_elite_count"`
-	AdaptiveConfig              *AdaptiveConfig       `json:"adaptive_config,omitempty"`
-	DisablePromptDiversityGuard bool                  `json:"disable_prompt_diversity_guard,omitempty"`
-	AgentMaxAge                 int                   `json:"agent_max_age"`
-	Callbacks                   EvolveCallbacks       `json:"-"`
-	AllowDuplicate              bool                  `json:"allow_duplicate"`
+	Size                      int                   `json:"size"`
+	SurvivalRate              float64               `json:"survival_rate"`
+	MutationRate              float64               `json:"mutation_rate"`
+	EliteCount                int                   `json:"elite_count"`
+	BreedingPoolRatio         float64               `json:"breeding_pool_ratio"`
+	Seed                      int64                 `json:"seed,omitempty"`
+	MinMutationRate           float64               `json:"min_mutation_rate"`
+	MaxMutationRate           float64               `json:"max_mutation_rate"`
+	MaxStagnantGenerations    int                   `json:"max_stagnant_generations"`
+	DiversityThreshold        float64               `json:"diversity_threshold"`
+	SelectionStrategy         string                `json:"selection_strategy"`
+	TournamentSize            int                   `json:"tournament_size"`
+	DiversityWeights          DiversityWeightConfig `json:"diversity_weights"`
+	DiversitySampleSize       int                   `json:"diversity_sample_size"`
+	FitnessSharingSampleLimit int                   `json:"fitness_sharing_sample_limit"`
+	FitnessSharingSampleSize  int                   `json:"fitness_sharing_size"`
+	SpatialIndexThreshold     int                   `json:"spatial_index_threshold"`
+	HistoryMaxSize            int                   `json:"history_max_size"`
+	// PerLineageElites toggles per-lineage elite preservation. The number of
+	// elites reserved per lineage is fixed at one (see
+	// Population.preservePerLineageElites); there is deliberately no count knob,
+	// because a configurable count that the implementation never reads would
+	// silently do nothing.
+	PerLineageElites            bool            `json:"per_lineage_elites"`
+	AdaptiveConfig              *AdaptiveConfig `json:"adaptive_config,omitempty"`
+	DisablePromptDiversityGuard bool            `json:"disable_prompt_diversity_guard,omitempty"`
+	AgentMaxAge                 int             `json:"agent_max_age"`
+	Callbacks                   EvolveCallbacks `json:"-"`
+	AllowDuplicate              bool            `json:"allow_duplicate"`
 }
 
 func DefaultPopulationConfig() PopulationConfig {
@@ -143,7 +147,6 @@ func DefaultPopulationConfig() PopulationConfig {
 		DiversitySampleSize:         200,
 		DisablePromptDiversityGuard: false,
 		PerLineageElites:            true,
-		PerLineageEliteCount:        1,
 		AgentMaxAge:                 0,
 		AllowDuplicate:              true,
 	}

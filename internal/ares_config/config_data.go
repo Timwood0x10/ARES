@@ -1,101 +1,15 @@
 package ares_config
 
-// Schema represents a JSON Schema for validation.
-type Schema struct {
-	Type        string            `yaml:"type,omitempty"`
-	Properties  map[string]*Field `yaml:"properties,omitempty"`
-	Items       *Field            `yaml:"items,omitempty"`
-	Required    []string          `yaml:"required,omitempty"`
-	Minimum     *float64          `yaml:"minimum,omitempty"`
-	Maximum     *float64          `yaml:"maximum,omitempty"`
-	MinLength   *int              `yaml:"min_length,omitempty"`
-	MaxLength   *int              `yaml:"max_length,omitempty"`
-	Pattern     string            `yaml:"pattern,omitempty"`
-	Enum        []interface{}     `yaml:"enum,omitempty"`
-	Nullable    bool              `yaml:"nullable,omitempty"`
-	MinItems    *int              `yaml:"min_items,omitempty"`
-	MaxItems    *int              `yaml:"max_items,omitempty"`
-	Description string            `yaml:"description,omitempty"`
-	Format      string            `yaml:"format,omitempty"`
-}
-
-// Field represents a field definition in schema.
-type Field struct {
-	Type        string            `yaml:"type,omitempty"`
-	Properties  map[string]*Field `yaml:"properties,omitempty"`
-	Items       *Field            `yaml:"items,omitempty"`
-	Required    []string          `yaml:"required,omitempty"`
-	Minimum     *float64          `yaml:"minimum,omitempty"`
-	Maximum     *float64          `yaml:"maximum,omitempty"`
-	MinLength   *int              `yaml:"min_length,omitempty"`
-	MaxLength   *int              `yaml:"max_length,omitempty"`
-	Pattern     string            `yaml:"pattern,omitempty"`
-	Enum        []interface{}     `yaml:"enum,omitempty"`
-	Nullable    bool              `yaml:"nullable,omitempty"`
-	MinItems    *int              `yaml:"min_items,omitempty"`
-	MaxItems    *int              `yaml:"max_items,omitempty"`
-	Format      string            `yaml:"format,omitempty"`
-	Description string            `yaml:"description,omitempty"`
-}
-
-// ValidationConfig holds validation configuration.
-type ValidationConfig struct {
-	Enabled      bool          `yaml:"enabled"`       // Enable/disable validation
-	SchemaType   string        `yaml:"schema_type"`   // Schema type for validation (e.g., "default", "travel", "custom")
-	RetryOnFail  bool          `yaml:"retry_on_fail"` // Retry LLM call on validation failure
-	MaxRetries   int           `yaml:"max_retries"`   // Max retry attempts
-	StrictMode   bool          `yaml:"strict_mode"`   // If true, fail on validation error
-	CustomSchema *CustomSchema `yaml:"custom_schema"` // Custom JSON schema
-}
-
-// CustomSchema holds custom validation schema.
-type CustomSchema struct {
-	ResultSchema *SchemaConfig `yaml:"result_schema"` // Schema for RecommendResult
-	ItemSchema   *SchemaConfig `yaml:"item_schema"`   // Schema for RecommendItem
-}
-
-// SchemaConfig holds JSON schema configuration.
-type SchemaConfig struct {
-	Type       string               `yaml:"type"`       // "object", "array"
-	Properties map[string]*Property `yaml:"properties"` // Field definitions
-	Required   []string             `yaml:"required"`   // Required fields
-	MinItems   *int                 `yaml:"min_items"`  // For arrays
-	MaxItems   *int                 `yaml:"max_items"`  // For arrays
-}
-
-// Property holds property definition for schema.
-type Property struct {
-	Type       string               `yaml:"type"`       // "string", "number", "integer", "boolean", "array", "object"
-	MinLength  *int                 `yaml:"min_length"` // For strings
-	MaxLength  *int                 `yaml:"max_length"` // For strings
-	Minimum    *float64             `yaml:"minimum"`    // For numbers
-	Maximum    *float64             `yaml:"maximum"`    // For numbers
-	MinItems   *int                 `yaml:"min_items"`  // For arrays
-	MaxItems   *int                 `yaml:"max_items"`  // For arrays
-	Enum       []string             `yaml:"enum"`       // Enum values
-	Format     string               `yaml:"format"`     // Format (uri, etc)
-	Items      *Property            `yaml:"items"`      // For array items
-	Properties map[string]*Property `yaml:"properties"` // For nested objects
-}
-
-// WorkflowConfig holds workflow configuration.
-type WorkflowConfig struct {
-	DefinitionPath string `yaml:"definition_path"` // path to workflow YAML
-	AutoReload     bool   `yaml:"auto_reload"`
-	ReloadInterval int    `yaml:"reload_interval"` // seconds
-}
-
 // StorageConfig holds storage configuration.
 type StorageConfig struct {
-	Enabled  bool           `yaml:"enabled"` // Enable storage
-	Type     string         `yaml:"type"`    // "postgres", "sqlite"
-	Host     string         `yaml:"host"`
-	Port     int            `yaml:"port"`
-	Username string         `yaml:"username"`
-	Password string         `yaml:"password" json:"-"` // json:"-" prevents accidental leak via JSON serialization
-	Database string         `yaml:"database"`
-	SSLMode  string         `yaml:"ssl_mode"`
-	PGVector PGVectorConfig `yaml:"pgvector"`
+	Enabled  bool   `yaml:"enabled"` // Enable storage
+	Type     string `yaml:"type"`    // "postgres", "sqlite"
+	Host     string `yaml:"host"`
+	Port     int    `yaml:"port"`
+	Username string `yaml:"username"`
+	Password string `yaml:"password" json:"-"` // json:"-" prevents accidental leak via JSON serialization
+	Database string `yaml:"database"`
+	SSLMode  string `yaml:"ssl_mode"`
 
 	// EventsRetentionDays bounds the PG events table's growth: when > 0,
 	// the maintenance worker periodically deletes event rows older than
@@ -106,13 +20,6 @@ type StorageConfig struct {
 	// restore window to the retention horizon; choose it well past any
 	// plausible recovery horizon.
 	EventsRetentionDays int `yaml:"events_retention_days"`
-}
-
-// PGVectorConfig holds pgvector specific configuration.
-type PGVectorConfig struct {
-	Enabled   bool   `yaml:"enabled"`    // Enable vector similarity search
-	Dimension int    `yaml:"dimension"`  // Embedding dimension (default 1536 for OpenAI)
-	TableName string `yaml:"table_name"` // Table name for vector storage
 }
 
 // MemoryConfig holds memory and distillation configuration.
@@ -215,16 +122,16 @@ type KnowledgeConfig struct {
 	MinScore float64 `yaml:"min_score"`
 }
 
-// SessionConfig holds session memory configuration.
+// SessionConfig holds session memory configuration. The store is gated by the
+// top-level MemoryConfig.IsEnabled switch; there is deliberately no per-store
+// enable bit, because a `session.enabled: false` that nothing reads would
+// silently fail to disable anything.
 type SessionConfig struct {
-	Enabled    bool `yaml:"enabled"`     // Enable session memory
-	MaxHistory int  `yaml:"max_history"` // Max conversation turns to keep
+	MaxHistory int `yaml:"max_history"` // Max conversation turns to keep
 }
 
 // ToolsConfig holds tool configuration for agents.
 type ToolsConfig struct {
-	Defaults []string                   `yaml:"defaults"` // Default tools for all agents
-	Agents   map[string]AgentToolConfig `yaml:"agents"`   // Agent-specific tool assignments
 	// NativeAllowlist is the set of host commands discovered and registered
 	// as tools (primitive 7: native command discovery). Empty (default)
 	// disables discovery. This is the single security boundary: only listed
@@ -238,14 +145,6 @@ type ToolsConfig struct {
 	// this value points at the intended workspace. Formerly the
 	// ARES_FILE_TOOLS_ALLOWED_DIR / ARES_WORKSPACE_DIR env vars.
 	FileSandboxDir string `yaml:"file_sandbox_dir"`
-}
-
-// AgentToolConfig holds tool configuration for a specific agent.
-type AgentToolConfig struct {
-	Name         string   `yaml:"name"`          // Agent display name
-	Description  string   `yaml:"description"`   // Agent description
-	SystemPrompt string   `yaml:"system_prompt"` // Custom system prompt for this agent
-	Tools        []string `yaml:"tools"`         // List of tool names this agent can use
 }
 
 // MCPConfig holds MCP client configuration.

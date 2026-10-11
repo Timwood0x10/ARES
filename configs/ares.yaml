@@ -433,9 +433,6 @@ reflection:
 #   # password: REPLACE_WITH_YOUR_PASSWORD
 #   database: ares
 #   # ssl_mode: disable | require | verify-full
-#   pgvector:
-#     enabled: false
-#     dimension: 1536
 #   # events_retention_days: 0   # 0 = keep forever (see StorageConfig docs)
 
 # ── Embedding service (required for distillation + RAG) ──────

@@ -469,7 +469,7 @@ var actionRoutes = []routeSpec{
 		Desc:    "collaboration graph submission (DAG)",
 		Handler: (*actionHandler).routeSubmitGraph},
 	{Method: "*", Path: "/api/...", Auth: authRead,
-		Desc:    "read-only control server: /api/agents, /api/health, /api/runtime/config, /api/flight/*, /api/observability/spans, /api/insights, /api/anomalies, /api/evolution/trajectory",
+		Desc:    "read-only control server: /api/agents, /api/health, /api/runtime/config, /api/flight/*, /api/observability/spans, /api/anomalies, /api/evolution/trajectory",
 		Handler: (*actionHandler).routeInner},
 	{Method: "*", Path: "/...", Auth: authNone,
 		Desc:    "non-API tail (control-server 404), left ungated so probing a wrong URL needs no token",

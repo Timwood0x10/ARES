@@ -9,7 +9,6 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/Timwood0x10/ares/internal/agentipc"
 	"github.com/Timwood0x10/ares/internal/agents/base"
 	"github.com/Timwood0x10/ares/internal/agents/sub"
 	"github.com/Timwood0x10/ares/internal/ares_bootstrap"
@@ -134,12 +133,11 @@ func slicesEqual(a, b []string) bool {
 	return true
 }
 
-// TestEnableKernelExecutionRunsFabricPath verifies that after flipping to the
-// Task Fabric policy, the kernel's new path executes the task through the
-// fabric (Create→Schedule→Acquire→RunQuantum) instead of scoring only, and
-// that shadow mode is turned off (so the legacy path is not re-run).
+// TestEnableKernelExecutionRunsFabricPath verifies that the kernel's new path
+// executes the task through the fabric (Create→Schedule→Acquire→RunQuantum)
+// instead of scoring only once enableKernelExecution attaches the executor.
 func TestEnableKernelExecutionRunsFabricPath(t *testing.T) {
-	kernel, flag := wireKernelDispatcher([]subAgentCapability{
+	kernel := wireKernelDispatcher([]subAgentCapability{
 		{ID: "code_01", Type: "tool/code"},
 	})
 
@@ -152,7 +150,6 @@ func TestEnableKernelExecutionRunsFabricPath(t *testing.T) {
 	// SUBMITS the task; the kernelScheduler is the single executor (no
 	// double-path acquire race).
 	enableKernelExecution(kernel, f)
-	flag.Set(agentipc.PolicyTaskFabric)
 
 	// Dispatch through the kernel's live path: the facade's current new-path
 	// dispatcher (the DualTrack dispatch entry was removed — zero production

@@ -18,13 +18,11 @@ import (
 // the legacy leader track has been deleted, so the dispatcher always routes
 // through kernelFabricDispatcher — scoring first, then (after
 // enableKernelExecution attaches the executor) real
-// Create→Schedule→Acquire→RunQuantum execution. The PolicyFlag starts at
-// PolicyTaskFabric with shadow mode OFF (there is no legacy track left to
-// compare against).
+// Create→Schedule→Acquire→RunQuantum execution. There is no execution-policy
+// flag and no shadow track left to compare against.
 //
 // Returns:
 //   - *agentipc.DualTrackDispatcher: the assembled kernel dispatcher.
-//   - *agentipc.PolicyFlag: the execution policy flag.
 //
 // TODO(tech-debt): agentipc records undeliverable/timed-out requests in a
 // bounded DeadLetterStore (bus.go DeadLetters), but there is NO automatic
@@ -34,19 +32,15 @@ import (
 // the natural input to such a policy.
 func wireKernelDispatcher(
 	subAgents []subAgentCapability,
-) (*agentipc.DualTrackDispatcher, *agentipc.PolicyFlag) {
-	flag := agentipc.NewPolicyFlag(agentipc.PolicyTaskFabric)
+) *agentipc.DualTrackDispatcher {
 	newPath := &kernelFabricDispatcher{candidates: subAgents}
-	// nil legacy track: the leader path is removed, so the "dual" track is
-	// single-track from the start and shadow mode is off.
-	return agentipc.NewDualTrackDispatcher(flag, nil, newPath, false), flag
+	return agentipc.NewDualTrackDispatcher(newPath)
 }
 
-// enableKernelExecution switches the kernel's Task Fabric path from scoring
-// (shadow) to real execution: it attaches the submitting executor (Create with
-// DAG edges — the kernelScheduler owns Schedule→Acquire→RunQuantum) to the
-// dispatcher. Callers invoke this at startup (peer mode) in the same critical
-// section as the flag set to PolicyTaskFabric.
+// enableKernelExecution switches the kernel's Task Fabric path from scoring to
+// real execution: it attaches the submitting executor (Create with DAG edges —
+// the kernelScheduler owns Schedule→Acquire→RunQuantum) to the dispatcher.
+// Callers invoke this at startup (peer mode).
 //
 // Args:
 //   - kernel: the dispatcher assembled by wireKernelDispatcher.
@@ -55,10 +49,6 @@ func enableKernelExecution(
 	kernel *agentipc.DualTrackDispatcher,
 	fabric *taskfabric.Fabric,
 ) {
-	// Turn shadow off first: with the new path about to become live, running
-	// the previous path in shadow would re-dispatch every task (double
-	// execution).
-	kernel.SetShadow(false)
 	// Replace the scoring-only path with the submitting one. IMPORTANT: the
 	// dispatch only SUBMITS the task to the fabric (Create); the kernelScheduler
 	// is the single executor (Schedule→Acquire→RunQuantum on every READY task).

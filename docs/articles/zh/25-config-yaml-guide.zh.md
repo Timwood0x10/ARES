@@ -4,7 +4,7 @@
 > 英文版见 [English Version](../en/25-config-yaml-guide.en.md)
 
 本指南说明如何编写 `ares.yaml`（或任意 `<name>.yaml`）来配置 ARES Runtime。
-配置采用 **YAML + 强类型校验**。顶层 `ares_config.Config` 有 17 个 section；所有字段都有合理默认值，只设置你需要覆盖的项即可（零值哲学）。默认值以 `internal/ares_config/config_defaults.go` 为准。
+配置采用 **YAML + 强类型校验**。顶层 `ares_config.Config` 有 15 个 section；所有字段都有合理默认值，只设置你需要覆盖的项即可（零值哲学）。默认值以 `internal/ares_config/config_defaults.go` 为准。
 
 **最小可用配置**（只需 LLM 即可启动，参考 `configs/ares.minimal.yaml`）：
 

@@ -28,13 +28,11 @@ const (
 	// zero-config serve and a zero-config SDK run behave the same. The previous
 	// value ("gemma4") existed in no Ollama registry, so the default config
 	// failed on its first inference.
-	defaultLLMModel     = "llama3.2"
-	defaultOutputFormat = "simple"
-	defaultStorageType  = "postgres"
-	defaultPGVectorTbl  = "embeddings"
-	providerOpenAI      = "openai"
-	providerOpenRouter  = "openrouter"
-	providerAnthropic   = "anthropic"
+	defaultLLMModel    = "llama3.2"
+	defaultStorageType = "postgres"
+	providerOpenAI     = "openai"
+	providerOpenRouter = "openrouter"
+	providerAnthropic  = "anthropic"
 	// defaultSubAgentTimeoutSeconds matches the shipped ares.yaml. Validate
 	// requires a positive sub-agent timeout, so leaving it at zero made
 	// every config that listed agents without an explicit timeout — and the
@@ -184,41 +182,12 @@ func (c *Config) setDefaults() {
 			c.Agents.Sub[i].Timeout = defaultSubAgentTimeoutSeconds
 		}
 	}
-	if c.Output.Format == "" {
-		c.Output.Format = defaultOutputFormat
-	}
-	if c.Output.ItemTemplate == "" {
-		c.Output.ItemTemplate = "{{.ItemID}}: {{.Name}} ({{.Price}})"
-	}
-	if c.Output.SummaryTemplate == "" {
-		c.Output.SummaryTemplate = "Got {{.Count}} recommendations"
-	}
-	// Prompt templates default so a config that omits the prompts section
-	// still renders a meaningful worker prompt. Before this, an empty
-	// prompts.recommendation rendered an empty prompt and every worker LLM
-	// call failed with a provider 400 (empty user content), burning the
-	// failover cooldown (20s) per call.
-	if c.Prompts.Recommendation == "" {
-		c.Prompts.Recommendation = DefaultRecommendationPrompt
-	}
-	if c.Prompts.ProfileExtraction == "" {
-		c.Prompts.ProfileExtraction = DefaultProfileExtractionPrompt
-	}
-	if c.Prompts.StyleAnalysis == "" {
-		c.Prompts.StyleAnalysis = DefaultStyleAnalysisPrompt
-	}
 	// Storage defaults
 	if c.Storage.Type == "" {
 		c.Storage.Type = defaultStorageType
 	}
 	if c.Storage.Port == 0 {
 		c.Storage.Port = 5432
-	}
-	if c.Storage.PGVector.Dimension == 0 {
-		c.Storage.PGVector.Dimension = 1536
-	}
-	if c.Storage.PGVector.TableName == "" {
-		c.Storage.PGVector.TableName = defaultPGVectorTbl
 	}
 	// Memory defaults
 	if c.Memory.SessionMemory.MaxHistory == 0 {
@@ -268,17 +237,6 @@ func (c *Config) setDefaults() {
 		if c.Knowledge.MinScore == 0 {
 			c.Knowledge.MinScore = 0.4
 		}
-	}
-	// Validation defaults
-	if c.Validation.SchemaType == "" {
-		c.Validation.SchemaType = "default" // "default", "travel", "custom"
-	}
-	if c.Validation.MaxRetries == 0 {
-		c.Validation.MaxRetries = 3
-	}
-	// Workflow defaults
-	if c.Workflow.ReloadInterval == 0 && c.Workflow.AutoReload {
-		c.Workflow.ReloadInterval = 30 // seconds
 	}
 	// MCP defaults
 	for i := range c.MCP.Servers {

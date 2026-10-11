@@ -142,12 +142,12 @@ flowchart LR
 
 ## 3. 配置面板（config.yaml）
 
-顶层 18 个大项（`internal/ares_config/config.go:53` `Config`）：
+顶层 15 个大项（`internal/ares_config/config.go` `Config`）：
 
 ```
-server / llm / agents / tools / prompts / output / validation /
-workflow / storage / memory / knowledge / mcp / evolution /
-embedding / discovery / kernel / security / introspect
+server / tasks / llm / agents / tools / storage / memory /
+knowledge / mcp / evolution / embedding / discovery / kernel /
+security / introspect
 ```
 
 **跟你最常打交道的三段：**

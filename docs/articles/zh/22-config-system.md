@@ -33,13 +33,10 @@
 // internal/ares_config/config.go（字段与 yaml 键）
 type Config struct {
     Server     ServerConfig     `yaml:"server"`
+    Tasks      TasksConfig      `yaml:"tasks"`
     LLM        LLMConfig        `yaml:"llm"`
     Agents     AgentsConfig     `yaml:"agents"`
     Tools      ToolsConfig      `yaml:"tools"`
-    Prompts    PromptsConfig    `yaml:"prompts"`
-    Output     OutputConfig     `yaml:"output"`
-    Validation ValidationConfig `yaml:"validation"`
-    Workflow   WorkflowConfig   `yaml:"workflow"`
     Storage    StorageConfig    `yaml:"storage"`
     Memory     MemoryConfig     `yaml:"memory"`
     Knowledge  KnowledgeConfig  `yaml:"knowledge"`
@@ -169,12 +166,10 @@ v0.2.4 遗留的 `memory.task_distillation.threshold`（`DistillConfig.Threshold
 | section | 默认值 |
 |---|---|
 | server.host / port | `localhost` / `8080` |
-| llm.provider / model | `ollama` / `gemma4` |
+| llm.provider / model | `ollama` / `llama3.2` |
 | llm.timeout / max_tokens | `60` / `4096` |
 | llm.scorer_api_rate / burst | `10` / `20` |
-| output.format | `simple` |
 | storage.type / port | `postgres` / `5432` |
-| storage.pgvector.dimension / table_name | `1536` / `embeddings` |
 | memory.max_history / session.max_history | `10` / `50` |
 | memory.enable_distillation | 默认开（`*bool` nil→true） |
 | memory.distillation_threshold | `3` |
