@@ -18,12 +18,12 @@ import (
 	"github.com/Timwood0x10/ares/internal/kernel"
 )
 
-// TestKernelAdopt_SixPillarsAdoptedAndStopped is the adopt acceptance: a fully
-// assembled kernel handle adopts all six pillars into a live orchestrator,
-// every one reaches Ready (the scheduler via its Running gate), and Shutdown
-// stops them in an order consistent with the dependency table
-// (pluginbus/recovery/scheduler → dispatcher → fabrics → eventstore).
-func TestKernelAdopt_SixPillarsAdoptedAndStopped(t *testing.T) {
+// TestKernelAdopt_PillarsAdoptedAndStopped is the adopt acceptance: a fully
+// assembled kernel handle adopts every present pillar into a live orchestrator,
+// each reaches Ready (the scheduler via its Running gate), and Shutdown stops
+// them in an order consistent with the dependency table
+// (pluginbus/recovery/scheduler → fabrics → eventstore).
+func TestKernelAdopt_PillarsAdoptedAndStopped(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -39,8 +39,6 @@ func TestKernelAdopt_SixPillarsAdoptedAndStopped(t *testing.T) {
 		// only when the pillar itself is absent — here we set the scheduler
 		// below via a real one.
 	}
-	dispatcher := wireKernelDispatcher(nil)
-	k.dispatcher = dispatcher
 
 	reg := kernel.NewRegistry()
 	// eventstore is the fabrics' dependency; register it so Adopt's
@@ -58,7 +56,7 @@ func TestKernelAdopt_SixPillarsAdoptedAndStopped(t *testing.T) {
 	if err := k.adopt(ctx, orch); err != nil {
 		t.Fatalf("adopt (partial kernel): %v", err)
 	}
-	for _, name := range []string{"taskfabric", "agentfabric", "dispatcher", "recovery"} {
+	for _, name := range []string{"taskfabric", "agentfabric", "recovery"} {
 		if _, ok := reg.GetStatus(name); !ok {
 			t.Fatalf("pillar %q missing after adopt", name)
 		}
@@ -70,7 +68,7 @@ func TestKernelAdopt_SixPillarsAdoptedAndStopped(t *testing.T) {
 		t.Fatal("nil plugin bus must not be adopted")
 	}
 
-	// Second orchestrator with a real running scheduler: all 6 pillars.
+	// Second orchestrator with a real running scheduler: every pillar present.
 	reg2 := kernel.NewRegistry()
 	if err := reg2.Register(&stubComponent{name: "eventstore"}, kernel.ModeRequired); err != nil {
 		t.Fatalf("register: %v", err)
@@ -93,9 +91,7 @@ func TestKernelAdopt_SixPillarsAdoptedAndStopped(t *testing.T) {
 		recoveryStop:  func() {},
 		recoveryDone:  make(chan struct{}),
 	}
-	dispatcher2 := wireKernelDispatcher(nil)
-	k2.dispatcher = dispatcher2
-	// Real plugin bus so all six pillars are present (full-kernel case).
+	// Real plugin bus so every pillar is present (full-kernel case).
 	k2.pluginBus = startPluginBus(ctx, ares_events.NewMemoryEventStore(), sched, kernelLoopConfig{})
 	if k2.pluginBus == nil {
 		t.Fatal("plugin bus must start in the full-kernel fixture")
@@ -109,7 +105,7 @@ func TestKernelAdopt_SixPillarsAdoptedAndStopped(t *testing.T) {
 		t.Fatalf("adopt (full kernel): %v", err)
 	}
 	for _, name := range []string{
-		sysCompTaskFabric, sysCompAgentFabric, sysCompDispatcher,
+		sysCompTaskFabric, sysCompAgentFabric,
 		sysCompScheduler, sysCompRecovery, sysCompPluginBus,
 	} {
 		st, ok := reg2.GetStatus(name)
@@ -148,8 +144,6 @@ func TestKernelAdopt_SchedulerNotRunningReportsDegraded(t *testing.T) {
 		schedulerStop: func() {},
 		schedulerDone: make(chan struct{}),
 	}
-	dispatcher := wireKernelDispatcher(nil)
-	k.dispatcher = dispatcher
 
 	if err := k.adopt(ctx, orch); err != nil {
 		t.Fatalf("adopt must not fail in Degraded mode: %v", err)

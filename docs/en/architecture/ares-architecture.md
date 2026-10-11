@@ -77,7 +77,7 @@ flowchart LR
     end
 
     subgraph KERNEL["Scheduling core"]
-        DISP["kernelTaskDispatcher"]
+        DISP["submit entry<br/>(submitPeerTask / POST /api/graphs)"]
         DAG["DAG ready set ReadyTasks"]
         SCH2["kernelScheduler.drain<br/>(concurrent bounded goroutines)"]
         SUB["fabricTaskMeta submit"]
@@ -182,7 +182,7 @@ flowchart LR
 |---|---|---|
 | `ares_bootstrap` | Assembles all infrastructure (EventStore/Runtime/Memory/MCP/LLM/evolution/distillation) | cfg, EventStore |
 | `ares_runtime.Manager` | Agent register/start/stop/recovery chain (lease/requeue) | EventStore, factories |
-| `kernelTaskDispatcher` + `kernelScheduler` | Task submit → DAG ready → concurrent drain execution | EventStore, fabric |
+| Submit entry (`submitPeerTask` / `fabric.Create`) + `kernelScheduler` | Task submit → DAG ready → concurrent drain execution | EventStore, fabric |
 | `taskfabric` | Task execution orchestration (preemption/retry/checkpoint) | agentfabric |
 | `aresrecovery` | GlobalTracer / FeedbackStore / QuotaManager / recovery | EventStore |
 | `agentipc` | Peer message bus (json+gzip evolution policy) | peer registry |

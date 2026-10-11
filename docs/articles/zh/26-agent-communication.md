@@ -135,7 +135,7 @@ graph LR
 
 > **v0.3.3 订正**：本节原描述的"双轨等价验证"已**不存在**——`ExecutionPolicy` / `PolicyFlag` / shadow 模式 / `Mismatches()` 已随 legacy leader 轨道一并删除。生产只有**一条**分发路径。
 
-`policy.go` 现在只剩一个可换路径的持有者 `KernelDispatcher`（v0.3.3 由 `DualTrackDispatcher` 改名——只剩单轨后 "dual" 就是假名）：`NewPath()` / `SetNewPath()` 就是全部可变状态，`enableKernelExecution` 在启动时把"只打分"路径换成"提交到 Task Fabric"的路径。没有策略枚举、没有原子开关、没有 shadow 对比——**HTTP 直接把任务提交给 Task Fabric，kernelScheduler 是唯一执行者**（`Schedule→Acquire→RunQuantum`）。
+**v0.3.3 二次收口**：`policy.go` 的整条门面（`Dispatcher` / `KernelDispatcher` / `NewPath` / `SetNewPath`）也已删除，`internal/agentipc` 不再承载任何"怎么派任务"的抽象。**HTTP 直接把任务提交给 Task Fabric（`submitPeerTask` / POST `/api/graphs`），`kernelScheduler` 是唯一执行者**（`Schedule→Acquire→RunQuantum`）。曾经存在、但只有测试调用的 kernel-bridge 分发层（`wireKernelDispatcher` / `enableKernelExecution` / `submitFabricTask`）已一并移除。
 
 ## 九、总结
 
@@ -145,7 +145,6 @@ graph LR
 | `Bus`（Send/Request/Reply/Delegate/Handoff/Subscribe/Broadcast/Unsubscribe） | `internal/agentipc` | peer 消息总线与全套协作原语 |
 | `DeadLetterStore` | `internal/agentipc` | 失败投递的有界 FIFO 记录（默认容量 1024） |
 | `CollaborationObserver` | `internal/agentipc` | 协作回执 → feedback 源 |
-| `KernelDispatcher` | `internal/agentipc` | 运行时可换的单一分发路径（双轨/特征开关已退役；原名 `DualTrackDispatcher`） |
 | `Kernel`（SpawnAgent/CreateTask/AskAgent/CreatePlan） | `internal/agentsyscall` | LLM 可调用的 syscall 工具内核 |
 
 **设计主线：Agent 表达意图，Kernel 保证送达，进化回路可观测。** 通信原语是对等协作层，任务分发是调度执行层，两者正交；而 ask_agent 把"协作意图"变成一个可注入、可观测、可进化的真工具，把 IPC 从库原语接进 Agent 的认知闭环。

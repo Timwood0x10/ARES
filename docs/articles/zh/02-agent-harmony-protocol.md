@@ -169,7 +169,7 @@ flowchart LR
 
 > **订正**：本节原描述的 `ExecutionPolicy` / `PolicyFlag`（`atomic.Int64`）/ shadow 模式 / `Mismatches()` **全部已删除**——它们随 legacy leader 轨道一起移除，生产只有一条分发路径。
 
-`agentipc` 里与"任务怎么派"相关的那层（`policy.go`）现在只剩一个**可换路径的持有者** `KernelDispatcher`（v0.3.3 由 `DualTrackDispatcher` 改名）：`NewPath()` / `SetNewPath()` 是全部可变状态，`enableKernelExecution` 在启动时把"只打分"路径换成"提交到 Task Fabric"的路径。没有策略枚举、没有运行时开关、没有双轨对比。
+`agentipc` 里与"任务怎么派"相关的那层（`policy.go`）已在 v0.3.3 **整体删除**：`Dispatcher` / `KernelDispatcher` / `NewPath` / `SetNewPath` 与只被测试调用的 kernel-bridge（`wireKernelDispatcher` / `enableKernelExecution` / `submitFabricTask`）全部移除。没有策略枚举、没有运行时开关、没有双轨对比，也没有多余的路径持有者——HTTP 提交（`submitPeerTask` / POST `/api/graphs`）是唯一入口，`kernelScheduler` 是唯一执行者。
 
 > 注意：策略枚举与开关**已整体删除**——不是"只保留 `PolicyLegacy` 常量"，而是 `ExecutionPolicy` / `PolicyFlag` 都已不存在。另：AHP 的协议机器（protocol / queue / dlq / heartbeat / codec）也已在 v0.3.3 退役，`internal/runtime/protocol/ahp` 现仅剩消息词汇 `message.go`，原文档提到的"DLQ 自动重试"同样不存在。
 
@@ -182,7 +182,7 @@ flowchart LR
 
 ## 八、总结
 
-`internal/agentipc` 是 ares 的 peer-mesh 消息总线：`Send` 发了就忘，`Request/Reply` 请求回复，`Delegate` 请求转交，`Handoff` 任务转移，`Subscribe/Broadcast/Unsubscribe` 订阅广播。`DeadLetterStore` 有界可观测。`KernelDispatcher` 只是运行时可换的**单一**分发路径（双轨验证已退役）。而 `internal/agentsyscall` 把 `ask_agent` 等工具暴露给真正的 LLM Agent——"Agent decides. Kernel enforces."
+`internal/agentipc` 是 ares 的 peer-mesh 消息总线：`Send` 发了就忘，`Request/Reply` 请求回复，`Delegate` 请求转交，`Handoff` 任务转移，`Subscribe/Broadcast/Unsubscribe` 订阅广播。`DeadLetterStore` 有界可观测。任务分发不再是 `agentipc` 的职责——HTTP 提交是唯一入口，`kernelScheduler` 是唯一执行者。而 `internal/agentsyscall` 把 `ask_agent` 等工具暴露给真正的 LLM Agent——"Agent decides. Kernel enforces."
 
 旧 AHP 协议机器（protocol / queue / dlq / heartbeat / codec）已在 v0.3.3 退役，`internal/runtime/protocol/ahp` 仅剩消息词汇（`message.go`）；peer 直投路径与 Agent IPC 已收敛为单一分发路径。**
 

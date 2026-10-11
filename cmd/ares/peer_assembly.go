@@ -106,39 +106,21 @@ func (a *peerAssembly) assembleFabric() error {
 	return nil
 }
 
-// wireDispatchAndScheduler assembles the Task Fabric dispatcher, creates the
-// shared load tracker, and configures the scheduler from YAML.
+// wireDispatchAndScheduler creates the shared load tracker and configures the
+// scheduler from YAML. Task submission is single-entry elsewhere — submitPeerTask
+// (POST /api/tasks) and k.fabric.Create (POST /api/graphs) create fabric tasks
+// directly, and the kernelScheduler is the sole executor. The former kernel-
+// bridge dispatcher was removed in v0.3.3 (it had no production caller).
 func (a *peerAssembly) wireDispatchAndScheduler() {
 	kernel := a.kernel
 	cfg := a.cfg
-	peers := a.peers
 	subAgents := a.subAgents
 	store := a.store
 	kernel.executors = make(map[string]CapabilityExecutor, len(subAgents))
 
-	// Build the candidate list for the fabric dispatcher. The full declared
-	// capability set (Caps) is offered to the scorer so a task matching ANY
-	// capability is schedulable to the peer.
-	subCaps := make([]subAgentCapability, 0, len(peers))
-	for _, p := range peers {
-		typ := ""
-		if len(p.Capabilities) > 0 {
-			typ = p.Capabilities[0]
-		}
-		subCaps = append(subCaps, subAgentCapability{ID: p.ID, Type: typ, Caps: append([]string(nil), p.Capabilities...)})
-	}
-
-	// Assemble the kernel dispatcher with the Task Fabric path as the active
-	// path (no legacy leader track, no execution-policy flag).
-	kernelDispatcher := wireKernelDispatcher(subCaps)
-	kernel.dispatcher = kernelDispatcher
-
 	// One shared load tracker for the scheduler.
 	tracker := newLoadTracker()
 	kernel.tracker = tracker
-
-	// Enable real Task Fabric execution (not scoring mode).
-	enableKernelExecution(kernel.dispatcher, kernel.fabric)
 
 	// Start the scheduler.
 	sched := NewKernelScheduler(kernel.fabric, kernel.executors, tracker)

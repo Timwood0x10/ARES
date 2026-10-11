@@ -45,6 +45,59 @@ none of this execute and persist exactly as before — pinned by
   `task.failed` event stay the single source of truth. `PlanStep.AllowPartial`,
   `.BackoffBase` and `.BackoffMax` carry the policy into a compiled plan.
 
+### Removed
+
+- **Unwired configuration shells** (`internal/ares_config`). None of these had a
+  consumer outside the config package, so a YAML that set them was silently doing
+  nothing — the G2 reachability gate (`internal/ares_config/contract_test.go`)
+  had been carrying them as `"C4 backlog"` whitelist entries instead of wiring
+  them. Removed: `Config.Prompts` / `.Output` / `.Validation` / `.Workflow`, the
+  JSON-schema model behind `Validation` (`Schema` / `Field` / `Property` /
+  `CustomSchema` / `SchemaConfig`), `Tools.Defaults` / `Tools.Agents`
+  (`AgentToolConfig`), `Memory.SessionMemory.Enabled`, `Memory.UserProfile` /
+  `Memory.TaskDistillation`, `Storage.PGVector` (`PGVectorConfig`),
+  `Embedding.RedisAddr`, plus their defaults, validators and default-prompt
+  constants. Two were actively misleading: `storage.pgvector.dimension`
+  defaulted to 1536 / `embeddings` while the live tables are 1024-dim, and
+  `session.enabled: false` could not turn the session store off (the real gate
+  is the top-level `memory.enabled`).
+  - The gate itself had silently degraded: `parseConfigStructs` opened only
+    `config.go`, so every dotted whitelist key was never actually consulted and
+    "the gate passes" was self-certifying. It now scans every `config*.go`
+    (parsed structs 4 → 46, needles 19 → 167) and asserts a canary nested path is
+    present. The whitelist is down to its one genuine exemption
+    (`Memory.EnableDistillation`, read through the tri-state
+    `DistillationEnabled()` accessor).
+  - A YAML file that still carries the removed keys keeps loading unchanged — the
+    loader is non-strict, so unknown keys are simply ignored.
+
+- **AHP protocol machinery** (`internal/runtime/protocol/ahp`). `Protocol`,
+  `MessageQueue` / `QueueRegistry`, `DLQ` / `DLQProcessor`, `HeartbeatMonitor`
+  and the codec had **zero production instantiation** — they were reachable only
+  from their own tests. `message.go`, the vocabulary the peer and CLI layers
+  actually use, is kept and gained its own test. The "DLQ auto-retry" described
+  in older guides never ran.
+
+- **Kernel dispatch layer / execution-policy facade**. `agentipc.Dispatcher` /
+  `KernelDispatcher` (`internal/agentipc/policy.go`) and the `cmd/ares` kernel
+  bridge (`wireKernelDispatcher` / `enableKernelExecution` /
+  `kernelFabricDispatcher` / `submitFabricTask` / `taskFromPayload`), along with
+  `PolicyFlag` / `ExecutionPolicy` / `SetShadow` and the shadow track, are gone.
+  Their `D()` chain had no production caller — only tests invoked it — while
+  submission already went through `submitPeerTask` (POST /api/tasks) and
+  `k.fabric.Create` (POST /api/graphs). Task submission is now a single entry
+  path, the `dispatcher` System-Runtime pillar node is gone (shutdown order is
+  unchanged), and `kernel.policy` is display-only in `ares status`.
+
+- **Other dead code**: the retired events `EventHandoff` /
+  `EventSubTaskScheduled` / `EventSubTaskStarted` (no emitter, no subscriber);
+  the never-read genome getters `Population.HistoryCount`,
+  `.CurrentMutationRate`, `.RecordRecoveryAction`, `WithAdaptiveConfig`,
+  `WithPerLineageEliteCount` and `PopulationConfig.PerLineageEliteCount`; and
+  `/api/insights` dropped from the capability `Desc` (the route stays a permanent
+  501 — no generator was ever built). `LLMSummarizer` is annotated as a
+  test-only capability reserve rather than deleted.
+
 ## [0.3.2] - 2026-10-09
 
 ### Added

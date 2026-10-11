@@ -1,6 +1,5 @@
 // kernel — merged CLI source: kernel.go, kernel_adopt.go, kernel_bridge.go,
-// kernel_dispatcher.go, kernel_loop.go, scheduler_compat.go,
-// runtime_bridge.go.
+// kernel_loop.go, scheduler_compat.go, runtime_bridge.go.
 package main
 
 import (
@@ -8,7 +7,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/agentipc"
 	"github.com/Timwood0x10/ares/internal/agentruntime"
 	"github.com/Timwood0x10/ares/internal/agents/peer"
 	"github.com/Timwood0x10/ares/internal/agentsyscall"
@@ -30,11 +28,19 @@ import (
 //   - agents:   Lifecycle pillar (agentfabric: spawn/suspend/resume/retire/kill)
 //   - recovery: Lifecycle recovery surface (aresrecovery: lease-expiry requeue /
 //     checkpoint resume / agent restart)
-//   - dispatcher: IPC pillar (agentipc: single-track Task Fabric dispatch; the
-//     legacy leader track was removed)
+//
+// Task submission is single-entry: the HTTP paths (submitPeerTask for
+// POST /api/tasks, k.fabric.Create for POST /api/graphs) create fabric tasks
+// directly and the kernelScheduler is the sole executor. The former agentipc
+// kernel-bridge dispatcher (D / submitFabricTask) was removed in v0.3.3 — it had
+// no production caller; only tests invoked it.
+//
+// TODO(tech-debt): agentipc records undeliverable/timed-out requests in a
+// bounded DeadLetterStore (bus.go DeadLetters), but there is NO automatic
+// retry/redelivery — a dead letter is diagnosed, never replayed. Wire a bounded
+// retry/redelivery policy when multi-agent messaging scales; the store already
+// carries From/To/Topic/Payload/TraceID, so it is the natural input.
 type kernelHandle struct {
-	dispatcher *agentipc.KernelDispatcher
-
 	fabric    *taskfabric.Fabric
 	agents    *agentfabric.Fabric
 	recovery  *aresrecovery.Recovery
@@ -98,15 +104,14 @@ func (k *kernelHandle) sessions() *agentruntime.Sessions {
 	return &agentruntime.Sessions{Reg: k.sessionReg, Fabric: k.fabric, Compile: k.compileCoord}
 }
 
-// System Runtime registry names of the six kernel pillars. The
-// dependency edges below turn these names into the shutdown order
-// pluginbus/recovery → scheduler → dispatcher → fabrics → eventstore.
+// System Runtime registry names of the kernel pillars. The dependency edges
+// below turn these names into the shutdown order
+// pluginbus/recovery → scheduler → fabrics → eventstore.
 const (
 	sysCompScheduler   = "scheduler"
 	sysCompTaskFabric  = "taskfabric"
 	sysCompAgentFabric = "agentfabric"
 	sysCompRecovery    = "recovery"
-	sysCompDispatcher  = "dispatcher"
 	sysCompPluginBus   = "pluginbus"
 )
 
@@ -122,9 +127,8 @@ const (
 // optional ready/stop/wait hooks let Adopt verify real readiness (the
 // scheduler must be draining to count as Ready) and let Shutdown drive real
 // teardown (cancel + wait the loop's goroutine). Nil hooks are safe
-// no-ops, so passive pillars (the fabrics, the dispatcher — pure in-memory
-// state machines with no goroutine of their own) still join the graph and
-// the shutdown order.
+// no-ops, so passive pillars (the fabrics — pure in-memory state machines
+// with no goroutine of their own) still join the graph and the shutdown order.
 type kernelComponent struct {
 	name    string
 	deps    []string
@@ -234,17 +238,11 @@ func (k *kernelHandle) adopt(ctx context.Context, orch *kernel.Orchestrator) err
 			deps: []string{eventstore},
 		},
 		{
-			// Dispatch is synchronous through the fabrics; stopping the
-			// fabrics first (reverse topo) already halts new dispatch.
-			name: sysCompDispatcher,
-			deps: []string{sysCompTaskFabric, sysCompAgentFabric},
-		},
-		{
 			// The scheduler owns the drain loop goroutine: Stop cancels its
 			// context, Wait joins it. Degraded mode: a loop that is not
 			// running reports Degraded + reason, never a false Ready.
 			name: sysCompScheduler,
-			deps: []string{sysCompTaskFabric, sysCompAgentFabric, sysCompDispatcher},
+			deps: []string{sysCompTaskFabric, sysCompAgentFabric},
 			mode: kernel.ModeDegraded,
 			readyFn: func(ctx context.Context) error {
 				if k.scheduler == nil {
@@ -319,8 +317,6 @@ func (k *kernelHandle) componentPresent(name string) bool {
 		return k.fabric != nil
 	case sysCompAgentFabric:
 		return k.agents != nil
-	case sysCompDispatcher:
-		return k.dispatcher != nil
 	case sysCompScheduler:
 		return k.scheduler != nil
 	case sysCompRecovery:

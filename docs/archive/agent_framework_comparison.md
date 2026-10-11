@@ -7,12 +7,14 @@
 
 ---
 
+> **已归档（v0.3.1 快照）。** 文中"六个 kernel 支柱（…dispatcher…）"的表述**自 v0.3.3 起过期**：`dispatcher` 支柱随 `agentipc` 的 kernel-bridge 分发层一并删除，现行 System Runtime 支柱为 **scheduler / taskfabric / agentfabric / recovery / pluginbus 五个**。本文 ARES 自述按 v0.3.1 代码核实，仅作追溯；现行对比文档见 `docs/reference/framework-comparison-langchain-crewai-agentscope-goagent-{zh,en}.md`。
+
 ## 0. 当前框架定位（ARES）
 
 **ARES — Agent Runtime & Evolution System**（Go，Apache-2.0，`github.com/Timwood0x10/ares`）。版本：**v0.3.1**（dev 分支，约 640 次提交，2 名贡献者）。
 
 - 统一 SDK：`sdk.NewRuntime(sdk.WithConfig("ares.yaml"))` 一份 YAML 装配 LLM / 工具 / 记忆 / 蒸馏 / 进化 / 知识（`config.yaml` 指南：`docs/articles/zh/25-config-yaml-guide.zh.md`）。v0.3.1 起 SDK 与 serve 共用同一个 L2 执行内核（`agentruntime.NewExecution`），不再有独立的 SDK 内置 ReAct 引擎。
-- **System Runtime 生命周期内核**：Orchestrator 逆拓扑启停、组件 Registry/Snapshot 可观测、缺依赖组件报 **Degraded** 而非静默 Ready——serve / SDK 入口共用同一内核。v0.3.1 起六个 kernel 支柱（scheduler/taskfabric/agentfabric/recovery/dispatcher/pluginbus）也纳入编排，关停按逆拓扑覆盖内核循环。
+- **System Runtime 生命周期内核**：Orchestrator 逆拓扑启停、组件 Registry/Snapshot 可观测、缺依赖组件报 **Degraded** 而非静默 Ready——serve / SDK 入口共用同一内核。v0.3.1 起六个 kernel 支柱（scheduler/taskfabric/agentfabric/recovery/dispatcher/pluginbus）也纳入编排，关停按逆拓扑覆盖内核循环。**（v0.3.3 起 `dispatcher` 支柱已删除 → 五支柱）**
 - **跨重启任务恢复**（v0.3.1）：`taskfabric.Fabric.RestoreFromStore` 将持久化 `task.*` 事件日志回折为内存任务，进程崩溃后未完结任务恢复为 READY 并带 checkpoint 续跑（此前仅覆盖进程内 agent 死亡）。
 - **证据持久化**：`evidence.PostgresStore` 支持 GA 反馈跨重启累积（原内存版重启清零）。
 - **AKF 知识编织**（`AKG.md`）：把数据源组织为针对当前任务的认知图——`KnowledgeObject` → 流式 `GraphProvider` → `Pipeline` → `Planner` → `Graph Runtime` → `Context Compiler`，可选 `KnowledgeStore`，带 `Evidence` 血缘追踪。**注意**：这不是 RAG 管线——本仓库没有文档加载、分块、混合检索、重排这类预置 RAG 能力，检索侧只有记忆/经验的向量检索接线。
@@ -24,7 +26,7 @@
 - **诚实的局限**：生态极小（2 名贡献者、内置工具约 20 个、无文档加载器、LLM 提供商 4 个：OpenAI / OpenRouter / Ollama / Anthropic，其中前两者测试最充分）；workflow/engine 的 HITL 能力已实现但未接入生产路径；演化系统未经大规模生产负载验证。详见 `docs/reference/framework-comparison-langchain-crewai-agentscope-goagent-zh.md`。
 
 - 统一 SDK：`sdk.NewRuntime(sdk.WithConfig("ares.yaml"))` 一份 YAML 装配 LLM / 工具 / 记忆 / 蒸馏 / 进化 / 知识（`config.yaml` 指南：`docs/articles/zh/25-config-yaml-guide.zh.md`）。v0.3.1 起 SDK 与 serve 共用同一个 L2 执行内核（`agentruntime.NewExecution`），不再有独立的 SDK 内置 ReAct 引擎。
-- **System Runtime 生命周期内核**：Orchestrator 逆拓扑启停、组件 Registry/Snapshot 可观测、缺依赖组件报 **Degraded** 而非静默 Ready——serve / SDK 入口共用同一内核（组件图等价有契约测试锁定）。v0.3.1 起六个 kernel 支柱（scheduler/taskfabric/agentfabric/recovery/dispatcher/pluginbus）也纳入编排。
+- **System Runtime 生命周期内核**：Orchestrator 逆拓扑启停、组件 Registry/Snapshot 可观测、缺依赖组件报 **Degraded** 而非静默 Ready——serve / SDK 入口共用同一内核（组件图等价有契约测试锁定）。v0.3.1 起六个 kernel 支柱（scheduler/taskfabric/agentfabric/recovery/dispatcher/pluginbus）也纳入编排。**（v0.3.3 起 `dispatcher` 支柱已删除 → 五支柱）**
 - **证据持久化**（v0.2.9）：`evidence.PostgresStore` 支持 GA 反馈跨重启累积（原内存版重启清零），serve/SDK 双接入口 opt-in + fail-loud。
 - **AKF 知识编织**（`AKG.md`）：把数据源组织为针对当前任务的认知图——`KnowledgeObject`(Raw/Normalized/Summary) → 流式 `GraphProvider` → `Pipeline`(Normalizer/Resolver/Summarizer) → `Planner` → `Graph Runtime`(Loader/Linker/Reducer) → `Context Compiler`(多格式)，可选 `KnowledgeStore`，全程 `Evidence` 血缘追踪。**这不是 RAG 管线**：本仓库没有文档加载/分块/混合检索/重排能力。
 - **自进化**：GA 遗传算法对运行参数做变异择优。实际接线 4 个 genome 维度（workflow/recovery/knowledge/memory）；scheduler 维度已退役（2026-08-22，并行批执行下无调度决策可优化），prompt genome 已实现但未接入生产装配。反馈环 Event→Evidence→GA→Strategy→Agent，另有 shadow A/B 门控与 Arena 回归门（Welch t-test）。未经大规模生产验证。
@@ -89,7 +91,7 @@
 1. **知识编织 AKF（动态认知图）**：区别于传统 RAG（静态索引）和 LangGraph（纯编排无知识层）。AKF 按"当前任务"实时把数据源组织成图，遵循 SoT / Graph-Ephemeral / Pluggable 三原则，并带 `Evidence` 血缘。这是 ARES 与其他框架差异最大的一块——但"护城河"说法需要生产验证支撑，目前尚无大规模外部采用。
 2. **自进化（遗传算法）**：GA 对运行参数做变异择优，实际接线 4 个 genome 维度（workflow/recovery/knowledge/memory；scheduler 已退役、prompt 未接线），Event→Evidence→GA→Strategy→Agent 反馈环 + shadow A/B 门控 + 回归门。LangGraph / Eino / LlamaIndex / CrewAI 无等价机制（tRPC-Agent-Go 的 SKILL 提取是另一种思路）。**注意该系统未经大规模生产验证**。
 3. **混沌工程内建**：`internal/runtime/arena` 故障注入 + 影子沙箱 + 实时护栏。其他框架多依赖外部重试/熔断。
-4. **System Runtime 生命周期内核**：Orchestrator 逆拓扑启停 + 组件快照可观测 + 缺依赖报 Degraded；serve/SDK 入口共用同一内核与组件图（v0.3.1 起内核六支柱也纳入）。
+4. **System Runtime 生命周期内核**：Orchestrator 逆拓扑启停 + 组件快照可观测 + 缺依赖报 Degraded；serve/SDK 入口共用同一内核与组件图（v0.3.1 起内核六支柱也纳入；**v0.3.3 起 `dispatcher` 支柱已删除 → 五支柱**）。
 5. **Go 原生部署**：单二进制、低内存、goroutine 高并发。
 6. **跨重启任务恢复**（v0.3.1）：task.* 事件日志回折，进程崩溃后任务带 checkpoint 续跑。
 

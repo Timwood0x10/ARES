@@ -77,7 +77,7 @@ flowchart LR
     end
 
     subgraph KERNEL["调度核心"]
-        DISP["kernelTaskDispatcher"]
+        DISP["提交入口<br/>(submitPeerTask / POST /api/graphs)"]
         DAG["DAG 就绪集 ReadyTasks"]
         SCH2["kernelScheduler.drain<br/>(并发 bounded goroutines)"]
         SUB["fabricTaskMeta 提交"]
@@ -182,7 +182,7 @@ flowchart LR
 |---|---|---|
 | `ares_bootstrap` | 装配所有基础设施（EventStore/Runtime/Memory/MCP/LLM/进化/蒸馏） | cfg, EventStore |
 | `ares_runtime.Manager` | agent 注册/启动/停止/恢复链（lease/requeue） | EventStore, factories |
-| `kernelTaskDispatcher` + `kernelScheduler` | 任务提交 → DAG 就绪 → 并发 drain 执行 | EventStore, fabric |
+| 提交入口（`submitPeerTask` / `fabric.Create`）+ `kernelScheduler` | 任务提交 → DAG 就绪 → 并发 drain 执行 | EventStore, fabric |
 | `taskfabric` | 任务执行编排（预占/重试/checkpoint） | agentfabric |
 | `aresrecovery` | GlobalTracer / FeedbackStore / QuotaManager / recovery | EventStore |
 | `agentipc` | peer 消息总线（json+gzip 演进策略） | peer registry |

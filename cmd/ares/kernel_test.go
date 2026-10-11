@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"sync"
 	"testing"
 	"time"
@@ -19,60 +18,32 @@ import (
 	"github.com/Timwood0x10/ares/internal/fabric/task"
 )
 
-// TestTaskFromPayload verifies payload decoding: agent_type is honored, absent
-// metadata falls back to a default type.
-func TestTaskFromPayload(t *testing.T) {
-	task, err := taskFromPayload("t1", map[string]any{"agent_type": "rust"})
-	if err != nil {
-		t.Fatalf("taskFromPayload: %v", err)
+// createFabricTask submits a task the way the single production entry does:
+// fabric.Create with DAG edges from Context.Dependencies and the default retry
+// budget (MaxRetries counts TOTAL attempts, so 2 = first attempt + one retry).
+//
+// The former kernel-bridge dispatcher (submitFabricTask / D) was removed in
+// v0.3.3 — it had no production caller (only tests invoked it), while the HTTP
+// paths (submitPeerTask for POST /api/tasks, k.fabric.Create for POST
+// /api/graphs) create fabric tasks directly.
+func createFabricTask(f *taskfabric.Fabric, t *models.Task) error {
+	var deps []string
+	if t.Context != nil {
+		deps = append([]string(nil), t.Context.Dependencies...)
 	}
-	if task.TaskID != "t1" || task.AgentType != models.AgentType("rust") {
-		t.Fatalf("unexpected task: %+v", task)
-	}
-	if _, err := taskFromPayload("", nil); err == nil {
-		t.Fatal("empty task id must error")
-	}
-	if _, err := taskFromPayload("t2", nil); err != nil {
-		t.Fatalf("nil payload must not error: %v", err)
-	}
-}
-
-// TestTaskFromPayloadRestoresDependencies verifies the DAG wiring: the kernel
-// dispatch payload carries Context.Dependencies through the agentipc hop so
-// executeFabricTask can create the fabric task with its DAG edges.
-func TestTaskFromPayloadRestoresDependencies(t *testing.T) {
-	cases := []struct {
-		name string
-		// deps is the payload value for "dependencies": []string comes from
-		// kernelTaskDispatcher.Dispatch (in-memory hop), []any comes from a
-		// JSON round-trip.
-		deps any
-	}{
-		{name: "in-memory []string", deps: []string{"task_a", "task_b"}},
-		{name: "json-shaped []any", deps: []any{"task_a", "task_b"}},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			payload := map[string]any{
-				"agent_type":   "write",
-				"dependencies": tc.deps,
-			}
-			task, err := taskFromPayload("t1", payload)
-			if err != nil {
-				t.Fatalf("taskFromPayload: %v", err)
-			}
-			if !slicesEqual(task.Context.Dependencies, []string{"task_a", "task_b"}) {
-				t.Fatalf("dependencies not restored: %v", task.Context.Dependencies)
-			}
-		})
-	}
+	return f.Create(&taskfabric.Task{
+		ID:           t.TaskID,
+		Capability:   string(t.AgentType),
+		Dependencies: deps,
+		RetryPolicy:  taskfabric.RetryPolicy{MaxRetries: 2},
+		Checkpoint:   taskfabric.NewCheckpointEnvelope(t.Payload),
+	})
 }
 
 // TestKernelDAGGateDefersDependentTask verifies the DAG-as-scheduling-source
-// wiring in the kernel path : the leader dispatch SUBMITS
-// tasks to the fabric (submitFabricTask) and the kernelScheduler drains only
-// READY tasks — a task whose dependencies are not all COMPLETED stays queued
-// until its dependency completes (it never executes out of order).
+// wiring: a submitted task (fabric.Create with DAG edges) is drained by the
+// kernelScheduler only once READY — a task whose dependencies are not all
+// COMPLETED stays queued until its dependency completes (never out of order).
 func TestKernelDAGGateDefersDependentTask(t *testing.T) {
 	f := taskfabric.NewFabric()
 	research := &stubAgent{id: "research_01", typ: models.AgentType("tool/research")}
@@ -90,8 +61,8 @@ func TestKernelDAGGateDefersDependentTask(t *testing.T) {
 	// Submit B (depends on A) first: it must NOT run before A completes.
 	b := models.NewTask("task_b", models.AgentType("tool/write"), nil)
 	b.Context.Dependencies = []string{"task_a"}
-	if err := submitFabricTask(ctx, f, b); err != nil {
-		t.Fatalf("submitFabricTask(B): %v", err)
+	if err := createFabricTask(f, b); err != nil {
+		t.Fatalf("createFabricTask(B): %v", err)
 	}
 	time.Sleep(60 * time.Millisecond)
 	if writer.executedCount() != 0 {
@@ -100,8 +71,8 @@ func TestKernelDAGGateDefersDependentTask(t *testing.T) {
 
 	// Submit A: the scheduler runs it, completing A and unlocking B.
 	a := models.NewTask("task_a", models.AgentType("tool/research"), nil)
-	if err := submitFabricTask(ctx, f, a); err != nil {
-		t.Fatalf("submitFabricTask(A): %v", err)
+	if err := createFabricTask(f, a); err != nil {
+		t.Fatalf("createFabricTask(A): %v", err)
 	}
 
 	// Both tasks must complete, in dependency order.
@@ -117,85 +88,6 @@ func TestKernelDAGGateDefersDependentTask(t *testing.T) {
 	}
 	if writer.executedCount() != 1 {
 		t.Fatalf("B must execute exactly once after A completes, got %d", writer.executedCount())
-	}
-}
-
-// slicesEqual is a tiny helper comparing two string slices (test-only).
-func slicesEqual(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
-}
-
-// TestEnableKernelExecutionRunsFabricPath verifies that the kernel's new path
-// executes the task through the fabric (Create→Schedule→Acquire→RunQuantum)
-// instead of scoring only once enableKernelExecution attaches the executor.
-func TestEnableKernelExecutionRunsFabricPath(t *testing.T) {
-	kernel := wireKernelDispatcher([]subAgentCapability{
-		{ID: "code_01", Type: "tool/code"},
-	})
-
-	f := taskfabric.NewFabric()
-	executor := &stubAgent{id: "code_01", typ: models.AgentType("tool/code")}
-	executors := map[string]CapabilityExecutor{"code_01": executor}
-	tracker := newLoadTracker()
-
-	// Attach the submit-only new path and disable shadow. The dispatch now
-	// SUBMITS the task; the kernelScheduler is the single executor (no
-	// double-path acquire race).
-	enableKernelExecution(kernel, f)
-
-	// Dispatch through the kernel's live path: the facade's current new-path
-	// dispatcher (the DualTrack dispatch entry was removed — zero production
-	// callers; enableKernelExecution swaps the path via SetNewPath).
-	payload := map[string]any{"agent_type": "tool/code"}
-	if err := kernel.NewPath().D(context.Background(), "", "t1", payload); err != nil {
-		t.Fatalf("dispatch: %v", err)
-	}
-
-	// After dispatch the task is SUBMITTED (READY), not yet executed — the
-	// scheduler must complete it.
-	tk, err := f.Task("t1")
-	if err != nil {
-		t.Fatalf("Task: %v", err)
-	}
-	if tk.State != taskfabric.StateReady {
-		t.Fatalf("after dispatch want READY (submitted, scheduler owns execution), got %s", tk.State)
-	}
-	if executor.executedCount() != 0 {
-		t.Fatalf("dispatch must NOT execute the task (scheduler owns execution), got %d", executor.executedCount())
-	}
-
-	// Now the kernelScheduler drains it to completion (single executor).
-	sched := NewKernelScheduler(f, executors, tracker)
-	sched.PollInterval = 10 * time.Millisecond
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go sched.Run(ctx)
-
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		tk, err = f.Task("t1")
-		if err == nil && tk.State == taskfabric.StateCompleted {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	tk, err = f.Task("t1")
-	if err != nil {
-		t.Fatalf("Task: %v", err)
-	}
-	if tk.State != taskfabric.StateCompleted {
-		t.Fatalf("want COMPLETED after scheduler drain, got %s", tk.State)
-	}
-	if executor.executedCount() != 1 {
-		t.Fatalf("executor must run once, got %d", executor.executedCount())
 	}
 }
 
@@ -360,22 +252,22 @@ func TestToModelTaskPreservesMetaAcrossYieldCheckpoint(t *testing.T) {
 	}
 }
 
-// TestRetryPolicyAllowsOneRetry verifies the retry-budget semantics:
-// submitFabricTask now grants ONE real retry (MaxRetries counts total
-// attempts, so 2 = first attempt + one retry). A transient failure requeues
-// the task to READY; only the second failure finalizes FAILED.
+// TestRetryPolicyAllowsOneRetry verifies the retry-budget semantics: the single
+// production submit shape grants ONE real retry (MaxRetries counts total
+// attempts, so 2 = first attempt + one retry). A transient failure requeues the
+// task to READY; only the second failure finalizes FAILED.
 func TestRetryPolicyAllowsOneRetry(t *testing.T) {
 	f := taskfabric.NewFabric()
 	task := models.NewTask("t-retry", models.AgentType("tool/code"), nil)
-	if err := submitFabricTask(context.Background(), f, task); err != nil {
-		t.Fatalf("submitFabricTask: %v", err)
+	if err := createFabricTask(f, task); err != nil {
+		t.Fatalf("createFabricTask: %v", err)
 	}
 	tk, err := f.Task("t-retry")
 	if err != nil {
 		t.Fatalf("Task: %v", err)
 	}
 	if tk.RetryPolicy.MaxRetries != 2 {
-		t.Fatalf("submitFabricTask must grant 1 retry (MaxRetries=2), got %d", tk.RetryPolicy.MaxRetries)
+		t.Fatalf("createFabricTask must grant 1 retry (MaxRetries=2), got %d", tk.RetryPolicy.MaxRetries)
 	}
 	// First execution fails → requeued to READY (the retry).
 	epoch, err := f.Acquire("t-retry", "agent-a", time.Minute)
@@ -474,32 +366,6 @@ func TestSchedulerPriorityPreemption(t *testing.T) {
 	tk, _ = f.Task("tie")
 	if tk.State != taskfabric.StateRunning {
 		t.Fatal("zero-priority preempt must not churn a running task")
-	}
-}
-
-// TestTaskFromPayloadRestoresJSONUserProfile verifies (kernel side) that
-// a user_profile that survived a JSON round-trip arrives as
-// a plain map, not a *models.UserProfile. taskFromPayload must still restore it
-// so the executor never degrades to executeByType.
-func TestTaskFromPayloadRestoresJSONUserProfile(t *testing.T) {
-	up := models.NewUserProfile("u1", "alice")
-	raw, err := json.Marshal(map[string]any{"user_profile": up})
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	var payload map[string]any
-	if err := json.Unmarshal(raw, &payload); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if _, ok := payload["user_profile"].(map[string]any); !ok {
-		t.Fatalf("test precondition: user_profile must be a plain map after round-trip, got %T", payload["user_profile"])
-	}
-	task, err := taskFromPayload("t-json", payload)
-	if err != nil {
-		t.Fatalf("taskFromPayload: %v", err)
-	}
-	if task.UserProfile == nil || task.UserProfile.UserID != "u1" {
-		t.Fatalf("JSON round-tripped profile must be restored, got %+v", task.UserProfile)
 	}
 }
 

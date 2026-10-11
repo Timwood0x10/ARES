@@ -89,7 +89,7 @@ flowchart TD
 
     subgraph L5["Agent 与通讯"]
         AG["agents/<br/>base/agent.go:49 · sub/agent.go:31 New:148<br/>peer/registry.go · lease/lease.go:30<br/>outputguard/guard.go:31<br/>strategy.go:13"]
-        IPC["agentipc/<br/>bus.go:56 · primitives.go Send:57<br/>Request:146 · Delegate:433 · Handoff:454<br/>Broadcast:516 · deadletter.go:32<br/>policy.go:36 · trace.go · collaboration_observer.go"]
+        IPC["agentipc/<br/>bus.go:56 · primitives.go Send:57<br/>Request:146 · Delegate:433 · Handoff:454<br/>Broadcast:516 · deadletter.go:32<br/>trace.go · collaboration_observer.go"]
         SYSCALL["agentsyscall/<br/>syscall.go:25K · plan.go:14K"]
         MCPCL["mcpclient/<br/>mcp.go:27 · sse.go:28 · stdio.go:23"]
     end

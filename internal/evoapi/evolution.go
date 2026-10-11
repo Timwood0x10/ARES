@@ -524,6 +524,12 @@ func (p *promoterAdapter) Demote(ctx context.Context, strategyID string) error {
 	return p.inner.Demote(ctx, strategyID, "demoted by public API")
 }
 
+// NewPromoter builds the public Promoter bridge over promotion.DefaultPromoter.
+//
+// NOTE(status, plan/0.3.3_task.md §E.5): legacy public GA API — not on the
+// production execution path (DreamCycle is hard-coded off; the live evolution
+// path runs through internal/runtime/ares_evolution). Kept (not deleted): it is
+// exercised by tests and examples and is slated to fold into sdk/ (v0.5.0).
 func NewPromoter(criteria *PromotionCriteria) Promoter {
 	ic := promotion.DefaultPromotionCriteria()
 	if criteria != nil {

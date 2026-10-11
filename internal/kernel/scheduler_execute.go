@@ -253,8 +253,9 @@ func (s *Scheduler) executeWithCandidates(ctx context.Context, taskID string, ca
 	// Track the busy slot while the quantum runs so the next Schedule sees the
 	// real load; end records the outcome for confidence.
 	// Preserve the submission metadata across the quantum: the task's current
-	// checkpoint is the meta envelope written by submitFabricTask or by a
-	// previous quantum (yield/done re-wraps below). Capturing it here — before
+	// checkpoint is the meta envelope written at submission time (submitPeerTask
+	// / POST /api/graphs) or by a previous quantum (yield/done re-wraps below).
+	// Capturing it here — before
 	// RunQuantum overwrites the task Checkpoint — is what keeps UserProfile
 	// alive through an arbitrary number of yield→resume cycles.
 	meta, decodeErr := taskfabric.DecodeCheckpoint(tk.Checkpoint)

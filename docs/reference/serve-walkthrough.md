@@ -714,17 +714,9 @@ return a.subAgents, a.kernel, nil
 
 ```go
 kernel.executors = make(map[string]CapabilityExecutor, len(subAgents))
-// 每个 peer 的完整能力集提供给 scorer
-subCaps := append(subCaps, subAgentCapability{ID: p.ID, Type: typ, Caps: p.Capabilities...})
-
-kernelDispatcher, kernelFlag := wireKernelDispatcher(subCaps)
-kernel.dual = kernelDispatcher
-kernel.flag = kernelFlag
 
 tracker := newLoadTracker()
 kernel.tracker = tracker
-
-enableKernelExecution(kernel.dual, kernel.fabric)
 
 sched := NewKernelScheduler(kernel.fabric, kernel.executors, tracker)
 if store != nil { sched.WithEventStore(store) }
@@ -736,7 +728,9 @@ kernel.scheduler = sched
 kernel.flipped = true
 ```
 
-`NewKernelScheduler`（`cmd/ares/kernel.go:375`）就是 `kernel.New(...)` 的薄封装。
+任务提交是**单一入口**：`submitPeerTask`（POST /api/tasks）与 `k.fabric.Create`（POST /api/graphs）直接建 fabric 任务，`kernelScheduler` 是唯一执行者。v0.3.3 已删除只有测试调用的 `agentipc` kernel-bridge 分发层（`wireKernelDispatcher` / `enableKernelExecution` / `submitFabricTask`）。
+
+`NewKernelScheduler`（`cmd/ares/kernel.go:380`）就是 `kernel.New(...)` 的薄封装。
 
 #### `assembleExecution` — `peer_assembly.go:288`
 

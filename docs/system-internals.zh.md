@@ -97,7 +97,7 @@ flowchart TB
 
 | 铁律 | 含义 | 源码 |
 |---|---|---|
-| agent 不自调度 | agent 被调度，从不自己决定"下一步做谁" | `cmd/ares/kernel_dispatch.go`（`agentipc.KernelDispatcher`，单轨） |
+| agent 不自调度 | agent 被调度，从不自己决定"下一步做谁" | `cmd/ares/kernel.go`（`kernelScheduler`；HTTP 提交是唯一入口） |
 | 任务比 agent 长寿 | agent 可丢弃，任务持久在 fabric | `internal/aresrecovery/recovery.go` |
 | 内核强制 provenance | 归属/租户/来源从 context 取，不信 LLM 参数 | `internal/agentsyscall/syscall.go` |
 
@@ -389,8 +389,8 @@ LLM 执行 quantum 时，和调 `web_search` 一样，还能调这几个"系统�
 | 工具 | 干什么 | 函数 | 源码 |
 |---|---|---|---|
 | `spawn_agent` | "再养一个队友" | `SpawnAgent` | `internal/agentsyscall/syscall.go:349` |
-| `create_task` | "这事拆成子任务" | `CreateTask` | `syscall.go:454` |
-| `ask_agent` | "问一下某队友" | `AskAgent` | `syscall.go:614` |
+| `create_task` | "这事拆成子任务" | `CreateTask` | `syscall.go:455` |
+| `ask_agent` | "问一下某队友" | `AskAgent` | `syscall.go:615` |
 | `create_plan` | 一次长一串 DAG 节点 | `CreatePlan` | `internal/agentsyscall/plan.go` |
 
 **最精妙的一点：provenance 靠 context，不靠 LLM（防伪造）。**

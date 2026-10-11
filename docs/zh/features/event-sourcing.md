@@ -9,8 +9,8 @@ Event Sourcing 将每次状态变更记录为不可变事件。系统不覆写�
 对 Agent 系统而言，Event Sourcing 的价值在于：
 
 - **可审计性**：每个决策、任务分发、故障转移都带有时间戳和版本号。
-- **可重放**：通过重放事件流重建任意 Agent 的状态。对 Leader 故障转移和 Agent 复活至关重要。
-- **解耦**：生产者（Leader、Sub-agent、Workflow）独立写入事件。消费者（Projector、Auditor、DLQ）异步订阅和响应。
+- **可重放**：通过重放事件流重建任意 Agent 的状态。对 agent 复活（`failover.*`）与任务跨重启恢复至关重要。
+- **解耦**：生产者（peer agent、Workflow、Memory）独立写入事件。消费者（Projector、Auditor）异步订阅和响应；死信由 `internal/agentipc` 的 `DeadLetterStore` 记录，**只诊断、不自动重试**（AHP 的 DLQ 机器已于 v0.3.3 退役）。
 - **乐观并发控制**：基于版本的冲突检测，防止多 Agent 写入同一 Stream 时静默数据损坏。
 
 ## 架构
@@ -18,8 +18,7 @@ Event Sourcing 将每次状态变更记录为不可变事件。系统不覆写�
 ```mermaid
 graph LR
     subgraph Producers ["生产者"]
-        Leader[Leader Agent]
-        SubAgent[Sub Agents]
+        Agent[Peer Agents]
         Workflow[Workflow Engine]
         Memory[Memory System]
     end
@@ -41,11 +40,9 @@ graph LR
         Projector[Projector]
         Replayer[Replayer]
         Auditor[Auditor]
-        DLQ[DLQ Retry]
     end
 
-    Leader --> Append
-    SubAgent --> Append
+    Agent --> Append
     Workflow --> Append
     Memory --> Append
 
@@ -60,12 +57,11 @@ graph LR
     Subscribe --> Projector
     Subscribe --> Replayer
     Subscribe --> Auditor
-    Subscribe --> DLQ
 ```
 
 ## Event Types
 
-共 20 种事件类型，按领域分组：
+共 35 种事件类型（`internal/ares_events/types.go`），按领域分组：
 
 ### Agent 生命周期
 
@@ -73,17 +69,29 @@ graph LR
 |------|------|------|
 | Agent Started | `agent.started` | Agent 实例启动 |
 | Agent Stopped | `agent.stopped` | Agent 正常停止 |
-| Agent Failed | `agent.failed` | Agent 遇到致命错误 |
-| Agent Recovered | `agent.recovered` | Agent 从故障中恢复 |
 
-### Task 生命周期
+### Task 生命周期（基础）
 
 | 事件 | Type | 说明 |
 |------|------|------|
-| Task Created | `task.created` | Leader 创建新任务 |
-| Task Dispatched | `task.dispatched` | 任务分发给 Sub-agent |
+| Task Created | `task.created` | 提交入口创建新任务（`submitPeerTask` / POST /api/graphs） |
+| Task Dispatched | `task.dispatched` | 任务被分派 |
 | Task Completed | `task.completed` | 任务执行成功 |
-| Task Failed | `task.failed` | 任务执行失败 |
+| Task Failed | `task.failed` | 任务执行失败（payload 带 `retryable` 判定） |
+
+### Task Fabric 状态机（`internal/fabric/task` 在每次状态迁移时发布）
+
+| 事件 | Type | 说明 |
+|------|------|------|
+| Task Ready | `task.ready` | 进入可调度集合（allow-partial 的降级缺口也挂在此事件上） |
+| Task Acquired | `task.acquired` | 被某 agent 取得租约 |
+| Task Started | `task.started` | 开始执行 |
+| Task Yielded | `task.yielded` | 主动让出（等待恢复/重调度） |
+| Task Checkpointed | `task.checkpointed` | checkpoint 落盘 |
+| Task Preempted | `task.preempted` | 被更高优先级抢占 |
+| Task Released | `task.released` | 释放租约 |
+| Task Expired | `task.expired` | 租约过期 |
+| Task Deleted | `task.deleted` | tombstone（任务被删除） |
 
 ### Session 与 Memory
 
@@ -93,29 +101,54 @@ graph LR
 | Message Added | `message.added` | 消息添加到会话 |
 | Memory Distilled | `memory.distilled` | Memory 蒸馏管线完成 |
 
-### Workflow
-
-| 事件 | Type | 说明 |
-|------|------|------|
-| Workflow Started | `workflow.started` | DAG 工作流开始执行 |
-| Step Completed | `step.completed` | Workflow Step 完成 |
-| Step Failed | `step.failed` | Workflow Step 失败 |
-| Step Skipped | `step.skipped` | Workflow Step 跳过（依赖失败） |
-
 ### Tool 与 LLM
 
 | 事件 | Type | 说明 |
 |------|------|------|
-| Tool Called | `tool.called` | 工具被调用时触发 |
-| Tool Failed | `tool.failed` | 工具调用失败时触发 |
+| Tool Call Started | `tool.call.started` | 工具调用开始 |
+| Tool Call Completed | `tool.call.completed` | 工具调用结束 |
 | LLM Call | `llm.call` | LLM 被调用时触发 |
 
-### Failover
+### Workflow Step 恢复
 
 | 事件 | Type | 说明 |
 |------|------|------|
-| Failover Triggered | `failover.triggered` | Leader 故障转移启动 |
-| Failover Completed | `failover.completed` | 故障转移完成，新 Leader 上线 |
+| Step Failed | `step.failed` | Workflow Step 失败 |
+| Step Recovery Started | `step.recovery.started` | Step 恢复启动 |
+| Step Recovery Completed | `step.recovery.completed` | Step 恢复完成 |
+| Step Recovery Failed | `step.recovery.failed` | Step 恢复失败 |
+
+### 协作（沿用 sub 命名）
+
+| 事件 | Type | 说明 |
+|------|------|------|
+| Sub Task Result | `sub_task.result` | sub 返回结果（成功或失败） |
+| Sub Agent Failed | `sub_agent.failed` | sub 崩溃（捕获 panic） |
+
+### Failover（agent 恢复，非 Leader）
+
+| 事件 | Type | 说明 |
+|------|------|------|
+| Failover Triggered | `failover.triggered` | agent 恢复启动（旧实例停用） |
+| Failover Completed | `failover.completed` | 状态恢复完成，新实例接管 |
+
+> 该类型名沿用自已删除的 Leader-Sub 时代：现在由 `internal/runtime/manager.go` 在 **agent 复活**（停旧实例 → 恢复状态 → 启动新实例）时发出，stream 为 `agentID`，与"Leader 故障转移"无关。
+
+### 服务发现
+
+| 事件 | Type | 说明 |
+|------|------|------|
+| Discovery Service Added | `discovery.service.added` | 发现新服务（MCP server / agent runtime） |
+| Discovery Service Removed | `discovery.service.removed` | 服务下线 |
+| Discovery Service Updated | `discovery.service.updated` | 服务信息更新 |
+| Discovery Health Changed | `discovery.health.changed` | 健康状态变化 |
+| Discovery Cycle Completed | `discovery.cycle.complete` | 一轮发现完成 |
+
+### 系统组件
+
+| 事件 | Type | 说明 |
+|------|------|------|
+| Component Failed | `component.failed` | 受管后台组件 panic/退出（stream 为 `system_runtime/<component>`） |
 
 ## 核心类型
 
@@ -171,7 +204,7 @@ evt := &events.Event{
 }
 
 // 追加到 Stream（expectedVersion=0 表示新 Stream）
-err := store.Append(ctx, "leader-main", []*events.Event{evt}, 0)
+err := store.Append(ctx, "task-1", []*events.Event{evt}, 0)
 if err != nil {
     log.Fatal(err)
 }
@@ -181,17 +214,17 @@ if err != nil {
 
 ```go
 // 读取 Stream 的所有事件
-evts, err := store.Read(ctx, "leader-main", events.ReadOptions{})
+evts, err := store.Read(ctx, "task-1", events.ReadOptions{})
 
 // 分页和过滤
-evts, err := store.Read(ctx, "leader-main", events.ReadOptions{
+evts, err := store.Read(ctx, "task-1", events.ReadOptions{
     FromVersion: 5,
     Limit:       10,
     Direction:   events.ReadAscending,
 })
 
 // 读取指定时间之后的事件
-evts, err := store.Read(ctx, "leader-main", events.ReadOptions{
+evts, err := store.Read(ctx, "task-1", events.ReadOptions{
     Since: time.Now().Add(-1 * time.Hour),
 })
 
@@ -225,10 +258,10 @@ go func() {
 
 ```go
 // 读取当前版本
-version, _ := store.StreamVersion(ctx, "leader-main")
+version, _ := store.StreamVersion(ctx, "task-1")
 
 // 带预期版本追加 - 如果其他写入者已变更 Stream 则失败
-err := store.Append(ctx, "leader-main", newEvents, version)
+err := store.Append(ctx, "task-1", newEvents, version)
 if errors.Is(err, events.ErrVersionConflict) {
     // 重新读取并重试
 }
@@ -263,7 +296,7 @@ pool, _ := postgres.NewPool(ctx, cfg)
 store := events.NewPostgresEventStore(pool)
 
 // 相同接口，持久化存储
-_ = store.Append(ctx, "leader-main", events, 0)
+_ = store.Append(ctx, "task-1", events, 0)
 ```
 
 特性：
@@ -293,7 +326,7 @@ CREATE INDEX idx_events_created_at ON events (created_at);
 
 > **v0.3.3 订正**：本节原描述的 AHP Dead Letter Queue（`internal/runtime/protocol/ahp/dlq.go` 的 `DLQ` / `DLQProcessor` / `RegisterHandler` / `StartAutoRetry`）**已随 AHP 协议机器一并删除**，该包如今只剩消息词汇（`message.go`）。这里原有的 `ahp.NewDLQ(...)` 代码示例在任何版本中都不再可运行。
 
-现在唯一活着的死信设施是 **`internal/agentipc` 的 `DeadLetterStore`**：有界 FIFO（默认容量 1024），记录无法投递或超时的请求，**只诊断、不自动重试**——没有 redelivery 策略，这是已知缺口（`cmd/ares/kernel_dispatch.go` 里有 `TODO(tech-debt)` 记录了补齐它的意图）。
+现在唯一活着的死信设施是 **`internal/agentipc` 的 `DeadLetterStore`**：有界 FIFO（默认容量 1024），记录无法投递或超时的请求，**只诊断、不自动重试**——没有 redelivery 策略，这是已知缺口（`cmd/ares/kernel.go` 里有 `TODO(tech-debt)` 记录了补齐它的意图）。
 
 ## 可靠性
 

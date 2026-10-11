@@ -203,7 +203,7 @@ If you're going through a rough patch, I hope this story encourages you. **Be ki
 ## 0.3.1 Update Notes
 
 - **Version**: the repo's `VERSION` file is currently `0.3.1`
-- **Leader/Sub is not the main path**: there is no central orchestrator in the Kernel; scheduling is done by `kernelscheduler.Scheduler` (`PolicyLegacy` stays only as a library constant in `agentipc`, for dual-track verification)
+- **Leader/Sub is not the main path**: there is no central orchestrator in the Kernel; scheduling is done by the `kernelScheduler` (`PolicyLegacy` / `PolicyFlag` and the other dual-track policy constants were deleted in v0.3.3; `agentipc` keeps no dispatch abstraction)
 - **Communication is peer-mesh**: `internal/agentipc.Bus` six primitives — see the second article of the series
 - **Recovery and evolution are real modules**: `aresrecovery` + `ares_evolution`, not concepts
 

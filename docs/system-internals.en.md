@@ -102,7 +102,7 @@ flowchart TB
 
 | Invariant | Meaning | Source |
 |---|---|---|
-| Agents never self-schedule | agents are scheduled, they never decide "who next" | `cmd/ares/kernel_dispatch.go` (`agentipc.KernelDispatcher`, single-track) |
+| Agents never self-schedule | agents are scheduled, they never decide "who next" | `cmd/ares/kernel.go` (`kernelScheduler`; HTTP submission is the single entry) |
 | Tasks outlive agents | agents are disposable; tasks are durable in the fabric | `internal/aresrecovery/recovery.go` |
 | Kernel enforces provenance | origin/tenant/source come from context, never LLM args | `internal/agentsyscall/syscall.go` |
 
@@ -221,7 +221,7 @@ flowchart TD
 |---|---|---|
 | Submit | `Submitter.Submit` | `internal/agentruntime/submit.go:151` |
 | Queue drain | `Scheduler.drain` | `internal/kernel/scheduler_dispatch.go:43` |
-| Select + acquire | Schedule/Acquire inside `drain` | `scheduler_dispatch.go:43` |
+| Select + acquire | Schedule/Acquire inside `drain` | `internal/kernel/scheduler_dispatch.go:43` |
 | Execute | `Scheduler.execute` | `internal/kernel/scheduler_execute.go:52` |
 | Quantum | `buildQuantumStep` | `internal/kernel/scheduler_quantum.go:38` |
 | Dispatch | `routerCognition.ExecuteStep` | `internal/fabric/agent/l2graph.go:388` |
@@ -298,7 +298,7 @@ flowchart LR
 | Concept | Mechanism | Source |
 |---|---|---|
 | Pre-gate (has budget to run) | `budgetOK` | `internal/kernel/scheduler_governance.go:30` |
-| Post bookkeeping | `consumeBudget` | `scheduler_governance.go:53` |
+| Post bookkeeping | `consumeBudget` | `internal/kernel/scheduler_governance.go:53` |
 | One concurrent quantum per agent | `maxConcurrentPerAgent` | architectural invariant |
 | Reject expired holder | epoch fencing | validated at drain |
 
@@ -411,8 +411,8 @@ calls `web_search`:
 | Tool | What | Function | Source |
 |---|---|---|---|
 | `spawn_agent` | "hire a teammate" | `SpawnAgent` | `internal/agentsyscall/syscall.go:349` |
-| `create_task` | "split this into subtasks" | `CreateTask` | `syscall.go:454` |
-| `ask_agent` | "ask a teammate" | `AskAgent` | `syscall.go:614` |
+| `create_task` | "split this into subtasks" | `CreateTask` | `syscall.go:455` |
+| `ask_agent` | "ask a teammate" | `AskAgent` | `syscall.go:615` |
 | `create_plan` | grow a whole DAG at once | `CreatePlan` | `internal/agentsyscall/plan.go` |
 
 **The subtle part: provenance comes from context, not the LLM (anti-forgery).**

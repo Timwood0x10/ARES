@@ -203,7 +203,7 @@ Task Fabric 每次状态迁移都会往 `EventStore` 追加 `task.*` 事件（`E
 ## 0.3.1 更新说明
 
 - **版本**：仓库 `VERSION` 当前是 `0.3.1`
-- **Leader/Sub 不是主路径**：Kernel 内没有"中央编排者"；调度由 `kernel.Scheduler` 完成（`PolicyLegacy` 仅在 `agentipc` 里作为库常量保留，供双轨验证用）
+- **Leader/Sub 不是主路径**：Kernel 内没有"中央编排者"；调度由 `kernelScheduler` 完成（`PolicyLegacy` / `PolicyFlag` 等策略常量已于 v0.3.3 随双轨机制一并删除，`agentipc` 不再保留任何分发抽象）
 - **通信走 peer-mesh**：`internal/agentipc.Bus` 六原语，见系列第二篇
 - **恢复与进化是真实模块**：`aresrecovery` + `ares_evolution`，不是概念
 

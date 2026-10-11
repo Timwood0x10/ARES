@@ -136,7 +136,7 @@ graph LR
 
 > **v0.3.3 correction**: the "dual-track equivalence verification" this section describes **no longer exists** — `ExecutionPolicy` / `PolicyFlag` / shadow mode / `Mismatches()` were deleted together with the legacy leader track. Production has exactly **one** dispatch path.
 
-`policy.go` now holds a single swappable path (`KernelDispatcher`, renamed from `DualTrackDispatcher` in v0.3.3 — with one track left, "dual" was a lie): `NewPath()` / `SetNewPath()` are the whole mutable surface, and `enableKernelExecution` swaps the scoring-only path for the one that submits to the Task Fabric at startup. There is no policy enum, no atomic flag and no shadow comparison — **HTTP submits tasks to the Task Fabric directly and the kernelScheduler is the sole executor** (`Schedule→Acquire→RunQuantum`).
+**v0.3.3 second pass**: the whole facade in `policy.go` (`Dispatcher` / `KernelDispatcher` / `NewPath` / `SetNewPath`) is gone too — `internal/agentipc` no longer carries any "how a task is dispatched" abstraction. **HTTP submits tasks to the Task Fabric directly (`submitPeerTask` / POST `/api/graphs`) and the kernelScheduler is the sole executor** (`Schedule→Acquire→RunQuantum`). The kernel-bridge dispatch layer that only tests ever invoked (`wireKernelDispatcher` / `enableKernelExecution` / `submitFabricTask`) was removed along with it.
 
 ## 9. Summary
 
@@ -146,7 +146,6 @@ graph LR
 | `Bus` (Send/Request/Reply/Delegate/Handoff/Subscribe/Broadcast/Unsubscribe) | `internal/agentipc` | Peer message bus and the full collaboration primitive set |
 | `DeadLetterStore` | `internal/agentipc` | Bounded FIFO record of failed deliveries (default 1024) |
 | `CollaborationObserver` | `internal/agentipc` | Collaboration receipts → feedback source |
-| `KernelDispatcher` | `internal/agentipc` | Runtime-swappable single dispatch path (dual-track + feature flag retired; formerly `DualTrackDispatcher`) |
 | `Kernel` (SpawnAgent/CreateTask/AskAgent/CreatePlan) | `internal/agentsyscall` | LLM-callable syscall tool kernel |
 
 **Design line: agents express intent, the Kernel guarantees delivery, and the evolution loop stays observable.** The communication primitives are the peer collaboration layer; task dispatch is the scheduling execution layer — orthogonal. And `ask_agent` turns a "collaboration intent" into a real, injectable, observable, evolvable tool, wiring the IPC from a library primitive into the agent's cognition loop.

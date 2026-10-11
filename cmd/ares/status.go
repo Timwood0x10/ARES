@@ -279,8 +279,10 @@ func configToStatus(source string, cfg *ares_config.Config, minimal bool) status
 		cfg = ares_config.NewMinimalConfig("", "", "")
 		minimal = true
 	}
-	// Empty policy is reported as the effective default "taskfabric"
-	// (wireKernelPolicy flips to Task Fabric unless "legacy" is explicit).
+	// Empty policy is reported as the effective default "taskfabric".
+	// The key is YAML-compatibility only: nothing routes by it any more (the
+	// legacy dual-track execution policy was retired in v0.3.3), so this is a
+	// display value, not an active switch.
 	policy := cfg.Kernel.Policy
 	if strings.TrimSpace(policy) == "" {
 		policy = "taskfabric"

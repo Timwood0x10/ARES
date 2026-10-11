@@ -370,9 +370,9 @@ the "agent OS" building blocks distilled from the prime-agent comparison.
 | Session lease | `internal/agents/lease` | Exclusive expiring holds for concurrent session access |
 | Task Fabric | `internal/fabric/task` | Durable Task state machine (cross-restart rebuild from the event log via `RestoreFromStore`; non-terminal tasks resume from checkpoint unowned) + Lease/fencing (epoch) + capability-aware Scheduler (Score/Pick/Schedule) + Work Stealing + DAG ReadyTasks + cooperative preempt (0.3.0 Kernel Scheduler pillar) |
 | Agent Fabric | `internal/fabric/agent` | spawn/suspend/resume/retire/kill/recover + Process Tree (provenance, not hierarchy) + Cognitive State + 3-layer Context + P5 resource quota (`WithResourceBudget`) (0.3.0 Kernel Lifecycle pillar) |
-| Agent IPC | `internal/agentipc` | Peer Send/Request/Reply/Delegate/Handoff/Subscribe + policy-gated dispatch (single-track taskfabric; legacy leader path removed) (0.3.0 Kernel IPC pillar) |
+| Agent IPC | `internal/agentipc` | Peer Send/Request/Reply/Delegate/Handoff/Subscribe (task dispatch lives in the HTTP submit path + kernelScheduler, not here) (0.3.0 Kernel IPC pillar) |
 | Runtime Recovery | `internal/aresrecovery` | lease-expiry requeue / checkpoint resume / agent restart / Chaos fault-injection validation (**Agent death ≠ Task death**) |
-| Kernel assembly | `cmd/ares/kernel.go` + `agent_kernel.go` | `wireKernelDispatcher`/`wireKernelPolicy`/`kernelScheduler` — config `kernel.policy` (`taskfabric`) + `subagents[].dependencies` DAG wiring |
+| Kernel assembly | `cmd/ares/kernel.go` + `agent_kernel.go` | `kernelScheduler` — HTTP-submitted tasks (`submitPeerTask` / POST `/api/graphs`) + `subagents[].dependencies` DAG wiring (`kernel.policy` is display-only in `ares status`) |
 
 Wiring: output guard validates sub-agent results; native tools and the peer
 registry are wired in `cmd/ares/serve.go`; state snapshots ride workflow
@@ -484,12 +484,13 @@ The six loops, and what locks them shut:
 
 ARES is an **agent-oriented dynamic compute runtime**: *agents are not
 orchestrated, they are scheduled* — the leader/sub hierarchy is gone and one
-Execution Policy (`kernel.policy: taskfabric`) drives every path.
+`kernelScheduler` drives every path (the legacy dual-track execution policy was
+retired in v0.3.3).
 
 | Pillar | Package | Responsibility |
 |--------|---------|----------------|
 | **Scheduler** | `internal/fabric/task` | durable task state machine + lease/epoch fencing, `cap×load×conf` scoring, work stealing, DAG `ReadyTasks`, cooperative preempt |
-| **IPC** | `internal/agentipc` | peer Send/Request/Reply/Delegate/Handoff/Subscribe with policy-gated dispatch |
+| **IPC** | `internal/agentipc` | peer Send/Request/Reply/Delegate/Handoff/Subscribe (dispatch retired to the HTTP submit path + kernelScheduler) |
 | **Lifecycle** | `internal/fabric/agent` | spawn/suspend/resume/retire/kill/recover, process-tree provenance, cognitive state, resource quota |
 
 Recovery (`internal/aresrecovery`) is what makes **agent death ≠ task death**:

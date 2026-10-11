@@ -169,7 +169,7 @@ flowchart LR
 
 > **Correction**: `ExecutionPolicy` / `PolicyFlag` (an `atomic.Int64`) / shadow mode / `Mismatches()` described here **have all been deleted** — they went with the legacy leader track. Production has exactly one dispatch path.
 
-The layer in `agentipc` about "how tasks are dispatched" (`policy.go`) now holds only a **swappable path holder** (`KernelDispatcher`, renamed from `DualTrackDispatcher` in v0.3.3): `NewPath()` / `SetNewPath()` are the whole mutable surface, and `enableKernelExecution` swaps the scoring-only path for the submitting one at startup. No policy enum, no runtime switch, no dual-track comparison.
+The layer in `agentipc` about "how tasks are dispatched" (`policy.go`) was **removed entirely** in v0.3.3: `Dispatcher` / `KernelDispatcher` / `NewPath` / `SetNewPath`, plus the test-only kernel-bridge (`wireKernelDispatcher` / `enableKernelExecution` / `submitFabricTask`), are all gone. No policy enum, no runtime switch, no dual-track comparison, and no spare path holder either — HTTP submission (`submitPeerTask` / POST `/api/graphs`) is the single entry, and the kernelScheduler is the sole executor.
 
 > Note: the AHP protocol machinery (protocol / queue / dlq / heartbeat / codec) was also retired in v0.3.3 — `internal/runtime/protocol/ahp` now holds only the message vocabulary (`message.go`), and the "DLQ auto-retry" described in older docs does not exist.
 
@@ -182,7 +182,7 @@ The layer in `agentipc` about "how tasks are dispatched" (`policy.go`) now holds
 
 ## VIII. Summary
 
-`internal/agentipc` is ares's peer-mesh message bus: `Send` for fire-and-forget, `Request/Reply` for request/reply, `Delegate` for request forwarding, `Handoff` for task transfer, `Subscribe/Broadcast/Unsubscribe` for pub/sub. `DeadLetterStore` is bounded and observable. `KernelDispatcher` is just a runtime-swappable **single** dispatch path (dual-track verification is retired). And `internal/agentsyscall` exposes `ask_agent` and friends to real LLM Agents — "Agent decides. Kernel enforces."
+`internal/agentipc` is ares's peer-mesh message bus: `Send` for fire-and-forget, `Request/Reply` for request/reply, `Delegate` for request forwarding, `Handoff` for task transfer, `Subscribe/Broadcast/Unsubscribe` for pub/sub. `DeadLetterStore` is bounded and observable. Task dispatch is no longer `agentipc`'s job — HTTP submission is the single entry and the kernelScheduler is the sole executor. And `internal/agentsyscall` exposes `ask_agent` and friends to real LLM Agents — "Agent decides. Kernel enforces."
 
 The legacy AHP protocol machinery (protocol / queue / dlq / heartbeat / codec) was retired in v0.3.3 — `internal/runtime/protocol/ahp` now holds only the message vocabulary (`message.go`); peer direct-delivery and Agent IPC have converged onto a single dispatch path.
 

@@ -9,8 +9,8 @@ Event Sourcing captures every state change as an immutable event. Instead of ove
 For agent systems this matters because:
 
 - **Auditability**: Every decision, task dispatch, and failover is recorded with a timestamp and version.
-- **Replay**: Rebuild any agent's state by replaying its event stream. Critical for leader failover and agent resurrection.
-- **Decoupling**: Producers (Leader, Sub-agents, Workflow) write events independently. Consumers (Projector, Auditor, DLQ) subscribe and react asynchronously.
+- **Replay**: Rebuild any agent's state by replaying its event stream. Critical for agent resurrection (`failover.*`) and cross-restart task recovery.
+- **Decoupling**: Producers (peer agents, Workflow, Memory) write events independently. Consumers (Projector, Auditor) subscribe and react asynchronously; dead letters are recorded by `internal/agentipc`'s `DeadLetterStore` — **diagnosis-only, no automatic retry** (the AHP DLQ machinery was retired in v0.3.3).
 - **Optimistic concurrency**: Version-based conflict detection prevents silent data corruption when multiple agents write to the same stream.
 
 ## Architecture
@@ -18,8 +18,7 @@ For agent systems this matters because:
 ```mermaid
 graph LR
     subgraph Producers
-        Leader[Leader Agent]
-        SubAgent[Sub Agents]
+        Agent[Peer Agents]
         Workflow[Workflow Engine]
         Memory[Memory System]
     end
@@ -41,11 +40,9 @@ graph LR
         Projector[Projector]
         Replayer[Replayer]
         Auditor[Auditor]
-        DLQ[DLQ Retry]
     end
 
-    Leader --> Append
-    SubAgent --> Append
+    Agent --> Append
     Workflow --> Append
     Memory --> Append
 
@@ -60,12 +57,11 @@ graph LR
     Subscribe --> Projector
     Subscribe --> Replayer
     Subscribe --> Auditor
-    Subscribe --> DLQ
 ```
 
 ## Event Types
 
-20 event types organized by domain:
+35 event types (`internal/ares_events/types.go`), organized by domain:
 
 ### Agent Lifecycle
 
@@ -73,17 +69,29 @@ graph LR
 |-------|------|-------------|
 | Agent Started | `agent.started` | Agent instance has started |
 | Agent Stopped | `agent.stopped` | Agent gracefully stopped |
-| Agent Failed | `agent.failed` | Agent encountered a fatal error |
-| Agent Recovered | `agent.recovered` | Agent recovered from failure |
 
-### Task Lifecycle
+### Task Lifecycle (base)
 
 | Event | Type | Description |
 |-------|------|-------------|
-| Task Created | `task.created` | New task created by Leader |
-| Task Dispatched | `task.dispatched` | Task sent to a Sub-agent |
+| Task Created | `task.created` | A new task created by the submit entry (`submitPeerTask` / POST /api/graphs) |
+| Task Dispatched | `task.dispatched` | Task handed out |
 | Task Completed | `task.completed` | Task finished successfully |
-| Task Failed | `task.failed` | Task execution failed |
+| Task Failed | `task.failed` | Task execution failed (payload carries the `retryable` verdict) |
+
+### Task Fabric state machine (published by `internal/fabric/task` on every transition)
+
+| Event | Type | Description |
+|-------|------|-------------|
+| Task Ready | `task.ready` | Entered the schedulable set (allow-partial gaps ride this event too) |
+| Task Acquired | `task.acquired` | Lease taken by an agent |
+| Task Started | `task.started` | Execution began |
+| Task Yielded | `task.yielded` | Voluntarily yielded (awaiting recovery / reschedule) |
+| Task Checkpointed | `task.checkpointed` | Checkpoint persisted |
+| Task Preempted | `task.preempted` | Preempted by a higher-priority task |
+| Task Released | `task.released` | Lease released |
+| Task Expired | `task.expired` | Lease expired |
+| Task Deleted | `task.deleted` | Tombstone (task removed) |
 
 ### Session & Memory
 
@@ -93,29 +101,54 @@ graph LR
 | Message Added | `message.added` | Message added to session |
 | Memory Distilled | `memory.distilled` | Memory distillation pipeline completed |
 
-### Workflow
-
-| Event | Type | Description |
-|-------|------|-------------|
-| Workflow Started | `workflow.started` | DAG workflow execution started |
-| Step Completed | `step.completed` | Workflow step finished |
-| Step Failed | `step.failed` | Workflow step failed |
-| Step Skipped | `step.skipped` | Workflow step skipped (dependency failed) |
-
 ### Tool & LLM
 
 | Event | Type | Description |
 |-------|------|-------------|
-| Tool Called | `tool.called` | Emitted when a tool is invoked |
-| Tool Failed | `tool.failed` | Emitted when a tool call fails |
+| Tool Call Started | `tool.call.started` | Emitted when a tool call begins |
+| Tool Call Completed | `tool.call.completed` | Emitted when a tool call ends |
 | LLM Call | `llm.call` | Emitted when LLM is called |
 
-### Failover
+### Workflow Step recovery
 
 | Event | Type | Description |
 |-------|------|-------------|
-| Failover Triggered | `failover.triggered` | Leader failover initiated |
-| Failover Completed | `failover.completed` | Failover finished, new leader active |
+| Step Failed | `step.failed` | Workflow step failed |
+| Step Recovery Started | `step.recovery.started` | Step recovery started |
+| Step Recovery Completed | `step.recovery.completed` | Step recovery finished |
+| Step Recovery Failed | `step.recovery.failed` | Step recovery failed |
+
+### Collaboration (legacy `sub` naming)
+
+| Event | Type | Description |
+|-------|------|-------------|
+| Sub Task Result | `sub_task.result` | Sub returns a result (success or failure) |
+| Sub Agent Failed | `sub_agent.failed` | Sub crashed (panic captured) |
+
+### Failover (agent recovery, not Leader)
+
+| Event | Type | Description |
+|-------|------|-------------|
+| Failover Triggered | `failover.triggered` | Agent recovery started (old instance stopped) |
+| Failover Completed | `failover.completed` | State recovered, a new instance took over |
+
+> The type names are inherited from the removed Leader-Sub era: `internal/runtime/manager.go` now emits them when it **resurrects an agent** (stop the old instance → recover state → launch a new one), with the stream set to the `agentID`. They have nothing to do with "leader failover".
+
+### Service discovery
+
+| Event | Type | Description |
+|-------|------|-------------|
+| Discovery Service Added | `discovery.service.added` | A service was discovered (MCP server / agent runtime) |
+| Discovery Service Removed | `discovery.service.removed` | A service went away |
+| Discovery Service Updated | `discovery.service.updated` | Service info changed |
+| Discovery Health Changed | `discovery.health.changed` | Health state changed |
+| Discovery Cycle Completed | `discovery.cycle.complete` | One discovery cycle finished |
+
+### System components
+
+| Event | Type | Description |
+|-------|------|-------------|
+| Component Failed | `component.failed` | A managed background component panicked/died (stream `system_runtime/<component>`) |
 
 ## Core Types
 
@@ -171,7 +204,7 @@ evt := &events.Event{
 }
 
 // Append to stream (expectedVersion=0 for new stream)
-err := store.Append(ctx, "leader-main", []*events.Event{evt}, 0)
+err := store.Append(ctx, "task-1", []*events.Event{evt}, 0)
 if err != nil {
     log.Fatal(err)
 }
@@ -181,17 +214,17 @@ if err != nil {
 
 ```go
 // Read all events from a stream
-evts, err := store.Read(ctx, "leader-main", events.ReadOptions{})
+evts, err := store.Read(ctx, "task-1", events.ReadOptions{})
 
 // Read with pagination and filtering
-evts, err := store.Read(ctx, "leader-main", events.ReadOptions{
+evts, err := store.Read(ctx, "task-1", events.ReadOptions{
     FromVersion: 5,
     Limit:       10,
     Direction:   events.ReadAscending,
 })
 
 // Read events since a specific time
-evts, err := store.Read(ctx, "leader-main", events.ReadOptions{
+evts, err := store.Read(ctx, "task-1", events.ReadOptions{
     Since: time.Now().Add(-1 * time.Hour),
 })
 
@@ -225,10 +258,10 @@ go func() {
 
 ```go
 // Read current version
-version, _ := store.StreamVersion(ctx, "leader-main")
+version, _ := store.StreamVersion(ctx, "task-1")
 
 // Append with expected version - fails if another writer changed the stream
-err := store.Append(ctx, "leader-main", newEvents, version)
+err := store.Append(ctx, "task-1", newEvents, version)
 if errors.Is(err, events.ErrVersionConflict) {
     // Re-read and retry
 }
@@ -263,7 +296,7 @@ pool, _ := postgres.NewPool(ctx, cfg)
 store := events.NewPostgresEventStore(pool)
 
 // Same interface, persistent storage
-_ = store.Append(ctx, "leader-main", events, 0)
+_ = store.Append(ctx, "task-1", events, 0)
 ```
 
 Characteristics:
@@ -293,7 +326,7 @@ CREATE INDEX idx_events_created_at ON events (created_at);
 
 > **v0.3.3 correction**: the AHP Dead Letter Queue described here (`internal/runtime/protocol/ahp/dlq.go` — `DLQ` / `DLQProcessor` / `RegisterHandler` / `StartAutoRetry`) was **deleted with the rest of the AHP protocol machinery**; the package now holds only the message vocabulary (`message.go`). The `ahp.NewDLQ(...)` sample that used to be here is no longer runnable in any version.
 
-The only live dead-letter facility is **`internal/agentipc`'s `DeadLetterStore`**: a bounded FIFO (default capacity 1024) recording undeliverable or timed-out requests, **diagnosis-only with no automatic retry** — there is no redelivery policy, a known gap recorded as `TODO(tech-debt)` in `cmd/ares/kernel_dispatch.go`.
+The only live dead-letter facility is **`internal/agentipc`'s `DeadLetterStore`**: a bounded FIFO (default capacity 1024) recording undeliverable or timed-out requests, **diagnosis-only with no automatic retry** — there is no redelivery policy, a known gap recorded as `TODO(tech-debt)` in `cmd/ares/kernel.go`.
 
 ## Reliability
 
