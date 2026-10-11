@@ -82,8 +82,23 @@ func (h *actionHandler) routeResolveInterrupt(w http.ResponseWriter, r *http.Req
 		decision = taskfabric.ApprovalDecisionApproved
 	}
 	approver := ""
-	if princ != nil {
-		approver = princ.Subject
+	if princ == nil {
+		// authWrite is enforced by the dispatcher, so a nil principal here
+		// means the route registry was misconfigured — an anonymous approval
+		// is an audit black hole (ApprovalBy = ""). Reject explicitly rather
+		// than recording an untraceable decision (R6: no anonymous approvals).
+		w.WriteHeader(http.StatusUnauthorized)
+		writeJSON(w, map[string]any{"error": "authenticated principal required", "status": "error"})
+		return
+	}
+	approver = princ.Subject
+	// Compute the blast radius BEFORE resolving so the approver (and the
+	// audit trail) can see how many downstream tasks a reject will cascade
+	// to (R3: blast radius transparency). After resolve the decision is no
+	// longer pending, so ApprovalBlastRadius would return zero.
+	var blastRadius taskfabric.BlastRadius
+	if decision == taskfabric.ApprovalDecisionRejected {
+		blastRadius = h.kernel.fabric.ApprovalBlastRadius(id)
 	}
 	if err := h.kernel.fabric.ResolveApproval(id, decision, req.Feedback, approver); err != nil {
 		switch {
@@ -108,6 +123,11 @@ func (h *actionHandler) routeResolveInterrupt(w http.ResponseWriter, r *http.Req
 	}
 	if tk, err := h.kernel.fabric.Task(id); err == nil {
 		resp["state"] = string(tk.State)
+	}
+	// On reject, surface the blast radius so the approver (and the audit
+	// trail) can see how many downstream tasks were cascaded (R3).
+	if decision == taskfabric.ApprovalDecisionRejected {
+		resp["blast_radius"] = blastRadius
 	}
 	w.WriteHeader(http.StatusOK)
 	writeJSON(w, resp)

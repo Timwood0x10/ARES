@@ -169,10 +169,12 @@ func (f *Fabric) Agents() []string {
 	return out
 }
 
-// IsIdle reports whether agentID is currently IDLE (schedulable). It is the
-// thread-safe scheduling view of Agent.State: the scheduler reads it from
-// drain goroutines without holding the agent's internal lock. Unknown or
-// non-IDLE agents report false (a candidate must be StateIdle and capability-matched).
+// IsIdle reports whether agentID is currently IDLE and not busy (R4:
+// schedulable). It is the thread-safe scheduling view of Agent.State +
+// the busy bridge flag: the scheduler reads it from drain goroutines
+// without holding the agent's internal lock. Unknown, non-IDLE, or busy
+// agents report false (a candidate must be StateIdle, not busy, and
+// capability-matched).
 func (f *Fabric) IsIdle(agentID string) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -182,7 +184,7 @@ func (f *Fabric) IsIdle(agentID string) bool {
 	}
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	return a.State == StateIdle
+	return a.State == StateIdle && !a.busy
 }
 
 // Children returns the child agent IDs of a parent (Process Tree: spawn

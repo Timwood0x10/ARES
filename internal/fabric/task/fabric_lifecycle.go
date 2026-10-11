@@ -527,6 +527,10 @@ const (
 	ApprovalDecisionRejected = "rejected"
 )
 
+// payloadKeyApproved is the EventInterruptResolved payload key carrying the
+// boolean approval outcome (true = approved, false = rejected).
+const payloadKeyApproved = "approved"
+
 // ResolveApproval is the human band-in entry point for the HITL approval gate
 // It does NOT require ownership — like
 // ExpireDeadlines, it is an out-of-band decision that operates under f.mu
@@ -588,7 +592,7 @@ func (f *Fabric) ResolveApproval(id, decision, feedback, by string) error {
 		// (approvalCleared) now returns true so the scheduler picks it up.
 		pending = append(pending, f.recordWithExtrasLocked(t,
 			EventType(ares_events.EventInterruptResolved), map[string]any{
-				"approved": true,
+				payloadKeyApproved: true,
 			}))
 		return nil
 	}
@@ -597,8 +601,8 @@ func (f *Fabric) ResolveApproval(id, decision, feedback, by string) error {
 	// We also record an interrupt.resolved event for observability.
 	pending = append(pending, f.recordWithExtrasLocked(t,
 		EventType(ares_events.EventInterruptResolved), map[string]any{
-			"approved": false,
-			"feedback": feedback,
+			payloadKeyApproved: false,
+			"feedback":         feedback,
 		}))
 	return f.failTerminalLocked(t, ErrInterruptRejected, false, &pending)
 }
@@ -611,6 +615,9 @@ type ApprovalView struct {
 	Message    string         `json:"message"`
 	Payload    map[string]any `json:"payload,omitempty"`
 	CreatedAt  time.Time      `json:"created_at"`
+	// ApprovalTimeout is the absolute deadline for a human decision. Zero
+	// when no SLA is set.
+	ApprovalTimeout time.Time `json:"approval_timeout,omitempty"`
 }
 
 // PendingApprovals returns a snapshot of every task that requires approval and
@@ -626,15 +633,133 @@ func (f *Fabric) PendingApprovals() []ApprovalView {
 			continue
 		}
 		out = append(out, ApprovalView{
-			TaskID:     t.ID,
-			Capability: t.Capability,
-			Message:    t.ApprovalMessage,
-			Payload:    t.ApprovalPayload,
-			CreatedAt:  t.CreatedAt,
+			TaskID:          t.ID,
+			Capability:      t.Capability,
+			Message:         t.ApprovalMessage,
+			Payload:         t.ApprovalPayload,
+			CreatedAt:       t.CreatedAt,
+			ApprovalTimeout: t.ApprovalTimeout,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].TaskID < out[j].TaskID })
 	return out
+}
+
+// BlastRadius is the downstream impact preview for a potential reject of a
+// pending approval gate. It tells the approver how many tasks will be
+// cascade-failed if they reject, broken down by strict vs. AllowPartial
+// dependents (R3: blast radius transparency).
+type BlastRadius struct {
+	// CascadedFail is the count of strict downstream tasks that would be
+	// driven to FAILED by cascadeFailureLocked.
+	CascadedFail int `json:"cascaded_fail"`
+	// AllowPartialDegraded is the count of AllowPartial downstream tasks
+	// that would survive (recorded as degraded inputs, not failed).
+	AllowPartialDegraded int `json:"allow_partial_degraded"`
+}
+
+// ApprovalBlastRadius computes the downstream impact of rejecting the
+// approval gate on task id. It walks the transitive READY dependents the
+// same way cascadeFailureLocked would, classifying each as strict (would
+// be cascaded to FAILED) or AllowPartial (would survive with a degraded
+// input). The caller (HTTP resolve handler) surfaces this to the approver
+// BEFORE the reject decision so they know the blast radius.
+//
+// Returns the zero value for a task that does not require approval or is
+// not pending (the blast radius is only meaningful before resolve).
+func (f *Fabric) ApprovalBlastRadius(id string) BlastRadius {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	t, ok := f.tasks[id]
+	if !ok || !t.RequiresApproval || t.ApprovalDecision != "" {
+		return BlastRadius{}
+	}
+	return f.blastRadiusLocked(id)
+}
+
+// blastRadiusLocked computes the blast radius for task id. Caller must hold
+// f.mu. It mirrors cascadeFailureLocked's traversal but is read-only: it
+// counts dependents instead of failing them.
+func (f *Fabric) blastRadiusLocked(rootID string) BlastRadius {
+	dependents := make(map[string][]string, len(f.tasks))
+	for taskID, t := range f.tasks {
+		for _, dep := range t.Dependencies {
+			dependents[dep] = append(dependents[dep], taskID)
+		}
+	}
+	var br BlastRadius
+	queue := []string{rootID}
+	visited := make(map[string]bool)
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		for _, taskID := range dependents[cur] {
+			if visited[taskID] {
+				continue
+			}
+			visited[taskID] = true
+			t := f.tasks[taskID]
+			if t == nil || t.State != StateReady {
+				continue
+			}
+			if t.AllowPartial {
+				br.AllowPartialDegraded++
+				// Do not traverse past an AllowPartial dependent: it
+				// survives, so its own dependents are not cascaded.
+				continue
+			}
+			br.CascadedFail++
+			queue = append(queue, taskID)
+		}
+	}
+	return br
+}
+
+// ExpireApprovals auto-rejects every pending approval gate whose
+// ApprovalTimeout has passed. It is the approval-SLA enforcement mechanism
+// (R1): a task whose gate has been open too long is driven to FAILED via
+// failTerminalLocked (READY→FAILED is a legal transition), with the same
+// cascade semantics as a manual reject. Returns the ids of every expired
+// task so the recovery sweep can report what it auto-rejected.
+//
+// A task with a zero ApprovalTimeout is never expired by this sweep — its
+// gate stays open until a human resolves it. Only pending tasks
+// (ApprovalDecision == "" and still in a live state) are eligible.
+func (f *Fabric) ExpireApprovals() []string {
+	pending := make([]*pendingAppend, 0, 1)
+	f.mu.Lock()
+	defer f.flushAppends(&pending)
+	defer f.mu.Unlock()
+	now := f.now()
+	var expired []string
+	for _, t := range f.tasks {
+		if !t.RequiresApproval || t.ApprovalDecision != "" {
+			continue
+		}
+		if t.ApprovalTimeout.IsZero() || !now.After(t.ApprovalTimeout) {
+			continue
+		}
+		switch t.State {
+		case StateReady, StateLeased, StateRunning, StateSuspended:
+		default:
+			continue
+		}
+		t.ApprovalDecision = ApprovalDecisionRejected
+		t.ApprovalFeedback = "approval gate timed out"
+		t.ApprovalBy = "system:approval-sla"
+		t.ApprovalAt = now
+		pending = append(pending, f.recordWithExtrasLocked(t,
+			EventType(ares_events.EventInterruptResolved), map[string]any{
+				payloadKeyApproved: false,
+				"feedback":         "approval gate timed out",
+				"auto":             true,
+			}))
+		if err := f.failTerminalLocked(t, ErrApprovalExpired, false, &pending); err != nil {
+			continue
+		}
+		expired = append(expired, t.ID)
+	}
+	return expired
 }
 
 // Delete removes a task from the fabric entirely (submitted

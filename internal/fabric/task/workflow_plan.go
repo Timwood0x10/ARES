@@ -65,6 +65,12 @@ type PlanStep struct {
 	// ApprovalPayload carries optional context for the approver. Nil when
 	// RequiresApproval is false.
 	ApprovalPayload map[string]any
+	// ApprovalTimeout is the relative SLA for resolving the approval gate.
+	// CompilePlan converts a positive value to an absolute Task.ApprovalTimeout
+	// (f.now()+ApprovalTimeout). When the fabric clock passes it,
+	// ExpireApprovals auto-rejects the task. Zero means "no SLA" — the gate
+	// stays open until a human resolves it.
+	ApprovalTimeout time.Duration
 	// Payload carries the step's input metadata (surfaced via the checkpoint
 	// envelope to the executor).
 	Payload map[string]any
@@ -182,6 +188,13 @@ func (f *Fabric) CompilePlan(ctx context.Context, steps []PlanStep) ([]string, e
 			RequiresApproval: s.RequiresApproval,
 			ApprovalMessage:  s.ApprovalMessage,
 			ApprovalPayload:  s.ApprovalPayload,
+		}
+		// Approval SLA: a positive relative timeout resolves to an absolute
+		// wall-clock instant at creation, enforced by ExpireApprovals. Zero
+		// leaves Task.ApprovalTimeout zero ("no SLA") — the gate stays open
+		// until a human resolves it.
+		if s.RequiresApproval && s.ApprovalTimeout > 0 {
+			t.ApprovalTimeout = f.now().Add(s.ApprovalTimeout)
 		}
 		// A positive relative Deadline resolves to an absolute wall-clock
 		// instant at creation; zero leaves Task.Deadline zero ("no deadline").

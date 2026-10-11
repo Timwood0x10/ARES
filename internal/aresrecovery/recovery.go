@@ -181,6 +181,19 @@ func (r *Recovery) ExpireTaskDeadlines() []string {
 	return r.tasks.ExpireDeadlines()
 }
 
+// ExpireApprovals auto-rejects every pending approval gate whose
+// ApprovalTimeout has passed. The kernel recovery sweep calls it AFTER
+// ExpireTaskDeadlines and BEFORE RequeueExpiredLeases: an expired approval
+// gate is a task-level stop (the human never responded), so the task must be
+// driven to FAILED before the lease path tries to hand it to a replacement
+// executor — a pending approval task has no lease, so the lease path would
+// otherwise skip it, but calling it here keeps the sweep log honest (R2:
+// recovery sweep does not "recover" a task that is actually waiting for a
+// human, it auto-rejects it when the SLA fires).
+func (r *Recovery) ExpireApprovals() []string {
+	return r.tasks.ExpireApprovals()
+}
+
 // RecoverTaskCheckpoint resumes a task's preserved checkpoint with a new
 // agent (checkpoint recovery). The task must be in a state where its
 // checkpoint is preserved (SUSPENDED or READY after lease expiry). The

@@ -208,12 +208,12 @@ func (f *Fabric) Suspend(ctx context.Context, agentID string) error {
 		f.mu.Unlock()
 		return ErrAgentRetired
 	}
-	if a.State == StateSuspended {
+	if a.State == StatePaused {
 		f.mu.Unlock()
 		return nil // idempotent
 	}
 	a.mu.Lock()
-	a.State = StateSuspended
+	a.State = StatePaused
 	a.mu.Unlock()
 	f.mu.Unlock()
 	f.record(ctx, a, EventAgentSuspended, nil)
@@ -240,7 +240,7 @@ func (f *Fabric) Resume(ctx context.Context, agentID string) error {
 		f.mu.Unlock()
 		return ErrAgentRetired
 	}
-	if a.State != StateSuspended {
+	if a.State != StatePaused {
 		f.mu.Unlock()
 		return ErrAgentNotSuspended
 	}
@@ -366,7 +366,7 @@ func (f *Fabric) Recover(ctx context.Context, agentID string, cognitive Cognitiv
 		cognitive.SchemaVersion = CognitiveStateSchemaVersion
 	}
 	a.cognitive = cognitive
-	if a.State == StateSuspended {
+	if a.State == StatePaused {
 		a.State = StateIdle
 	}
 	a.mu.Unlock()

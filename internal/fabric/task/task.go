@@ -112,6 +112,13 @@ type Task struct {
 	ApprovalBy string
 	// ApprovalAt is when the gate was resolved. Zero until resolved.
 	ApprovalAt time.Time
+	// ApprovalTimeout is the absolute deadline for a human to resolve the
+	// approval gate. When non-zero and the fabric clock passes it,
+	// ExpireApprovals auto-rejects the task so a pending gate cannot stall
+	// forever (R1: approval SLA). Zero means "no SLA" — the gate stays open
+	// until a human resolves it, preserving pre-SLA behaviour for callers
+	// that do not set it.
+	ApprovalTimeout time.Time
 }
 
 // RetryPolicy bounds re-queueing after failures.

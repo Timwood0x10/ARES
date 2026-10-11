@@ -7,14 +7,30 @@ import (
 )
 
 // AgentState is the lifecycle state of a managed Agent (ares-runtime: disposable execution).
+//
+// State transfer table:
+//
+//	State       → allowed actions / exits
+//	────────  ─────────────────────────────────────────
+//	IDLE        → Suspend (→PAUSED), Retire (→RETIRED), Kill (→gone)
+//	PAUSED      → Resume (→IDLE), Retire (→RETIRED), Kill (→gone)
+//	RETIRED     → (terminal, no exits)
+//
+// R5: PAUSED replaces the old SUSPENDED name to avoid collision with the
+// task-layer StateSuspended (which means a RUNNING task yielded its
+// quantum). The agent PAUSED is a lifecycle-level pause — the agent is
+// alive but excluded from scheduling. The string value stays "SUSPENDED"
+// for wire compatibility (events, snapshots).
 type AgentState string
 
 const (
 	// StateIdle: the agent is alive and available for assignment.
 	StateIdle AgentState = "IDLE"
-	// StateSuspended: the agent is paused (Lifecycle, not Task); its state
-	// is preserved and it can be resumed.
-	StateSuspended AgentState = "SUSPENDED"
+	// StatePaused: the agent is paused (Lifecycle, not Task); its state
+	// is preserved and it can be resumed. Renamed from StateSuspended to
+	// avoid collision with task-layer StateSuspended (R5). The wire value
+	// stays "SUSPENDED" for event/snapshot compatibility.
+	StatePaused AgentState = "SUSPENDED"
 	// StateRetired: the agent is permanently decommissioned (retire); it
 	// cannot be resumed. Its in-flight tasks are reclaimed by the Runtime.
 	StateRetired AgentState = "RETIRED"
@@ -53,7 +69,7 @@ type Agent struct {
 	// the fabric lock during spawn/kill/retire.
 	resources map[string]float64
 
-	mu             sync.RWMutex // guards cognitive, privateContext, taskContext, state, load, cognition
+	mu             sync.RWMutex // guards cognitive, privateContext, taskContext, state, load, cognition, busy
 	cognitive      CognitiveState
 	privateContext map[string]any
 	taskContext    map[string]any // shared task state (read-only view for the agent)
@@ -62,6 +78,13 @@ type Agent struct {
 	// (spawn/kill/recover) but cannot run a quantum until injected via
 	// SpawnSpec.CognitionFactory. Guarded by mu.
 	cognition Cognition
+	// busy is the R4 bridge between subAgent execution state and fabric
+	// scheduling state. When true the agent is executing a quantum and must
+	// NOT be offered as a scheduling candidate, even though its lifecycle
+	// state is still StateIdle (the lifecycle state does not have a RUNNING
+	// value — it was removed as unused). The scheduler's IsIdle check
+	// therefore also reads this flag. Guarded by mu.
+	busy bool
 	// governance is the budget state (see governance.go). Nil when the
 	// agent was spawned without budgets.
 	governance *governanceState
@@ -143,6 +166,26 @@ func (a *Agent) Executable() bool {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return a.cognition != nil
+}
+
+// SetBusy sets the agent's busy flag — the R4 bridge between subAgent
+// execution state and fabric scheduling state. When true, IsSchedulable
+// returns false so the scheduler does not offer the agent as a candidate
+// while it is executing a quantum. The lifecycle state stays StateIdle
+// (there is no RUNNING lifecycle state); busy is the execution-layer signal
+// that complements it. Thread-safe; writes under the agent lock.
+func (a *Agent) SetBusy(busy bool) {
+	a.mu.Lock()
+	a.busy = busy
+	a.mu.Unlock()
+}
+
+// IsBusy reports whether the agent is currently executing a quantum (R4
+// bridge). Thread-safe; reads under the agent lock.
+func (a *Agent) IsBusy() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.busy
 }
 
 // ErrInvalidSpawnSpec is returned when a SpawnSpec is invalid.

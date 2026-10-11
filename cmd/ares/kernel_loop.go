@@ -235,6 +235,51 @@ func runKernelQuotaLoop(ctx context.Context, mgr *aresrecovery.EvolutionAwareQuo
 	}
 }
 
+// runSweepChain executes the three-step recovery sweep: deadline expiry,
+// approval SLA expiry, and lease requeue. Extracted from runKernelRecoveryLoop
+// to keep that function under the cyclomatic-complexity gate.
+//
+// Ordering rationale:
+//  1. ExpireTaskDeadlines — a task past its absolute deadline must fail
+//     terminally, not be handed to a replacement executor by the lease path.
+//  2. ExpireApprovals — a pending approval gate whose SLA fired must be
+//     auto-rejected (R1/R2), not left for the lease path to "recover" (a
+//     pending approval task has no lease, so the lease path would skip it —
+//     but calling it here keeps the sweep log honest and surfaces the
+//     auto-reject to operators).
+//  3. RequeueExpiredLeases — requeue the tasks whose lease expired THIS sweep
+//     (not all READY tasks), then give each one an execution body.
+func runSweepChain(
+	ctx context.Context,
+	recovery *aresrecovery.Recovery,
+	bindReplacements func(ids []string),
+) {
+	// Deadline expiry runs BEFORE the lease requeue.
+	expired := recovery.ExpireTaskDeadlines()
+	if len(expired) > 0 {
+		log.Info(ctx, "runKernelRecoveryLoop",
+			"kernel recovery loop: task(s) past deadline failed",
+			"count", len(expired), "task_ids", expired)
+	}
+	// Approval SLA expiry runs AFTER deadline expiry and BEFORE the lease
+	// requeue (R1/R2).
+	expiredApprovals := recovery.ExpireApprovals()
+	if len(expiredApprovals) > 0 {
+		log.Info(ctx, "runKernelRecoveryLoop",
+			"kernel recovery loop: approval gate(s) timed out, auto-rejected",
+			"count", len(expiredApprovals), "task_ids", expiredApprovals)
+	}
+	// Recovery closed loop: requeue the tasks whose lease expired THIS sweep.
+	requeued := recovery.RequeueExpiredLeases()
+	if len(requeued) == 0 {
+		return
+	}
+	log.Info(ctx, "runKernelRecoveryLoop",
+		"kernel recovery loop: requeued expired task(s)",
+		"count", len(requeued), "task_ids", requeued)
+	bindReplacements(requeued)
+}
+
 // runKernelRecoveryLoop is the Kernel-level event-driven recovery loop. It
 // reacts to task
 // lifecycle events (TaskExpired / TaskFailed / TaskAcquired / TaskYielded) on
@@ -417,26 +462,9 @@ func runKernelRecoveryLoop(
 				return
 			default:
 			}
-			// Deadline expiry runs BEFORE the lease requeue: a task past its
-			// absolute deadline must fail terminally, not be handed to a
-			// replacement executor by the lease path (see ExpireTaskDeadlines).
-			expired := recovery.ExpireTaskDeadlines()
-			if len(expired) > 0 {
-				log.Info(ctx, "runKernelRecoveryLoop",
-					"kernel recovery loop: task(s) past deadline failed",
-					"count", len(expired), "task_ids", expired)
-			}
-			// Recovery closed loop: requeue the tasks whose lease expired THIS
-			// sweep (not all READY tasks — a brand-new task is never a
-			// recovery candidate), then give each one an execution body.
-			requeued := recovery.RequeueExpiredLeases()
-			if len(requeued) == 0 {
-				return
-			}
-			log.Info(ctx, "runKernelRecoveryLoop",
-				"kernel recovery loop: requeued expired task(s)",
-				"count", len(requeued), "task_ids", requeued)
-			bindReplacements(requeued)
+			// Deadline expiry, approval SLA expiry, and lease requeue
+			// run in sequence: see runSweepChain for the ordering rationale.
+			runSweepChain(ctx, recovery, bindReplacements)
 		}()
 	}
 	// bindNominated handles one stale-winner nomination. It shares the

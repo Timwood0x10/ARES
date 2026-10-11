@@ -106,6 +106,11 @@ const (
 	restoreKeyApprovalMessage  = "approval_message"
 	restoreKeyApprovalDecision = "approval_decision"
 	restoreKeyApprovalFeedback = "approval_feedback"
+	// restoreKeyApprovalTimeout is the approval SLA (absolute instant). It
+	// rides the creation event like the other approval-policy keys so a
+	// restart does not lose the SLA (a lost SLA = a gate that can never
+	// expire = R1 regression).
+	restoreKeyApprovalTimeout = "approval_timeout"
 )
 
 // RestoreFromStore rebuilds the in-memory task set from the attached event
@@ -463,6 +468,11 @@ func foldApproval(p map[string]any, t *Task) {
 	}
 	if s := restoreString(p, restoreKeyApprovalFeedback); s != "" {
 		t.ApprovalFeedback = s
+	}
+	if s := restoreString(p, restoreKeyApprovalTimeout); s != "" {
+		if ts, err := time.Parse(time.RFC3339, s); err == nil {
+			t.ApprovalTimeout = ts
+		}
 	}
 }
 

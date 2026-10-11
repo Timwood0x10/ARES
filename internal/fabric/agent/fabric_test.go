@@ -222,7 +222,7 @@ func TestLifecycleSuspendResumeRetireKill(t *testing.T) {
 	if err := f.Suspend(context.Background(), "a"); err != nil {
 		t.Fatalf("Suspend: %v", err)
 	}
-	if st, _ := f.Get("a"); st.State != StateSuspended {
+	if st, _ := f.Get("a"); st.State != StatePaused {
 		t.Fatalf("want SUSPENDED, got %s", st.State)
 	}
 	if err := f.Resume(context.Background(), "a"); err != nil {

@@ -77,6 +77,10 @@ var (
 	// a human rejects its approval gate — the task is driven to FAILED via
 	// failTerminalLocked.
 	ErrInterruptRejected = errors.New("taskfabric: interrupt rejected by human")
+	// ErrApprovalExpired is the cause stamped into a task's checkpoint when
+	// its approval gate timed out (ApprovalTimeout passed without a human
+	// decision). The task is auto-rejected via failTerminalLocked.
+	ErrApprovalExpired = errors.New("taskfabric: approval gate timed out")
 )
 
 // Fabric owns Tasks and their leases (ares-runtime.md:

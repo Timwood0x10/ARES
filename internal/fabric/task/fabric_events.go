@@ -199,6 +199,9 @@ func (f *Fabric) recordWithExtrasLocked(t *Task, typ EventType, extras map[strin
 			if t.ApprovalFeedback != "" {
 				payload[restoreKeyApprovalFeedback] = t.ApprovalFeedback
 			}
+			if !t.ApprovalTimeout.IsZero() {
+				payload[restoreKeyApprovalTimeout] = t.ApprovalTimeout.Format(time.RFC3339)
+			}
 		}
 		payload[restoreKeyRetryAttempts] = t.RetryPolicy.Attempts
 		payload[restoreKeyRetryMax] = t.RetryPolicy.MaxRetries

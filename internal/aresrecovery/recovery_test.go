@@ -370,7 +370,7 @@ func TestChaosSuspendFailure(t *testing.T) {
 		t.Fatalf("InjectFailure suspend: %v", err)
 	}
 	a, _ := agents.Get("a")
-	if a.State != agentfabric.StateSuspended {
+	if a.State != agentfabric.StatePaused {
 		t.Fatalf("want SUSPENDED, got %s", a.State)
 	}
 	inj := chaos.InjectedFailures()
@@ -534,7 +534,7 @@ func TestYieldSuspendResumeFullChain(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get a1: %v", err)
 	}
-	if a.State != agentfabric.StateSuspended {
+	if a.State != agentfabric.StatePaused {
 		t.Fatalf("after suspend: want SUSPENDED, got %s", a.State)
 	}
 
