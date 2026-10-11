@@ -373,6 +373,8 @@ tail -f run.log
 
 ### Q14: 如何处理任务失败？
 
+> **已归档（历史快照）。** 本节引用的两处代码**都已不存在**：`internal/agents/leader/agent.go`（Leader-Sub 架构已于 v0.3.x 删除）与 `internal/ares_protocol/ahp/dlq.go`（AHP 协议机器含 DLQ 已于 v0.3.3 退役，该包现仅剩 `message.go`）。**当前唯一活着的死信设施**是 `internal/agentipc` 的 `DeadLetterStore`：有界 FIFO、**只诊断、不自动重试**。详见 `docs/{zh,en}/features/event-sourcing.md`。
+
 **解决方案**:
 
 1. 检查任务状态：

@@ -373,7 +373,7 @@ tail -f run.log
 
 ### Q14: How to handle task failures?
 
-**Solution**:
+> **Archived (historical snapshot).** Both code references in this section **no longer exist**: `internal/agents/leader/agent.go` (the Leader-Sub architecture was removed in v0.3.x) and `internal/ares_protocol/ahp/dlq.go` (the AHP protocol machinery, DLQ included, was retired in v0.3.3 — that package now holds only `message.go`). The **only live dead-letter facility** is `internal/agentipc`'s `DeadLetterStore`: a bounded FIFO, **diagnosis-only, no automatic retry**. See `docs/{zh,en}/features/event-sourcing.md`.
 
 1. Check task status:
 **Code Location**: `internal/agents/leader/agent.go:200-220`

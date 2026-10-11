@@ -609,6 +609,63 @@ never requeued by this sweep (see §4.1).
 | Full recovery chain | `RecoverFromAgentDeath` | `recovery.go:384` |
 | Kernel recovery loop | `runKernelRecoveryLoop` | `cmd/ares/kernel_loop.go:275` |
 
+### 12.1 Task-failure degradation (new in 0.3.3, sits right next to the agent layer)
+
+§12 above covers the **agent layer** (an agent dies, the task survives:
+replacement / in-place revival). 0.3.3 adds a **task layer** — what happens
+when the task itself fails. The two layers **coexist and stack**; they do not
+replace each other: the agent half is untouched in 0.3.3 (`aresrecovery` /
+`kernel_loop` are exactly as before).
+
+| Layer | Governs | Trigger | Status |
+|---|---|---|---|
+| **Agent layer** (§12 body) | the agent itself dies / goes quiet → replace or revive | lease expiry, chaos kill, agent crash | always present, 0.3.3 left it alone |
+| **Task layer** (this section) | the task fails → classify retryability + backoff + gap tolerance | task returns an error, deadline exceeded | **added in 0.3.3** |
+
+**The core decision point, `classifyFailure` (`failure.go:77`)** — the single
+judge of "is this failure worth retrying?" with a three-rule precedence:
+
+```
+1. An explicit marker wins: MarkPermanent(failure.go:47) / MarkRetryable(failure.go:58)
+   — the layer that produced the error knows best; it decides
+2. ErrTaskDeadlineExceeded → terminal: past the absolute deadline, do not burn
+   the remaining retry budget
+3. Everything else is retryable (= 0.3.2 behaviour): a misclassification costs
+   at most one retry, never a task (verbatim: "a misclassification costs a
+   retry rather than a task")
+```
+
+**The six new `Task` fields added in 0.3.3** (`internal/fabric/task/task.go`):
+
+| Field | Line | What |
+|---|---|---|
+| `Deadline` | `task.go:30` | absolute cut-off; `ExpireDeadlines` takes its own terminal path (no requeue), `Acquire` refuses expired |
+| `RetryPolicy` | `task.go:32` (struct at `:91`) | retry budget: `MaxRetries` total / `Attempts` used; `CanRetry` (`:104`) = `Attempts < MaxRetries` |
+| `BackoffBase`/`BackoffMax` | `task.go:37/39` | retry delay doubles, capped; `0` = immediate retry (old behaviour) |
+| `NextAttemptAt` | `task.go:45` | `Acquire` refuses before this instant; **persisted**, so a restart cannot retry early |
+| `AllowPartial` | `task.go:68` | run with a gap even when a predecessor dies permanently (a creation-time policy) |
+| `DegradedInputs` | `task.go:72` | records "which predecessors are the gap" — the very record that unblocks scheduling |
+
+**The degradation (partial-input) mechanism** (`AllowPartial` + `DegradedInputs`):
+
+```
+a predecessor fails permanently -> cascade
+   · strict dependent -> FAILED as in 0.3.2
+   · dependent with AllowPartial=true -> stays READY, the failed predecessor's
+     ID is recorded in DegradedInputs
+       — a still-running other dependency still blocks it; only recorded gaps count as met
+       — checkpoint payload AND the task.ready event carry degraded_inputs (list of
+         missing predecessors)
+       — the failure reason is deliberately NOT copied: the failed task's own
+         LastError / task.failed event remains the single source of truth
+```
+
+**In one line**: the agent layer guarantees "the executor may vanish, the task
+remains"; the task layer guarantees "when the task fails we know to retry /
+back off / degrade with a gap". The two are **additive** — a task can both be
+re-homed because an agent vanished (§12) and be classified for retry or
+degradation by `classifyFailure` (this section).
+
 ---
 
 ## 13. Chaos Engineering

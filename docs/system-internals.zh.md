@@ -569,6 +569,52 @@ restart budget，重试预算不动。而 `Task.Deadline` 已过是另一种截�
 | 完整恢复链 | `RecoverFromAgentDeath` | `recovery.go:384` |
 | 内核恢复循环 | `runKernelRecoveryLoop` | `cmd/ares/kernel_loop.go:275` |
 
+### 12.1 task 失败降级（0.3.3 新增，紧挨 agent 层）
+
+上面 §12 讲的是 **agent 层**容错（agent 挂了，任务不死，换人/原地复活）。
+0.3.3 在 **task 层**新增了一层——**任务本身做崩了怎么办**。两层**并存、叠加**，
+不是替代：agent 那半边 0.3.3 一个没删（`aresrecovery`/`kernel_loop` 原样在）。
+
+| 层 | 管什么 | 触发 | 现状 |
+|---|---|---|---|
+| **agent 层**（§12 主体） | agent 本体挂了/失联 → 换人 / 原地复活 | lease 过期、chaos kill、agent 崩 | 一直有，0.3.3 未动 |
+| **task 层**（本节） | 任务做崩 → 判可不可重试 + 退避 + 缺口容忍 | 任务返回失败、超 deadline | **0.3.3 新增** |
+
+**核心决策点 `classifyFailure`（`failure.go:77`）**——"这次失败值不值得重试"的唯一判官，优先级三条：
+
+```
+1. 显式标记赢：MarkPermanent(failure.go:47) / MarkRetryable(failure.go:58)
+   —— 产生错误的那一层最懂，它说了算
+2. ErrTaskDeadlineExceeded → 终态：过了绝对 deadline 就别烧剩余重试预算
+3. 其余一律可重试（= 0.3.2 行为）：误判最多浪费一次重试，不会弄丢任务
+   （注释原话 "a misclassification costs a retry rather than a task"）
+```
+
+**0.3.3 给 `Task` 新增 6 个字段**（`internal/fabric/task/task.go`）：
+
+| 字段 | 行 | 干嘛 |
+|---|---|---|
+| `Deadline` | `task.go:30` | 绝对截止；`ExpireDeadlines` 走独立终态（不回 READY），`Acquire` 拒过期 |
+| `RetryPolicy` | `task.go:32`（结构 `:91`） | 重试预算：`MaxRetries` 总次数 / `Attempts` 已试；`CanRetry`（`:104`）= `Attempts < MaxRetries` |
+| `BackoffBase`/`BackoffMax` | `task.go:37/39` | 重试延迟翻倍、封顶；`0`=立即重试（旧行为） |
+| `NextAttemptAt` | `task.go:45` | 早于此刻 `Acquire` 拒绝；**持久化**，重启不会提前重试 |
+| `AllowPartial` | `task.go:68` | 前驱**永久失败**时本任务仍可带缺口跑（creation-time 策略） |
+| `DegradedInputs` | `task.go:72` | 记录"缺口是哪些前驱"，即解锁调度者的那把钥匙 |
+
+**降级（部分输入）机制**（`AllowPartial` + `DegradedInputs`）：
+
+```
+前驱永久失败 → cascade 级联
+   · 依赖者是严格任务 → 照常 FAILED（0.3.2 行为）
+   · 依赖者 AllowPartial=true → 保持 READY，把失败前驱 ID 记进 DegradedInputs
+       —— "另一个仍在跑的依赖"照样阻塞它；只有"已记录的缺口"才算满足
+       —— checkpoint payload 与 task.ready 事件都带 degraded_inputs（缺失前驱列表）
+       —— 失败原因【故意不复制】：被否任务的 LastError / task.failed 仍是唯一事实源
+```
+
+**一句话**：agent 层保证"执行体没了任务还在"，task 层保证"任务做崩了知道该重试/该退避/该带缺口降级"。
+**两层是"且"关系**——一个任务既可能因 agent 没了被换人（§12），也可能因做崩被 `classifyFailure` 判重试/降级（本节）。
+
 ---
 
 ## 13. chaos 混沌演练

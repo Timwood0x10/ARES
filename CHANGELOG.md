@@ -13,6 +13,16 @@ recorded input gap instead of being killed by a failed dependency. Tasks that us
 none of this execute and persist exactly as before — pinned by
 `TestDefaultPathPayloadHasNoNewKeys`.
 
+> **Upgrade notes**: v0.3.3 removes a set of configuration keys that never had a
+> runtime consumer (see **Removed**). Existing `ares.yaml` files keep loading
+> unchanged — the loader is non-strict, so removed keys are simply ignored, and
+> runtime behaviour is unchanged because those keys did nothing before either.
+> Only two surfaces are observable: `/api/insights` is no longer advertised in
+> the control server's capability `Desc` (the route itself stays a permanent
+> 501), and three event constants that were never emitted were removed. If your
+> own tooling parses `ares.yaml` with strict/known-fields validation, drop the
+> removed keys there.
+
 ### Added
 
 - **Failure classification** (`internal/fabric/task/failure.go`): `Fail`
@@ -44,6 +54,30 @@ none of this execute and persist exactly as before — pinned by
   deliberately not copied, because the failed task's own `LastError` and
   `task.failed` event stay the single source of truth. `PlanStep.AllowPartial`,
   `.BackoffBase` and `.BackoffMax` carry the policy into a compiled plan.
+
+- **Turn-aware context cleaning** (`memory.turn_aware_cleaning`, opt-in, default
+  off): routes `BuildContext`'s history cleaning through the turn-aware cleaner
+  (`CleanWithTurns`) instead of the flat rule-based `Clean`, keeping
+  `tool_call` ↔ `tool_result` pairs together. Off is byte-for-byte the previous
+  behaviour, and the switch never widens the per-role character budget — a
+  stronger cleaner is not a bigger budget.
+
+- **Context token budget** (`memory.context_token_budget`, opt-in, default 0 =
+  off): an estimated-token ceiling applied to the windowed history before
+  cleaning, with a fixed drop order — `system`/schema floor (never dropped) →
+  tool causality → plain history, oldest first. The estimate
+  (`ceil(runes/3) + 4` per message) is deliberately conservative and documented
+  as an approximation rather than a tokenizer, so it can only trim more, never
+  less. Budget first, then cleaning; `0` is a no-op.
+
+### Fixed
+
+- **Deterministic L1 priors ordering**
+  (`internal/fabric/agent/planner_cognition.go`): `l1Priors()` claimed to be
+  "sorted by tool name for determinism" but never sorted — the order followed
+  `GetToolSchemas()`'s map iteration and varied between processes, silently
+  defeating prompt-prefix (KV) cache reuse. It now sorts; the ordering
+  invariant is pinned by `TestL1PriorsDeterministicOrder`.
 
 ### Removed
 
