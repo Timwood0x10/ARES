@@ -38,6 +38,13 @@ func NewServiceAdapter(rt *runtime.KnowledgeRuntime) (*ServiceAdapter, error) {
 }
 
 // ServiceAdapter bridges internal KnowledgeRuntime to public KnowledgeService.
+//
+// NOTE(status, plan/0.3.3_task.md §E.5): BETA, capability-complete but not yet
+// wired into serve — the knowledge AKG surface is wired via the MCP path
+// (knowledge/mcp AKFService), and this adapter is the alternative public
+// KnowledgeService bridge awaiting its own server/SDK entry point. Kept (not
+// deleted): it is a complete bridge over the live KnowledgeRuntime, not a
+// dead config shell. Wire it when the public KnowledgeService is exposed.
 type ServiceAdapter struct {
 	rt *runtime.KnowledgeRuntime
 }

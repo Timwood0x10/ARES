@@ -289,29 +289,11 @@ CREATE INDEX idx_events_stream_version ON events (stream_id, version);
 CREATE INDEX idx_events_created_at ON events (created_at);
 ```
 
-## DLQ 自动重试
+## 死信记录（原 AHP DLQ 已退役）
 
-失败的消息处理与 `internal/runtime/protocol/ahp/dlq.go` 中的 Dead Letter Queue (DLQ) 集成。`DLQProcessor` 在可配置的间隔内重试失败的条目：
+> **v0.3.3 订正**：本节原描述的 AHP Dead Letter Queue（`internal/runtime/protocol/ahp/dlq.go` 的 `DLQ` / `DLQProcessor` / `RegisterHandler` / `StartAutoRetry`）**已随 AHP 协议机器一并删除**，该包如今只剩消息词汇（`message.go`）。这里原有的 `ahp.NewDLQ(...)` 代码示例在任何版本中都不再可运行。
 
-```go
-dlq := ahp.NewDLQ(10000)
-processor := ahp.NewDLQProcessor(dlq)
-
-// 注册特定失败原因的处理器
-processor.RegisterHandler("timeout", func(ctx context.Context, entry *ahp.DLQEntry) error {
-    // 重试消息
-    return retryMessage(ctx, entry.Message)
-})
-
-// 启动后台自动重试（内部使用 errgroup）
-processor.StartAutoRetry(ctx, 30*time.Second)
-```
-
-关键行为：
-- `MaxRetries > 0` 的条目耗尽重试次数后被跳过
-- `MaxRetriesUnlimited`（0）表示无限重试
-- 成功处理的条目从 DLQ 中移除
-- 通过 `processor.Stats()` 获取统计信息（已处理、失败计数）
+现在唯一活着的死信设施是 **`internal/agentipc` 的 `DeadLetterStore`**：有界 FIFO（默认容量 1024），记录无法投递或超时的请求，**只诊断、不自动重试**——没有 redelivery 策略，这是已知缺口（`cmd/ares/kernel_dispatch.go` 里有 `TODO(tech-debt)` 记录了补齐它的意图）。
 
 ## 可靠性
 

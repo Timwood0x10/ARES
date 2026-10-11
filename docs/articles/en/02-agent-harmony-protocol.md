@@ -165,11 +165,13 @@ flowchart LR
     Bus -->|"target handler"| Target["Target Agent"]
 ```
 
-## VI. Dual-Track Dispatch: PolicyFlag
+## VI. Single-Track Dispatch: the dual-track machinery is retired (v0.3.3)
 
-`agentipc` also has a layer about "how tasks are dispatched" (`policy.go`), parallel to the communication primitives: `ExecutionPolicy` (`PolicyLegacy` / `PolicyTaskFabric`) and `PolicyFlag` (an `atomic.Int64`, 0=legacy, 1=task fabric, flipped at runtime without restart). `DualTrackDispatcher` holds the legacy and new `Dispatcher` paths and picks the active one by the flag; with shadow mode on, the inactive path also runs and its outcome is compared (`Mismatches()`). That's the "dual-track equivalence" verification surface.
+> **Correction**: `ExecutionPolicy` / `PolicyFlag` (an `atomic.Int64`) / shadow mode / `Mismatches()` described here **have all been deleted** — they went with the legacy leader track. Production has exactly one dispatch path.
 
-> Note: production today is `PolicyTaskFabric` only — the Leader runtime is removed. `PolicyLegacy` is retained just as a library constant for dual-track/shadow verification. The legacy "AHP five message types / DLQ auto-retry" details are NOT in `internal/agentipc`; the legacy paths live under `internal/runtime/protocol/ahp` and `internal/agents/peer` (not expanded here — 待核实).
+The layer in `agentipc` about "how tasks are dispatched" (`policy.go`) now holds only a **swappable path holder** (`KernelDispatcher`, renamed from `DualTrackDispatcher` in v0.3.3): `NewPath()` / `SetNewPath()` are the whole mutable surface, and `enableKernelExecution` swaps the scoring-only path for the submitting one at startup. No policy enum, no runtime switch, no dual-track comparison.
+
+> Note: the AHP protocol machinery (protocol / queue / dlq / heartbeat / codec) was also retired in v0.3.3 — `internal/runtime/protocol/ahp` now holds only the message vocabulary (`message.go`), and the "DLQ auto-retry" described in older docs does not exist.
 
 ## VII. Design Trade-offs (Honest Section)
 
@@ -180,8 +182,8 @@ flowchart LR
 
 ## VIII. Summary
 
-`internal/agentipc` is ares's peer-mesh message bus: `Send` for fire-and-forget, `Request/Reply` for request/reply, `Delegate` for request forwarding, `Handoff` for task transfer, `Subscribe/Broadcast/Unsubscribe` for pub/sub. `DeadLetterStore` is bounded and observable. `PolicyFlag + DualTrackDispatcher` provide dual-track scheduling verification. And `internal/agentsyscall` exposes `ask_agent` and friends to real LLM Agents — "Agent decides. Kernel enforces."
+`internal/agentipc` is ares's peer-mesh message bus: `Send` for fire-and-forget, `Request/Reply` for request/reply, `Delegate` for request forwarding, `Handoff` for task transfer, `Subscribe/Broadcast/Unsubscribe` for pub/sub. `DeadLetterStore` is bounded and observable. `KernelDispatcher` is just a runtime-swappable **single** dispatch path (dual-track verification is retired). And `internal/agentsyscall` exposes `ask_agent` and friends to real LLM Agents — "Agent decides. Kernel enforces."
 
-The legacy AHP compatibility layer and peer direct-delivery path run in parallel with the new Agent IPC (feature-flag gradual cutover); the long-term goal is for all new communication to go through Agent IPC.
+The legacy AHP protocol machinery (protocol / queue / dlq / heartbeat / codec) was retired in v0.3.3 — `internal/runtime/protocol/ahp` now holds only the message vocabulary (`message.go`); peer direct-delivery and Agent IPC have converged onto a single dispatch path.
 
 Next up, let's talk about **Experience Distillation** — how Agents distill task results into reusable experiences and reuse them directly when they hit a similar problem.

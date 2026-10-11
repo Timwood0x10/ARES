@@ -130,6 +130,10 @@ func WithSelectionStrategy(strategy string) PopulationOption {
 	}
 }
 
+// WithDiversityWeights overrides the relative weights used when computing the
+// diversity report. Opt-in: production uses the zero-value default (balanced
+// weights, normalized at use). Exercised by diversity_config_test to pin the
+// weighting effect; keep as a functional-options knob (plan §E.5 verdict).
 func WithDiversityWeights(w DiversityWeightConfig) PopulationOption {
 	return func(cfg *PopulationConfig) error {
 		cfg.DiversityWeights = w
@@ -164,6 +168,10 @@ func WithHistoryEnabled(maxSize int) PopulationOption {
 	}
 }
 
+// WithPerLineageElites toggles per-lineage elite preservation. Opt-in:
+// production uses the default (true); tests set false to force deterministic
+// global-elite ordering. Real behavioural knob read by Population — keep as a
+// functional-options switch (plan §E.5 verdict).
 func WithPerLineageElites(enabled bool) PopulationOption {
 	return func(cfg *PopulationConfig) error {
 		cfg.PerLineageElites = enabled

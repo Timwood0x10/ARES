@@ -289,29 +289,11 @@ CREATE INDEX idx_events_stream_version ON events (stream_id, version);
 CREATE INDEX idx_events_created_at ON events (created_at);
 ```
 
-## DLQ Auto-Retry
+## Dead-Letter Recording (the AHP DLQ is retired)
 
-Failed message processing integrates with the Dead Letter Queue (DLQ) in `internal/runtime/protocol/ahp/dlq.go`. The `DLQProcessor` retries failed entries on a configurable interval:
+> **v0.3.3 correction**: the AHP Dead Letter Queue described here (`internal/runtime/protocol/ahp/dlq.go` — `DLQ` / `DLQProcessor` / `RegisterHandler` / `StartAutoRetry`) was **deleted with the rest of the AHP protocol machinery**; the package now holds only the message vocabulary (`message.go`). The `ahp.NewDLQ(...)` sample that used to be here is no longer runnable in any version.
 
-```go
-dlq := ahp.NewDLQ(10000)
-processor := ahp.NewDLQProcessor(dlq)
-
-// Register handler for specific failure reasons
-processor.RegisterHandler("timeout", func(ctx context.Context, entry *ahp.DLQEntry) error {
-    // Retry the message
-    return retryMessage(ctx, entry.Message)
-})
-
-// Start background auto-retry (uses errgroup internally)
-processor.StartAutoRetry(ctx, 30*time.Second)
-```
-
-Key behaviors:
-- Entries with `MaxRetries > 0` are skipped once exhausted
-- `MaxRetriesUnlimited` (0) means infinite retries
-- Successfully processed entries are removed from the DLQ
-- Stats available via `processor.Stats()` (processed, failed counts)
+The only live dead-letter facility is **`internal/agentipc`'s `DeadLetterStore`**: a bounded FIFO (default capacity 1024) recording undeliverable or timed-out requests, **diagnosis-only with no automatic retry** — there is no redelivery policy, a known gap recorded as `TODO(tech-debt)` in `cmd/ares/kernel_dispatch.go`.
 
 ## Reliability
 

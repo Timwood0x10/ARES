@@ -78,7 +78,6 @@ memory:
   # rag_top_k: RAG 检索片段数，默认 5（仅 enable_rag 时生效）
   # rag_min_score: 最小相似度阈值，默认 0.4（仅 enable_rag 时生效）
   session:
-    enabled: true
     max_history: 50         # session 存储窗口，默认 50
   archive:
     enabled: true           # 三态，默认开
@@ -231,10 +230,6 @@ storage:
   password: ""                 # json:"-" 防止 JSON 序列化泄漏
   database: ares
   ssl_mode: disable
-  pgvector:
-    enabled: false
-    dimension: 1536
-    table_name: embeddings
 
 # --- sdk 侧 DatabaseFileConfig（configs/ares.yaml 用 database 键）---
 database:

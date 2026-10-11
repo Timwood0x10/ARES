@@ -78,7 +78,7 @@ flowchart TD
         MGR["manager.go:22K · manager_lifecycle.go:17<br/>manager_chaos.go:69-407"]
         PLUG["plugin.go:35 · tool.go · loop.go<br/>interrupt.go · recovery.go<br/>observer.go · collector.go:11<br/>executable.go · events.go · runtime.go"]
         OBS["observability/<br/>tracer.go:9 · cost.go:38 · prometheus.go:23<br/>otel_tracer.go:20 · metrics_tracer.go:13<br/>flight/ recorder.go:14 · collector.go:30<br/>timeline.go:55 · genealogy.go:34<br/>diagnostics.go:45 · replay.go:33"]
-        PROT["protocol/<br/>mcp/ client.go:39 · manager.go:39<br/>server.go:97 · transport*.go<br/>skills/ catalog.go:43 · loader.go:14<br/>resolver.go:49 · indexer.go:18<br/>experience.go:25 · discovery.go:13<br/>ahp/ protocol.go:13 · queue.go:13<br/>heartbeat.go · dlq.go · codec.go"]
+        PROT["protocol/<br/>mcp/ client.go:39 · manager.go:39<br/>server.go:97 · transport*.go<br/>skills/ catalog.go:43 · loader.go:14<br/>resolver.go:49 · indexer.go:18<br/>experience.go:25 · discovery.go:13<br/>ahp/ message.go（机器已退役，仅消息词汇）"]
         ARCHV["archive/<br/>writer.go:42 · reader.go:37<br/>sink.go:43 · extract.go:48"]
         EVAL["eval/<br/>evaluator.go:14 · llm_judge.go:89<br/>process_verifier.go:28<br/>result_verifier.go:34<br/>types.go TestCase:60 · report.go:182"]
         MEM["memory/<br/>manager.go:20 · pipeline.go:97<br/>context/ · distillation/ · embedding/<br/>experience/ · experienceadapters/<br/>push/ · report/"]
@@ -433,7 +433,7 @@ task.completed → skill_outcome_writer → Experience（下轮置信先验）
 
 **插件**（均实现 `plugin.go:35` `RuntimePlugin`）：`observer.go:14`（事件落库）· `loop.go:33`（轮次时钟）· `tool.go:19`（工具白名单门）· `interrupt.go:15`（HITL）· `recovery.go:11`（步骤级恢复许可）· `collector.go:11` `ExecutionCollector`（路由/工具/记忆命中/中断/错误记录，`Export:190` 可入 checkpoint）
 
-**子系统**：`observability/`（`tracer.go:9` · `cost.go:38` `CostTracker` · `prometheus.go:23` · `otel_tracer.go:20` · `flight/` `recorder.go:14` `Collector:30` `timeline.go:55` `genealogy.go:34` `diagnostics.go:45` `replay.go:33`）· `protocol/`（`mcp/` JSON-RPC 客户端+服务端 · `skills/` 目录/信任/FTS5/经验加权选择 `catalog.go:43` `resolver.go:49` `experience.go:25` · `ahp/` agent 线协议 `protocol.go:13` `queue.go:13` `heartbeat.go` `dlq.go`）· `archive/`（`writer.go:42` 轮次归档 `round_N.json` · `sink.go:43`）· `eval/`（`evaluator.go:14` · `llm_judge.go:89` · `process_verifier.go:28` · `result_verifier.go:34` · `types.go:60` TestCase）· `memory/`（见第5.9节）· `arena/`（见第5.10节）
+**子系统**：`observability/`（`tracer.go:9` · `cost.go:38` `CostTracker` · `prometheus.go:23` · `otel_tracer.go:20` · `flight/` `recorder.go:14` `Collector:30` `timeline.go:55` `genealogy.go:34` `diagnostics.go:45` `replay.go:33`）· `protocol/`（`mcp/` JSON-RPC 客户端+服务端 · `skills/` 目录/信任/FTS5/经验加权选择 `catalog.go:43` `resolver.go:49` `experience.go:25` · `ahp/` 仅剩消息词汇 `message.go`（协议机器 protocol/queue/dlq/heartbeat/codec 于 0.3.3 退役，生产零实例化，见 plan §E.6））· `archive/`（`writer.go:42` 轮次归档 `round_N.json` · `sink.go:43`）· `eval/`（`evaluator.go:14` · `llm_judge.go:89` · `process_verifier.go:28` · `result_verifier.go:34` · `types.go:60` TestCase）· `memory/`（见第5.9节）· `arena/`（见第5.10节）
 
 ### 5.7 Agent 执行（`internal/agents/`）
 
@@ -455,7 +455,7 @@ task.completed → skill_outcome_writer → Experience（下轮置信先验）
 | agent 间协作 | `agentipc/` | `Bus:56` 主题总线：`Send:57` · `Request:146`/`Reply:356`（corrID 配对）· `Delegate:433` · `Handoff:454`（带 contextSnapshot）· `Broadcast:516` · `Subscribe:474`；死信 `deadletter.go:32`；panic 隔离 `safeInvokeHandler:117` |
 | 外部工具协议 | `mcpclient/` | `Client:27` JSON-RPC：`ListTools:88` · `CallTool:115`；`ConnectSSE:28` / `ConnectStdio:23` |
 | LLM 自主分解 | `agentsyscall/` | `spawn_agent` / `create_task` / `create_plan`；`syscall.go` 25K + `plan.go` 14K。**身份来自 kernel ctx** |
-| 线协议 | `protocol/ahp/` | `Protocol:13` · `MessageQueue:13` · `HeartbeatMonitor` · `DLQ:32` |
+| 线协议 | `protocol/ahp/` | 仅剩消息词汇 `AHPMessage` + 构造器/谓词（`message.go`）；协议机器 `Protocol`/`MessageQueue`/`HeartbeatMonitor`/`DLQ` 于 0.3.3 退役（生产零实例化，见 plan §E.6） |
 
 ### 5.9 工具系统（`internal/tools/` + `internal/apitools/`）
 

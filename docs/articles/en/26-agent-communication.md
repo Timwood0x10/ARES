@@ -132,9 +132,11 @@ graph LR
     OBS --> FB[collaboration feedback source]
 ```
 
-## 8. Dual-Track Dispatch Policy
+## 8. Single-Track Dispatch: the dual-track machinery is retired
 
-`policy.go` shows how task dispatch (outside IPC proper) transitions: `ExecutionPolicy` enumerates `PolicyLegacy` (legacy leader+sub path, retained only as a library constant) and `PolicyTaskFabric` (Kernel path: Task Fabric → Scheduler → Agent). `PolicyFlag` is an atomic feature flag; `DualTrackDispatcher` keeps both paths coexisting, and in **shadow mode the inactive path also runs and outcomes are compared** (equivalence verification), with mismatches surfaced via `Mismatches()`. This is P4 D4's "parallel + feature-flag gradual cutover" made concrete.
+> **v0.3.3 correction**: the "dual-track equivalence verification" this section describes **no longer exists** — `ExecutionPolicy` / `PolicyFlag` / shadow mode / `Mismatches()` were deleted together with the legacy leader track. Production has exactly **one** dispatch path.
+
+`policy.go` now holds a single swappable path (`KernelDispatcher`, renamed from `DualTrackDispatcher` in v0.3.3 — with one track left, "dual" was a lie): `NewPath()` / `SetNewPath()` are the whole mutable surface, and `enableKernelExecution` swaps the scoring-only path for the one that submits to the Task Fabric at startup. There is no policy enum, no atomic flag and no shadow comparison — **HTTP submits tasks to the Task Fabric directly and the kernelScheduler is the sole executor** (`Schedule→Acquire→RunQuantum`).
 
 ## 9. Summary
 
@@ -144,7 +146,7 @@ graph LR
 | `Bus` (Send/Request/Reply/Delegate/Handoff/Subscribe/Broadcast/Unsubscribe) | `internal/agentipc` | Peer message bus and the full collaboration primitive set |
 | `DeadLetterStore` | `internal/agentipc` | Bounded FIFO record of failed deliveries (default 1024) |
 | `CollaborationObserver` | `internal/agentipc` | Collaboration receipts → feedback source |
-| `DualTrackDispatcher` + `PolicyFlag` | `internal/agentipc` | Dual-track equivalence dispatch / feature flag |
+| `KernelDispatcher` | `internal/agentipc` | Runtime-swappable single dispatch path (dual-track + feature flag retired; formerly `DualTrackDispatcher`) |
 | `Kernel` (SpawnAgent/CreateTask/AskAgent/CreatePlan) | `internal/agentsyscall` | LLM-callable syscall tool kernel |
 
 **Design line: agents express intent, the Kernel guarantees delivery, and the evolution loop stays observable.** The communication primitives are the peer collaboration layer; task dispatch is the scheduling execution layer — orthogonal. And `ask_agent` turns a "collaboration intent" into a real, injectable, observable, evolvable tool, wiring the IPC from a library primitive into the agent's cognition loop.

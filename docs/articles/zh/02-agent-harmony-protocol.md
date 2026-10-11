@@ -165,11 +165,13 @@ flowchart LR
     Bus -->|"目标 handler"| Target["目标 Agent"]
 ```
 
-## 六、双轨调度：PolicyFlag
+## 六、单轨分发：双轨机制已退役（v0.3.3）
 
-`agentipc` 里还有一层与"任务怎么派"相关的（`policy.go`），跟通信原语平行：`ExecutionPolicy`（`PolicyLegacy` / `PolicyTaskFabric`）和 `PolicyFlag`（`atomic.Int64`，0=legacy、1=task fabric，运行时翻转、不需要重启生效）。`DualTrackDispatcher` 持有 legacy 和 new 两条路径的 `Dispatcher`，按 flag 选一条 active；打开 shadow 时 inactive 路径也会跑，比较 outcome 是否一致（`Mismatches()`），这就是"双轨等价"验证的 surface。
+> **订正**：本节原描述的 `ExecutionPolicy` / `PolicyFlag`（`atomic.Int64`）/ shadow 模式 / `Mismatches()` **全部已删除**——它们随 legacy leader 轨道一起移除，生产只有一条分发路径。
 
-> 注意：当前生产只有 `PolicyTaskFabric`——Leader 运行时已移除。`PolicyLegacy` 只是作为库常量保留，供双轨验证/阴影模式用。原文档提到的"AHP 五消息类型/DLQ 自动重试"等旧协议细节，不在 `internal/agentipc` 里，相关旧路径以 `internal/runtime/protocol/ahp` 与 `internal/agents/peer` 为准（本系列暂不展开，待核实）。
+`agentipc` 里与"任务怎么派"相关的那层（`policy.go`）现在只剩一个**可换路径的持有者** `KernelDispatcher`（v0.3.3 由 `DualTrackDispatcher` 改名）：`NewPath()` / `SetNewPath()` 是全部可变状态，`enableKernelExecution` 在启动时把"只打分"路径换成"提交到 Task Fabric"的路径。没有策略枚举、没有运行时开关、没有双轨对比。
+
+> 注意：策略枚举与开关**已整体删除**——不是"只保留 `PolicyLegacy` 常量"，而是 `ExecutionPolicy` / `PolicyFlag` 都已不存在。另：AHP 的协议机器（protocol / queue / dlq / heartbeat / codec）也已在 v0.3.3 退役，`internal/runtime/protocol/ahp` 现仅剩消息词汇 `message.go`，原文档提到的"DLQ 自动重试"同样不存在。
 
 ## 七、设计取舍（坦诚环节）
 
@@ -180,8 +182,8 @@ flowchart LR
 
 ## 八、总结
 
-`internal/agentipc` 是 ares 的 peer-mesh 消息总线：`Send` 发了就忘，`Request/Reply` 请求回复，`Delegate` 请求转交，`Handoff` 任务转移，`Subscribe/Broadcast/Unsubscribe` 订阅广播。`DeadLetterStore` 有界可观测。`PolicyFlag + DualTrackDispatcher` 做双轨调度验证。而 `internal/agentsyscall` 把 `ask_agent` 等工具暴露给真正的 LLM Agent——"Agent decides. Kernel enforces."
+`internal/agentipc` 是 ares 的 peer-mesh 消息总线：`Send` 发了就忘，`Request/Reply` 请求回复，`Delegate` 请求转交，`Handoff` 任务转移，`Subscribe/Broadcast/Unsubscribe` 订阅广播。`DeadLetterStore` 有界可观测。`KernelDispatcher` 只是运行时可换的**单一**分发路径（双轨验证已退役）。而 `internal/agentsyscall` 把 `ask_agent` 等工具暴露给真正的 LLM Agent——"Agent decides. Kernel enforces."
 
-旧 AHP 兼容层与 peer 直投路径与新的 Agent IPC 并行运行（feature flag 渐进切换），长期目标是新通信都走 Agent IPC。**
+旧 AHP 协议机器（protocol / queue / dlq / heartbeat / codec）已在 v0.3.3 退役，`internal/runtime/protocol/ahp` 仅剩消息词汇（`message.go`）；peer 直投路径与 Agent IPC 已收敛为单一分发路径。**
 
 下一篇聊聊**经验蒸馏**——Agent 怎么从任务结果里把可复用经验提炼出来，下次遇到类似问题直接复用。

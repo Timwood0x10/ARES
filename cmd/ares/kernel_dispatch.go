@@ -22,7 +22,7 @@ import (
 // flag and no shadow track left to compare against.
 //
 // Returns:
-//   - *agentipc.DualTrackDispatcher: the assembled kernel dispatcher.
+//   - *agentipc.KernelDispatcher: the assembled kernel dispatcher.
 //
 // TODO(tech-debt): agentipc records undeliverable/timed-out requests in a
 // bounded DeadLetterStore (bus.go DeadLetters), but there is NO automatic
@@ -32,9 +32,9 @@ import (
 // the natural input to such a policy.
 func wireKernelDispatcher(
 	subAgents []subAgentCapability,
-) *agentipc.DualTrackDispatcher {
+) *agentipc.KernelDispatcher {
 	newPath := &kernelFabricDispatcher{candidates: subAgents}
-	return agentipc.NewDualTrackDispatcher(newPath)
+	return agentipc.NewKernelDispatcher(newPath)
 }
 
 // enableKernelExecution switches the kernel's Task Fabric path from scoring to
@@ -46,7 +46,7 @@ func wireKernelDispatcher(
 //   - kernel: the dispatcher assembled by wireKernelDispatcher.
 //   - fabric: the Task Fabric that executes tasks.
 func enableKernelExecution(
-	kernel *agentipc.DualTrackDispatcher,
+	kernel *agentipc.KernelDispatcher,
 	fabric *taskfabric.Fabric,
 ) {
 	// Replace the scoring-only path with the submitting one. IMPORTANT: the
@@ -66,7 +66,7 @@ func enableKernelExecution(
 
 // kernelNewPathCandidates extracts the candidate list from the kernel's new
 // path so enableKernelExecution can rebuild it with an executor attached.
-func kernelNewPathCandidates(kernel *agentipc.DualTrackDispatcher) []subAgentCapability {
+func kernelNewPathCandidates(kernel *agentipc.KernelDispatcher) []subAgentCapability {
 	if fp, ok := kernel.NewPath().(*kernelFabricDispatcher); ok {
 		return fp.candidates
 	}

@@ -39,8 +39,8 @@ func TestKernelAdopt_SixPillarsAdoptedAndStopped(t *testing.T) {
 		// only when the pillar itself is absent — here we set the scheduler
 		// below via a real one.
 	}
-	dual := wireKernelDispatcher(nil)
-	k.dual = dual
+	dispatcher := wireKernelDispatcher(nil)
+	k.dispatcher = dispatcher
 
 	reg := kernel.NewRegistry()
 	// eventstore is the fabrics' dependency; register it so Adopt's
@@ -93,8 +93,8 @@ func TestKernelAdopt_SixPillarsAdoptedAndStopped(t *testing.T) {
 		recoveryStop:  func() {},
 		recoveryDone:  make(chan struct{}),
 	}
-	dual2 := wireKernelDispatcher(nil)
-	k2.dual = dual2
+	dispatcher2 := wireKernelDispatcher(nil)
+	k2.dispatcher = dispatcher2
 	// Real plugin bus so all six pillars are present (full-kernel case).
 	k2.pluginBus = startPluginBus(ctx, ares_events.NewMemoryEventStore(), sched, kernelLoopConfig{})
 	if k2.pluginBus == nil {
@@ -148,8 +148,8 @@ func TestKernelAdopt_SchedulerNotRunningReportsDegraded(t *testing.T) {
 		schedulerStop: func() {},
 		schedulerDone: make(chan struct{}),
 	}
-	dual := wireKernelDispatcher(nil)
-	k.dual = dual
+	dispatcher := wireKernelDispatcher(nil)
+	k.dispatcher = dispatcher
 
 	if err := k.adopt(ctx, orch); err != nil {
 		t.Fatalf("adopt must not fail in Degraded mode: %v", err)

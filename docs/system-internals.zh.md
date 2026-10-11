@@ -97,7 +97,7 @@ flowchart TB
 
 | 铁律 | 含义 | 源码 |
 |---|---|---|
-| agent 不自调度 | agent 被调度，从不自己决定"下一步做谁" | `cmd/ares/kernel_dispatch.go`（PolicyTaskFabric 默认） |
+| agent 不自调度 | agent 被调度，从不自己决定"下一步做谁" | `cmd/ares/kernel_dispatch.go`（`agentipc.KernelDispatcher`，单轨） |
 | 任务比 agent 长寿 | agent 可丢弃，任务持久在 fabric | `internal/aresrecovery/recovery.go` |
 | 内核强制 provenance | 归属/租户/来源从 context 取，不信 LLM 参数 | `internal/agentsyscall/syscall.go` |
 
@@ -120,9 +120,9 @@ flowchart LR
     H --> I[Wait 直到 SIGINT/SIGTERM]
 ```
 
-**安全 fail-closed**（`cmd/ares/serve.go:86` `validateServeConfig`）：通配符 bind
+**安全 fail-closed**（`cmd/ares/serve.go:292` `validateServeConfig`）：通配符 bind
 （`0.0.0.0` / `::`）若没配 auth/JWT/`introspect.token`，**直接拒绝启动**，而非
-"启动后打个日志"。默认绑定 `127.0.0.1`（`serve.go:300` `defaultServeHost`）。
+"启动后打个日志"。默认绑定 `127.0.0.1`（`serve.go:327` `defaultServeHost`）。
 
 **Bootstrap 7 步装配顺序**（组件有依赖，按顺序搭）：
 
@@ -174,9 +174,9 @@ evolution:                                # GA 开关/种群/安全门/回滚
 
 | 配置块 | 结构体 | 源码 |
 |---|---|---|
-| `kernel` | `KernelConfig` | `config.go:84` |
-| `agent_budget`（钱包） | `AgentBudgetConfig` | `config.go:163` |
-| `dag_execution` | `DAGExecutionConfig` | `config.go:179` |
+| `kernel` | `KernelConfig` | `config.go:60` |
+| `agent_budget`（钱包） | `AgentBudgetConfig` | `config.go:141` |
+| `dag_execution` | `DAGExecutionConfig` | `config.go:157` |
 
 **"agent 钱包"（`agent_budget`）三格限额**：`tokens` / `tools` / `deadline`，
 全零 = 不限。它是"长任务安全门"——没有它，一个失控 agent 没有成本/寿命上限。
@@ -289,7 +289,7 @@ flowchart LR
 | 单 agent 并发=1 | `maxConcurrentPerAgent` | 架构不变量 |
 | 拒绝过期持有者 | epoch fencing | 调度器 drain 时校验 |
 
-**agent 钱包** = `kernel.agent_budget`（`config.go:163`）：`tokens`/`tools`/`deadline`
+**agent 钱包** = `kernel.agent_budget`（`config.go:141`）：`tokens`/`tools`/`deadline`
 三格，全零不限。syscall spawn 的 agent 也从出生就带这个钱包
 （`internal/agentsyscall/syscall.go` `SpawnAgent` 的 `Governance: k.governance`）。
 
@@ -338,7 +338,7 @@ sequenceDiagram
 | 图加节点（带环检测+回滚） | `MutableDAG.AddNode` | `internal/fabric/task/workflow/engine/mutable_dag.go:77` |
 | 原子替换节点 | `ReplaceNode` | `mutable_dag.go:784` |
 | 订阅图事件 | `Subscribe` / `SubscribeWithID` | `mutable_dag.go:585` / `:593` |
-| 节点→任务映射 | `ProjectStep` | `internal/fabric/planprojection/projection.go:47` |
+| 节点→任务映射 | `ProjectStep` | `internal/fabric/planprojection/projection.go:58` |
 | 增量编译 | `ApplyChange` | `internal/fabric/planprojection/coordinator.go:314` |
 | 全量对账 | `Reconcile` | `coordinator.go:384` |
 | 事件订阅循环 | `SubscribeGraphEvents` | `coordinator.go:695` |
@@ -565,8 +565,8 @@ restart budget，重试预算不动。而 `Task.Deadline` 已过是另一种截�
 |---|---|---|
 | 恢复系统 | `Recovery` | `internal/aresrecovery/recovery.go:21` |
 | 租约过期扫描 | `RequeueExpiredLeases` | `recovery.go:171` |
-| 原地复活 | `RestartAgent`（death snapshot） | `recovery.go:265` |
-| 完整恢复链 | `RecoverFromAgentDeath` | `recovery.go:375` |
+| 原地复活 | `RestartAgent`（death snapshot） | `recovery.go:274` |
+| 完整恢复链 | `RecoverFromAgentDeath` | `recovery.go:384` |
 | 内核恢复循环 | `runKernelRecoveryLoop` | `cmd/ares/kernel_loop.go:275` |
 
 ---
@@ -775,7 +775,7 @@ flowchart LR
 | **存储型间接注入防护** | `fenceUntrusted`：任务正文包 `---UNTRUSTED-TASK-DATA---` 围栏，防"存进经验库再 RAG 注入回 prompt"的持久化注入 | `distillation_service.go` `buildExtractionPrompt` |
 | 蒸馏装配 | `wireDistillation` + `subscribeDistillationEvents`（订阅 `task.completed`） | `internal/ares_bootstrap/bootstrap_steps.go:26` / `:105` |
 | 读侧检索 | `MemoryRetriever`（vector, 默认 `MinScore=0.4`/`TopK=5`） | `internal/runtime/memory/context/memory_retriever.go:65` |
-| 调度侧先验 | `ExperiencePrior` 注入 spawn（截断 4096 字） | `internal/fabric/agent/lifecycle.go:49` / `planner_cognition.go:181` |
+| 调度侧先验 | `ExperiencePrior` 注入 spawn（截断 4096 字） | `internal/fabric/agent/lifecycle.go:49` / `planner_cognition.go:186`（`maxExperiencePriorRunes`） |
 | 成本/阈值旋钮 | `DistillationThreshold` / `MaxDistilledTasks` / `DistilledTaskTTL` | `internal/runtime/memory/manager.go:102/116/125` |
 | 异步向量回填 | `embeddingEnqueuer`（默认同步；配了队列则先落行后异步补向量，不阻塞事件循环） | `distillation_service.go` `WithEmbeddingEnqueuer` |
 
@@ -807,7 +807,7 @@ flowchart TB
 | MCP 装配 | `ProvideMCP`（stdio / http 传输） | `internal/ares_bootstrap/provide_mcp.go:57` |
 | MCP 管理器 | `MCPManager`（transport_stdio / transport_server） | `internal/runtime/protocol/mcp/` |
 | **渐进披露** | 服务保留**全量**工具；每个任务只把**相关子集**喂给 LLM（省 token） | `cmd/ares/serve_wiring.go:215` |
-| 能力搜索器 | `registerCapabilitySearch`（envcap）：把 skills 变成可检索的工具能力 | `cmd/ares/agent_routes_tools.go:263` |
+| 能力搜索器 | `registerCapabilitySearch`（envcap）：把 skills 变成可检索的工具能力 | `cmd/ares/agent_routes_tools.go:280` |
 | L1 工具类图 | `buildToolClassDAG(toolBinder.GetToolSchemas())` | `cmd/ares/serve_peer.go:515` |
 
 **"工具发现"的特色**：不是把所有工具 schema 一次塞给 LLM（会爆 token），
@@ -852,7 +852,7 @@ flowchart TB
 | Provider 接口 | `DiscoveryProvider.Discover` | `internal/discovery/discovery.go:87` |
 | 各 IDE 配置扫描 | `NewClaudeProvider`/`NewCursorProvider`/`NewVSCodeProvider`/`NewARESProvider` | `internal/discovery/providers/filesystem.go` |
 | 自动发现循环（自愈+退避） | `StartAutoDiscovery` | `internal/discovery/engine.go` |
-| 装配 + 事件桥 | `ProvideDiscovery`/`forwardDiscoveryEvent` | `internal/ares_bootstrap/provide_discovery.go:47` |
+| 装配 + 事件桥 | `ProvideDiscovery`/`forwardDiscoveryEvent` | `internal/ares_bootstrap/provide_discovery.go:51` |
 
 ---
 
@@ -904,7 +904,7 @@ tool-calling / DAG / multi-agent / evolution / chaos / HITL / MCP / full-app，
 
 | 手段 | 作用 | 源码 |
 |---|---|---|
-| 通配符 bind 必须带 auth | 无认证就拒启动 | `cmd/ares/serve.go:86` |
+| 通配符 bind 必须带 auth | 无认证就拒启动 | `cmd/ares/serve.go:292` |
 | 路径穿越守卫 | `SetAllowedConfigDir` 把 config 读取圈定在目录内 | `internal/ares_config/config.go` |
 | 读接口也需权限 | `PermRead` 门控 introspect / config 读 | `agent_routes_task_read.go` |
 | SQL 标识符校验 | `validateSQLIdentifier` 防注入 | `internal/storage/postgres/security.go:23` |
@@ -948,9 +948,9 @@ flowchart TB
 
 | ReAct（0.2.x） | 替代（0.3.x） | 源码 |
 |---|---|---|
-| 一个 cognition 内 `LLM→工具→LLM` 死循环 | **plannerCognition**：每 quantum 只调 LLM 一次，把工具调用长成品节点，不执行 | `planner_cognition.go:84` |
+| 一个 cognition 内 `LLM→工具→LLM` 死循环 | **plannerCognition**：每 quantum 只调 LLM 一次，把工具调用长成品节点，不执行 | `planner_cognition.go:236`（`ExecuteStep`） |
 | 工具在 cognition 里直接跑 | **toolCognition**：工具节点是一等 fabric task，内核调度执行 | `internal/fabric/agent/l2graph.go` |
-| 无上限，LLM 爱调多久调多久 | **maxPlanDepth**（默认 10）强制收敛 | `planner_cognition.go:25` |
+| 无上限，LLM 爱调多久调多久 | **maxPlanDepth**（默认 10）强制收敛 | `planner_cognition.go:26`（`DefaultMaxPlanDepth`） |
 | 循环状态=内存 Messages，挂了就丢 | 任务 + `CheckpointEnvelope` 才是持久的（断点续跑）；**L2 图本身只在进程内**——重启后会话重新 Admit，重建成一张空图 | 见 §6、§25.1 |
 
 ### 22.3 "动态"到底动态在哪（边跑边长）
@@ -995,7 +995,7 @@ flowchart TB
 
 ### 22.5 还有一层"外层轮"（进化）
 
-`LoopConfig`（`internal/runtime/loop.go:11`，注释原文在 `:8`："Unlike a fixed ReAct loop,
+`LoopConfig`（`internal/runtime/loop.go:11`，注释原文在 `:9`："Unlike a fixed ReAct loop,
 drives the outer round loop that re-executes the entire DAG with mutations applied
 between rounds"）。这是 GA 冷路径用的——**每轮之间注入变异，重跑整个 DAG**。
 
@@ -1083,7 +1083,7 @@ flowchart LR
 |---|---|---|
 | 硬过滤先缩空间（`WHERE tenant_id AND embedding IS NOT NULL`） | ①③ | `internal/storage/postgres/vector.go:91` |
 | **HybridSearch 混合检索**（向量 cosine + 关键词 lexical 融合） | ①④ | `internal/knowledge/store.go:55` |
-| TopK + MinScore 双闸（默认 `RAGTopK:5 / MinScore:0.4`） | ①③ | `internal/runtime/memory/manager.go:411-412` |
+| TopK + MinScore 双闸（默认 `RAGTopK:5 / MinScore:0.4`） | ①③ | `internal/runtime/memory/manager.go:429-430` |
 | Quality 元数据参与打分（Extraction/Consistency/Freshness/Usage） | ③ | `internal/knowledge/object.go:96`（权重在 `quality.go:31`） |
 | 经验去重/冲突合并（相似度阈值） | ③ | `internal/runtime/memory/experience/conflict_resolver.go:15` |
 
@@ -1350,7 +1350,7 @@ agent 钱包   = 【任务级】一个 agent 一生能烧多少 token/工具
 |---|---|---|
 | **调度器** `scheduler.go:315` | `task.created/ready/completed/failed/yielded`（5 类） | 事件驱动 drain；`yielded` 让 SUSPENDED 任务省掉一个 poll 间隔（§4） |
 | **恢复循环** `kernel_loop.go:290` | `task.expired/failed/acquired/yielded`（4 类） | 租约/失败 → 恢复处理 |
-| **answer 失败释放** `peer_assembly.go:434` | `task.failed` | answer 失败 → 释放会话（idle TTL 是兜底） |
+| **answer 失败释放** `peer_assembly.go:432` | `task.failed` | answer 失败 → 释放会话（idle TTL 是兜底） |
 | **蒸馏** `bootstrap_steps.go:112` | `task.completed/failed` | 蒸经验（§18，**成功失败都蒸**） |
 | **GA 成绩** `ares_evolution/observer.go:216`（+ `scheduler.go:433`） | `task.completed/failed/agent.stopped` | 转成策略样本 / `KindFitness` 证据喂 GA（§14）。注：`ExecutionAttribution` 是内核调度器**内联**写入的（`kernel/scheduler_quantum.go:258`），不是订阅驱动 |
 | **skill 结果写入** `skill_outcome_writer.go:81` | `task.completed/failed` | 把任务结果写进 skills 经验 |

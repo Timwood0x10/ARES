@@ -131,14 +131,14 @@ func (a *peerAssembly) wireDispatchAndScheduler() {
 	// Assemble the kernel dispatcher with the Task Fabric path as the active
 	// path (no legacy leader track, no execution-policy flag).
 	kernelDispatcher := wireKernelDispatcher(subCaps)
-	kernel.dual = kernelDispatcher
+	kernel.dispatcher = kernelDispatcher
 
 	// One shared load tracker for the scheduler.
 	tracker := newLoadTracker()
 	kernel.tracker = tracker
 
 	// Enable real Task Fabric execution (not scoring mode).
-	enableKernelExecution(kernel.dual, kernel.fabric)
+	enableKernelExecution(kernel.dispatcher, kernel.fabric)
 
 	// Start the scheduler.
 	sched := NewKernelScheduler(kernel.fabric, kernel.executors, tracker)

@@ -994,7 +994,7 @@ if cur > 0 && cur != last {
 
 **智能引擎**（`:367-371`）从共享事件流打分健康度/检异常。喂数据的 goroutine（`:377-398`）独立于内省面板的 sink——**这个订阅只服务 health/anomalies/insights**。best-effort：订阅坏了只 Warn，引擎保持空（deny-by-default 健康度）。channel 关闭时直接 return 而非空转（`:389-393` 注释）。
 
-**只读控制服务器**（`:400-444`）暴露 `/api/agents`、`/api/agents/:id`、`/api/health`、`/api/anomalies`、`/api/insights`。agent 数据来自 peer kernel 的 agent fabric；**kernel 不存在时端点报 503**——注释说"部分路径也必须能编译并服务"（`:400-403`）。
+**只读控制服务器**（`:400-444`）暴露 `/api/agents`、`/api/agents/:id`、`/api/health`、`/api/anomalies`、`/api/insights`（**永久 501**：insight 生成器从未实现，`internal/introspect/intel.go` 明写要先用 anomaly 检测做生成器）。agent 数据来自 peer kernel 的 agent fabric；**kernel 不存在时端点报 503**——注释说"部分路径也必须能编译并服务"（`:400-403`）。
 
 挂载的 option 一览（都是从已删除的 `:8090` dashboard 迁来的）：
 

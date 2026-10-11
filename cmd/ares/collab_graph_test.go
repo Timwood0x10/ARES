@@ -331,13 +331,23 @@ func TestGraphsEndpointNodeFailureDeterministicSingleNode(t *testing.T) {
 // cancelled) drives the wait loop past the deadline, and the endpoint reports
 // 504 Gateway Timeout — not a 500 — with a "timed out" error.
 func TestGraphsEndpointTimeoutReturns504(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
-	defer cancel()
-	handler, kh := newGraphTestKernel(t, ctx)
+	// Setup gets its own cancel-only context. The 300ms deadline below must
+	// bound ONLY the request: sharing one deadline with kernel assembly let a
+	// slow (CPU-contended) setup eat the budget, so the handler could reach its
+	// wait loop already past the deadline — the flake this test used to show
+	// under starvation. The 504 comes from the request context alone
+	// (agent_routes_tasks.go: waitCtx.Done() → ErrGraphTimeout), so splitting is
+	// behaviour-preserving.
+	setupCtx, setupCancel := context.WithCancel(context.Background())
+	defer setupCancel()
+	handler, kh := newGraphTestKernel(t, setupCtx)
 	kh.scheduler.RegisterExecutor("peer-hang", &blockingExecutor{id: "peer-hang", typ: "hang"})
 
+	reqCtx, reqCancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer reqCancel()
+
 	body := `{"schema_version":1,"nodes":[{"id":"stuck","capability":"hang"}],"edges":[]}`
-	code, resp := postGraphCtx(t, handler, ctx, body)
+	code, resp := postGraphCtx(t, handler, reqCtx, body)
 	if code != http.StatusGatewayTimeout {
 		t.Fatalf("status=%d want 504, resp=%v", code, resp)
 	}

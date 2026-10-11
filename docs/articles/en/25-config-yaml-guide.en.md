@@ -78,7 +78,6 @@ memory:
   # rag_top_k: retrieved snippets, default 5 (only when enable_rag)
   # rag_min_score: min similarity, default 0.4 (only when enable_rag)
   session:
-    enabled: true
     max_history: 50         # session store window, default 50
   archive:
     enabled: true           # tri-state, on by default
@@ -232,10 +231,6 @@ storage:
   password: ""                 # json:"-" prevents JSON serialization leak
   database: ares
   ssl_mode: disable
-  pgvector:
-    enabled: false
-    dimension: 1536
-    table_name: embeddings
 
 # --- sdk-side DatabaseFileConfig (configs/ares.yaml uses the database key) ---
 database:

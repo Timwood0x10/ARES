@@ -30,10 +30,10 @@ import (
 //   - agents:   Lifecycle pillar (agentfabric: spawn/suspend/resume/retire/kill)
 //   - recovery: Lifecycle recovery surface (aresrecovery: lease-expiry requeue /
 //     checkpoint resume / agent restart)
-//   - dual: IPC pillar (agentipc: single-track Task Fabric dispatch; the
+//   - dispatcher: IPC pillar (agentipc: single-track Task Fabric dispatch; the
 //     legacy leader track was removed)
 type kernelHandle struct {
-	dual *agentipc.DualTrackDispatcher
+	dispatcher *agentipc.KernelDispatcher
 
 	fabric    *taskfabric.Fabric
 	agents    *agentfabric.Fabric
@@ -320,7 +320,7 @@ func (k *kernelHandle) componentPresent(name string) bool {
 	case sysCompAgentFabric:
 		return k.agents != nil
 	case sysCompDispatcher:
-		return k.dual != nil
+		return k.dispatcher != nil
 	case sysCompScheduler:
 		return k.scheduler != nil
 	case sysCompRecovery:

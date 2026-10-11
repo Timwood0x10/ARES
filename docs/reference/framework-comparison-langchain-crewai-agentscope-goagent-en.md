@@ -213,7 +213,7 @@ ARES uses application-level tenantID predicates on all repository queries (tenan
 
 - **FailoverClient**: ARES has a multi-provider LLM failover client with cooldown-based circuit breaking. When a provider returns errors (e.g., 429 rate limit), it is cooled down and the next provider is tried. This is production-wired in `ares serve`.
 - **Circuit Breaker**: The `internal/storage/postgres/circuit_breaker.go` is a PostgreSQL-specific circuit breaker for the retrieval guard, not a general-purpose mechanism.
-- **DLQ**: The AHP dead letter queue is implemented in `internal/runtime/protocol/ahp/dlq.go` but has zero production call sites outside the AHP package itself.
+- **DLQ**: The AHP dead letter queue (formerly `internal/runtime/protocol/ahp/dlq.go`) was retired with the AHP protocol machinery in v0.3.3; the only live dead-letter facility is `internal/agentipc`'s `DeadLetterStore` (bounded, diagnosis-only, no auto-retry).
 - **Chaos Engineering**: `internal/runtime/arena` provides fault injection primitives (KillAgent / KillOrchestrator / NetworkPartition / RemoveNode / RemoveEdge / Pause / Resume / SlowAgent / ToolTimeout / CorruptMemory / DisconnectMCP / InjectLLMFailure) plus survival/scenario modes. The `cmd/ares/serve_arena.go` entry point wires them into the serve binary.
 - **Chaos Isolation** (v0.3.1): Shadow sandbox mode (scratch fabric, zero production impact) + live mode with six guardrails (rate limit, cooldown, fail-safe latch, GA quiet window, target whitelist, emergency stop). Wired into `ares serve`.
 

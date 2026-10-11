@@ -102,7 +102,7 @@ flowchart TB
 
 | Invariant | Meaning | Source |
 |---|---|---|
-| Agents never self-schedule | agents are scheduled, they never decide "who next" | `cmd/ares/kernel_dispatch.go` (PolicyTaskFabric default) |
+| Agents never self-schedule | agents are scheduled, they never decide "who next" | `cmd/ares/kernel_dispatch.go` (`agentipc.KernelDispatcher`, single-track) |
 | Tasks outlive agents | agents are disposable; tasks are durable in the fabric | `internal/aresrecovery/recovery.go` |
 | Kernel enforces provenance | origin/tenant/source come from context, never LLM args | `internal/agentsyscall/syscall.go` |
 
@@ -125,10 +125,10 @@ flowchart LR
     H --> I[wait for SIGINT/SIGTERM]
 ```
 
-**Security fail-closed** (`cmd/ares/serve.go:86` `validateServeConfig`): a
+**Security fail-closed** (`cmd/ares/serve.go:292` `validateServeConfig`): a
 wildcard bind (`0.0.0.0` / `::`) with no auth/JWT/`introspect.token` is
 **refused at startup**, not logged-and-started. Default bind is
-`127.0.0.1` (`serve.go:300` `defaultServeHost`).
+`127.0.0.1` (`serve.go:327` `defaultServeHost`).
 
 **Bootstrap 7-step assembly order** (components have dependencies, built in order):
 
@@ -181,9 +181,9 @@ evolution:                                # GA on/off / population / gates / rol
 
 | Block | Struct | Source |
 |---|---|---|
-| `kernel` | `KernelConfig` | `config.go:84` |
-| `agent_budget` (wallet) | `AgentBudgetConfig` | `config.go:163` |
-| `dag_execution` | `DAGExecutionConfig` | `config.go:179` |
+| `kernel` | `KernelConfig` | `config.go:60` |
+| `agent_budget` (wallet) | `AgentBudgetConfig` | `config.go:141` |
+| `dag_execution` | `DAGExecutionConfig` | `config.go:157` |
 
 **The "agent wallet" (`agent_budget`)** is a three-slot cap: `tokens` /
 `tools` / `deadline`, all-zero = unlimited. It is the "long-task safety
@@ -302,7 +302,7 @@ flowchart LR
 | One concurrent quantum per agent | `maxConcurrentPerAgent` | architectural invariant |
 | Reject expired holder | epoch fencing | validated at drain |
 
-**The agent wallet** = `kernel.agent_budget` (`config.go:163`): `tokens` /
+**The agent wallet** = `kernel.agent_budget` (`config.go:141`): `tokens` /
 `tools` / `deadline`, all-zero = unlimited. A syscall-spawned agent carries
 this wallet from birth (`SpawnAgent`'s `Governance: k.governance` in
 `internal/agentsyscall/syscall.go`).
@@ -355,7 +355,7 @@ version two-signal** scheme (F-21) to trigger a full `Reconcile`.
 | Add node (cycle check + rollback) | `MutableDAG.AddNode` | `internal/fabric/task/workflow/engine/mutable_dag.go:77` |
 | Atomic node replace | `ReplaceNode` | `mutable_dag.go:784` |
 | Subscribe to graph events | `Subscribe` / `SubscribeWithID` | `mutable_dag.go:585` / `:593` |
-| Node->task mapping | `ProjectStep` | `internal/fabric/planprojection/projection.go:47` |
+| Node->task mapping | `ProjectStep` | `internal/fabric/planprojection/projection.go:58` |
 | Incremental compile | `ApplyChange` | `internal/fabric/planprojection/coordinator.go:314` |
 | Full reconcile | `Reconcile` | `coordinator.go:384` |
 | Event subscription loop | `SubscribeGraphEvents` | `coordinator.go:695` |
@@ -605,8 +605,8 @@ never requeued by this sweep (see §4.1).
 |---|---|---|
 | Recovery subsystem | `Recovery` | `internal/aresrecovery/recovery.go:21` |
 | Lease-expiry sweep | `RequeueExpiredLeases` | `recovery.go:171` |
-| In-place revive | `RestartAgent` (death snapshot) | `recovery.go:265` |
-| Full recovery chain | `RecoverFromAgentDeath` | `recovery.go:375` |
+| In-place revive | `RestartAgent` (death snapshot) | `recovery.go:274` |
+| Full recovery chain | `RecoverFromAgentDeath` | `recovery.go:384` |
 | Kernel recovery loop | `runKernelRecoveryLoop` | `cmd/ares/kernel_loop.go:275` |
 
 ---
@@ -839,7 +839,7 @@ flowchart LR
 | **Stored indirect-injection guard** | `fenceUntrusted`: task content wrapped in `---UNTRUSTED-TASK-DATA---` fences, preventing a "stored into the experience store then RAG-injected back into a prompt" persistent-injection path | `distillation_service.go` `buildExtractionPrompt` |
 | Distillation wiring | `wireDistillation` + `subscribeDistillationEvents` (subscribes `task.completed`) | `internal/ares_bootstrap/bootstrap_steps.go:26` / `:105` |
 | Read-side retrieval | `MemoryRetriever` (vector, defaults `MinScore=0.4` / `TopK=5`) | `internal/runtime/memory/context/memory_retriever.go:65` |
-| Scheduler-side prior | `ExperiencePrior` injected at spawn (truncated to 4096 runes) | `internal/fabric/agent/lifecycle.go:49` / `planner_cognition.go:181` |
+| Scheduler-side prior | `ExperiencePrior` injected at spawn (truncated to 4096 runes) | `internal/fabric/agent/lifecycle.go:49` / `planner_cognition.go:186` (`maxExperiencePriorRunes`) |
 | Cost / threshold knobs | `DistillationThreshold` / `MaxDistilledTasks` / `DistilledTaskTTL` | `internal/runtime/memory/manager.go:102/116/125` |
 | Async vector backfill | `embeddingEnqueuer` (default synchronous; with a queue it persists the row first, then backfills the vector async so the event loop never blocks) | `distillation_service.go` `WithEmbeddingEnqueuer` |
 
@@ -874,7 +874,7 @@ flowchart TB
 | MCP assembly | `ProvideMCP` (stdio / http transports) | `internal/ares_bootstrap/provide_mcp.go:57` |
 | MCP manager | `MCPManager` (transport_stdio / transport_server) | `internal/runtime/protocol/mcp/` |
 | **Progressive disclosure** | the server keeps the **full** tool set; each task is fed only the **relevant subset** (saves tokens) | `cmd/ares/serve_wiring.go:215` |
-| Capability searcher | `registerCapabilitySearch` (envcap): makes the skills catalog a searchable tool capability | `cmd/ares/agent_routes_tools.go:263` |
+| Capability searcher | `registerCapabilitySearch` (envcap): makes the skills catalog a searchable tool capability | `cmd/ares/agent_routes_tools.go:280` |
 | L1 tool-class graph | `buildToolClassDAG(toolBinder.GetToolSchemas())` | `cmd/ares/serve_peer.go:515` |
 
 **What makes "tool discovery" distinctive**: instead of dumping every tool
@@ -928,7 +928,7 @@ flowchart TB
 | Provider interface | `DiscoveryProvider.Discover` | `internal/discovery/discovery.go:87` |
 | Per-IDE config scanning | `NewClaudeProvider` / `NewCursorProvider` / `NewVSCodeProvider` / `NewARESProvider` | `internal/discovery/providers/filesystem.go` |
 | Auto-discovery loop (self-heal + backoff) | `StartAutoDiscovery` | `internal/discovery/engine.go` |
-| Assembly + event bridge | `ProvideDiscovery` / `forwardDiscoveryEvent` | `internal/ares_bootstrap/provide_discovery.go:47` |
+| Assembly + event bridge | `ProvideDiscovery` / `forwardDiscoveryEvent` | `internal/ares_bootstrap/provide_discovery.go:51` |
 
 ---
 
@@ -981,7 +981,7 @@ HITL / MCP / full-app — the living documentation of "how to use the system."
 
 | Mechanism | Effect | Source |
 |---|---|---|
-| Wildcard bind requires auth | refuse to start unauthenticated | `cmd/ares/serve.go:86` |
+| Wildcard bind requires auth | refuse to start unauthenticated | `cmd/ares/serve.go:292` |
 | Path-traversal guard | `SetAllowedConfigDir` confines config reads to a directory | `internal/ares_config/config.go` |
 | Read interfaces need permission | `PermRead` gates introspect / config reads | `agent_routes_task_read.go` |
 | SQL identifier validation | `validateSQLIdentifier` blocks injection | `internal/storage/postgres/security.go:23` |
@@ -1028,9 +1028,9 @@ flowchart TB
 
 | ReAct (0.2.x) | Replacement (0.3.x) | Source |
 |---|---|---|
-| one cognition's `LLM→tool→LLM` tight loop | **plannerCognition**: one LLM call per quantum, grows tool calls as nodes, does not execute | `planner_cognition.go:84` |
+| one cognition's `LLM→tool→LLM` tight loop | **plannerCognition**: one LLM call per quantum, grows tool calls as nodes, does not execute | `planner_cognition.go:236` (`ExecuteStep`) |
 | tools run inside the cognition | **toolCognition**: a tool node is a first-class fabric task, executed by the scheduler | `internal/fabric/agent/l2graph.go` |
-| unbounded, LLM runs as long as it wants | **maxPlanDepth** (default 10) forces convergence | `planner_cognition.go:25` |
+| unbounded, LLM runs as long as it wants | **maxPlanDepth** (default 10) forces convergence | `planner_cognition.go:26` (`DefaultMaxPlanDepth`) |
 | loop state = in-memory Messages, lost on crash | tasks + `CheckpointEnvelope` are durable (checkpoint-resume); the **L2 graph itself is in-process only** — after a restart the session is re-admitted with a freshly built (empty) graph | see §6, §25.1 |
 
 ### 22.3 What "dynamic" actually means (grow-as-you-go)
@@ -1075,7 +1075,7 @@ flowchart TB
 
 ### 22.5 There is also an "outer round" (evolution)
 
-`LoopConfig` (`internal/runtime/loop.go:11`; the verbatim comment sits at `:8`:
+`LoopConfig` (`internal/runtime/loop.go:11`; the verbatim comment sits at `:9`:
 "Unlike a fixed ReAct loop, drives the outer round loop that re-executes the
 entire DAG with mutations applied between rounds"). This is what the GA cold
 path uses — **a mutation is injected between rounds, then the whole DAG is
@@ -1181,7 +1181,7 @@ flowchart LR
 |---|---|---|
 | Hard filter first (`WHERE tenant_id AND embedding IS NOT NULL`) | ①③ | `internal/storage/postgres/vector.go:91` |
 | **HybridSearch** (vector cosine + lexical keyword, fused) | ①④ | `internal/knowledge/store.go:55` |
-| TopK + MinScore gates (default `RAGTopK:5 / MinScore:0.4`) | ①③ | `internal/runtime/memory/manager.go:411-412` |
+| TopK + MinScore gates (default `RAGTopK:5 / MinScore:0.4`) | ①③ | `internal/runtime/memory/manager.go:429-430` |
 | Quality metadata in scoring (Extraction/Consistency/Freshness/Usage) | ③ | `internal/knowledge/object.go:96` (weights in `quality.go:31`) |
 | Experience dedup / conflict merge (similarity threshold) | ③ | `internal/runtime/memory/experience/conflict_resolver.go:15` |
 
@@ -1512,7 +1512,7 @@ drive §19's envcap capability search, not the L1 graph.
 |---|---|---|
 | **Scheduler** `scheduler.go:315` | `task.created/ready/completed/failed/yielded` (5) | event-driven drain; `yielded` skips the poll interval between quanta (§4) |
 | **Recovery loop** `kernel_loop.go:290` | `task.expired/failed/acquired/yielded` (4) | lease / failure -> recovery |
-| **answer-fail release** `peer_assembly.go:434` | `task.failed` | answer failed -> release the session (idle TTL is the backstop) |
+| **answer-fail release** `peer_assembly.go:432` | `task.failed` | answer failed -> release the session (idle TTL is the backstop) |
 | **Distillation** `bootstrap_steps.go:112` | `task.completed/failed` | distill experience (§18, success **and** failure) |
 | **GA fitness** `ares_evolution/observer.go:216` (+ `scheduler.go:433`) | `task.completed/failed/agent.stopped` | turn outcomes into strategy samples / `KindFitness` evidence (§14). Note: `ExecutionAttribution` is written **inline** by the kernel scheduler (`kernel/scheduler_quantum.go:258`), not by a subscriber |
 | **skill outcome writer** `skill_outcome_writer.go:81` | `task.completed/failed` | write task outcomes into skills experience |
