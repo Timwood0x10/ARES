@@ -59,6 +59,14 @@ func (c QualityGateConfig) ComputeFinal(q *Quality) float64 {
 // When RequireEvidence is true and obj has no evidence, Evaluate returns nil:
 // the caller (DistillBridge scoreQuality) treats a nil Quality as a rejection
 // (Confidence stays 0, below MinFinalScore, so the object is never promoted).
+//
+// "Rejected" here means NEVER PROMOTED, not "never stored": the write path
+// saves the object as a candidate before evaluating the gate, so an
+// un-evidenced object still lands in the store (as StatusCandidate) and is
+// simply never promoted to StatusActive — which keeps it out of default recall
+// without destroying it. Callers that need "do not persist at all" must check
+// the gate before Save.
+//
 // This is the fail-closed path: pre-0.3.4 objects with no evidence are still
 // admitted when RequireEvidence is false (the default), preserving backward
 // compatibility.

@@ -18,6 +18,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_config"
 	"github.com/Timwood0x10/ares/internal/ares_security"
 	"github.com/Timwood0x10/ares/internal/fabric/task"
+	"github.com/Timwood0x10/ares/internal/userctx"
 )
 
 // External task-surface constants (goconst shield + single source of truth).
@@ -28,6 +29,11 @@ const (
 	// taskPayloadDesc keys the documented envelope task-description slot
 	// (checkpoint_schema.go: Payload carries "incl. task_desc").
 	taskPayloadDesc = "task_desc"
+	// taskPayloadUserID keys the caller-declared user scope that rides the task
+	// payload (M5). The scheduler reads it back to stamp userctx onto the
+	// execution context, so knowledge recall resolves the same user graph the
+	// write path distilled into. Empty/absent means "no user known".
+	taskPayloadUserID = "user_id"
 	// taskWaitDefaultDuration is the sync-wait when ?wait= has no value and
 	// tasks.wait_timeout is unset/zero in ares.yaml.
 	taskWaitDefaultDuration = 60 * time.Second
@@ -147,6 +153,13 @@ type submitTaskRequest struct {
 	// must derive it from the authenticated principal server-side instead
 	// of trusting this field (see SECURITY.md → Tenancy).
 	TenantID string `json:"tenant_id,omitempty"`
+	// UserID optionally scopes the submission to one user within the tenant
+	// (M5: one user one graph). It rides the task payload, which the checkpoint
+	// envelope already persists, so no envelope field or schema bump is needed.
+	// Absent/empty keeps pre-M5 behaviour: recall resolves the tenant namespace.
+	// NOTE: like TenantID this is caller-declared today — a genuine deployment
+	// must derive it from the authenticated principal server-side.
+	UserID string `json:"user_id,omitempty"`
 }
 
 // handleSubmitTask submits a task to the peer runtime through the kernel
@@ -220,6 +233,14 @@ func (h *actionHandler) handleSubmitTask(w http.ResponseWriter, r *http.Request,
 		// every submission path shares) and stamps it onto the envelope.
 		req.Payload["tenant_id"] = req.TenantID
 	}
+	if req.UserID != "" {
+		if req.Payload == nil {
+			req.Payload = map[string]any{}
+		}
+		// Same carrier as the tenant: the scheduler reads the user back from
+		// the payload and stamps userctx onto the execution context (M5).
+		req.Payload[taskPayloadUserID] = req.UserID
+	}
 	// A partially wired kernel is the same "not a peer runtime" state
 	// submitPeerTask rejects — report 503 (not a 500 submission fault), and
 	// only now: the validation guards above keep precedence (§3.6).
@@ -231,7 +252,15 @@ func (h *actionHandler) handleSubmitTask(w http.ResponseWriter, r *http.Request,
 		})
 		return
 	}
-	taskID, err := submitPeerTask(r.Context(), h.kernel, capability, req.Payload)
+	// The user rides the payload for the scheduler (which executes the task in
+	// a different context) AND the context for the synchronous submit path: the
+	// memory enricher records the session's owner from it, so a session is
+	// attributed to the same user the request declared.
+	submitCtx := r.Context()
+	if req.UserID != "" {
+		submitCtx = userctx.With(submitCtx, req.UserID)
+	}
+	taskID, err := submitPeerTask(submitCtx, h.kernel, capability, req.Payload)
 	if err != nil {
 		h.auditAction(r, "submit_task", capability, princ, false)
 		w.WriteHeader(http.StatusInternalServerError)

@@ -1,11 +1,9 @@
 package knowledge_test
 
 import (
-	"context"
 	"testing"
 
 	"github.com/Timwood0x10/ares/internal/knowledge"
-	"github.com/Timwood0x10/ares/internal/tenantctx"
 )
 
 // TestUserNamespace_CollisionSafe pins that a tenant or user ID containing
@@ -95,30 +93,5 @@ func TestResolveUserNamespace_Precedence(t *testing.T) {
 	ns = knowledge.ResolveUserNamespace("", "", "default")
 	if ns != "default" {
 		t.Errorf("no user no tenant should fall back to default, got %q", ns)
-	}
-}
-
-// TestUserContext_RoundTrip pins that WithUserContext and UserFromContext
-// work together to carry the user ID through a context.
-func TestUserContext_RoundTrip(t *testing.T) {
-	t.Parallel()
-
-	ctx := context.Background()
-	if uid := knowledge.UserFromContext(ctx); uid != "" {
-		t.Errorf("empty context should return empty user, got %q", uid)
-	}
-
-	ctx = knowledge.WithUserContext(ctx, "user-1")
-	if uid := knowledge.UserFromContext(ctx); uid != "user-1" {
-		t.Errorf("UserFromContext = %q, want %q", uid, "user-1")
-	}
-
-	// Verify tenant context is NOT affected.
-	ctx = tenantctx.With(ctx, "tenant-1")
-	if uid := knowledge.UserFromContext(ctx); uid != "user-1" {
-		t.Errorf("UserFromContext after tenant.With = %q, want %q", uid, "user-1")
-	}
-	if tid := tenantctx.From(ctx); tid != "tenant-1" {
-		t.Errorf("tenant.From after user context = %q, want %q", tid, "tenant-1")
 	}
 }

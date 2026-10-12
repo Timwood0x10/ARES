@@ -136,7 +136,9 @@ func (tr *TieredRetriever) Retrieve(ctx context.Context, query Query) (*Result, 
 // It splits the query into keywords and matches objects whose Summary or
 // Normalized contains ALL the keywords (AND semantics). This is the cheapest
 // retrieval path and the highest-precision for known terms.
-func (tr *TieredRetriever) lexiconSearch(ctx context.Context, namespace, queryText string, limit int) []*knowledge.KnowledgeObject {
+func (tr *TieredRetriever) lexiconSearch(
+	ctx context.Context, namespace, queryText string, limit int,
+) []*knowledge.KnowledgeObject {
 	if tr.store == nil || queryText == "" {
 		return nil
 	}

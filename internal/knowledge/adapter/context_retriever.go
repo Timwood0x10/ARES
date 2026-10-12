@@ -10,6 +10,7 @@ import (
 	knowledgeruntime "github.com/Timwood0x10/ares/internal/knowledge/runtime"
 	"github.com/Timwood0x10/ares/internal/scoreutil"
 	"github.com/Timwood0x10/ares/internal/tenantctx"
+	"github.com/Timwood0x10/ares/internal/userctx"
 )
 
 // ContextSnippet matches context.ContextSnippet in internal/runtime/memory/context.
@@ -283,12 +284,15 @@ func (r *KnowledgeRetriever) Retrieve(
 	// caller's topK so the FinalK ranking has a richer candidate pool.
 	if r.store != nil {
 		// Resolve the namespace per-request: an explicit r.namespace always
-		// wins; otherwise fall back to the request-scoped tenant. When both
-		// are empty the store's global scan is the DESIRED single-tenant
-		// behaviour — do not invent a default namespace here.
+		// wins; otherwise resolve the request-scoped user (M5, stamped by the
+		// scheduler) together with the tenant, so recall hits the same user
+		// graph the write side distilled into. ResolveUserNamespace falls back
+		// to the tenant when no user is known, and to "" when neither is
+		// present — the store's global scan is the DESIRED single-tenant
+		// behaviour, so no default namespace is invented here.
 		ns := r.namespace
 		if ns == "" {
-			ns = tenantctx.From(ctx)
+			ns = knowledge.ResolveUserNamespace(tenantctx.From(ctx), userctx.From(ctx), "")
 		}
 		req := knowledge.HybridSearchRequest{
 			Query:        input,

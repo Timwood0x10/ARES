@@ -181,7 +181,7 @@ func (m *DefaultEntityMatcher) MatchTokens(_ context.Context, obj *knowledge.Kno
 		}
 		// Exact ID match is not a merge — it means the same logical entity
 		// was re-ingested. Return a match so the pipeline can update it.
-		if obj.ID != "" && identifierMatch(obj, candidate) {
+		if obj.ID != "" && sameSummaryAndType(obj, candidate) {
 			return &knowledge.ResolveResult{
 				MatchedObjectID: candidate.ID,
 				Confidence:      1.0,
@@ -300,12 +300,19 @@ func (v *DefaultValidator) Validate(_ context.Context, merged *knowledge.Knowled
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-// identifierMatch checks whether two objects share the same logical identifier
-// beyond their KnowledgeObject ID: same Summary AND same Type is treated as a
-// strong signal that they refer to the same entity (e.g. a re-ingested record
-// that got a new ID due to a namespace change). This is the highest-precision
-// match step in the risk-ascending resolution order (M2.5 step 1).
-func identifierMatch(a, b *knowledge.KnowledgeObject) bool {
+// sameSummaryAndType reports whether two objects share BOTH their Summary text
+// and their Type. It is the step-1 "highest precision" signal in the M2.5
+// risk-ascending order: a re-ingested record that got a new ID (e.g. because
+// its namespace changed) is recognised as the same entity.
+//
+// It is NOT an identifier comparison despite the step's name: the caller skips
+// identical object IDs, so this is a text-equality heuristic.
+//
+// TODO(tech-debt): the caller merges on this at Confidence 1.0, which is
+// unjustified for a text-equality heuristic — two different entities can share
+// a summary string. Lower the confidence (or require corroborating evidence)
+// once the resolver's thresholds are calibrated.
+func sameSummaryAndType(a, b *knowledge.KnowledgeObject) bool {
 	if a == nil || b == nil {
 		return false
 	}

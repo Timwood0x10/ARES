@@ -31,6 +31,26 @@ func distillTenantID(task *models.Task) string {
 	return ares_events.DefaultTenantID
 }
 
+// distillUserID reads the caller-declared user scope from the task payload so
+// the task-lifecycle events can attribute AKG distillation to a user (M5: one
+// user one graph). It mirrors distillTenantID, except there is NO default: an
+// empty result means "no user known" and the AKG write path falls back to the
+// tenant namespace, preserving pre-M5 behaviour.
+//
+// The payload is the carrier rather than a dedicated task field because the
+// checkpoint envelope already persists Payload through yield→resume cycles, so
+// the user survives the scheduler's asynchronous execution without an envelope
+// schema change.
+func distillUserID(task *models.Task) string {
+	if task == nil || task.Payload == nil {
+		return ""
+	}
+	if id, ok := task.Payload[ares_events.EventKeyUserID].(string); ok {
+		return id
+	}
+	return ""
+}
+
 // taskEventText extracts a best-effort textual description of a task for
 // embedding and experience retrieval. Preference order:
 //  1. an explicit request/query string in the task payload

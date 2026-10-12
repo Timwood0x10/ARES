@@ -20,7 +20,7 @@
 |---|---|
 | Kernel / task fabric / SDK | exercised end-to-end and regression-locked; **not a hardened runtime** |
 | GA evolution + patch pipeline | runs end-to-end; the apply gate and the multi-objective entry points are **not wired** |
-| **AKG** (Adaptive Knowledge Graph) | **Stable (0.3.4) — API frozen, schema versioned** |
+| **AKG** (Adaptive Knowledge Graph) | **API frozen (0.3.4), schema versioned; the 0.3.4 features are still landing — see Honest limits** |
 
 AKG is the **first attempt to build a knowledge graph without relying on LLMs**
 (rule-based relation extraction, BM25-style lexical + vector hybrid search,
@@ -202,6 +202,24 @@ a bug in the README.
   `KnowledgeStore`) and the 4 MCP tools are stable. Schema versioning (`SchemaVersion`)
   and temporal fields (`valid_from`/`valid_until`/`observed_at`/`source_version`) are
   additive — zero values preserve pre-0.3.4 behaviour.
+- **Most 0.3.4 AKG features are not wired into production yet** — the API surface is
+  frozen, the features behind it are not live. Verified by repo-wide grep for non-test
+  callers: the M2.5 relation validation gate (`ValidateRelation` / `FilterRelations`),
+  M3 export/import (`ExportStore` / `ImportStore` / `StoreExporter`), M4 decay and build
+  observability (`ApplyDecay` / `BuildReport` / `ContentFingerprint`), and M6 tiered
+  retrieval + eval (`TieredRetriever` / `EvalHarness`) all have **zero production
+  callers**. Each carries a `TODO(tech-debt)` at its definition. Do not read "API frozen"
+  as "the features shipped".
+- **M5 "one user one graph" is wired, but only takes effect when a submission declares a
+  user.** The user is caller-declared (submit `user_id`), carried in the task payload —
+  which the checkpoint envelope already persists, so no envelope schema change was
+  needed — stamped onto the execution context as `userctx` (mirroring `tenantctx`) and
+  resolved to `tu:<hash(tenant)>:<hash(user)>` on both the write (`DistillBridge`) and
+  read (`StoreProvider`) sides. With no `user_id` the behaviour is unchanged (the tenant
+  namespace). Two caveats: facts written before a user is declared live under the
+  tenant/`default` namespace, so enabling `user_id` makes them invisible to user-scoped
+  recall until migrated; and the user, like the tenant, is caller-declared today rather
+  than derived from the authenticated principal (see *Tenancy Model* / `SECURITY.md`).
 - **Benchmarks are single-run and single-machine** (Apple M3 Max, `-benchtime=500ms`):
   a smoke baseline for before/after comparison, not an SLA.
 - **Coverage is uneven.** `cmd/ares` (the HTTP/serve surface) and the

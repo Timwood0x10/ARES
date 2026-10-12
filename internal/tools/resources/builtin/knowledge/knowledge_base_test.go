@@ -8,14 +8,20 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+
+	"github.com/Timwood0x10/ares/internal/ares_events"
 )
+
+// testDefaultNamespace mirrors the fallback scopeNamespace applies when the
+// request context carries neither a tenant nor a user.
+const testDefaultNamespace = ares_events.DefaultTenantID
 
 type mockSearcher struct {
 	mock.Mock
 }
 
-func (m *mockSearcher) Search(ctx context.Context, tenantID, query string) ([]*RetrievalResult, error) {
-	args := m.Called(ctx, tenantID, query)
+func (m *mockSearcher) Search(ctx context.Context, namespace, query string) ([]*RetrievalResult, error) {
+	args := m.Called(ctx, namespace, query)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
 	}
@@ -26,16 +32,16 @@ type mockKnowledgeService struct {
 	mock.Mock
 }
 
-func (m *mockKnowledgeService) GetKnowledge(ctx context.Context, tenantID, itemID string) (*KnowledgeItem, error) {
-	args := m.Called(ctx, tenantID, itemID)
+func (m *mockKnowledgeService) GetKnowledge(ctx context.Context, namespace, itemID string) (*KnowledgeItem, error) {
+	args := m.Called(ctx, namespace, itemID)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
 	}
 	return args.Get(0).(*KnowledgeItem), args.Error(1)
 }
 
-func (m *mockKnowledgeService) UpdateKnowledge(ctx context.Context, tenantID string, item *KnowledgeItem) (*KnowledgeItem, error) {
-	args := m.Called(ctx, tenantID, item)
+func (m *mockKnowledgeService) UpdateKnowledge(ctx context.Context, namespace string, item *KnowledgeItem) (*KnowledgeItem, error) {
+	args := m.Called(ctx, namespace, item)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
 	}
@@ -50,8 +56,8 @@ func (m *mockKnowledgeService) AddKnowledge(ctx context.Context, item *Knowledge
 	return args.Get(0).(*KnowledgeItem), args.Error(1)
 }
 
-func (m *mockKnowledgeService) DeleteKnowledge(ctx context.Context, tenantID, itemID string) error {
-	args := m.Called(ctx, tenantID, itemID)
+func (m *mockKnowledgeService) DeleteKnowledge(ctx context.Context, namespace, itemID string) error {
+	args := m.Called(ctx, namespace, itemID)
 	return args.Error(0)
 }
 
@@ -64,11 +70,12 @@ func TestKnowledgeSearch_New(t *testing.T) {
 
 // TestKnowledgeSearch_Execute_ServerTenantWithoutParam is the #63
 // regression: tenant_id used to be a required LLM-supplied parameter, so
-// isolation depended on the model's honesty. The tenant is now server-side:
-// a request WITHOUT any tenant_id must be served under serverTenantID.
+// isolation depended on the model's honesty. The scope is now resolved
+// server-side from the request context: a request WITHOUT any tenant_id and
+// with no scope in ctx is served under testDefaultNamespace.
 func TestKnowledgeSearch_Execute_ServerTenantWithoutParam(t *testing.T) {
 	s := &mockSearcher{}
-	s.On("Search", mock.Anything, serverTenantID, "test").Return([]*RetrievalResult{}, nil)
+	s.On("Search", mock.Anything, testDefaultNamespace, "test").Return([]*RetrievalResult{}, nil)
 	ks := NewKnowledgeSearch(s)
 	result, err := ks.Execute(context.Background(), map[string]interface{}{
 		"query": "test",
@@ -80,10 +87,11 @@ func TestKnowledgeSearch_Execute_ServerTenantWithoutParam(t *testing.T) {
 
 // TestKnowledgeSearch_Execute_IgnoresCallerTenantID is the #63 hostile-path
 // regression: an LLM-supplied tenant_id (here pretending to be another
-// tenant) must be IGNORED — the searcher still sees serverTenantID.
+// tenant) must be IGNORED — the scope is resolved from the request context,
+// so the searcher still sees testDefaultNamespace.
 func TestKnowledgeSearch_Execute_IgnoresCallerTenantID(t *testing.T) {
 	s := &mockSearcher{}
-	s.On("Search", mock.Anything, serverTenantID, "test").Return([]*RetrievalResult{}, nil)
+	s.On("Search", mock.Anything, testDefaultNamespace, "test").Return([]*RetrievalResult{}, nil)
 	ks := NewKnowledgeSearch(s)
 	result, err := ks.Execute(context.Background(), map[string]interface{}{
 		"tenant_id": "some-other-tenant",
@@ -153,10 +161,11 @@ func TestKnowledgeUpdate_New(t *testing.T) {
 
 // TestKnowledgeUpdate_Execute_ServerTenantWithoutParam is the #63
 // regression: tenant_id is no longer a tool parameter; the update path
-// operates on serverTenantID.
+// resolves its scope from the request context (testDefaultNamespace when
+// unscoped).
 func TestKnowledgeUpdate_Execute_ServerTenantWithoutParam(t *testing.T) {
 	svc := &mockKnowledgeService{}
-	svc.On("GetKnowledge", mock.Anything, serverTenantID, "1").Return(nil, nil)
+	svc.On("GetKnowledge", mock.Anything, testDefaultNamespace, "1").Return(nil, nil)
 	ku := NewKnowledgeUpdate(svc)
 	result, err := ku.Execute(context.Background(), map[string]interface{}{
 		"item_id": "1",
@@ -204,7 +213,7 @@ func TestKnowledgeUpdate_Execute_Success(t *testing.T) {
 	svc := &mockKnowledgeService{}
 	now := time.Now()
 	svc.On("GetKnowledge", mock.Anything, "default", "1").Return(&KnowledgeItem{
-		ID: "1", TenantID: "default", Content: "old", CreatedAt: now, UpdatedAt: now,
+		ID: "1", Namespace: "default", Content: "old", CreatedAt: now, UpdatedAt: now,
 	}, nil)
 	svc.On("UpdateKnowledge", mock.Anything, "default", mock.MatchedBy(func(item *KnowledgeItem) bool {
 		return item.Content == "updated content" && item.Source == "new-source"
@@ -227,7 +236,7 @@ func TestKnowledgeUpdate_Execute_WithTags(t *testing.T) {
 	svc := &mockKnowledgeService{}
 	now := time.Now()
 	svc.On("GetKnowledge", mock.Anything, "default", "1").Return(&KnowledgeItem{
-		ID: "1", TenantID: "default", Content: "old", CreatedAt: now, UpdatedAt: now,
+		ID: "1", Namespace: "default", Content: "old", CreatedAt: now, UpdatedAt: now,
 	}, nil)
 	svc.On("UpdateKnowledge", mock.Anything, "default", mock.MatchedBy(func(item *KnowledgeItem) bool {
 		return item.Content == "updated" && len(item.Tags) == 2 && item.Tags[0] == "tag1"
@@ -249,7 +258,7 @@ func TestKnowledgeUpdate_Execute_UpdateError(t *testing.T) {
 	svc := &mockKnowledgeService{}
 	now := time.Now()
 	svc.On("GetKnowledge", mock.Anything, "default", "1").Return(&KnowledgeItem{
-		ID: "1", TenantID: "default", Content: "old", CreatedAt: now, UpdatedAt: now,
+		ID: "1", Namespace: "default", Content: "old", CreatedAt: now, UpdatedAt: now,
 	}, nil)
 	svc.On("UpdateKnowledge", mock.Anything, "default", mock.Anything).Return(nil, errors.New("db error"))
 	ku := NewKnowledgeUpdate(svc)
@@ -270,13 +279,14 @@ func TestKnowledgeAdd_New(t *testing.T) {
 }
 
 // TestKnowledgeAdd_Execute_ServerTenant is the #63 regression: items are
-// always created under serverTenantID regardless of any caller-supplied
+// created under the scope resolved from the request context
+// (testDefaultNamespace when unscoped), regardless of any caller-supplied
 // tenant_id.
 func TestKnowledgeAdd_Execute_ServerTenant(t *testing.T) {
 	svc := &mockKnowledgeService{}
 	svc.On("AddKnowledge", mock.Anything, mock.MatchedBy(func(item *KnowledgeItem) bool {
-		return item.TenantID == serverTenantID && item.Content == "test"
-	})).Return(&KnowledgeItem{ID: "new-id", TenantID: serverTenantID, Content: "test"}, nil)
+		return item.Namespace == testDefaultNamespace && item.Content == "test"
+	})).Return(&KnowledgeItem{ID: "new-id", Namespace: testDefaultNamespace, Content: "test"}, nil)
 	ka := NewKnowledgeAdd(svc)
 	result, err := ka.Execute(context.Background(), map[string]interface{}{
 		"tenant_id": "attacker-tenant",
@@ -299,7 +309,7 @@ func TestKnowledgeAdd_Execute_Success(t *testing.T) {
 	svc := &mockKnowledgeService{}
 	now := time.Now()
 	svc.On("AddKnowledge", mock.Anything, mock.MatchedBy(func(item *KnowledgeItem) bool {
-		return item.TenantID == "default" && item.Content == "test content" && item.Source == "src"
+		return item.Namespace == "default" && item.Content == "test content" && item.Source == "src"
 	})).Return(&KnowledgeItem{
 		ID: "1", Content: "test content", CreatedAt: now,
 	}, nil)
@@ -352,10 +362,11 @@ func TestKnowledgeDelete_New(t *testing.T) {
 }
 
 // TestKnowledgeDelete_Execute_ServerTenant is the #63 regression: deletion
-// runs under serverTenantID; a caller-supplied tenant_id is ignored.
+// runs under the scope resolved from the request context
+// (testDefaultNamespace when unscoped); a caller-supplied tenant_id is ignored.
 func TestKnowledgeDelete_Execute_ServerTenant(t *testing.T) {
 	svc := &mockKnowledgeService{}
-	svc.On("DeleteKnowledge", mock.Anything, serverTenantID, "1").Return(nil)
+	svc.On("DeleteKnowledge", mock.Anything, testDefaultNamespace, "1").Return(nil)
 	kd := NewKnowledgeDelete(svc)
 	result, err := kd.Execute(context.Background(), map[string]interface{}{
 		"tenant_id": "attacker-tenant",

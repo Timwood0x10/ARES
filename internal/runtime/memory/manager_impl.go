@@ -24,6 +24,7 @@ import (
 	memctx "github.com/Timwood0x10/ares/internal/runtime/memory/context"
 	"github.com/Timwood0x10/ares/internal/runtime/memory/distillation"
 	memembed "github.com/Timwood0x10/ares/internal/runtime/memory/embedding"
+	"github.com/Timwood0x10/ares/internal/tenantctx"
 	truncpkg "github.com/Timwood0x10/ares/internal/truncate"
 )
 
@@ -458,6 +459,23 @@ func (m *memoryManager) GetMessages(ctx context.Context, sessionID string) ([]Me
 	return sessionMemMessages, nil
 }
 
+// SessionOwner returns the user a session belongs to, or ("", nil) when the
+// session is unknown (never created, or expired).
+//
+// The owner is recorded at CreateSession time, which makes this the check a
+// caller needs before trusting a session id from an untrusted source: a tool
+// parameter naming someone else's session must not be readable.
+func (m *memoryManager) SessionOwner(ctx context.Context, sessionID string) (string, error) {
+	if sessionID == "" {
+		return "", nil
+	}
+	session, ok := m.sessionMemory.Get(ctx, sessionID)
+	if !ok || session == nil {
+		return "", nil
+	}
+	return session.UserID, nil
+}
+
 // AddStructuredMessage adds a structured message with full metadata (TurnID, ToolCallID, ToolCalls)
 // to the session. The underlying SessionMemory stores all Message fields faithfully.
 func (m *memoryManager) AddStructuredMessage(ctx context.Context, sessionID string, msg Message) error {
@@ -880,12 +898,25 @@ func (m *memoryManager) SearchSimilarTasks(ctx context.Context, query string, li
 		return nil, errors.Wrap(err, "generate query embedding")
 	}
 
-	// Snapshot the tenant under RLock: SetDefaultTenantID writes it under the
-	// full lock, and an unlocked read here is a -race (same contract as the
-	// config snapshots in BuildContext).
-	m.mu.RLock()
-	tenant := m.defaultTenantID
-	m.mu.RUnlock()
+	// Resolve the tenant per REQUEST rather than from the process-level
+	// default: the scheduler stamps the executing task's tenant onto the
+	// quantum's context, so this resolves the same tenant StoreDistilledTask
+	// wrote under (it reads tenant_id from the task payload, falling back to
+	// the same default). Reading defaultTenantID unconditionally made every
+	// request recall whichever tenant SetDefaultTenantID last pinned — the
+	// same defect class the AKG recall path fixed by resolving tenantctx per
+	// request instead of a process-global namespace.
+	//
+	// defaultTenantID remains the fallback for callers outside a task scope.
+	// Snapshot it under RLock: SetDefaultTenantID writes it under the full
+	// lock, and an unlocked read here is a -race (same contract as the config
+	// snapshots in BuildContext).
+	tenant := tenantctx.From(ctx)
+	if tenant == "" {
+		m.mu.RLock()
+		tenant = m.defaultTenantID
+		m.mu.RUnlock()
+	}
 	experiences, err := expRepo.SearchByVector(ctx, queryVector, tenant, limit)
 	if err != nil {
 		return nil, errors.Wrap(err, "search experiences")

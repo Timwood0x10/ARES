@@ -70,6 +70,13 @@ type MemoryManager interface {
 	// (empty string, nil error) from "unsupported backend" (non-nil error).
 	GetLatestSessionForAgent(ctx context.Context, agentID string) (string, error)
 
+	// SessionOwner returns the user a session belongs to. Returns ("", nil)
+	// when the session is unknown (never created, or expired) — the same
+	// convention as GetLatestSessionForAgent — so a caller handed a session id
+	// from an untrusted source (e.g. a tool parameter) can verify it belongs to
+	// the request's user before reading its messages.
+	SessionOwner(ctx context.Context, sessionID string) (string, error)
+
 	// Start starts the memory manager and background workers.
 	Start(ctx context.Context) error
 

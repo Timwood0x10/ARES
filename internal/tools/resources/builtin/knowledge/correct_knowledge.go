@@ -29,12 +29,8 @@ func NewCorrectKnowledge(repo repositories.KnowledgeRepositoryInterface) *Correc
 				Type:        "string",
 				Description: "Corrected content",
 			},
-			"tenant_id": {
-				Type:        "string",
-				Description: "Tenant identifier for isolation",
-			},
 		},
-		Required: []string{"chunk_id", "corrected_content", "tenant_id"},
+		Required: []string{"chunk_id", "corrected_content"},
 	}
 
 	ck := &CorrectKnowledge{
@@ -45,7 +41,8 @@ func NewCorrectKnowledge(repo repositories.KnowledgeRepositoryInterface) *Correc
 	return ck
 }
 
-// Execute corrects knowledge content.
+// Execute corrects knowledge content. The scope is resolved from the request
+// context (#63): tenant_id is not a tool parameter.
 func (t *CorrectKnowledge) Execute(ctx context.Context, params map[string]interface{}) (core.Result, error) {
 	if t.repo == nil {
 		return core.NewErrorResult("knowledge correction unavailable: repository not configured"), nil
@@ -56,18 +53,19 @@ func (t *CorrectKnowledge) Execute(ctx context.Context, params map[string]interf
 		return core.NewErrorResult("chunk_id is required"), nil
 	}
 
-	tenantID, ok := params["tenant_id"].(string)
-	if !ok || tenantID == "" {
-		return core.NewErrorResult("tenant_id is required"), nil
-	}
-
 	correctedContent, ok := params["corrected_content"].(string)
 	if !ok || correctedContent == "" {
 		return core.NewErrorResult("corrected_content is required"), nil
 	}
 
+	// Scope comes from the request context, never from tool parameters: the
+	// previous contract read tenant_id from model-generated params, so a
+	// hallucinated (or hostile) value could read and rewrite another tenant's
+	// — or, under M5, another user's — knowledge.
+	namespace := scopeNamespace(ctx)
+
 	// Get existing chunk
-	chunk, err := t.repo.GetByID(ctx, tenantID, chunkID)
+	chunk, err := t.repo.GetByID(ctx, namespace, chunkID)
 	if err != nil {
 		return core.NewErrorResult(fmt.Sprintf("failed to get chunk: %v", err)), nil
 	}

@@ -8,10 +8,12 @@ import (
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/agents/sub"
+	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/core/models"
 	apperrors "github.com/Timwood0x10/ares/internal/errors"
 	taskfabric "github.com/Timwood0x10/ares/internal/fabric/task"
 	"github.com/Timwood0x10/ares/internal/tenantctx"
+	"github.com/Timwood0x10/ares/internal/userctx"
 )
 
 // quantumUsage is the side-channel ledger for one quantum: the LLM tokens it
@@ -94,7 +96,14 @@ func (s *Scheduler) buildQuantumStep(
 			// scoped per request (the fix for the AKG read/write coherence
 			// gap that akgActiveNamespace used to paper over).
 			mt := s.ToModelTask(tk)
-			out, stepErr := executor.ExecuteStep(tenantctx.With(ctx, mt.TenantID), mt)
+			// The task's user rides alongside its tenant: userctx mirrors
+			// tenantctx so knowledge recall — and every other user-scoped
+			// consumer — resolves the same user graph the write path distilled
+			// into (M5). The user is carried in the task payload, which the
+			// checkpoint envelope already persists across yield→resume, so no
+			// envelope field or schema bump is needed.
+			stepCtx := userctx.With(tenantctx.With(ctx, mt.TenantID), userIDFromPayload(mt.Payload))
+			out, stepErr := executor.ExecuteStep(stepCtx, mt)
 			done <- stepResult{out: out, err: stepErr}
 		}()
 		var out *sub.StepOutcome
@@ -301,6 +310,19 @@ func (s *Scheduler) endQuantumOutcome(winner, capability, taskID string, err err
 // a resumed quantum can observe where the previous step left off. Decode goes
 // through the single shared protocol (taskfabric.DecodeCheckpoint) — the same
 // path recovery and every other consumer use.
+// userIDFromPayload reads the caller-declared user scope from a task payload
+// (M5: one user one graph). The payload is the durable carrier —
+// CheckpointEnvelope.Payload rides the scheduler's yield→resume cycles — so
+// this needs no envelope field. An absent or non-string value means "no user
+// known"; consumers then fall back to the tenant namespace, preserving pre-M5
+// behaviour.
+func userIDFromPayload(payload map[string]any) string {
+	if id, ok := payload[ares_events.EventKeyUserID].(string); ok {
+		return id
+	}
+	return ""
+}
+
 func (s *Scheduler) ToModelTask(tk *taskfabric.Task) *models.Task {
 	t := models.NewTask(tk.ID, models.AgentType(tk.Capability), nil)
 	if tk.Checkpoint == nil {

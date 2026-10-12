@@ -18,6 +18,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/agentruntime"
 	"github.com/Timwood0x10/ares/internal/ares_config"
 	memory "github.com/Timwood0x10/ares/internal/runtime/memory"
+	"github.com/Timwood0x10/ares/internal/userctx"
 )
 
 // memorySessionTTL bounds how long an idle L2-session → memory-session
@@ -151,7 +152,17 @@ func (e *memoryPromptEnricher) memorySession(ctx context.Context, sessionID stri
 		if mem, ok := e.lookup(sessionID); ok {
 			return mem, nil
 		}
-		mem, err := e.mgr.CreateSession(ctx, sessionID)
+		// Create the memory session under the REQUEST's user, so the recorded
+		// owner is a real user rather than the L2 session id. SessionOwner
+		// answers "does this session belong to the caller's user?" from that
+		// field, and with the session id as a stand-in every ownership check
+		// would compare a user against a session id. Falls back to the session
+		// id only when the request carries no user (pre-M5 behaviour).
+		owner := userctx.From(ctx)
+		if owner == "" {
+			owner = sessionID
+		}
+		mem, err := e.mgr.CreateSession(ctx, owner)
 		if err != nil {
 			return "", fmt.Errorf("create memory session for %s: %w", sessionID, err)
 		}

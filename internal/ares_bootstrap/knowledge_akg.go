@@ -234,19 +234,13 @@ func triggerAKGBridge(
 	taskText := akgEventStringField(ev.Payload, ares_events.EventKeyTask)
 	resultText := akgEventStringField(ev.Payload, ares_events.EventKeyResult)
 	tenantID := akgEventStringField(ev.Payload, ares_events.EventKeyTenantID)
-	// M5: read the actual user_id from the event payload instead of passing
-	// agent_id into the userID parameter. Pre-0.3.4 code used agent_id as a
-	// stand-in, which meant AKG never had a real user dimension.
-	//
-	// TODO(tech-debt): M5 is NOT live end-to-end. No event producer sets
-	// user_id yet — the task-lifecycle payloads in
-	// internal/agents/sub/agent.go carry task/result/tenant_id/
-	// used_experience_id/strategy_id only, and models.Task has no user field —
-	// so userID is always "" here and ResolveUserNamespace falls back to the
-	// tenant namespace, leaving "one user one graph" inert. The read side is
-	// unwired too: nothing calls knowledge.WithUserContext (see the TODO in
-	// knowledge/user_context.go). Wire the producer AND the scheduler-side
-	// context stamp before this feature is reachable.
+	// M5: read the caller-declared user id from the event payload instead of
+	// passing agent_id into the userID parameter (pre-0.3.4 used agent_id as a
+	// stand-in, so AKG never had a real user dimension). The producer is the
+	// executing agent, which stamps it from task.Payload (agents/sub), and the
+	// payload is the durable carrier the checkpoint envelope already persists.
+	// An empty value means "no user known": the distiller then falls back to
+	// the tenant namespace, preserving pre-M5 behaviour.
 	userID := akgEventStringField(ev.Payload, ares_events.EventKeyUserID)
 
 	if tenantID == "" || len(taskText) < 10 || len(resultText) < 20 {

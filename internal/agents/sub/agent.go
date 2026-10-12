@@ -440,6 +440,7 @@ func (a *subAgent) finalizeErr(ctx context.Context, task *models.Task, result *m
 			ares_events.EventKeyTenantID:         distillTenantID(task),
 			ares_events.EventKeyUsedExperienceID: task.UsedExperienceID,
 			ares_events.EventKeyStrategyID:       task.StrategyID,
+			ares_events.EventKeyUserID:           distillUserID(task),
 		})
 		return nil, execErr
 	}
@@ -457,6 +458,7 @@ func (a *subAgent) finalizeErr(ctx context.Context, task *models.Task, result *m
 			ares_events.EventKeyTenantID:         distillTenantID(task),
 			ares_events.EventKeyUsedExperienceID: task.UsedExperienceID,
 			ares_events.EventKeyStrategyID:       task.StrategyID,
+			ares_events.EventKeyUserID:           distillUserID(task),
 		})
 		return result, fmt.Errorf("sub agent %s output guard rejected result: %w", a.id, guardErr)
 	}
@@ -469,6 +471,7 @@ func (a *subAgent) finalizeErr(ctx context.Context, task *models.Task, result *m
 		ares_events.EventKeyTenantID:         distillTenantID(task),
 		ares_events.EventKeyUsedExperienceID: task.UsedExperienceID,
 		ares_events.EventKeyStrategyID:       task.StrategyID,
+		ares_events.EventKeyUserID:           distillUserID(task),
 	})
 
 	return result, nil
@@ -596,6 +599,7 @@ func (a *subAgent) runTaskAndEmit(
 			ares_events.EventKeyTenantID:         distillTenantID(task),
 			ares_events.EventKeyUsedExperienceID: task.UsedExperienceID,
 			ares_events.EventKeyStrategyID:       task.StrategyID,
+			ares_events.EventKeyUserID:           distillUserID(task),
 		})
 
 		select {
@@ -614,6 +618,7 @@ func (a *subAgent) runTaskAndEmit(
 		ares_events.EventKeyTenantID:         distillTenantID(task),
 		ares_events.EventKeyUsedExperienceID: task.UsedExperienceID,
 		ares_events.EventKeyStrategyID:       task.StrategyID,
+		ares_events.EventKeyUserID:           distillUserID(task),
 	})
 
 	// Send task complete event

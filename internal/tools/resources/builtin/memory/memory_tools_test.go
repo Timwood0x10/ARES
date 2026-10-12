@@ -10,12 +10,25 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/core/models"
 	memory "github.com/Timwood0x10/ares/internal/runtime/memory"
+	"github.com/Timwood0x10/ares/internal/tenantctx"
+	"github.com/Timwood0x10/ares/internal/userctx"
 )
 
 // MockMemoryManager is a mock implementation of memory.MemoryManager for testing.
 type MockMemoryManager struct {
 	searchFunc func(ctx context.Context, query string, limit int) ([]*models.Task, error)
 	msgFunc    func(ctx context.Context, sessionID string) ([]memory.Message, error)
+	ownerFunc  func(ctx context.Context, sessionID string) (string, error)
+}
+
+// SessionOwner reports the session's recorded owner. Unset means an
+// unattributed session: ("", nil), the same shape the real manager uses for an
+// unknown session.
+func (m *MockMemoryManager) SessionOwner(ctx context.Context, sessionID string) (string, error) {
+	if m.ownerFunc != nil {
+		return m.ownerFunc(ctx, sessionID)
+	}
+	return "", nil
 }
 
 func (m *MockMemoryManager) SearchSimilarTasks(ctx context.Context, query string, limit int) ([]*models.Task, error) {
@@ -327,7 +340,10 @@ func TestNewUserProfile(t *testing.T) {
 	}
 }
 
-// TestUserProfileExecute_MissingParameters tests missing required parameters.
+// TestUserProfileExecute_MissingParameters pins the fail-closed contract: with
+// no user in the request context and none supplied, the tool must not guess
+// whose profile was meant. A tenant_id parameter no longer satisfies it (#63)
+// — the tenant is resolved from the context.
 func TestUserProfileExecute_MissingParameters(t *testing.T) {
 	memoryMgr := &MockMemoryManager{}
 	profile := NewUserProfile(memoryMgr)
@@ -342,29 +358,16 @@ func TestUserProfileExecute_MissingParameters(t *testing.T) {
 			params: map[string]interface{}{},
 		},
 		{
-			name: "missing user_id",
-			params: map[string]interface{}{
-				"tenant_id": "tenant1",
-			},
-		},
-		{
-			name: "missing tenant_id",
-			params: map[string]interface{}{
-				"user_id": "user1",
-			},
-		},
-		{
 			name: "empty user_id",
 			params: map[string]interface{}{
-				"user_id":   "",
-				"tenant_id": "tenant1",
+				"user_id": "",
 			},
 		},
 		{
-			name: "empty tenant_id",
+			// Ignored: a tenant alone does not identify a user.
+			name: "tenant_id only",
 			params: map[string]interface{}{
-				"user_id":   "user1",
-				"tenant_id": "",
+				"tenant_id": "tenant1",
 			},
 		},
 	}
@@ -377,7 +380,7 @@ func TestUserProfileExecute_MissingParameters(t *testing.T) {
 				return
 			}
 			if result.Success {
-				t.Error("Execute() should fail when required parameters are missing")
+				t.Error("Execute() should fail when no user is resolvable")
 			}
 		})
 	}
@@ -407,11 +410,14 @@ func TestUserProfileExecute_Success(t *testing.T) {
 	}
 
 	profile := NewUserProfile(memoryMgr)
-	ctx := context.Background()
+	// The tenant comes from the request context, not from parameters.
+	ctx := tenantctx.With(context.Background(), "tenant1")
 
 	params := map[string]interface{}{
+		// user_id is the fallback (no user in ctx); the tenant_id parameter is
+		// ignored outright — the context wins.
 		"user_id":    "user1",
-		"tenant_id":  "tenant1",
+		"tenant_id":  "attacker-tenant",
 		"session_id": "session1",
 	}
 
@@ -495,6 +501,124 @@ func TestUserProfileExecute_NoManagers(t *testing.T) {
 	if len(data["preferences"].([]map[string]interface{})) != 0 {
 		t.Error("preferences should be empty without managers")
 	}
+}
+
+// TestUserProfileExecute_ScopeFromContext is the #63 regression for this tool:
+// user_id and tenant_id used to be REQUIRED model-supplied parameters, so a
+// hallucinated (or hostile) pair could read another user's profile. Both now
+// resolve from the request context, and parameters cannot override them.
+func TestUserProfileExecute_ScopeFromContext(t *testing.T) {
+	tests := []struct {
+		name     string
+		ctx      context.Context
+		params   map[string]interface{}
+		wantUser string
+		wantNS   string
+	}{
+		{
+			name: "context user and tenant win over conflicting parameters",
+			ctx:  userctx.With(tenantctx.With(context.Background(), "tenant-ctx"), "user-ctx"),
+			params: map[string]interface{}{
+				"user_id":   "attacker-user",
+				"tenant_id": "attacker-tenant",
+			},
+			wantUser: "user-ctx",
+			wantNS:   "tenant-ctx",
+		},
+		{
+			name:     "unscoped context falls back to the user_id parameter",
+			ctx:      context.Background(),
+			params:   map[string]interface{}{"user_id": "user1", "tenant_id": "attacker-tenant"},
+			wantUser: "user1",
+			wantNS:   ares_events.DefaultTenantID,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			profile := NewUserProfile(nil)
+
+			result, err := profile.Execute(tt.ctx, tt.params)
+			if err != nil {
+				t.Fatalf("Execute() unexpected error: %v", err)
+			}
+			if !result.Success {
+				t.Fatalf("Execute() should succeed, got: %s", result.Error)
+			}
+			data, ok := result.Data.(map[string]interface{})
+			if !ok {
+				t.Fatal("Result.Data should be a map")
+			}
+			if got := data["user_id"]; got != tt.wantUser {
+				t.Errorf("user_id = %v, want %q", got, tt.wantUser)
+			}
+			if got := data["tenant_id"]; got != tt.wantNS {
+				t.Errorf("tenant_id = %v, want %q", got, tt.wantNS)
+			}
+		})
+	}
+}
+
+// TestUserProfileExecute_RejectsForeignSession is the ownership regression:
+// session_id is a model-supplied parameter, so without the check the tool would
+// read whichever session the model named.
+func TestUserProfileExecute_RejectsForeignSession(t *testing.T) {
+	memoryMgr := &MockMemoryManager{
+		ownerFunc: func(_ context.Context, _ string) (string, error) { return "someone-else", nil },
+		msgFunc: func(_ context.Context, _ string) ([]memory.Message, error) {
+			t.Error("messages must not be read for a session owned by another user")
+			return nil, nil
+		},
+	}
+	profile := NewUserProfile(memoryMgr)
+	ctx := userctx.With(tenantctx.With(context.Background(), "tenant-1"), "user-1")
+
+	result, err := profile.Execute(ctx, map[string]interface{}{
+		"session_id": "session_someone-else_1",
+	})
+	require.NoError(t, err)
+	require.False(t, result.Success, "a foreign session must be refused")
+	require.Contains(t, result.Error, "does not belong")
+}
+
+// TestUserProfileExecute_ReadsOwnSession is the positive half: a session the
+// request's user owns is still read.
+func TestUserProfileExecute_ReadsOwnSession(t *testing.T) {
+	memoryMgr := &MockMemoryManager{
+		ownerFunc: func(_ context.Context, _ string) (string, error) { return "user-1", nil },
+		msgFunc: func(_ context.Context, _ string) ([]memory.Message, error) {
+			return []memory.Message{{Role: "user", Content: "hi"}}, nil
+		},
+	}
+	profile := NewUserProfile(memoryMgr)
+	ctx := userctx.With(tenantctx.With(context.Background(), "tenant-1"), "user-1")
+
+	result, err := profile.Execute(ctx, map[string]interface{}{
+		"session_id": "session_user-1_1",
+	})
+	require.NoError(t, err)
+	require.True(t, result.Success)
+
+	data, ok := result.Data.(map[string]interface{})
+	require.True(t, ok)
+	require.Equal(t, 1, data["current_session_messages"])
+}
+
+// TestUserProfileExecute_SessionOwnerUnavailable pins fail-closed: when the
+// backend cannot answer the ownership question, the tool must not read blind.
+func TestUserProfileExecute_SessionOwnerUnavailable(t *testing.T) {
+	memoryMgr := &MockMemoryManager{
+		ownerFunc: func(_ context.Context, _ string) (string, error) {
+			return "", errors.New("backend cannot answer")
+		},
+	}
+	profile := NewUserProfile(memoryMgr)
+	ctx := userctx.With(tenantctx.With(context.Background(), "tenant-1"), "user-1")
+
+	result, err := profile.Execute(ctx, map[string]interface{}{"session_id": "session_user-1_1"})
+	require.NoError(t, err)
+	require.False(t, result.Success)
+	require.Contains(t, result.Error, "ownership unavailable")
 }
 
 func TestContainsKeywords(t *testing.T) {

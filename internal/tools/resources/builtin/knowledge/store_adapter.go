@@ -33,13 +33,13 @@ func NewStoreAdapter(store knowledge.KnowledgeStore) *StoreAdapter {
 
 // Search implements KnowledgeSearcher via HybridSearch (lexical fallback when
 // no embedding is wired). Results are ranked by FinalScore descending.
-func (a *StoreAdapter) Search(ctx context.Context, tenantID, query string) ([]*RetrievalResult, error) {
+func (a *StoreAdapter) Search(ctx context.Context, namespace, query string) ([]*RetrievalResult, error) {
 	if a == nil || a.store == nil {
 		return nil, errors.New("knowledge store adapter: store is nil")
 	}
 	scored, err := a.store.HybridSearch(ctx, knowledge.HybridSearchRequest{
 		Query:     query,
-		Namespace: tenantID,
+		Namespace: namespace,
 		FinalK:    10,
 	})
 	if err != nil {
@@ -62,11 +62,11 @@ func (a *StoreAdapter) Search(ctx context.Context, tenantID, query string) ([]*R
 }
 
 // GetKnowledge implements KnowledgeService.GetKnowledge.
-func (a *StoreAdapter) GetKnowledge(ctx context.Context, tenantID, itemID string) (*KnowledgeItem, error) {
+func (a *StoreAdapter) GetKnowledge(ctx context.Context, namespace, itemID string) (*KnowledgeItem, error) {
 	if a == nil || a.store == nil {
 		return nil, errors.New("knowledge store adapter: store is nil")
 	}
-	obj, err := a.store.Get(ctx, tenantID, itemID)
+	obj, err := a.store.Get(ctx, namespace, itemID)
 	if err != nil {
 		return nil, err
 	}
@@ -77,7 +77,7 @@ func (a *StoreAdapter) GetKnowledge(ctx context.Context, tenantID, itemID string
 }
 
 // UpdateKnowledge implements KnowledgeService.UpdateKnowledge.
-func (a *StoreAdapter) UpdateKnowledge(ctx context.Context, tenantID string, item *KnowledgeItem) (*KnowledgeItem, error) {
+func (a *StoreAdapter) UpdateKnowledge(ctx context.Context, namespace string, item *KnowledgeItem) (*KnowledgeItem, error) {
 	if a == nil || a.store == nil {
 		return nil, errors.New("knowledge store adapter: store is nil")
 	}
@@ -85,7 +85,7 @@ func (a *StoreAdapter) UpdateKnowledge(ctx context.Context, tenantID string, ite
 		return nil, errors.New("knowledge item is nil")
 	}
 	obj := fromKnowledgeItem(item)
-	obj.Namespace = tenantID
+	obj.Namespace = namespace
 	// Fetch the existing row for field preservation only — NOT for ownership.
 	// A tenant-scoped Get reports a foreign-namespace row as absent, so the
 	// adapter cannot distinguish "no such row" from "another tenant's row", and
@@ -94,7 +94,7 @@ func (a *StoreAdapter) UpdateKnowledge(ctx context.Context, tenantID string, ite
 	// overwrite a row whose namespace differs (ErrObjectNotFound), which is
 	// what stops a cross-tenant knowledge_update from migrating the victim row
 	// into the caller's namespace via the upsert-on-miss path below.
-	existing, gerr := a.store.Get(ctx, tenantID, item.ID)
+	existing, gerr := a.store.Get(ctx, namespace, item.ID)
 	if gerr != nil {
 		existing = nil
 	}
@@ -160,11 +160,11 @@ func (a *StoreAdapter) AddKnowledge(ctx context.Context, item *KnowledgeItem) (*
 }
 
 // DeleteKnowledge implements KnowledgeService.DeleteKnowledge.
-func (a *StoreAdapter) DeleteKnowledge(ctx context.Context, tenantID, itemID string) error {
+func (a *StoreAdapter) DeleteKnowledge(ctx context.Context, namespace, itemID string) error {
 	if a == nil || a.store == nil {
 		return errors.New("knowledge store adapter: store is nil")
 	}
-	obj, err := a.store.Get(ctx, tenantID, itemID)
+	obj, err := a.store.Get(ctx, namespace, itemID)
 	if err != nil {
 		return err
 	}
@@ -175,10 +175,10 @@ func (a *StoreAdapter) DeleteKnowledge(ctx context.Context, tenantID, itemID str
 	// (GetKnowledge already rejected nil). Any store backend that answers
 	// (nil, nil) instead of an ErrObjectNotFound sentinel turned that
 	// asymmetry into an unguarded delete.
-	if obj == nil || obj.Namespace != tenantID {
+	if obj == nil || obj.Namespace != namespace {
 		return errObjectNotFound
 	}
-	return a.store.Delete(ctx, tenantID, itemID)
+	return a.store.Delete(ctx, namespace, itemID)
 }
 
 // objectText returns the most complete text representation of an object.
@@ -204,7 +204,7 @@ func objectSource(obj *knowledge.KnowledgeObject) string {
 func toKnowledgeItem(obj *knowledge.KnowledgeObject) *KnowledgeItem {
 	return &KnowledgeItem{
 		ID:        obj.ID,
-		TenantID:  obj.Namespace,
+		Namespace: obj.Namespace,
 		Content:   objectText(obj),
 		Source:    objectSource(obj),
 		Tags:      obj.Tags,
@@ -219,7 +219,7 @@ func fromKnowledgeItem(item *KnowledgeItem) *knowledge.KnowledgeObject {
 	now := time.Now()
 	obj := &knowledge.KnowledgeObject{
 		ID:         item.ID,
-		Namespace:  item.TenantID,
+		Namespace:  item.Namespace,
 		Normalized: item.Content,
 		Summary:    item.Content,
 		Tags:       item.Tags,
