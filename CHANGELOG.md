@@ -5,173 +5,110 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.3.3] - Unreleased
+## [0.3.3]
 
-Task execution becomes explainable and selectively tolerant: a failure carries a
+Task execution becomes explainable and selectively tolerant: failures carry a
 retry verdict, retries can back off, and a task can opt into running with a
-recorded input gap instead of being killed by a failed dependency. Tasks that use
-none of this execute and persist exactly as before — pinned by
-`TestDefaultPathPayloadHasNoNewKeys`.
+recorded input gap instead of being killed by a failed dependency. Tasks that
+use none of this execute and persist exactly as before.
 
-> **Upgrade notes**: v0.3.3 removes a set of configuration keys that never had a
-> runtime consumer (see **Removed**). Existing `ares.yaml` files keep loading
-> unchanged — the loader is non-strict, so removed keys are simply ignored, and
-> runtime behaviour is unchanged because those keys did nothing before either.
-> Only two surfaces are observable: `/api/insights` is no longer advertised in
-> the control server's capability `Desc` (the route itself stays a permanent
-> 501), and three event constants that were never emitted were removed. If your
-> own tooling parses `ares.yaml` with strict/known-fields validation, drop the
-> removed keys there.
+> **Upgrade**: removed config keys are silently ignored by the non-strict
+> loader; `/api/insights` no longer advertised (route stays 501); three
+> never-emitted event constants removed. If your tooling validates
+> `ares.yaml` with known-fields, drop the removed keys.
 
 ### Added
 
-- **Failure classification** (`internal/fabric/task/failure.go`): `Fail`
-  classifies the cause, records `retryable` on the `task.failed` event, and
-  requeues only when the cause is retryable AND the budget allows it — previously
-  any failure with budget left was requeued. Unclassified causes fall back to
-  retryable, so a misclassification costs a retry rather than a task.
+- **Failure classification** (`failure.go`): `Fail` classifies the cause;
+  requeues only when retryable AND budget allows. Unclassified → retryable
+  (a misclassification costs a retry, not a task).
 
-- **Task deadlines** (`Task.Deadline`, `Fabric.ExpireDeadlines`): a deadline is
-  an absolute cut-off enforced through its own terminal path (`task.failed` with
-  `ErrTaskDeadlineExceeded`, then the normal cascade) rather than through `Fail`,
-  which would have pushed an expired task back into READY while a retry budget
-  remained. `Acquire` refuses a task whose deadline has already passed, closing
-  the window between expiry and the recovery tick.
+- **Task deadlines** (`Task.Deadline`, `ExpireDeadlines`): absolute cut-off
+  enforced through its own terminal path; `Acquire` refuses an expired task.
 
-- **Retry backoff** (`BackoffBase` / `BackoffMax` / `NextAttemptAt`): the delay
-  before the first retry doubles per attempt, capped by `BackoffMax` and computed
-  so a huge attempt count saturates instead of overflowing. A waiting task is
-  hidden from `ReadyTasks`/`ResumableTasks` and refused by `Acquire`, and its due
-  time is persisted, so a restart cannot make it retry early. A zero `BackoffBase`
-  keeps the previous immediate requeue.
+- **Retry backoff** (`BackoffBase`/`BackoffMax`/`NextAttemptAt`): doubles per
+  attempt, capped, persisted (restart cannot retry early); zero = immediate.
 
-- **Partial input** (`AllowPartial` + `DegradedInputs`): a task that opts in is
-  no longer failed by the cascade when a dependency dies permanently. The failed
-  predecessor is recorded as a gap, and that record is what unblocks scheduling —
-  so a second dependency still outstanding keeps blocking, and strict tasks
-  cascade exactly as before. The gap is exposed as `degraded_inputs` in the
-  task's checkpoint payload and on its `task.ready` event; the failure reason is
-  deliberately not copied, because the failed task's own `LastError` and
-  `task.failed` event stay the single source of truth. `PlanStep.AllowPartial`,
-  `.BackoffBase` and `.BackoffMax` carry the policy into a compiled plan.
+- **Partial input** (`AllowPartial`+`DegradedInputs`): opt-in — a permanently
+  failed dependency records a gap (`degraded_inputs`) instead of cascading
+  FAILED; strict tasks cascade as before.
 
-- **Turn-aware context cleaning** (`memory.turn_aware_cleaning`, opt-in, default
-  off): routes `BuildContext`'s history cleaning through the turn-aware cleaner
-  (`CleanWithTurns`) instead of the flat rule-based `Clean`, keeping
-  `tool_call` ↔ `tool_result` pairs together. Off is byte-for-byte the previous
-  behaviour, and the switch never widens the per-role character budget — a
-  stronger cleaner is not a bigger budget.
+- **Turn-aware context cleaning** (`memory.turn_aware_cleaning`, opt-in):
+  keeps `tool_call`↔`tool_result` pairs together; off = byte-for-byte same.
 
-- **Context token budget** (`memory.context_token_budget`, opt-in, default 0 =
-  off): an estimated-token ceiling applied to the windowed history before
-  cleaning, with a fixed drop order — `system`/schema floor (never dropped) →
-  tool causality → plain history, oldest first. The estimate
-  (`ceil(runes/3) + 4` per message) is deliberately conservative and documented
-  as an approximation rather than a tokenizer, so it can only trim more, never
-  less. Budget first, then cleaning; `0` is a no-op.
+- **Context token budget** (`memory.context_token_budget`, opt-in): estimated
+  token ceiling on windowed history before cleaning; `0` = off.
 
-- **HITL approval gate** (`internal/fabric/task`, `cmd/ares/agent_routes_interrupts.go`):
-  a workflow step can now declare `interrupt: { message: "..." }` in YAML (or
-  set `engine.Step.Interrupt` in Go) to mark it as requiring human approval
-  before execution. The compiled task enters READY but is blocked by an approval
-  gate — it must not be scheduled (`ReadyTasks`/`ResumableTasks` exclude it) or
-  acquired (`Acquire` returns `ErrTaskAwaitingApproval`). A human resolves the
-  gate via `POST /api/interrupts/{id}/resolve` (authWrite) or the Fabric API
-  (`ResolveApproval`). Approve opens the gate (task stays READY, scheduler picks
-  it up next tick); reject drives it to FAILED via the existing `READY→FAILED`
-  transition with cascade. The approval policy and decision are persisted in the
-  event stream and folded back on restore, so a restart cannot silently open a
-  pending gate. Default (no `interrupt` declared) is byte-for-byte compatible
-  with 0.3.3. Two event constants (`interrupt.created` / `interrupt.resolved`)
-  were moved from `internal/runtime` to `internal/ares_events` so the fabric
-  core can reference them without violating the layering gate
-  (`TestFabricCoreMustNotImportRuntime`).
+- **HITL approval gate**: a step declares `interrupt: { message: "..." }`;
+  the compiled task is blocked by an approval gate (excluded from
+  `ReadyTasks`/`ResumableTasks`, `Acquire` returns
+  `ErrTaskAwaitingApproval`). Resolve via
+  `POST /api/interrupts/{id}/resolve` or `ResolveApproval`. Approve → task
+  stays READY (emits `task.ready`); reject → `READY→FAILED` with cascade.
+  Persisted + folded on restore. Two event constants moved to
+  `internal/ares_events` (layering gate).
 
-- **HITL approval SLA, reject blast-radius, agent PAUSED** (increment on the
-  approval gate): a step may set `ApprovalTimeout` — a pending gate past its SLA
-  is auto-rejected by `Fabric.ExpireApprovals` (run in the recovery sweep after
-  deadline-expiry, before lease-requeue) with the same cascade as a manual
-  reject, so a gate cannot stall a plan forever; the SLA is persisted and folded
-  on restore. A fabric-wide fallback (`kernel.approval_sla`, default off) is
-  applied in the single create chokepoint so a gate created via any path —
-  direct `Fabric.Create` as well as `CompilePlan` — inherits an SLA when it sets
-  no per-task one, closing the window where a forgotten SLA meant an indefinite
-  stall; a per-task `ApprovalTimeout` always wins and leaving the fabric default
-  zero preserves the deliberate "wait until a human resolves it" behaviour. `POST /api/interrupts/{id}/resolve` now resolves and computes the
-  reject blast radius (`cascaded_fail` / `allow_partial_degraded`) atomically
-  under one fabric lock (`ResolveApprovalWithBlastRadius`), so the number the
-  approver sees is exactly what cascaded, and an anonymous principal is refused
-  (401). Approve now also emits `task.ready` so a scheduler subscribed to
-  lifecycle events drains the newly-schedulable task without a sweep delay. The
-  agent lifecycle `StateSuspended` is renamed `StatePaused` to end the collision
-  with the task-layer `SUSPENDED` (the wire value stays `"SUSPENDED"` for event
-  /snapshot compatibility), and an execution-layer `busy` flag now excludes an
-  agent from scheduling candidates while it runs a quantum (`IsIdle` reads it;
-  set before the quantum and cleared via defer so a panic cannot strand the
-  agent). Default (no `ApprovalTimeout`, no `interrupt`) stays byte-for-byte
-  compatible.
+- **HITL SLA + blast-radius + agent PAUSED**: `ApprovalTimeout` — pending
+  gate past SLA auto-rejected by `ExpireApprovals` (in recovery sweep);
+  `kernel.approval_sla` fallback applied at the single create chokepoint
+  (`Create` and `CompilePlan` both inherit it when no per-task timeout).
+  Reject now computes blast radius atomically
+  (`ResolveApprovalWithBlastRadius`); anonymous principal → 401.
+  `StateSuspended` renamed `StatePaused` (wire value stays `"SUSPENDED"`);
+  execution-layer `busy` flag excludes an agent from candidates while it
+  runs a quantum (`IsIdle` reads it, cleared via `defer`).
+
+- **Agent scheduling diagnostics** (`stopreason.go`): 8 `StopReason` codes
+  record *why* an agent is not taking work (`unknown`, `budget_reserved`,
+  `budget_exhausted`, `deadline_exceeded`, `capability_unfit`, `crashed`,
+  `recovery_exhausted`, `retired`); the reason rides one `"reason"` field
+  across `task.released` / `agent.killed` / `agent.retired`.
+
+- **Unified admission predicate** (`Fabric.Admissibility`): one predicate for
+  the pre-schedule filter and post-acquire gate; precedence deadline >
+  exhaustion > reserve; `err` admits rather than blocks.
+
+- **Affordability vs capability** (`scheduler_execute.go`): pre-schedule
+  `filterBudgetAffordable` drops over-budget candidates; empty post-filter
+  returns `ErrNoAffordableCandidate` ("raise budget") not
+  `ErrNoCapableCandidate` ("add agent").
+
+- **Immediate reclaim of unfit winners**: `handleStaleWinner` releases a
+  winner with no live executor back to READY (`capability_unfit`,
+  checkpoint preserved) instead of waiting for TTL.
 
 ### Fixed
 
-- **Deterministic L1 priors ordering**
-  (`internal/fabric/agent/planner_cognition.go`): `l1Priors()` claimed to be
-  "sorted by tool name for determinism" but never sorted — the order followed
-  `GetToolSchemas()`'s map iteration and varied between processes, silently
-  defeating prompt-prefix (KV) cache reuse. It now sorts; the ordering
-  invariant is pinned by `TestL1PriorsDeterministicOrder`.
+- **L1 priors ordering** (`planner_cognition.go`): `l1Priors()` now actually
+  sorts by tool name (previously followed map iteration order, silently
+  defeating KV-cache reuse). Pinned by `TestL1PriorsDeterministicOrder`.
 
 ### Removed
 
-- **Unwired configuration shells** (`internal/ares_config`). None of these had a
-  consumer outside the config package, so a YAML that set them was silently doing
-  nothing — the G2 reachability gate (`internal/ares_config/contract_test.go`)
-  had been carrying them as `"C4 backlog"` whitelist entries instead of wiring
-  them. Removed: `Config.Prompts` / `.Output` / `.Validation` / `.Workflow`, the
-  JSON-schema model behind `Validation` (`Schema` / `Field` / `Property` /
-  `CustomSchema` / `SchemaConfig`), `Tools.Defaults` / `Tools.Agents`
-  (`AgentToolConfig`), `Memory.SessionMemory.Enabled`, `Memory.UserProfile` /
-  `Memory.TaskDistillation`, `Storage.PGVector` (`PGVectorConfig`),
-  `Embedding.RedisAddr`, plus their defaults, validators and default-prompt
-  constants. Two were actively misleading: `storage.pgvector.dimension`
-  defaulted to 1536 / `embeddings` while the live tables are 1024-dim, and
-  `session.enabled: false` could not turn the session store off (the real gate
-  is the top-level `memory.enabled`).
-  - The gate itself had silently degraded: `parseConfigStructs` opened only
-    `config.go`, so every dotted whitelist key was never actually consulted and
-    "the gate passes" was self-certifying. It now scans every `config*.go`
-    (parsed structs 4 → 46, needles 19 → 167) and asserts a canary nested path is
-    present. The whitelist is down to its one genuine exemption
-    (`Memory.EnableDistillation`, read through the tri-state
-    `DistillationEnabled()` accessor).
-  - A YAML file that still carries the removed keys keeps loading unchanged — the
-    loader is non-strict, so unknown keys are simply ignored.
+- **Unwired config shells** (`ares_config`): `Prompts`/`Output`/`Validation`/
+  `Workflow`, JSON-schema model, `Tools.Defaults`/`Agents`,
+  `Memory.SessionMemory.Enabled`/`UserProfile`/`TaskDistillation`,
+  `Storage.PGVector`, `Embedding.RedisAddr` — none had a consumer. Two were
+  actively misleading: `pgvector.dimension` defaulted to 1536 (live tables
+  are 1024), `session.enabled: false` could not turn off the session store
+  (real gate is `memory.enabled`). The G2 reachability gate now scans all
+  `config*.go` (structs 4→46, needles 19→167).
 
-- **AHP protocol machinery** (`internal/runtime/protocol/ahp`). `Protocol`,
-  `MessageQueue` / `QueueRegistry`, `DLQ` / `DLQProcessor`, `HeartbeatMonitor`
-  and the codec had **zero production instantiation** — they were reachable only
-  from their own tests. `message.go`, the vocabulary the peer and CLI layers
-  actually use, is kept and gained its own test. The "DLQ auto-retry" described
-  in older guides never ran.
+- **AHP protocol machinery** (`protocol/ahp`): `Protocol`, `MessageQueue`,
+  `DLQ`, `HeartbeatMonitor`, codec — zero production instantiation.
+  `message.go` (the vocabulary peer/CLI layers use) is kept.
 
-- **Kernel dispatch layer / execution-policy facade**. `agentipc.Dispatcher` /
-  `KernelDispatcher` (`internal/agentipc/policy.go`) and the `cmd/ares` kernel
-  bridge (`wireKernelDispatcher` / `enableKernelExecution` /
-  `kernelFabricDispatcher` / `submitFabricTask` / `taskFromPayload`), along with
-  `PolicyFlag` / `ExecutionPolicy` / `SetShadow` and the shadow track, are gone.
-  Their `D()` chain had no production caller — only tests invoked it — while
-  submission already went through `submitPeerTask` (POST /api/tasks) and
-  `k.fabric.Create` (POST /api/graphs). Task submission is now a single entry
-  path, the `dispatcher` System-Runtime pillar node is gone (shutdown order is
-  unchanged), and `kernel.policy` is display-only in `ares status`.
+- **Kernel dispatch facade**: `agentipc/policy.go` and the `cmd/ares` kernel
+  bridge (`wireKernelDispatcher`/`enableKernelExecution`/
+  `kernelFabricDispatcher`/`PolicyFlag`/`SetShadow`) — the `D()` chain had no
+  production caller; submission already went through `submitPeerTask`.
+  Task submission is now a single entry path.
 
-- **Other dead code**: the retired events `EventHandoff` /
-  `EventSubTaskScheduled` / `EventSubTaskStarted` (no emitter, no subscriber);
-  the never-read genome getters `Population.HistoryCount`,
-  `.CurrentMutationRate`, `.RecordRecoveryAction`, `WithAdaptiveConfig`,
-  `WithPerLineageEliteCount` and `PopulationConfig.PerLineageEliteCount`; and
-  `/api/insights` dropped from the capability `Desc` (the route stays a permanent
-  501 — no generator was ever built). `LLMSummarizer` is annotated as a
-  test-only capability reserve rather than deleted.
+- **Other dead code**: events `EventHandoff`/`EventSubTaskScheduled`/
+  `EventSubTaskStarted` (no emitter, no subscriber); never-read genome
+  getters (`HistoryCount`/`CurrentMutationRate`/`RecordRecoveryAction`/
+  `WithAdaptiveConfig`/`WithPerLineageEliteCount`/`PerLineageEliteCount`);
+  `/api/insights` dropped from capability `Desc` (route stays 501).
 
 ## [0.3.2] - 2026-10-09
 
