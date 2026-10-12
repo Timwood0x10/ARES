@@ -58,9 +58,10 @@ planner（想，长节点）和 tool（做，执行）是**两类量子，中间
 
 L2 增长深度默认上限 **10 轮**（`DefaultMaxPlanDepth = 10`，`planner_cognition.go:26`）。撞墙就**强制出 answer 节点**，`ForcedAnswers`（`planner_cognition.go:109`）统计"多少次因深度耗尽被强塞答案"。
 
-- **坑**：真需要 15 轮 plan-tool 的复杂任务，在第 10 轮被**逼着出答案——计划没长完就交差，且默认是静默的**（不盯 ForcedAnswers 指标就发现不了）。
+- **坑**：真需要 15 轮 plan-tool 的复杂任务，在第 10 轮被**逼着出 answer——计划没长完就交差**。
+- **现状（v0.3.3 实测，比初稿好一点）**：撞墙时**有** `logger.Warn("planner: max plan depth reached, forcing answer", ...)`（`planner_cognition.go:266`），并把 `truncated=true` 写进结果 metadata；`ForcedAnswers()`（`:123`）作为 process-wide canary 计数被 canary 测试消费。**真正缺的是"面板 / 告警规则"**——这条 Warn 不会自动变成告警、也不进 metrics。
 - **性质**：10 是防 runaway 的保护，但也**封顶了合法复杂度**。
-- **建议**：`ForcedAnswers` 非零时**打告警**（现在是纯 canary 计数，不上面板/日志告警），让"深度掐断"不再静默。
+- **建议**：把 `ForcedAnswers` 接进 metrics/面板并配阈值告警（现在只有 canary 计数 + 一条 Warn 日志），让"深度掐断"在面板上可见。
 
 ### D2 · L1 约束全拦 → 会话"正常地"啥都没跑 〔缺陷-需可观测〕
 
@@ -110,7 +111,7 @@ Q/D 里最危险的一类是 **"任务看着完成了，其实没收好"且无�
 
 | 触发 | 表现 | 现状 |
 |---|---|---|
-| D1 深度掐断（maxPlanDepth） | 第 10 轮强制出 answer | `ForcedAnswers` 计数，**不告警** |
+| D1 深度掐断（maxPlanDepth） | 第 10 轮强制出 answer | `ForcedAnswers` canary 计数 + 一条 Warn 日志（`planner_cognition.go:266`），**无面板/告警规则** |
 | D2 L1 全拦 | grown==0 强制出 answer | 出正常 COMPLETED，**不标记成因** |
 | Q3 有损续跑 | 换人丢了推理链 | 静默，**答案可能偏** |
 
@@ -127,7 +128,7 @@ Q/D 里最危险的一类是 **"任务看着完成了，其实没收好"且无�
 | **Q3 换人有损续跑** | 缺陷 | 高（上下文依赖型任务） |
 | Q4 抢占粗/串行 | 取舍 | 架构级，不改 |
 | Q5 map 别名 | 隐患(已修) | 后续改 checkpoint 时盯 |
-| **D1 maxPlanDepth 静默** | 缺陷 | 高（加告警） |
+| **D1 maxPlanDepth 静默** | 缺陷 | 高（补面板/告警规则；已有 Warn+计数） |
 | **D2 L1 全拦静默** | 缺陷 | 高（答案带成因标签） |
 | **D3 Reconcile 全量拿锁** | 隐患 | 中（规模化前优化） |
 | D4 事件至少一次 | 取舍 | 知边界 |

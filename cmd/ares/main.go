@@ -14,7 +14,7 @@
 //	ARES evolution status              Show evolution system status
 //	ARES flight inspect <taskID>       Inspect flight data
 //	ARES flight replay <taskID>        Replay flight data
-//	ARES knowledge build <goal>        Build a knowledge graph (via HTTP API)
+//	ARES knowledge export|import        Snapshot the AKG knowledge store (Postgres only)
 //	ARES recall query <text>           Recall archived rounds by text
 //	ARES recall round <N>              Recall one archived round
 //	ARES evolution run [flags]         Run the GA evolution loop
@@ -728,26 +728,30 @@ func tokenSecret(cfg *ares_config.Config) string {
 
 var knowledgeCmd = &cobra.Command{
 	Use:   "knowledge",
-	Short: "Knowledge graph management (via HTTP API)",
-	Long: `Knowledge graph commands are available via the running ARES HTTP API.
+	Short: "Knowledge store (AKG) snapshot management",
+	Long: `Operator commands for the AKG knowledge store.
 
-Usage:
-  ares serve                  Start the HTTP server first
-  curl localhost:PORT/api/v1/knowledge/build -d '{"goal":"..."}'
-  curl localhost:PORT/api/v1/knowledge/context -d '{"goal":"...", "formats":["prompt"]}'`,
+  ares knowledge export --namespace <ns> --out <file>   Write a JSON snapshot
+  ares knowledge import --in <file>                     Restore a snapshot
+
+Both read the storage section of ares.yaml and require the persistent Postgres
+store: the default in-memory store lives inside the serve process and holds
+nothing a separate command can read. These are operator commands, not tools the
+model can call.`,
 }
 
 var knowledgeBuildCmd = &cobra.Command{
 	Use:   "build <goal>",
 	Short: "Build a knowledge graph (requires running ares serve)",
 	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		return fmt.Errorf(`knowledge build is available via the HTTP API.
-Start the server with 'ares serve' first, then send a POST request:
+	RunE: func(_ *cobra.Command, args []string) error {
+		return fmt.Errorf(`knowledge build has no CLI path: the graph is built by the running
+runtime, which streams providers into the store as tasks execute. Start the server
+('ares serve') and let the AKG write loop distil completed tasks; use
+'ares knowledge export' to snapshot what the store holds.
 
-  curl -X POST http://localhost:PORT/api/v1/knowledge/build \
-    -H "Content-Type: application/json" \
-    -d '{"goal":%q, "max_tokens":5000, "for_graph":3000}'`, args[0])
+(The previous message here pointed at POST /api/v1/knowledge/build, an endpoint that is
+not registered anywhere in this tree.) Goal given: %q`, args[0])
 	},
 }
 

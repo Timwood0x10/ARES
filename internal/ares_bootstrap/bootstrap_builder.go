@@ -196,6 +196,7 @@ func (b *bootstrapBuilder) assembleExperience() error {
 	knowStore, akgBridge := wireAKGLoop(cfg, deps, embClient, &b.cleanups)
 	comp.KnowledgeStore = knowStore
 	comp.AKGBridge = akgBridge
+	wireAKGDecay(comp, cfg)
 
 	subscribeDistillationEvents(bctx, comp)
 

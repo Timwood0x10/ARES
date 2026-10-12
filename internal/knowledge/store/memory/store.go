@@ -287,6 +287,35 @@ func (s *Store) SaveRepresentation(_ context.Context, rep *knowledge.Representat
 	return nil
 }
 
+// ListRepresentations returns every representation whose owning object lives in
+// namespace, sorted by ID so a snapshot is reproducible. It satisfies
+// knowledge.RepresentationLister.
+func (s *Store) ListRepresentations(_ context.Context, namespace string) ([]*knowledge.Representation, error) {
+	if namespace == "" {
+		// Fail closed: a representation is reachable only through its owning
+		// object, so an unscoped listing would cross tenants (the same contract
+		// as ApplyDecay and ListByStatus).
+		return nil, errors.New("list representations: namespace is required")
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	reps := make([]*knowledge.Representation, 0, len(s.reps))
+	for _, rep := range s.reps {
+		if rep == nil {
+			continue
+		}
+		// The namespace comes from the OWNING object (F-05): representations
+		// carry no namespace of their own.
+		if obj, ok := s.objects[rep.ObjectID]; !ok || obj.Namespace != namespace {
+			continue
+		}
+		reps = append(reps, cloneRepresentation(rep))
+	}
+	sort.Slice(reps, func(i, j int) bool { return reps[i].ID < reps[j].ID })
+	return reps, nil
+}
+
 func (s *Store) GetRepresentation(_ context.Context, tenantID, objectID, model string) (*knowledge.Representation, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -389,6 +418,28 @@ func (s *Store) HybridSearch(_ context.Context, req knowledge.HybridSearchReques
 		scored[i].Object = cloneObject(scored[i].Object)
 	}
 	return scored, nil
+}
+
+// ListNamespaces returns the distinct non-empty namespaces currently held,
+// sorted so a sweep over them is reproducible. It satisfies
+// knowledge.NamespaceLister.
+func (s *Store) ListNamespaces(_ context.Context) ([]string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	seen := make(map[string]struct{}, len(s.objects))
+	for _, obj := range s.objects {
+		if obj == nil || obj.Namespace == "" {
+			continue
+		}
+		seen[obj.Namespace] = struct{}{}
+	}
+	namespaces := make([]string, 0, len(seen))
+	for ns := range seen {
+		namespaces = append(namespaces, ns)
+	}
+	sort.Strings(namespaces)
+	return namespaces, nil
 }
 
 // ListByStatus returns objects in ns matching one of the given statuses.

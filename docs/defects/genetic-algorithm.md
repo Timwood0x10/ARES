@@ -5,29 +5,37 @@
 > 性质标记：`缺陷`（建议修）/ `隐患`（规模/时间下暴露）/ `取舍`（设计权衡，知边界即可）/ `已做`（有保护，确认非缺陷）。
 >
 > **一句话总纲**：GA 的**骨架是扎实的**（真实成绩打分、三道安全门、回滚网、样本门槛），
-> 但**进化方向缺一根"锚"**——fitness 里没有"做对了没"这个正向信号，
+> 但**进化方向缺一根"锚"**——**运行时** fitness 里没有"做对了没"这个正向信号
+> （`DimensionEval` 通道存在、默认权重 0.25，但运行时 observer 不填充），
 > 而"少做、早交差"在当前 outcome 语义下被算成成功。所以**开自动进化，方向可能越跑越"糊弄"**。
 
 ---
 
 ## G1 · fitness 没有"正确率"信号 → 往"糊弄"漂 〔缺陷 · 最致命〕
 
-**fitness 默认只看"成败 + 快省"，没有 accuracy / quality / completeness**（`fitness_aggregator.go:29` `FitnessWeights`）：
+**fitness 的"行为方向"实际只有 outcome（成败）+ 快省，**运行时路径**没有 accuracy 信号**（`fitness_aggregator.go:29` `FitnessWeights`）：
 
 | 维度 | 有？ | 说明 |
 |---|---|---|
-| `Outcome`（success/failure） | ✅ | 唯一的行为方向项 |
-| cost penalty（token） | ✅ | 乘进 success 分（`observer.go` `costPenalty`） |
-| latency penalty（耗时） | ✅ | 乘进 success 分（`observer.go` `latencyPenalty`） |
+| `Outcome`（success/failure） | ✅ 默认 0.40 | 运行时唯一的行为方向项 |
+| `DimensionEval`（维度评测证据） | ⚠️ **权重存在（默认 0.25），但运行时路径不产出** | `FitnessWeights.DimensionEval`（`:33`/`:57`）；由评测层 `dimension_judge.go` emit，需接 `DimensionJudgeBridge` 才有数据 |
+| cost penalty（token） | ✅ | 乘进 success 分（`observer.go` `costPenalty`，`:96`） |
+| latency penalty（耗时） | ✅ | 乘进 success 分（`observer.go` `latencyPenalty`，`:128`） |
+| `Workflow` / `Scheduler` / `Recovery` | ✅ 默认非 0 | `DefaultFitnessWeights`（`:54`） |
 | `Collaboration` / `ToolCall` | ⚠️ 默认 0（opt-in） | `DefaultFitnessWeights`（`:54`） |
-| **accuracy / quality / completeness / "做对没"** | ❌ **没有** | 无任何维度衡量"答案对不对" |
+| **runtime 路径里的 accuracy / "做对没"** | ❌ **没有** | 运行时 observer 自称 "the sole producer of runtime fitness samples"（`observer.go:422`），只写 outcome（+cost/latency 惩罚），**不写 `dimension_eval`** |
+
+> **更正（v0.3.3 实测）**：`FitnessWeights` **并非"没有质量维度"**——它有一个
+> `DimensionEval float64`，默认权重 **0.25**，可承载评测框架的 correctness/completeness。
+> G1 的准确表述是：**"运行时 observe 路径不产生正确率信号（`dimension_eval` 通道存在但默认无人填充）"**，
+> 而不是"结构里完全没有质量维度"。在默认未接评测桥的部署下，GA 确实只吃 success + 快省。
 
 **实锤链路（"提前交差"被算成 success，且分还更高）**：
 
 ```
 maxPlanDepth=10 撞墙 / L1 全拦
   → planner 强制出 answer（l2graph.go:512 "truncated" / grown==0 强制）
-  → gap body（unansweredBody，l2graph.go:560 "gap body rather than failing"）
+  → gap body（unansweredBody，l2graph.go:518；注释 "gap body rather than an error" 在 :560）
   → 任务仍 COMPLETED（不是 FAILED）
   → observer 从 terminal task.completed 读 Success=true（observer.go:326）
   → cost/latency 还低（没做多少事）→ success 分更高
@@ -56,10 +64,11 @@ G2（影子 A/B）的判定是"**新策略打赢 baseline ≥ 5%**"（`deploymen
 
 | 保护 | 现状 | 锚点 |
 |---|---|---|
-| 最小任务数门槛 | `MinTasksBeforeEvolve`（不到不进化） | `dream_cycle_ga.go` |
-| 最小样本数（影子对比） | `MinSamples` + `WithMinRollbackSamples` | `genome_wiring_idle.go:28` |
+| 最小任务数门槛 | `MinTasksBeforeEvolve`（不到不进化） | `dream_cycle.go:41/136/349`（**非** `dream_cycle_ga.go`） |
+| 最小样本数（回滚看护网门槛） | `MinSamples` + `WithMinRollbackSamples`（属 `RollbackPolicy`，**非**影子门） | `genome_wiring_idle.go:28-29` |
+| 影子门的样本门槛 | `ShadowEvalConfig.MinSamples` | `genome_wiring_idle.go:107-115` |
 | 冷启动中性分 | `ColdStartScore = 0.5`（无证据时不给偏向） | `fitness_aggregator.go:94` |
-| 确定性 scorer 告警 | 影子用确定性打分时**打 warn**（"comparison identical, MinSamples satisfied by repetition, not independent evidence"） | `genome_wiring_idle.go:108` |
+| 确定性 scorer 告警 | 影子用确定性打分时**打 warn**（"comparisons are identical, MinSamples satisfied by repetition, not independent evidence"） | `genome_wiring_idle.go:107-108` |
 
 **含义**：GA **不会**在冷启动拿 3 个样本乱进化，这块是稳的。缺陷只在 G1（方向）和 G2（门的盲区）。
 

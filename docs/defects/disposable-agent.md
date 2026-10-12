@@ -4,6 +4,7 @@
 > 前提共识：`agent = 可丢弃的执行体，任务 = 持久意图`；agent 挂了 → 换人从 checkpoint 续跑，或同 ID 原地复活（death snapshot）。
 > 每条带源码锚点（v0.3.3 行号可能随 dev 分支漂移，定位以符号为准）。
 > 性质标记：`缺陷`（建议修）/ `隐患`（规模/时间/并发下暴露）/ `取舍`（设计权衡，知边界即可）/ `已做`（有保护，确认非缺陷）。
+> **路径说明**：本文所有 `recovery.go` 锚点指向 **`internal/aresrecovery/recovery.go`**（不是 `internal/fabric/agent/recovery.go`，该文件不存在）。
 >
 > **一句话总纲**："可丢弃"的核心（任务比 agent 活得久、lease/epoch 保唯一写者、换人/原地复活两条路）**是扎实的**；
 > 真正的坑集中在**"带过去的脑子有多少"和"复活预算/快照的生命周期"**——
@@ -16,10 +17,16 @@
 原地复活（`RestartAgent`，`recovery.go:287`）带过去的是 `CognitiveState`：
 
 ```
-CognitiveState = { SchemaVersion, Context any, ToolState }   // context.go / agent.go
+// internal/fabric/agent/agent.go:110-128
+CognitiveState = {
+    SchemaVersion, Context any, Observation, WorkingMemory, Decision, ToolState, Checkpoint
+}
 ```
 
-- **`Context` 是 opaque `any`**（`context.go:41` "legacy opaque state carried in Context"）——**存多少完全取决于 agent 有没有往 `Context` 塞东西**。
+> 注：初稿把结构体简写成 `{ SchemaVersion, Context any, ToolState }`，实际还有
+> `Observation` / `WorkingMemory` / `Decision` / `Checkpoint` 四个字段（`agent.go:110-128`）。
+
+- **`Context` 是 opaque `any`**（`agent.go:116`；注释 "legacy opaque state carried in Context" 在 `context.go:85`，初稿写的 `:41` 是漂移锚点）——**存多少完全取决于 agent 有没有往 `Context` 塞东西**。
 - peer 模式里，认知大量是**每量子从 L2 图 + 经验先验现组**的（planner 不存 CoT，见量子缺陷 Q3）。所以 `Context` 常常**很薄 / 甚至是零值**。
 - **后果**：agent 可丢弃的前提是"任务进度持久在 fabric"，但**"复活成多像它自己"取决于 `Context`/`ToolState` 里真塞了多少**。塞得少 = replacement 几乎是"白盘复活"（拿到任务做到哪了，但拿不到它的推理思路）。
 - **建议**：要么明确"复活到底要带什么"（把关键推理/工具中间态结构化进 `CognitiveState`，别留 opaque any），要么**在文档/运维层面承认"可丢弃 = 换人是有损的，原地复活才有脑"**，两条路径的"脑含量"必须可辨识。
@@ -44,8 +51,8 @@ CognitiveState = { SchemaVersion, Context any, ToolState }   // context.go / age
 
 `snapshotStore`（`snapshot.go`）：
 
-- `byID` 有界：超过 `maxDeathSnapshots = 1024`（`snapshot.go:57`）时 **FIFO 淘汰最旧的**（`:69`）。
-- `findByCapability` **偏好最近死亡的**那个（`:54` "prefers the most recent"）。
+- `byID` 有界：超过 `maxDeathSnapshots = 1024`（`snapshot.go:57`）时**淘汰 `DiedAt` 最旧的**（`:69-76`，注释 "Evict the oldest DiedAt entries"）。注意：是**按死亡时间**淘汰，不是插入序 FIFO。
+- `findByCapability` **偏好最近死亡的**那个（`snapshot.go:109-133`，判定 `:125` `snap.DiedAt.After(best.DiedAt)`；注释在 `:54` "prefers the most recent"）。
 
 - **后果**：高故障率 / chaos 风暴 / 大量并发 agent 死亡时，**早期死亡 agent 的快照被挤掉** → 它们后续想原地复活时**找不到 snapshot** → 只能退回"requeue 换新 agent"（= 有损，见 A1）。
 - **坑**：这是**静默的**——快照没了不会报错，只是"从原地复活"悄悄降级成"换人"。排障时容易误以为"复活机制失效"，其实是**快照被 1024 上限挤掉了**。
@@ -67,7 +74,7 @@ CognitiveState = { SchemaVersion, Context any, ToolState }   // context.go / age
 
 ## A5 · 双状态码只对齐了"能不能调度" 〔隐患 · 已知〕
 
-`AgentState`（fabric：IDLE/PAUSED/RETIRED）与 `models.AgentStatus`（subAgent：starting/ready/**busy**/stopping/offline）是两套。`busy` 桥（`agent.go:81`）只对齐了"**能否被调度**"这一个点（`IsIdle = StateIdle && !busy`）。
+`AgentState`（fabric：IDLE/PAUSED/RETIRED，注意 `StatePaused` 的**线值是 `"SUSPENDED"`**，`agent.go:33`）与 `models.AgentStatus`（subAgent：starting/ready/**busy**/stopping/offline，`internal/core/models/types.go:62-70`）是两套。`busy` 桥（`agent.go:81-87`）只对齐了"**能否被调度**"这一个点（`IsIdle = StateIdle && !busy`，实现在 `fabric.go:187`）。
 
 - **没对齐的**：`stopping`（正在优雅停）/ `offline`（已下线）/ `starting`（还没就绪）这些 subAgent 态**没有跨到 fabric 层**——fabric 层只知道 IDLE/PAUSED/RETIRED。
 - **坑**：一个 subAgent 正在 `stopping`（要下线了）但 fabric 层还显示 IDLE → 调度器可能仍把任务派给它 → 派到"即将死的 agent"上，靠 lease 过期兜底才回收。**这是"多一个不协调的窗口"**。
@@ -80,7 +87,7 @@ CognitiveState = { SchemaVersion, Context any, ToolState }   // context.go / age
 | 路径 | 触发 | 带过去的 | 预算 |
 |---|---|---|---|
 | **原地复活**（`RestartAgent`） | agent panic/chaos kill + 有 death snapshot | `CognitiveState`（脑子，可能薄）+ 同 ID | 消耗 lifetime budget |
-| **换人**（`RequeueExpiredLeases` + `RecoverTaskCheckpoint`） | lease 过期 / 无 snapshot | 仅 `Task.Checkpoint`（任务做到哪了） | 不消耗 agent 复活预算 |
+| **换人**（`RequeueExpiredLeases` + **新 replacement executor**；`RecoverTaskCheckpoint` 仅 TEST/CHAOS） | lease 过期 / 无 snapshot | 仅 `Task.Checkpoint`（任务做到哪了） | 不消耗 agent 复活预算 |
 
 - **坑**：同一个"agent 没了"，**最终是原地复活还是换人，取决于"有没有 snapshot、snapshot 有没有被 A3 挤掉、recovery loop 有没有 wire 到"**。两条路"脑含量"不同（A1）、预算不同（A2），但**对上层常常是静默的**——你不知道任务是被"复活的原 agent"做完的，还是被"全新 agent"做完的。
 - **建议**：给"最终由哪种路径续跑"打标签/指标（`StopReason` 已有 `crashed` vs 无，但"实际续跑走 snapshot 还是 fresh"没单独记），让"续跑耐久度"可观测。
@@ -91,7 +98,7 @@ CognitiveState = { SchemaVersion, Context any, ToolState }   // context.go / age
 
 | 保护 | 现状 | 锚点 |
 |---|---|---|
-| 唯一写者（lease + epoch fencing） | 旧 holder 的写全被 `ErrEpochMismatch` 拒，换人不会和僵尸 agent 打架 | `fabric_lifecycle.go` ownerLocked / epoch |
+| 唯一写者（lease + epoch fencing） | 旧 holder 的写全被 `ErrEpochMismatch` 拒，换人不会和僵尸 agent 打架 | `ErrEpochMismatch` 定义在 `internal/fabric/task/fabric.go:22`，拒写在 `ownerLocked`（`fabric.go:367-377`；`fabric_lifecycle.go` 只是调用方） |
 | 换人保 checkpoint（resume not restart） | requeue 保留 `Checkpoint`，不回 READY 从头跑 | `recovery.go` RecoverTaskCheckpoint |
 | 复活预算防风暴 | 原子预留（reserve 再 sleep）+ 指数 backoff（1s/2s/4s…30s cap） | `recovery.go` restarts + Backoff |
 | 成功复活不回退计数（防循环） | "broken agent 不能无限重启循环" | `recovery.go:289` |

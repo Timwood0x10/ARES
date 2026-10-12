@@ -396,6 +396,40 @@ func (s *Store) SaveRepresentation(ctx context.Context, rep *knowledge.Represent
 	return err
 }
 
+// ListRepresentations returns every representation whose owning object lives in
+// namespace, ordered by ID so a snapshot is reproducible. It satisfies
+// knowledge.RepresentationLister.
+func (s *Store) ListRepresentations(ctx context.Context, namespace string) ([]*knowledge.Representation, error) {
+	if namespace == "" {
+		// Fail closed: a vector is reachable only through its owning object, so
+		// an unscoped listing would cross tenants (F-05).
+		return nil, errors.New("list representations: namespace is required")
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT r.id, r.object_id, r.model, r.dimension, r.vector, r.metadata, r.created_at
+		FROM akf_representations r
+		JOIN akf_objects o ON o.id = r.object_id
+		WHERE o.namespace = ?
+		ORDER BY r.id`, namespace)
+	if err != nil {
+		return nil, fmt.Errorf("list representations: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var reps []*knowledge.Representation
+	for rows.Next() {
+		rep, scanErr := scanRepresentation(rows)
+		if scanErr != nil {
+			return nil, fmt.Errorf("list representations: scan: %w", scanErr)
+		}
+		reps = append(reps, rep)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list representations: rows: %w", err)
+	}
+	return reps, nil
+}
+
 func (s *Store) GetRepresentation(ctx context.Context, tenantID, objectID, model string) (*knowledge.Representation, error) {
 	// Tenant scope via the owning object (F-05): the representations table
 	// carries no namespace column, so the join enforces that the caller's
@@ -697,6 +731,31 @@ func scanRepresentation(row scanner) (*knowledge.Representation, error) {
 	_ = json.Unmarshal([]byte(metaJSON), &rep.Metadata)
 	rep.CreatedAt = parseTimeField(createdAtStr, "representation", rep.ID)
 	return &rep, nil
+}
+
+// ListNamespaces returns the distinct non-empty namespaces currently held,
+// ordered by namespace so a sweep over them is reproducible. It satisfies
+// knowledge.NamespaceLister.
+func (s *Store) ListNamespaces(ctx context.Context) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT DISTINCT namespace FROM akf_objects WHERE namespace <> '' ORDER BY namespace`)
+	if err != nil {
+		return nil, fmt.Errorf("list namespaces: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var namespaces []string
+	for rows.Next() {
+		var ns string
+		if err := rows.Scan(&ns); err != nil {
+			return nil, fmt.Errorf("list namespaces: scan: %w", err)
+		}
+		namespaces = append(namespaces, ns)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list namespaces: rows: %w", err)
+	}
+	return namespaces, nil
 }
 
 // ListByStatus returns objects in ns matching the given status.

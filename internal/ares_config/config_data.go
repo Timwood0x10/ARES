@@ -1,5 +1,7 @@
 package ares_config
 
+import "time"
+
 // StorageConfig holds storage configuration.
 type StorageConfig struct {
 	Enabled  bool   `yaml:"enabled"` // Enable storage
@@ -120,6 +122,21 @@ type KnowledgeConfig struct {
 	// be included. Snippets below this threshold are filtered out.
 	// Defaults to 0.4 when zero (only applied when RetrievalEnabled is true).
 	MinScore float64 `yaml:"min_score"`
+
+	// DecayArchiveAfter archives AKG objects older than this duration by moving
+	// them to StatusSuperseded (M4). Objects are never deleted — the pass
+	// changes lifecycle status only, so history stays traceable.
+	//
+	// Zero (the default) disables the pass entirely, preserving pre-0.3.4
+	// behaviour. When set, the pass runs on the maintenance worker's periodic
+	// sweep and is namespace-scoped: it enumerates the store's namespaces and
+	// archives within each, because an unscoped sweep would cross tenants (and,
+	// under M5, users). A store that cannot enumerate namespaces is skipped
+	// with a warning rather than scanned blind.
+	//
+	// Staleness downweighting needs no schedule: freshness is computed at query
+	// time by the quality gate, so an old object already ranks lower.
+	DecayArchiveAfter time.Duration `yaml:"decay_archive_after"`
 }
 
 // SessionConfig holds session memory configuration. The store is gated by the

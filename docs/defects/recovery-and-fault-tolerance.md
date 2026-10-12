@@ -44,6 +44,15 @@
 - **和 G1（GA 往糊弄漂）同族**：G1 是"优化目标缺正确率"，T-F1 是"重试判定缺永久错识别"。
   两个都是"**默认偏向乐观、代价由漏配的一方承担**"。
 
+> **更正（v0.3.3 实测）**：识别**不是完全没有**。`markPermanentStepCause`
+> （`internal/kernel/scheduler_quantum.go:45-50`，接线在 `:129`）已把
+> `apperrors.ErrInvalidArgument`（"输入非法"类，含 LLM 超长 prompt，见 `internal/llm/generate.go:42-44`）
+> **自动升为 `MarkPermanent`**，量子收尾即终态、不烧重试预算（测试
+> `internal/kernel/permanent_cause_test.go` 锁定）。它的注释自述这是**后来**补的生产入口
+> （"`MarkPermanent` had zero production callers"）。
+> 所以本条的**准确表述**是：**"输入非法（InvalidArgument）已被覆盖；但'引用不存在的工具 / 上游 404'
+> 这类仍未被识别，忘 `MarkPermanent` 就白烧满预算"**，而非"没有任何永久错识别"。
+
 **建议**：给 `classifyFailure` 加**已知永久错的识别**（如 4xx 类、"引用不存在"、
 `context.Canceled` 的特定子类），或至少**在"重试次数 > N 仍未好"时自动升级告警**
 （"这个任务重试了 5 次还挂，八成是永久错，别再烧了"），别静默烧满预算。
@@ -96,9 +105,10 @@ it as permanent would silently retire retry budget"。
 
 ### A-F2 · stale-winner 只救"当前正在 drain 的那个"任务 〔取舍 + 隐患〕
 
-`scheduler_recovery.go` 的 stale-winner 恢复（`WithRecoveryHint`/`notifyRecovery`，`:9-42`）：
+stale-winner 恢复分两处：**hint 接线**在 `scheduler_recovery.go`（`WithRecoveryHint`/`notifyRecovery`/`hasRecoveryHint`，`:19/28/42`），**真正的 reclaim 逻辑 `handleStaleWinner` 在 `internal/kernel/scheduler_execute.go:144-174`**（初稿把它归到 `scheduler_recovery.go`，是错的）：
 - 触发点在 **scheduler drain 某个任务时**发现"winner 没活 executor"→ `handleStaleWinner`
-  即时 `ReleaseReason(capability_unfit)`（见 §4.3 那份）。
+  即时 `ReleaseReason(..., agentfabric.StopUnfit.String())`（`scheduler_execute.go:146/158`；
+  `StopUnfit = "capability_unfit"`，`stopreason.go:61`）（见 §4.3 那份）。
 - **坑（边界）**：这是"**per-drained-task**"的即时救——**只救"恰好这一轮 drain 到的任务"**。
   一个 winner 死了、但它的任务**此刻没被 drain 到**（不是最高优）→ **不会即时 reclaim**，
   仍然**等 lease TTL + sweep（A-F1）**。
@@ -121,11 +131,22 @@ it as permanent would silently retire retry budget"。
 - **建议**：requeue 后**紧跟一次 drain 试探**（或至少记一条"requeued but N capable agents
   all inadmissible"的关联日志），别让"requeue 了"给人"恢复了"的错觉。
 
+> **更正（v0.3.3 实测）**："完全静默"要打折扣：`runSweepChain` 在 requeue 后**有**日志
+> `"requeued expired task(s)"`（`kernel_loop.go:277-279`），并**紧跟** `bindReplacements(requeued)`
+> （`:280`）——peer 模式下会探测 `hasCapableExecutor` 并给任务绑 replacement executor
+> （`:369-435`）。所以"requeue 后紧跟一次试探"这条建议**已部分实现**（只是不是 drain 试探）。
+> 缺陷内核仍成立：**"没活人接"这件事本身没有单独告警**，日志不知道下游会撞 `NoCapable` 还是 `NoAffordable`。
+
 ### A-F4 · checkpoint 续跑是有损的（接 A1/Q3） 〔缺陷 · 跨文档〕
 
 `RecoverTaskCheckpoint`（`recovery.go:222`）让 replacement **从 checkpoint 续**，但 checkpoint
-只有 `StepCheckpoint`（做到第几步 + 前驱输出），**没有 LLM 推理链**（同 §disposable-agent A1、
-§dynamic-dag Q3）。
+**没有 LLM 推理链**（同 §disposable-agent A1、§dynamic-dag Q3）。
+
+- **更正（v0.3.3 实测）**：checkpoint **并非只有 `StepCheckpoint`**——`CheckpointEnvelope`
+  还带 `UserProfile/Payload/UsedExperienceID/StrategyID/SessionID/InputTokens/OutputTokens/
+  TenantID/LastError`（`internal/fabric/task/checkpoint_schema.go:67-133`）。所以"只有 StepCheckpoint"
+  的措辞不准；**但对的部分是**：整份 envelope 里**没有任何 reasoning 字段**，恢复的进度内容即
+  `StepCheckpoint`，所以"续的是进度不是思路"成立。
 
 - **坑**：agent 层"换人续跑"这条最常用路径，**续的是"进度"不是"思路"**。对"强依赖推理链"的
   任务，换人后可能**走偏**（前驱输出在，但"为什么这么排"丢了）。
@@ -166,7 +187,7 @@ it as permanent would silently retire retry budget"。
 | **stale-winner 即时 reclaim（热路径）** | 正在 drain 的活，winner 没 executor 立即回 READY（不等 TTL） | `scheduler_recovery.go` + §4.3 |
 | **recovery-bound executor 不被 reconcile 误删** | replacement 故意活在 fabric 外，terminal 才摘 | `scheduler_recovery.go:72` |
 | **checkpoint 持久（跨重启）** | 重启后 requeue 的活能从 checkpoint 续 | `recovery.go` RecoverTaskCheckpoint |
-| **lease + epoch fencing 唯一写者** | 僵尸 holder 的写被 `ErrEpochMismatch` 拒 | `fabric_lifecycle.go` |
+| **lease + epoch fencing 唯一写者** | 僵尸 holder 的写被 `ErrEpochMismatch` 拒 | 定义 `internal/fabric/task/fabric.go:22`，拒写 `ownerLocked` `fabric.go:367-377` |
 
 ---
 

@@ -78,40 +78,47 @@ dead-letter"）。
 **前提共识**：任务工厂负责把"任务 + 依赖边"建进 fabric。`Create`（`fabric_lifecycle.go:20`）
 建单任务，`CompilePlan`（`workflow_plan.go:121`）批量建一张 DAG。
 
-### T1 · LLM 扩编路径不校验"依赖是否存在" → 悬挂引用静默卡死 〔缺陷 · 最该修〕
+### T1 · LLM 的 `create_task` 不校验"依赖是否存在" → 悬挂引用静默卡死 〔缺陷 · 最该修〕
 
-**先分清两条建任务的路径**（这决定缺陷到底在谁身上）：
+**先分清三条建任务的路径**（这决定缺陷到底在谁身上）：
 
 | 路径 | 入口 | 依赖存在性校验 | 环检测 |
 |---|---|---|---|
-| **operator 提交协作图** | `POST /api/graphs` → `CompilePlan` | ✅ `resolveDependencies`（`workflow_plan.go:34`） | ✅ `detectPlanCycle`（`:38`） |
-| **LLM 运行时扩编** | `create_task`/`create_plan` → **裸 `k.fabric.Create`**（`syscall.go:475/721`） | ❌ 只 copy slice（`fabric_lifecycle.go:53`） | ❌ 无 |
+| **operator 提交协作图** | `POST /api/graphs` → `runCollabGraph` → **裸 `k.fabric.Create`**（`agent_routes_tasks.go:645`） | ✅ **自带**边存在性检查（`:611-614`） | ✅ **自带** `findCycle`（Kahn 拓扑，`:617`，定义 `:738`） |
+| **LLM `create_task`** | `create_task` → **裸 `k.fabric.Create`**（`syscall.go:489`） | ❌ 只 copy slice（`fabric_lifecycle.go:53`） | ❌ 无 |
+| **LLM `create_plan`** | `create_plan` → `k.fabric.CompilePlan`（`plan.go:164`） | ✅ `resolveDependencies`（`workflow_plan.go:154`，定义 `:302`） | ✅ `detectPlanCycle`（`:158`，定义 `:332`） |
 
-- **坑（只发生在 LLM 路径）**：`Create` 对 `Dependencies` **只 copy slice、不校验被依赖的
+- **坑（只发生在 `create_task` 这条路）**：`Create` 对 `Dependencies` **只 copy slice、不校验被依赖的
   task 是否真的在 fabric 里**。LLM 在量子里"我造个子任务 X，它依赖 Y"，若 **Y 拼错 /
   没建成 / 已被 GC** → X 的依赖门**永远不满足** → X **永远不 READY**，**无任何报错/告警**
   （"依赖不存在"和"依赖还没跑完"在 gate 里长得一样）。
 - **后果**：LLM 侧一个悬挂依赖能把**整条下游链**永久卡死在等待，且静默。比 maxPlanDepth
   （D1）**更隐蔽**的"任务永远起不来"。
-- **注意**：**operator 走 `CompilePlan` 的路径是安全的**（有 `resolveDependencies`）——所以
-  "任务工厂整体不校验"是**错的**，缺陷精确在**"LLM 直连 `Create` 这条路"**。
-- **建议**：给 LLM 的 `create_task`/`create_plan`（`syscall.go`）**补依赖存在性校验**（复用
-  `resolveDependencies` 那套，对"依赖已存在的 task ID"做 `existing` 检查，不存在 → 拒绝/告警），
+- **注意（重要 · 与初稿不同）**：**`create_plan` 与 operator 两条路都是有保护的**——
+  - `create_plan`（`agentsyscall/plan.go:164`）走的是 `k.fabric.CompilePlan`，**有**
+    `resolveDependencies`（`:154`）+ `detectPlanCycle`（`:158`）；
+  - operator 的 `POST /api/graphs` 走 `runCollabGraph` 的**裸 `Create`**，但它**自己的**边存在性检查
+    （`agent_routes_tasks.go:611-614`）+ `findCycle`（`:617`，Kahn）挡住了悬挂/成环——
+    **注意它并不经过 `CompilePlan`**（初稿把这条路径归给 `CompilePlan/resolveDependencies/detectPlanCycle`，是错的）。
+  - 所以缺陷**精确在 `create_task` 这条"单任务"旁路**上，**不要把 `create_plan` 也算进来**。
+- **建议**：给 LLM 的 `create_task`（`syscall.go:489` 之前）**补依赖存在性校验**（复用
+  `CompilePlan` 的 `resolveDependencies`，对"依赖已存在的 task ID"做 `existing` 检查，不存在 → 拒绝/告警），
   或在 sweep 时对"依赖 N 分钟仍全未满足"打 `unresolvable_dependency` 指标。
 
-### T2 · LLM 扩编路径无环检测 → 依赖成环永不 READY 〔缺陷〕
+### T2 · LLM 的 `create_task` 无环检测 → 依赖成环永不 READY 〔缺陷〕
 
-同样分两条路：**operator 的 `CompilePlan` 有环检测**（`detectPlanCycle`，DFS 三色，
-`workflow_plan.go:38`），但 **LLM 的 `create_task` 逐个裸 `Create`（`syscall.go:721` 循环调
-`CreateTask`）不环检测**。
+同样看路径：**`create_plan` 走 `CompilePlan` 有环检测**（`detectPlanCycle`，DFS 三色，
+`workflow_plan.go:158/:332`），**operator 协作图有自己的 `findCycle`**（Kahn，
+`agent_routes_tasks.go:738`），但 **LLM 的 `create_task` 是裸 `Create`（`syscall.go:489`）**
+——**单任务入口根本没有"整图"概念，自然无环检测**。
 
-- **坑（只发生在 LLM 路径）**：A 依赖 B、B 依赖 A（或三角环）经 LLM 逐个 `Create` 进来 →
+- **坑（只发生在 `create_task` 路径）**：A 依赖 B、B 依赖 A（或三角环）经 LLM 逐个 `create_task` 进来 →
   三者**永远到不了"依赖全完成"** → 永远不 READY，静默。
-- **为什么 LLM 路径更容易出环**：operator 提交的是**一次性定好的 DAG**（编译时就能查），
-  LLM 是**边跑边长节点**、多量子多次 `Create`，环可能是**跨量子分次长出来的**——单次
-  `Create` 的局部视角根本看不到"全图已闭合"。
-- **建议**：LLM 扩编路径在每次 `create_task` 后做一次**增量环检查**（或至少"目标能否被
-  拓扑完成"的可达性探测），把环挡在建图时而非留给运行时。
+- **为什么 `create_task` 路径更容易出环**：operator 提交的是**一次性定好的 DAG**（提交时就能查），
+  `create_plan` 也是**一批**一起编译；只有 `create_task` 是**边跑边逐个长节点**、多量子多次调用，
+  环可能是**跨量子分次长出来的**——单次 `Create` 的局部视角根本看不到"全图已闭合"。
+- **建议**：`create_task` 建图后做一次**增量环检查**（或至少"目标能否被拓扑完成"的可达性探测），
+  把环挡在建图时而非留给运行时。
 
 ### T3 · "依赖 gate 全靠 ReadyTasks 过滤，Acquire 不查依赖" 〔取舍 · 需配套告警〕
 
@@ -124,10 +131,15 @@ checked here — 'what may run' is [gated elsewhere by] dependencySatisfied"）�
 - **建议**：这本身不用改，但要**给"卡住的任务"配可观测**（T1 的告警）——否则"好设计"会被
   T1/T2 的静默缺陷拖累成"任务莫名不动"。
 
-> **更正（重要）**：任务工厂**并非"整体不校验"**——operator 的 `CompilePlan` 路径有
-> `resolveDependencies`（依赖存在性）+ `detectPlanCycle`（环检测）。缺陷**精确在"LLM 直连
-> `Create` 这条路"（`syscall.go:475/721`）绕过了这两个校验**。不要把 T1/T2 理解成"任务工厂缺
-> 环检测"，而是"LLM 运行时扩编这条旁路没复用 CompilePlan 的校验"。
+> **更正（重要 · 二次修订）**：三条路径的校验现状要分清——
+> - **`create_plan`**（`plan.go:164`）走 `k.fabric.CompilePlan`，**有** `resolveDependencies`
+>   （`workflow_plan.go:154`）+ `detectPlanCycle`（`:158`）；
+> - **operator 协作图**（`agent_routes_tasks.go:645`）走**裸 `Create`**，但**自带**边存在性检查
+>   （`:611-614`）+ `findCycle`（`:617`，Kahn）——**它并不经过 `CompilePlan`**；
+> - **`create_task`**（`syscall.go:489`）走**裸 `Create`**，**没有任何**依赖存在性/环校验。
+>
+> 所以 T1/T2 的缺陷**只精确在 `create_task` 这一条**；不要把 `create_plan` / operator 也算进来，
+> 也**不要**再说成"operator 走 `CompilePlan` 所以安全"（安全的原因不同：是有自己的 `findCycle`）。
 
 ### T4 · 协作图（`collab-`）GC 与悬挂依赖的交互 〔隐患〕
 
@@ -156,14 +168,17 @@ LLM 通过 `spawn_agent`（`agentsyscall`）触发，或 operator/内核预建�
 
 ### A2 · 能力为空的 agent = "能管不能跑" 〔隐患 · 易配错〕
 
-`Spawn` 允许 `Capabilities` 为空 → 注释（`lifecycle.go:121/131`）："Without a cognitive
-capability, the spawned agent has **no execution capability** and cannot run a quantum
-(it can still be managed by [lifecycle])"。
+`Spawn` 允许 `Capabilities` 为空 → 注释（`lifecycle.go:42-44`，`SpawnSpec.CognitionFactory`）：
+"Without a cognitive capability, the spawned agent has **no execution capability** and cannot
+run a quantum (it can still be managed by [lifecycle])"。（初稿锚点 `:121/131` 不准；`:131` 是近似注释。）
 
 - **坑**：误配（LLM 调 `spawn_agent` 没带能力 / 带错能力名）→ 建出一个**永远排不上调度**的
   agent（`CapabilityOverlap=0`，score 恒 0）。它**占着池子 quota 但不干活**，且**不报错**。
-- **建议**：spawn 时**非空校验能力**（有 parent 时注释已要求 "non-empty capabilities when a
-  parent is present"，但 top-level spawn 似乎可空）；或对"建成但 0 能力"的 agent 打 warn。
+- **实证（v0.3.3）**：`validateSpawnSpec`（`lifecycle.go:176-188`）**只**校验 `Identity` 含空格
+  （→ `ErrInvalidSpawnSpec`），**完全不校验 capabilities**——所以能力为空对**所有** spawn
+  （不只有 parent 的）都放行；`lifecycle.go:69` 那句 "non-empty capabilities when a parent is
+  present" **只是注释、代码从未强制**。
+- **建议**：spawn 时**非空校验能力**；或对"建成但 0 能力"的 agent 打 warn。
 
 ### A3 · 资源 quota 是 claim/release，漏释放 = 池子假死 〔隐患〕
 
@@ -191,16 +206,17 @@ parent death ≠ child death)"）——父 agent 退役，子 agent **继续活�
 
 | 保护 | 现状 | 锚点 |
 |---|---|---|
-| **operator 建图已做依赖存在性校验** | `CompilePlan` → `resolveDependencies` | `workflow_plan.go:34` |
-| **operator 建图已做环检测** | `CompilePlan` → `detectPlanCycle`（DFS 三色） | `workflow_plan.go:38` |
-| spawn 前校验 spec（重复 ID / 空能力 / 非法） | `ErrAgentExists`/`ErrInvalidSpawnSpec` | `lifecycle.go:82` |
-| quota claim 记录 + kill/retire 释放 | 防"无限 spawn 撑爆" | `lifecycle.go:72` |
-| L2 能力校验（spawn 只出 L2 能力） | 防"造出永久空转的 agent" | `agentsyscall` spawn 门 |
+| **operator 建图已做依赖存在性校验** | `runCollabGraph` 自带边存在性检查（**非** `CompilePlan`） | `agent_routes_tasks.go:611-614` |
+| **operator 建图已做环检测** | `runCollabGraph` 自带 `findCycle`（Kahn，**非** `detectPlanCycle`） | `agent_routes_tasks.go:617/:738` |
+| **`create_plan` 已做依赖+环校验** | 走 `k.fabric.CompilePlan` → `resolveDependencies` + `detectPlanCycle` | `plan.go:164`；`workflow_plan.go:154/158` |
+| spawn 前校验 spec（重复 ID / 非法 ID） | `ErrAgentExists`/`ErrInvalidSpawnSpec`；**注意：不校验空能力**（见 A2） | `lifecycle.go:108-110/183` |
+| quota claim 记录 + kill/retire 释放 | 防"无限 spawn 撑爆" | `lifecycle.go:115/162`（claim）、`:280/:325`（release） |
+| L2 能力校验（spawn 只出 L2 能力） | 防"造出永久空转的 agent" | `syscall.go:359-361` |
 
-> 结论：**"任务工厂缺校验"只在 LLM 直连 `Create` 这条旁路上成立**（T1/T2）；
-> operator 经 `CompilePlan` 提交协作图的路径是**有保护的**。修 T1/T2 的正确姿势是
-> **让 LLM 扩编复用 `CompilePlan` 的校验（或等价增量校验）**，而不是"给任务工厂加环检测"
-> （它已经有了）。
+> 结论：**"任务工厂缺校验"只在 LLM `create_task` 这条"单任务"旁路上成立**（T1/T2）；
+> `create_plan`（走 `CompilePlan`）与 operator 协作图（自带 `findCycle`）**都是有保护的**。
+> 修 T1/T2 的正确姿势是**让 `create_task` 复用 `create_plan`/operator 已有的那类校验（或等价增量校验）**，
+> 而不是"给任务工厂加环检测"（`CompilePlan` 已经有了，operator 也有自己的）。
 
 ---
 
@@ -208,17 +224,20 @@ parent death ≠ child death)"）——父 agent 退役，子 agent **继续活�
 
 ```
 协作是"触发"非"对话"（I1）
-   + 触发会产生新任务（T1/T2：LLM 直连 Create 绕过 CompilePlan 的依赖/环校验 → 悬挂/成环静默卡死）
+   + 触发会产生新任务（T1/T2：LLM `create_task` 裸 Create，绕过 CompilePlan 的依赖/环校验 → 悬挂/成环静默卡死）
    + 触发会 spawn 新 agent（A2 空能力 / A3 quota 泄漏 / A4 孤儿累积）
 ```
 
 **真正的一类根因**：三个模块都是**"引用式建/连"**（依赖 ID、spawn、协作目标），
-但"被引用的东西到底存不存在 / 还活没活 / 有没有被清掉"的**一致性校验，在 operator 路径
-（CompilePlan）有，在 LLM 运行时直连路径（裸 `Create`）没有**。所以最该补的是一族
-**"引用完整性"守卫**——重点是把 operator 路径已有的校验（`resolveDependencies` +
-`detectPlanCycle`）**移植到 LLM 扩编路径**：
+但"被引用的东西到底存不存在 / 还活没活 / 有没有被清掉"的**一致性校验分布不均**：
+- **operator 协作图**有（但走的是**自己的**边存在性检查 + `findCycle`，**不是** `CompilePlan`）；
+- **LLM `create_plan`** 有（走 `CompilePlan` → `resolveDependencies` + `detectPlanCycle`）；
+- **LLM `create_task`（单任务）** ❌ **没有**。
+
+所以最该补的是一族**"引用完整性"守卫**——重点是给**单任务的 `create_task` 这条路**补上
+`create_plan`/operator 已有的那类校验（或等价增量校验）：
 - T1 依赖存在性校验（LLM `create_task`）
-- T2 增量环检测（LLM 跨量子长图）
+- T2 增量环检测（LLM `create_task` 跨量子长图）
 - T4 GC 前引用计数
 - A3 quota 孤儿回收 + TTL
 - I4 dead-letter 落持久（可审计）
@@ -231,7 +250,7 @@ parent death ≠ child death)"）——父 agent 退役，子 agent **继续活�
 |---|---|---|
 | **I1 ask 不回写** | 缺陷 | 高（协作"对话"缺半截） |
 | **T1 悬挂依赖** | 缺陷 | 高（静默卡死整链） |
-| **T2 依赖成环** | 缺陷 | 高（`CompilePlan` 加拓扑校验） |
+| **T2 依赖成环** | 缺陷 | 高（`create_task` 补增量环检测） |
 | A3 quota 泄漏假死 | 隐患 | 中（加 TTL/孤儿回收） |
 | A4 孤儿 agent 累积 | 取舍 | 中（reaper 回收） |
 | I4 dead-letter 非持久 | 隐患 | 中（落 EventStore） |

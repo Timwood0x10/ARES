@@ -205,21 +205,42 @@ a bug in the README.
 - **Most 0.3.4 AKG features are not wired into production yet** — the API surface is
   frozen, the features behind it are not live. Verified by repo-wide grep for non-test
   callers: the M2.5 relation validation gate (`ValidateRelation` / `FilterRelations`),
-  M3 export/import (`ExportStore` / `ImportStore` / `StoreExporter`), M4 decay and build
-  observability (`ApplyDecay` / `BuildReport` / `ContentFingerprint`), and M6 tiered
-  retrieval + eval (`TieredRetriever` / `EvalHarness`) all have **zero production
-  callers**. Each carries a `TODO(tech-debt)` at its definition. Do not read "API frozen"
-  as "the features shipped".
+  M4 build observability (`BuildReport` / `ContentFingerprint`), and M6 tiered retrieval +
+  eval (`TieredRetriever` / `EvalHarness`) all have **zero production callers**, and each
+  carries a `TODO(tech-debt)` at its definition. Two exceptions, both operator surfaces
+  (never MCP tools — a knowledge dump is not a capability to hand a model):
+  M4 archival (`ApplyDecay`) runs on the maintenance sweep when
+  `knowledge.decay_archive_after` is set (off by default), visiting each namespace the
+  store lists; and M3 snapshots (`ExportStore` / `ImportStore`) are driven by
+  `ares knowledge export|import`, which requires the persistent Postgres store. A snapshot
+  carries embedding vectors, not only objects — without them a restore silently degraded
+  recall to lexical. Do not read "API frozen" as "the features shipped".
 - **M5 "one user one graph" is wired, but only takes effect when a submission declares a
   user.** The user is caller-declared (submit `user_id`), carried in the task payload —
   which the checkpoint envelope already persists, so no envelope schema change was
   needed — stamped onto the execution context as `userctx` (mirroring `tenantctx`) and
   resolved to `tu:<hash(tenant)>:<hash(user)>` on both the write (`DistillBridge`) and
   read (`StoreProvider`) sides. With no `user_id` the behaviour is unchanged (the tenant
-  namespace). Two caveats: facts written before a user is declared live under the
+  namespace). Three caveats: facts written before a user is declared live under the
   tenant/`default` namespace, so enabling `user_id` makes them invisible to user-scoped
-  recall until migrated; and the user, like the tenant, is caller-declared today rather
-  than derived from the authenticated principal (see *Tenancy Model* / `SECURITY.md`).
+  recall until migrated. M3's export/import now exists (`ares knowledge export|import`),
+  but it restores into the namespace the snapshot was taken from: re-homing existing facts
+  under a user namespace is still **not** supported, because the store keys objects by ID
+  alone and refuses to move an existing ID to a different namespace (see
+  `KnowledgeStore.Save`, which rejects the overwrite as `ErrObjectNotFound` rather than let
+  a caller re-home another scope's row). Migration therefore needs either re-exported
+  object IDs or an explicit store-level move, neither of which exists yet; the user, like the tenant,
+  is caller-declared rather than derived from the authenticated principal (see *Tenancy
+  Model* / `SECURITY.md`); and the AKG store defaults to **in-memory** —
+  `buildBootstrapKnowledgeStore` returns the in-memory store unless `storage.enabled:
+  true` plus a Postgres host is configured — so a distilled user graph does not survive a
+  restart out of the box.
+- **The whole loop needs three switches, and all three default off.** Declare `user_id` on
+  the submission, run a persistent store (`storage.enabled: true` + Postgres), and opt into
+  recall injection (`memory.enable_rag: true` — retrieval fires only when that gate is on
+  *and* retrievers are wired). With any switch missing the AKG pipeline still runs, but
+  in-process only and only through the explicit MCP tools; "the longer you use it, the
+  better it knows you" is not the default behaviour.
 - **Benchmarks are single-run and single-machine** (Apple M3 Max, `-benchtime=500ms`):
   a smoke baseline for before/after comparison, not an SLA.
 - **Coverage is uneven.** `cmd/ares` (the HTTP/serve surface) and the

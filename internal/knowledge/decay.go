@@ -35,10 +35,17 @@ func DefaultDecayConfig() DecayConfig {
 	}
 }
 
-// TODO(tech-debt): ApplyDecay has no production caller — nothing schedules a
-// decay pass — and BuildReport (below) has no producer at all: it is only
+// Wiring (M4): ApplyDecay runs on the maintenance sweep
+// (ares_bootstrap.akgDecayCleaner), which enumerates the store's namespaces via
+// knowledge.NamespaceLister and archives within each — an unscoped pass would
+// cross tenants (and, under M5, users). It is opt-in through
+// knowledge.decay_archive_after and off by default, so upgrading does not start
+// archiving anyone's knowledge. A store that cannot enumerate its namespaces is
+// skipped with a warning rather than scanned blind.
+//
+// TODO(tech-debt): BuildReport (below) still has no producer — it is only
 // constructed in tests, so TestAKG_BuildReport_ExposesCounters proves nothing
-// about a real build. Wire both (or delete) before claiming M4.
+// about a real build. Wire it or delete it.
 //
 // ApplyDecay archives stale objects by moving them to StatusSuperseded.
 // It never deletes objects: the knowledge stays in the store, only its
