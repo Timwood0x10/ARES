@@ -54,7 +54,18 @@ func cloneObject(obj *knowledge.KnowledgeObject) *knowledge.KnowledgeObject {
 		cp.Tags = append([]string(nil), obj.Tags...)
 	}
 	if obj.Evidence != nil {
-		cp.Evidence = append([]knowledge.Evidence(nil), obj.Evidence...)
+		// Evidence is a value slice, but its Span is a *EvidenceRef: copy the
+		// slice AND each pointed-to span, otherwise a caller editing a span
+		// after Save mutates the stored copy (same isolation contract as the
+		// Quality copy below).
+		cp.Evidence = make([]knowledge.Evidence, len(obj.Evidence))
+		copy(cp.Evidence, obj.Evidence)
+		for i := range cp.Evidence {
+			if obj.Evidence[i].Span != nil {
+				s := *obj.Evidence[i].Span
+				cp.Evidence[i].Span = &s
+			}
+		}
 	}
 	if obj.Representations != nil {
 		cp.Representations = make(map[string]string, len(obj.Representations))
@@ -65,6 +76,23 @@ func cloneObject(obj *knowledge.KnowledgeObject) *knowledge.KnowledgeObject {
 	if obj.Quality != nil {
 		q := *obj.Quality
 		cp.Quality = &q
+	}
+	// The temporal fields are *time.Time: a shallow copy would alias the
+	// caller's pointers, so a caller mutating *obj.ValidFrom after Save (or
+	// through a pointer returned by Get) would race with every reader under
+	// RLock — the same isolation break the Quality copy above exists to
+	// prevent. Copy the pointed-to values.
+	if obj.ValidFrom != nil {
+		v := *obj.ValidFrom
+		cp.ValidFrom = &v
+	}
+	if obj.ValidUntil != nil {
+		v := *obj.ValidUntil
+		cp.ValidUntil = &v
+	}
+	if obj.ObservedAt != nil {
+		v := *obj.ObservedAt
+		cp.ObservedAt = &v
 	}
 	if obj.Relations != nil {
 		cp.Relations = append([]knowledge.Relation(nil), obj.Relations...)

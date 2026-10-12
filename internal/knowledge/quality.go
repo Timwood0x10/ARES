@@ -13,10 +13,19 @@ type QualityGateConfig struct {
 	MaxFactsPerIngest int     `yaml:"max_facts_per_ingest"`
 	EnableDedup       bool    `yaml:"enable_dedup"`
 	DedupThreshold    float64 `yaml:"dedup_threshold"`
+	// RequireEvidence controls whether the quality gate rejects objects that
+	// carry no evidence. It defaults to false for backward compatibility:
+	// pre-0.3.4 stored objects and DistillBridge writes that predate the
+	// evidence requirement are admitted as before. Once a deployment has
+	// backfilled evidence on all write paths, set this to true to make the
+	// gate fail-closed on un-evidenced facts.
+	RequireEvidence bool `yaml:"require_evidence"`
 }
 
 // DefaultQualityGateConfig returns the 0.2.9 defaults (MinFinalScore 0.55
-// replaces the old hardcoded 0.4).
+// replaces the old hardcoded 0.4). RequireEvidence defaults to false so
+// existing deployments keep admitting objects without evidence until the
+// operator explicitly opts in.
 func DefaultQualityGateConfig() QualityGateConfig {
 	return QualityGateConfig{
 		MinExtraction:     0.5,
@@ -25,6 +34,7 @@ func DefaultQualityGateConfig() QualityGateConfig {
 		MaxFactsPerIngest: 50,
 		EnableDedup:       true,
 		DedupThreshold:    0.85,
+		RequireEvidence:   false,
 	}
 }
 
@@ -45,8 +55,22 @@ func (c QualityGateConfig) ComputeFinal(q *Quality) float64 {
 // evidence, and freshness. ConsistencyScore defaults to 1.0 (store-layer dedup
 // can lower it later). UsageScore is read from metadata["usage_count"]. It
 // returns nil when obj is nil.
+//
+// When RequireEvidence is true and obj has no evidence, Evaluate returns nil:
+// the caller (DistillBridge scoreQuality) treats a nil Quality as a rejection
+// (Confidence stays 0, below MinFinalScore, so the object is never promoted).
+// This is the fail-closed path: pre-0.3.4 objects with no evidence are still
+// admitted when RequireEvidence is false (the default), preserving backward
+// compatibility.
 func (c QualityGateConfig) Evaluate(obj *KnowledgeObject) *Quality {
 	if obj == nil {
+		return nil
+	}
+	// Fail-closed: when RequireEvidence is on, an object with no evidence
+	// is rejected. Objects already marked active (existing stored facts)
+	// are exempt — the migration path is "active = grandfathered", not
+	// "re-evaluate everything".
+	if c.RequireEvidence && len(obj.Evidence) == 0 && obj.Status != StatusActive {
 		return nil
 	}
 	q := &Quality{}

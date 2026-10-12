@@ -20,7 +20,7 @@
 |---|---|
 | Kernel / task fabric / SDK | exercised end-to-end and regression-locked; **not a hardened runtime** |
 | GA evolution + patch pipeline | runs end-to-end; the apply gate and the multi-objective entry points are **not wired** |
-| **AKG** (Adaptive Knowledge Graph) | **BETA / experimental — API may change, not production-ready** |
+| **AKG** (Adaptive Knowledge Graph) | **Stable (0.3.4) — API frozen, schema versioned** |
 
 AKG is the **first attempt to build a knowledge graph without relying on LLMs**
 (rule-based relation extraction, BM25-style lexical + vector hybrid search,
@@ -157,8 +157,8 @@ How it holds together:
 **Actual isolation boundaries** (stated honestly — do not read this as end-to-end column-level tenancy):
 
 - **Experience/distillation store**: every query in `internal/storage/postgres/repositories/experience_repository.go` carries a `tenant_id = $N` predicate — column-level isolation. Distillation writes take the tenant through a context seam (`distillation.WithTenant`), so a runtime override reaches the write side.
-- **Knowledge isolates by namespace, not by a tenant column**: `KnowledgeStore` objects have a `namespace` column and no `tenant_id` column. `StoreProvider` maps tenant → namespace via `namespaceFor` (explicit `Scope.Namespaces` → `tenantctx` → provider default), so isolation depends on the caller always supplying one; the underlying `Get`/`Delete`/`Search` carry no tenant or namespace predicate of their own.
-- **AKG-distilled facts are not tenant-split today**: `akgNamespace` in `internal/ares_bootstrap/knowledge_akg.go` is the constant `"default"`, so every AKG fact lands in the same namespace.
+- **Knowledge isolates by namespace, not by a tenant column**: `KnowledgeStore` objects have a `namespace` column and no `tenant_id` column. `StoreProvider` maps tenant → namespace via `namespaceFor` (explicit `Scope.Namespaces` → `tenantctx` → provider default), so isolation depends on the caller always supplying one. The underlying `Get`/`Delete`/`Search` all carry `AND namespace = ?` predicates (`store/postgres/store.go`, `store/sqlite/store.go`), so cross-tenant access returns `ErrObjectNotFound` rather than leaking data.
+- **AKG-distilled facts default to `"default"` but respect tenant context**: `akgNamespace` in `internal/ares_bootstrap/knowledge_akg.go` is the constant `"default"` as a fallback, but `tenantctx` propagation overrides it when a tenant is present, so AKG facts land in the caller's namespace when one is supplied and in `"default"` when not.
 
 - **Multi-tenant deployments**: the tenant is currently *caller-declared* at the HTTP boundary. A genuine multi-tenant deployment must bind the tenant at the auth layer (e.g. derive it from the JWT principal server-side) rather than trust the request body — and the two knowledge-side gaps above must be closed first before the isolation is end to end. See `SECURITY.md` → Tenancy.
 
@@ -170,8 +170,9 @@ a bug in the README.
 
 - **Tenancy is not end-to-end.** The experience/distillation store isolates per
   tenant *column*, but the knowledge side isolates by **namespace** and depends on the
-  caller supplying one; AKG-distilled facts all land in the `"default"` namespace. A
-  real multi-tenant deployment must bind the tenant at the auth layer rather than
+  caller supplying one; AKG-distilled facts default to the `"default"` namespace when no
+  tenant context is present, and land in the caller's namespace when one is supplied.
+  A real multi-tenant deployment must bind the tenant at the auth layer rather than
   trust the request body — see *Tenancy Model* above and `SECURITY.md` → Tenancy.
 - **`WithMaxTokens` is a peer-lifetime budget, not a per-run cap.** Since 0.3.1 it is
   enforced (no longer a silent no-op): it bridges into the runtime governance budget
@@ -197,8 +198,10 @@ a bug in the README.
 - **The default fabric is in-memory and single-process.** Task durability across a
   restart requires the Postgres-backed event store; this is not a distributed
   scheduler.
-- **AKG is BETA** (see the Status table at the top): its API may change, and it is the
-  least finished subsystem.
+- **AKG API is frozen (0.3.4)**: the core types (`KnowledgeObject`, `GraphProvider`,
+  `KnowledgeStore`) and the 4 MCP tools are stable. Schema versioning (`SchemaVersion`)
+  and temporal fields (`valid_from`/`valid_until`/`observed_at`/`source_version`) are
+  additive — zero values preserve pre-0.3.4 behaviour.
 - **Benchmarks are single-run and single-machine** (Apple M3 Max, `-benchtime=500ms`):
   a smoke baseline for before/after comparison, not an SLA.
 - **Coverage is uneven.** `cmd/ares` (the HTTP/serve surface) and the
@@ -235,7 +238,7 @@ stay green on every change.
 
 ## AKG — Knowledge Graph Without LLMs (Experimental)
 
-*AKG is BETA (see the Status table at the top and *Honest limits*): the API may change.*
+*AKG API is frozen as of 0.3.4 (see the Status table at the top). Schema versioning and temporal fields are additive.*
 
 ### Exploration goal
 

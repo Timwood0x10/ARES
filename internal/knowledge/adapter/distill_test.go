@@ -104,7 +104,7 @@ func (s *testStore) Promote(_ context.Context, _, _ string, _ *knowledge.Quality
 
 func TestDistillBridge_NilDistiller(t *testing.T) {
 	bridge := NewDistillBridge(nil, nil, nil, "test")
-	_, err := bridge.DistillConversation(context.Background(), "conv1", nil, "t1", "u1")
+	_, err := bridge.DistillConversation(context.Background(), "conv1", nil, "t1", "")
 	if err == nil {
 		t.Error("expected error for nil distiller")
 	}
@@ -112,7 +112,7 @@ func TestDistillBridge_NilDistiller(t *testing.T) {
 
 func TestDistillBridge_NoMessages(t *testing.T) {
 	bridge := NewDistillBridge(&testDistiller{}, nil, nil, "test")
-	_, err := bridge.DistillConversation(context.Background(), "conv1", []distillation.Message{}, "t1", "u1")
+	_, err := bridge.DistillConversation(context.Background(), "conv1", []distillation.Message{}, "t1", "")
 	if err == nil {
 		t.Error("expected error for empty messages")
 	}
@@ -127,7 +127,7 @@ func TestDistillBridge_FullPipeline(t *testing.T) {
 		{Role: "assistant", Content: "Redis for caching."},
 	}
 
-	objects, err := bridge.DistillConversation(context.Background(), "conv1", msgs, "t1", "u1")
+	objects, err := bridge.DistillConversation(context.Background(), "conv1", msgs, "t1", "")
 	if err != nil {
 		t.Fatalf("DistillConversation error: %v", err)
 	}
@@ -156,7 +156,7 @@ func TestDistillBridge_ConfidenceClamped(t *testing.T) {
 		{Role: "assistant", Content: "test response"},
 	}
 
-	objects, err := bridge.DistillConversation(context.Background(), "conv2", msgs, "t1", "u1")
+	objects, err := bridge.DistillConversation(context.Background(), "conv2", msgs, "t1", "")
 	if err != nil {
 		t.Fatalf("DistillConversation error: %v", err)
 	}
@@ -184,7 +184,7 @@ func TestDistillBridge_WithPipeline(t *testing.T) {
 		{Role: "assistant", Content: "Redis for caching."},
 	}
 
-	objects, err := bridge.DistillConversation(context.Background(), "conv3", msgs, "t1", "u1")
+	objects, err := bridge.DistillConversation(context.Background(), "conv3", msgs, "t1", "")
 	if err != nil {
 		t.Fatalf("DistillConversation with pipeline error: %v", err)
 	}
@@ -274,7 +274,7 @@ func TestDistillBridge_QualityGate(t *testing.T) {
 				{Role: "assistant", Content: "a"},
 			}
 
-			objects, err := bridge.DistillConversation(context.Background(), "conv1", msgs, "t1", "u1")
+			objects, err := bridge.DistillConversation(context.Background(), "conv1", msgs, "t1", "")
 			if err != nil {
 				t.Fatalf("DistillConversation error: %v", err)
 			}
@@ -327,7 +327,7 @@ func TestDistillBridge_ObjectsLandInTheCallerTenantNamespace(t *testing.T) {
 	b := mustBridge(t, store, "bridge-default")
 
 	if _, err := b.DistillConversation(context.Background(), "conv-1",
-		[]distillation.Message{{Role: "user", Content: "hello"}}, "tenant-acme", "u1"); err != nil {
+		[]distillation.Message{{Role: "user", Content: "hello"}}, "tenant-acme", ""); err != nil {
 		t.Fatalf("DistillConversation: %v", err)
 	}
 
@@ -352,7 +352,7 @@ func TestDistillBridge_EmptyTenantKeepsBridgeNamespace(t *testing.T) {
 	b := mustBridge(t, store, "bridge-default")
 
 	if _, err := b.DistillConversation(context.Background(), "conv-1",
-		[]distillation.Message{{Role: "user", Content: "hello"}}, "", "u1"); err != nil {
+		[]distillation.Message{{Role: "user", Content: "hello"}}, "", ""); err != nil {
 		t.Fatalf("DistillConversation: %v", err)
 	}
 	for id, obj := range store.objects {
@@ -373,7 +373,7 @@ func TestDistillBridge_IDsDoNotCollideAcrossTenants(t *testing.T) {
 	b := mustBridge(t, store, "bridge-default")
 
 	msgs := []distillation.Message{{Role: "user", Content: "identical content"}}
-	if _, err := b.DistillConversation(context.Background(), "conv-a", msgs, "tenant-a", "u1"); err != nil {
+	if _, err := b.DistillConversation(context.Background(), "conv-a", msgs, "tenant-a", ""); err != nil {
 		t.Fatalf("tenant-a: %v", err)
 	}
 	firstCount := len(store.objects)
@@ -381,7 +381,7 @@ func TestDistillBridge_IDsDoNotCollideAcrossTenants(t *testing.T) {
 		t.Fatal("expected tenant-a to persist objects")
 	}
 
-	if _, err := b.DistillConversation(context.Background(), "conv-b", msgs, "tenant-b", "u1"); err != nil {
+	if _, err := b.DistillConversation(context.Background(), "conv-b", msgs, "tenant-b", ""); err != nil {
 		t.Fatalf("tenant-b: %v", err)
 	}
 	if len(store.objects) <= firstCount {

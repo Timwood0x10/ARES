@@ -31,6 +31,28 @@ type Evidence struct {
 	Ref       string    `json:"ref"`       // Reference ID, e.g. row ID, commit hash
 	Weight    float64   `json:"weight"`    // Confidence weight [0, 1]
 	Timestamp time.Time `json:"timestamp"` // When the evidence was collected
+	// Span narrows the evidence to a specific location within the source
+	// document or data set. It is a POINTER so an unspecified span is ABSENT
+	// on the wire: encoding/json's omitempty does not omit a zero struct, so a
+	// value field would serialise "span":{} on every evidence item. Nil means
+	// "unspecified", keeping the field additive — pre-0.3.4 evidence
+	// deserialises with a nil Span and behaves exactly as before.
+	Span *EvidenceRef `json:"span,omitempty"`
+}
+
+// EvidenceRef pinpoints where in a source the evidence was extracted from.
+// All fields are optional (zero = unspecified) to keep the type additive.
+type EvidenceRef struct {
+	// StartLine is the 1-based line number where the evidence starts (0 = unspecified).
+	StartLine int `json:"start_line,omitempty"`
+	// EndLine is the 1-based line number where the evidence ends (0 = unspecified).
+	EndLine int `json:"end_line,omitempty"`
+	// StartOffset is the 0-based byte offset within the source (0 = unspecified, -1 = N/A).
+	StartOffset int `json:"start_offset,omitempty"`
+	// EndOffset is the 0-based byte offset where the evidence ends (0 = unspecified, -1 = N/A).
+	EndOffset int `json:"end_offset,omitempty"`
+	// Text is a short verbatim excerpt of the evidence span for human review.
+	Text string `json:"text,omitempty"`
 }
 
 // KnowledgeObject is the universal knowledge representation.
@@ -204,6 +226,12 @@ func MigrateObject(o *KnowledgeObject) error {
 			// only records the version.
 			o.SchemaVersion = 1
 		default:
+			// An unrecognised revision (e.g. a corrupted negative version) is
+			// deliberately NOT wrapped in ErrSchemaVersionTooNew: list/search
+			// callers skip "newer" records on purpose, but an unknown version
+			// is a data-integrity error that should surface rather than be
+			// silently dropped. Only a record from a future build gets the
+			// skippable sentinel.
 			return fmt.Errorf("knowledge: no migration step from object %q schema version %d",
 				o.ID, o.SchemaVersion)
 		}

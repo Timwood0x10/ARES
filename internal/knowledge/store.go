@@ -1,6 +1,11 @@
 package knowledge
 
-import "context"
+import (
+	"context"
+	"errors"
+	"fmt"
+	"time"
+)
 
 // Query defines filter criteria for KnowledgeStore queries.
 type Query struct {
@@ -92,4 +97,102 @@ type ScoredObject struct {
 	VectorScore  float64
 	LexicalScore float64
 	FinalScore   float64
+}
+
+// StoreSnapshot is a portable, self-describing export of a KnowledgeStore
+// slice. It carries the schema version and the objects so an import on a
+// different backend or a fresh instance can reconstruct the corpus without
+// re-ingesting from source. The format is deliberately simple JSON: every
+// KnowledgeObject already serialises to JSON, and wrapping in a versioned
+// envelope makes future migrations detectable on read.
+type StoreSnapshot struct {
+	// SchemaVersion is the KnowledgeObject schema revision at export time.
+	SchemaVersion int `json:"schema_version"`
+	// ExportedAt is the wall-clock time the snapshot was taken.
+	ExportedAt time.Time `json:"exported_at"`
+	// Namespace is the namespace filter used for the export (empty = all).
+	Namespace string `json:"namespace,omitempty"`
+	// Objects is the exported knowledge objects.
+	Objects []*KnowledgeObject `json:"objects"`
+}
+
+// TODO(tech-debt): ExportStore / ImportStore / StoreExporter have no
+// production caller yet. Two gaps to close before real backup/migration use:
+//   - the snapshot carries no Representations, so a round-trip silently drops
+//     embeddings and recall degrades to lexical (the round-trip test only
+//     checks objects);
+//   - StoreSnapshot.SchemaVersion is written but never validated on import
+//     (the real guard is the per-object MigrateObject).
+//
+// StoreExporter is an optional capability of a KnowledgeStore: the ability
+// to export all objects in a namespace (or all namespaces) as a portable
+// snapshot, and to import a snapshot back. Stores that do not implement
+// this interface are still valid KnowledgeStores — export/import is an
+// add-on for backup, migration, and GA reproducibility (M3).
+//
+// Export streams all objects matching the given namespace (empty = all
+// namespaces) through the snapshot. Import persists the snapshot's objects
+// via the store's existing Save path so all write-side guards (namespace
+// isolation, schema stamping, quality gate) apply — import does NOT bypass
+// the write contract.
+type StoreExporter interface {
+	Export(ctx context.Context, namespace string) (*StoreSnapshot, error)
+	Import(ctx context.Context, snapshot *StoreSnapshot) error
+}
+
+// ExportStore creates a portable snapshot from a KnowledgeStore using the
+// store's Query method. It does not require the store to implement
+// StoreExporter; it falls back to Query when the store does not. The
+// snapshot is stamped with the current schema version so future migrations
+// can detect the shape it was written in.
+func ExportStore(ctx context.Context, store KnowledgeStore, namespace string) (*StoreSnapshot, error) {
+	// Fast path: store implements StoreExporter.
+	if se, ok := store.(StoreExporter); ok {
+		return se.Export(ctx, namespace)
+	}
+	// Fallback: use Query.
+	q := Query{Limit: 0}
+	if namespace != "" {
+		q.Namespace = namespace
+	}
+	objects, err := store.Query(ctx, q)
+	if err != nil {
+		return nil, fmt.Errorf("export store: query: %w", err)
+	}
+	return &StoreSnapshot{
+		SchemaVersion: CurrentSchemaVersion,
+		ExportedAt:    time.Now(),
+		Namespace:     namespace,
+		Objects:       objects,
+	}, nil
+}
+
+// ImportStore persists a snapshot's objects into a KnowledgeStore via the
+// store's existing Save path. It stamps each object with the current schema
+// version (MigrateObject upgrades legacy records on read) and deduplicates
+// by object ID — re-importing the same snapshot is idempotent. The import
+// does NOT bypass write-side guards: namespace isolation, schema stamping,
+// and the quality gate all apply through Save.
+func ImportStore(ctx context.Context, store KnowledgeStore, snapshot *StoreSnapshot) error {
+	if snapshot == nil {
+		return errors.New("import store: snapshot is nil")
+	}
+	// Fast path: store implements StoreExporter.
+	if se, ok := store.(StoreExporter); ok {
+		return se.Import(ctx, snapshot)
+	}
+	// Fallback: use Save.
+	objects := snapshot.Objects
+	// Migrate each object to the current schema so Save receives
+	// well-formed records.
+	for _, obj := range objects {
+		if err := MigrateObject(obj); err != nil {
+			return fmt.Errorf("import store: migrate object %q: %w", obj.ID, err)
+		}
+	}
+	StampWriteSchema(objects...)
+	if err := store.Save(ctx, objects...); err != nil {
+		return fmt.Errorf("import store: save: %w", err)
+	}
+	return nil
 }

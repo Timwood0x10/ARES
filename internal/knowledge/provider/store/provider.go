@@ -61,11 +61,14 @@ func New(name string, st knowledge.KnowledgeStore, emb embedding.EmbeddingServic
 //
 //  1. the intent's declared scope — a caller explicitly asking for one wins
 //     over everything (an explicit override is never second-guessed);
-//  2. the request-scoped tenant in ctx (tenantctx) — the scheduler stamps the
+//  2. the request-scoped user in ctx (knowledge.WithUserContext, M5) combined
+//     with the tenant in ctx (tenantctx) — resolves the user-level namespace
+//     so recall hits the same graph the write side distilled into;
+//  3. the request-scoped tenant in ctx (tenantctx) — the scheduler stamps the
 //     executing task's tenant onto the quantum's context, so recall resolves
 //     the same tenant the DistillBridge write side attributes facts to, per
 //     request instead of per process;
-//  3. the constructor's static namespace — the documented default for
+//  4. the constructor's static namespace — the documented default for
 //     tenant-less requests, matching the write side's fallback.
 //
 // Only the FIRST declared scope namespace is honoured: the schema allows a
@@ -76,7 +79,18 @@ func (p *StoreProvider) namespaceFor(ctx context.Context, intent knowledge.Inten
 	if len(intent.Scope.Namespaces) > 0 && intent.Scope.Namespaces[0] != "" {
 		return intent.Scope.Namespaces[0]
 	}
-	if ns := tenantctx.From(ctx); ns != "" {
+	// M5: resolve user-level namespace from context when available.
+	//
+	// TODO(tech-debt): userID is always "" today — nothing in production calls
+	// knowledge.WithUserContext — so this resolves to the tenant namespace and
+	// the user-level split stays inert. See the TODO in
+	// knowledge/user_context.go for the missing wiring.
+	//
+	// ResolveUserNamespace already falls back to tenantID (and thus covers the
+	// former `if tenantID != ""` branch, which was unreachable).
+	tenantID := tenantctx.From(ctx)
+	userID := knowledge.UserFromContext(ctx)
+	if ns := knowledge.ResolveUserNamespace(tenantID, userID, ""); ns != "" {
 		return ns
 	}
 	return p.ns

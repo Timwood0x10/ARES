@@ -140,3 +140,113 @@ func stripTrailingPunct(s string) string {
 	s = strings.TrimRight(s, " \t\n\r.,;:。，；：、!?！？")
 	return s
 }
+
+// TODO(tech-debt): the relation validation gate below (RelationGateConfig /
+// ValidateRelation / FilterRelations) has NO production caller yet — nothing
+// in the distill/extract path invokes it. Wire it into
+// DistillBridge.extractRelations (or the pipeline) before relying on it, or
+// delete it. Note wiring it changes extraction behaviour (it drops
+// type-incompatible relations), so it should land with its own test.
+//
+// RelationGateConfig configures the relation validation gate (M2.5).
+type RelationGateConfig struct {
+	// RequireEvidence, when true, rejects candidate relations that have no
+	// evidence span. The RelationExtractor always sets Evidence to the match
+	// text, so this only rejects relations added by other paths.
+	RequireEvidence bool
+}
+
+// DefaultRelationGateConfig returns the default relation gate config:
+// evidence not required (backward compatible with pre-0.3.4 relations).
+func DefaultRelationGateConfig() RelationGateConfig {
+	return RelationGateConfig{
+		RequireEvidence: false,
+	}
+}
+
+// ValidateRelation checks a candidate relation against the M2.5 relation
+// validation gate:
+//  1. Predicate is in AllowedPredicates.
+//  2. Subject type is compatible with the predicate (e.g. "fixes" requires
+//     a non-user subject — a user cannot "fix" a bug in the knowledge graph).
+//  3. Evidence is present (when RequireEvidence is true).
+//  4. The relation does not conflict with existing knowledge (same predicate
+//     + same target already present is not a conflict, it is a confirmation;
+//     a contradiction would be "fixes" + "causes" on the same target, which
+//     is left for the LLM to resolve — the gate only rejects structurally
+//     invalid relations).
+//
+// Returns true when the relation passes the gate, false when it is rejected.
+func ValidateRelation(rel Relation, subjectType ObjectType, cfg RelationGateConfig) bool {
+	// Step 1: predicate must be in the allowed vocabulary.
+	if !AllowedPredicates[rel.Predicate] {
+		return false
+	}
+
+	// Step 2: subject-predicate type compatibility. Some predicates only make
+	// sense for certain subject types. The checks are deliberately permissive:
+	// they reject obvious type errors, not edge cases.
+	if !isPredicateCompatible(rel.Predicate, subjectType) {
+		return false
+	}
+
+	// Step 3: evidence requirement (when enabled).
+	if cfg.RequireEvidence && rel.Evidence == "" {
+		return false
+	}
+
+	// Step 4: conflict detection is left to the store-layer dedup; the gate
+	// only validates the structural shape of a single candidate relation.
+	return true
+}
+
+// isPredicateCompatible checks whether the predicate makes semantic sense for
+// the given subject type. Unknown predicates (not in the map) are allowed by
+// default — the AllowedPredicates check in ValidateRelation already filters
+// unknown predicates.
+func isPredicateCompatible(predicate string, subjectType ObjectType) bool {
+	// No subject type means we cannot check compatibility — allow it.
+	if subjectType == "" {
+		return true
+	}
+	switch predicate {
+	case RelFixes:
+		// "fixes" requires a non-user, non-project subject: typically a
+		// commit, decision, or tool result. A "user" cannot "fix" a bug
+		// in the knowledge graph sense.
+		switch subjectType {
+		case ObjectUser, ObjectProject, ObjectDocument:
+			return false
+		}
+		return true
+	case RelDependsOn, RelCalls:
+		// "depends_on" and "calls" require a technical subject: code,
+		// project, commit, or workflow. A "user" or "memory" does not
+		// "depend on" or "call" things in the knowledge graph.
+		switch subjectType {
+		case ObjectUser, ObjectMemory, ObjectDecision:
+			return false
+		}
+		return true
+	default:
+		// All other predicates (belongs_to, similar_to, supersedes, etc.)
+		// are universally applicable.
+		return true
+	}
+}
+
+// FilterRelations applies the relation validation gate to a slice of
+// candidate relations, returning only those that pass. The subject type is
+// taken from the owning object.
+func FilterRelations(rels []Relation, subjectType ObjectType, cfg RelationGateConfig) []Relation {
+	if len(rels) == 0 {
+		return rels
+	}
+	filtered := rels[:0:0]
+	for _, rel := range rels {
+		if ValidateRelation(rel, subjectType, cfg) {
+			filtered = append(filtered, rel)
+		}
+	}
+	return filtered
+}

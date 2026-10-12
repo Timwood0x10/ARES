@@ -177,8 +177,6 @@ func (a *KnowledgeAgent) ProcessStream(ctx context.Context, input any) (<-chan b
 // NewKnowledgeAgent). If one instance is shared by multiple concurrently
 // executing nodes, Process must be safe for concurrent use itself — the
 // returned adapter adds no synchronization.
-//
-// Beta: the graph-node adapter API is BETA and may change between releases.
 func (a *KnowledgeAgent) AsGraphNode() func(ctx context.Context, state map[string]any) error {
 	return func(ctx context.Context, state map[string]any) error {
 		input := state["input"]

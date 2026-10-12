@@ -324,3 +324,56 @@ func TestKnowledgeObject_ZeroTemporalOmittedFromJSON(t *testing.T) {
 		t.Errorf("unset bounds must stay nil after round-trip, got %v / %v", back.ValidUntil, back.ObservedAt)
 	}
 }
+
+// TestSchemaMigration_MissingVersionTreatedAsBaseline pins that a record
+// decoded from JSON with no schema_version field (as written by any pre-0.3.4
+// build) is treated as a baseline (version 0) record: it migrates to the
+// current version without error, its temporal fields stay nil (legacy
+// behaviour), and IsValidAt remains true for any instant.
+func TestSchemaMigration_MissingVersionTreatedAsBaseline(t *testing.T) {
+	t.Parallel()
+
+	// Simulates a record written before 0.3.4: no schema_version key at all.
+	legacyJSON := `{
+		"id": "pre_034",
+		"type": "memory",
+		"summary": "fact from before schema versioning",
+		"confidence": 0.85,
+		"version": 1,
+		"created_at": "2025-06-01T00:00:00Z",
+		"updated_at": "2025-06-02T00:00:00Z"
+	}`
+
+	var obj knowledge.KnowledgeObject
+	if err := json.Unmarshal([]byte(legacyJSON), &obj); err != nil {
+		t.Fatalf("unmarshal legacy JSON: %v", err)
+	}
+
+	// A missing schema_version field decodes as 0 — the baseline sentinel.
+	if obj.SchemaVersion != 0 {
+		t.Fatalf("missing schema_version should decode as 0, got %d", obj.SchemaVersion)
+	}
+
+	// Migration upgrades 0 → current without error and preserves legacy semantics.
+	if err := knowledge.MigrateObject(&obj); err != nil {
+		t.Fatalf("MigrateObject: %v", err)
+	}
+	if obj.SchemaVersion != knowledge.CurrentSchemaVersion {
+		t.Errorf("after migration: got SchemaVersion %d want %d",
+			obj.SchemaVersion, knowledge.CurrentSchemaVersion)
+	}
+
+	// Temporal fields stay nil: pre-0.3.4 records had no temporal metadata.
+	if obj.ValidFrom != nil || obj.ValidUntil != nil || obj.ObservedAt != nil {
+		t.Errorf("migrated legacy object should have nil temporal fields, got from=%v until=%v observed=%v",
+			obj.ValidFrom, obj.ValidUntil, obj.ObservedAt)
+	}
+	if obj.SourceVersion != "" {
+		t.Errorf("migrated legacy SourceVersion: got %q want empty", obj.SourceVersion)
+	}
+
+	// Legacy object is always valid — pre-0.3.4 behaviour.
+	if !obj.IsValidAt(time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)) {
+		t.Error("migrated legacy object should be valid at any instant")
+	}
+}

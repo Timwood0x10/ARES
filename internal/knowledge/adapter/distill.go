@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/Timwood0x10/ares/internal/embedding"
 	"github.com/Timwood0x10/ares/internal/knowledge"
@@ -198,10 +199,12 @@ func (b *DistillBridge) DistillConversation(
 	// tenant had stored something similar (silent fact loss on top of the
 	// leak). An empty tenantID keeps the bridge namespace so callers that
 	// genuinely have no tenant behave exactly as before.
-	ns := b.namespace
-	if tenantID != "" {
-		ns = tenantID
-	}
+	//
+	// M5: when userID is present, resolve the user-level namespace
+	// (UserNamespace) so all of a user's sessions accumulate into the same
+	// knowledge graph. When userID is absent, fall back to the tenant
+	// namespace (pre-M5 behaviour).
+	ns := knowledge.ResolveUserNamespace(tenantID, userID, b.namespace)
 	pointers := make([]*distillation.Memory, len(memories))
 	for i := range memories {
 		pointers[i] = &memories[i]
@@ -236,6 +239,13 @@ func (b *DistillBridge) DistillConversation(
 	// graph construction.
 	b.extractRelations(objects)
 
+	// Ensure every object carries at least one Evidence pointing back to the
+	// source conversation. The quality gate (when RequireEvidence is on)
+	// rejects objects with no evidence; even when the gate is off (default),
+	// attaching evidence makes every fact traceable to its origin — the core
+	// promise of the AKG evidence chain (M2).
+	b.attachEvidence(objects, conversationID, tenantID)
+
 	// embedding + dedup. Requires both emb and store; dedup
 	// additionally requires gate.EnableDedup. Superseded objects skip the
 	// quality gate during scoring. Representations are collected but NOT
@@ -264,6 +274,50 @@ func (b *DistillBridge) extractRelations(objects []*knowledge.KnowledgeObject) {
 	for _, obj := range objects {
 		obj.Relations = b.extractor.Extract(obj)
 	}
+}
+
+// attachEvidence ensures every object has at least one Evidence entry
+// pointing back to the source conversation. Objects that already carry
+// evidence (e.g. from a provider that sets it) are left untouched. The
+// evidence records the conversation ID, tenant, and a timestamp so every
+// fact is traceable to its origin — the core promise of the AKG evidence
+// chain (M2).
+func (b *DistillBridge) attachEvidence(objects []*knowledge.KnowledgeObject, conversationID, tenantID string) {
+	now := time.Now()
+	for _, obj := range objects {
+		if len(obj.Evidence) > 0 {
+			continue
+		}
+		obj.Evidence = []knowledge.Evidence{{
+			Source: "conversation:" + conversationID,
+			// Ref points at the SOURCE the fact came from, per the Evidence
+			// contract ("row ID, commit hash, ..."). It previously held obj.ID,
+			// which is a self-reference, not a source location: it told a
+			// reader nothing and silently disabled the M2.5 "data-source unique
+			// ID" step (two different objects can never share a Ref if each Ref
+			// is its own ID). Note the source here is a whole conversation —
+			// the resolver must not treat a shared conversation as entity
+			// identity, which is why isRecordScopedEvidence excludes
+			// "conversation:" evidence.
+			Ref:       conversationID,
+			Weight:    1.0,
+			Timestamp: now,
+			Span: &knowledge.EvidenceRef{
+				Text: truncateForEvidence(obj.Summary, 200),
+			},
+		}}
+	}
+	_ = tenantID // reserved for future per-tenant evidence scoping
+}
+
+// truncateForEvidence returns at most n characters of s, with a "..."
+// sentinel when truncated. Used to keep the evidence span excerpt short
+// enough for human review without bloating the stored object.
+func truncateForEvidence(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
 }
 
 // embedAndDedup embeds each object and marks superseded duplicates.
