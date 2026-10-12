@@ -14,7 +14,7 @@
 //	ARES evolution status              Show evolution system status
 //	ARES flight inspect <taskID>       Inspect flight data
 //	ARES flight replay <taskID>        Replay flight data
-//	ARES knowledge export|import        Snapshot the AKG knowledge store (Postgres only)
+//	ARES knowledge export|import|migrate  Snapshot / restore / re-home the AKG store (Postgres only)
 //	ARES recall query <text>           Recall archived rounds by text
 //	ARES recall round <N>              Recall one archived round
 //	ARES evolution run [flags]         Run the GA evolution loop
@@ -733,8 +733,11 @@ var knowledgeCmd = &cobra.Command{
 
   ares knowledge export --namespace <ns> --out <file>   Write a JSON snapshot
   ares knowledge import --in <file>                     Restore a snapshot
+  ares knowledge migrate --from <ns> --tenant T --user U  Re-home facts (e.g. into
+                                                          the user's graph once
+                                                          user-scoped recall is on)
 
-Both read the storage section of ares.yaml and require the persistent Postgres
+All three read the storage section of ares.yaml and require the persistent Postgres
 store: the default in-memory store lives inside the serve process and holds
 nothing a separate command can read. These are operator commands, not tools the
 model can call.`,

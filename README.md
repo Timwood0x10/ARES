@@ -211,10 +211,11 @@ a bug in the README.
   (never MCP tools — a knowledge dump is not a capability to hand a model):
   M4 archival (`ApplyDecay`) runs on the maintenance sweep when
   `knowledge.decay_archive_after` is set (off by default), visiting each namespace the
-  store lists; and M3 snapshots (`ExportStore` / `ImportStore`) are driven by
-  `ares knowledge export|import`, which requires the persistent Postgres store. A snapshot
-  carries embedding vectors, not only objects — without them a restore silently degraded
-  recall to lexical. Do not read "API frozen" as "the features shipped".
+  store lists; and M3's snapshot + migration surface (`ExportStore` / `ImportStore` /
+  `MigrateNamespace`) is driven by `ares knowledge export|import|migrate`, which requires
+  the persistent Postgres store. A snapshot carries embedding vectors, not only objects —
+  without them a restore silently degraded recall to lexical. Do not read "API frozen" as
+  "the features shipped".
 - **M5 "one user one graph" is wired, but only takes effect when a submission declares a
   user.** The user is caller-declared (submit `user_id`), carried in the task payload —
   which the checkpoint envelope already persists, so no envelope schema change was
@@ -223,13 +224,12 @@ a bug in the README.
   read (`StoreProvider`) sides. With no `user_id` the behaviour is unchanged (the tenant
   namespace). Three caveats: facts written before a user is declared live under the
   tenant/`default` namespace, so enabling `user_id` makes them invisible to user-scoped
-  recall until migrated. M3's export/import now exists (`ares knowledge export|import`),
-  but it restores into the namespace the snapshot was taken from: re-homing existing facts
-  under a user namespace is still **not** supported, because the store keys objects by ID
-  alone and refuses to move an existing ID to a different namespace (see
-  `KnowledgeStore.Save`, which rejects the overwrite as `ErrObjectNotFound` rather than let
-  a caller re-home another scope's row). Migration therefore needs either re-exported
-  object IDs or an explicit store-level move, neither of which exists yet; the user, like the tenant,
+  recall until migrated — `ares knowledge migrate --from <ns> --tenant T --user U` re-homes
+  them, and it is a **move**, not a copy: the store keys objects by ID alone and refuses to
+  re-home an ID under a different namespace, so a copy would need new IDs while leaving the
+  facts visible to exactly the tenant-scoped recall the move exists to scope down. Vectors
+  travel with their objects, a failed save is rolled back rather than dropping the fact, and
+  a re-run resumes with whatever is left in the source. The user, like the tenant,
   is caller-declared rather than derived from the authenticated principal (see *Tenancy
   Model* / `SECURITY.md`); and the AKG store defaults to **in-memory** —
   `buildBootstrapKnowledgeStore` returns the in-memory store unless `storage.enabled:

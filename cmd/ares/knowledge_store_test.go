@@ -100,3 +100,29 @@ func TestOpenAKGStore_MissingConfigIsAnError(t *testing.T) {
 	_, _, err := openAKGStore(filepath.Join(t.TempDir(), "absent.yaml"))
 	require.Error(t, err)
 }
+
+// TestResolveMigrateTarget pins how the migrate command names its destination:
+// --to wins, --tenant/--user resolve through the SAME function the runtime uses
+// (so an operator never hand-computes the user namespace hash), and no target at
+// all is refused rather than defaulting to something destructive.
+func TestResolveMigrateTarget(t *testing.T) {
+	restore := func(to, tenant, user string) {
+		knowledgeMigrateTo, knowledgeMigrateTenant, knowledgeMigrateUser = to, tenant, user
+	}
+	t.Cleanup(func() { restore("", "", "") })
+
+	restore("tu:explicit", "ignored", "ignored")
+	target, err := resolveMigrateTarget()
+	require.NoError(t, err)
+	require.Equal(t, "tu:explicit", target, "--to must win over the resolution helpers")
+
+	restore("", "acme", "alice")
+	target, err = resolveMigrateTarget()
+	require.NoError(t, err)
+	require.Equal(t, knowledge.ResolveUserNamespace("acme", "alice", ""), target,
+		"the target must be the namespace the runtime would resolve for that tenant+user")
+
+	restore("", "", "")
+	_, err = resolveMigrateTarget()
+	require.Error(t, err, "a migrate with no target must not silently pick one")
+}

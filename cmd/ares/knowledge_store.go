@@ -37,6 +37,11 @@ var (
 	knowledgeStoreNamespace string
 	knowledgeStoreOut       string
 	knowledgeStoreIn        string
+	knowledgeMigrateFrom    string
+	knowledgeMigrateTo      string
+	knowledgeMigrateTenant  string
+	knowledgeMigrateUser    string
+	knowledgeMigrateDryRun  bool
 )
 
 var knowledgeExportCmd = &cobra.Command{
@@ -110,10 +115,64 @@ idempotent.
 	},
 }
 
-func init() {
-	knowledgeCmd.AddCommand(knowledgeExportCmd, knowledgeImportCmd)
+var knowledgeMigrateCmd = &cobra.Command{
+	Use:   "migrate",
+	Short: "Re-home a namespace's knowledge into another (e.g. into a user's graph)",
+	Long: `Moves every object from one namespace into another. This is the primitive behind
+enabling user-scoped recall on facts written before any user was declared: those
+live under the tenant (or "default"), where user-scoped recall never looks.
 
-	for _, c := range []*cobra.Command{knowledgeExportCmd, knowledgeImportCmd} {
+  ares knowledge migrate --from default --tenant acme --user alice
+  ares knowledge migrate --from default --to tu:... --dry-run
+
+The target is --to when given; otherwise --tenant/--user resolve through the same
+user-level namespace the runtime uses, so the operator never hand-computes the
+hash. Migration is a MOVE: the facts leave the source namespace, and re-running it
+resumes with whatever is still there. Vectors travel with their objects — a gap in
+the vector count means those objects now recall lexically.`,
+	Args: cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, _ []string) error {
+		target, err := resolveMigrateTarget()
+		if err != nil {
+			return err
+		}
+		store, closeStore, err := openAKGStore(knowledgeStoreConfig)
+		if err != nil {
+			return err
+		}
+		defer closeStore()
+
+		report, runErr := knowledge.MigrateNamespace(cmd.Context(), store, knowledgeMigrateFrom, target,
+			knowledge.MigrateOptions{DryRun: knowledgeMigrateDryRun})
+		verb := "moved"
+		if report.DryRun {
+			verb = "would move"
+		}
+		// Print progress even when the pass failed: a partial migration has to be
+		// legible, because it is resumable rather than repeatable.
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s %d/%d object(s) from %q into %q, %d vector(s) restored\n",
+			verb, report.Migrated, report.Considered, knowledgeMigrateFrom, target, report.Vectors)
+		return runErr
+	},
+}
+
+// resolveMigrateTarget resolves the destination namespace: an explicit --to, or
+// --tenant/--user through the same resolution the runtime uses (so the operator
+// never hand-computes tu:<hash>:<hash>).
+func resolveMigrateTarget() (string, error) {
+	if knowledgeMigrateTo != "" {
+		return knowledgeMigrateTo, nil
+	}
+	if knowledgeMigrateTenant == "" && knowledgeMigrateUser == "" {
+		return "", errors.New("migrate needs a target: pass --to <namespace>, or --tenant/--user")
+	}
+	return knowledge.ResolveUserNamespace(knowledgeMigrateTenant, knowledgeMigrateUser, ""), nil
+}
+
+func init() {
+	knowledgeCmd.AddCommand(knowledgeExportCmd, knowledgeImportCmd, knowledgeMigrateCmd)
+
+	for _, c := range []*cobra.Command{knowledgeExportCmd, knowledgeImportCmd, knowledgeMigrateCmd} {
 		c.Flags().StringVar(&knowledgeStoreConfig, "config", "ares.yaml",
 			"Path to ares.yaml (storage section)")
 	}
@@ -123,6 +182,18 @@ func init() {
 		"Snapshot file to write (\"-\" = stdout)")
 	knowledgeImportCmd.Flags().StringVar(&knowledgeStoreIn, "in", "-",
 		"Snapshot file to read (\"-\" = stdin)")
+
+	knowledgeMigrateCmd.Flags().StringVar(&knowledgeMigrateFrom, "from", "",
+		"Namespace to migrate out of (required)")
+	knowledgeMigrateCmd.Flags().StringVar(&knowledgeMigrateTo, "to", "",
+		"Target namespace (overrides --tenant/--user)")
+	knowledgeMigrateCmd.Flags().StringVar(&knowledgeMigrateTenant, "tenant", "",
+		"Tenant whose user-level namespace is the target")
+	knowledgeMigrateCmd.Flags().StringVar(&knowledgeMigrateUser, "user", "",
+		"User whose graph is the target (resolved the way the runtime resolves it)")
+	knowledgeMigrateCmd.Flags().BoolVar(&knowledgeMigrateDryRun, "dry-run", false,
+		"Report what would move without writing")
+	_ = knowledgeMigrateCmd.MarkFlagRequired("from")
 }
 
 // openAKGStore opens the configured AKG store for an operator command.
