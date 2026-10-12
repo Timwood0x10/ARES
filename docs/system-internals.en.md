@@ -125,10 +125,10 @@ flowchart LR
     H --> I[wait for SIGINT/SIGTERM]
 ```
 
-**Security fail-closed** (`cmd/ares/serve.go:292` `validateServeConfig`): a
+**Security fail-closed** (`cmd/ares/serve.go:300` `validateServeConfig`): a
 wildcard bind (`0.0.0.0` / `::`) with no auth/JWT/`introspect.token` is
 **refused at startup**, not logged-and-started. Default bind is
-`127.0.0.1` (`serve.go:327` `defaultServeHost`).
+`127.0.0.1` (`serve.go:335` `defaultServeHost`).
 
 **Bootstrap 7-step assembly order** (components have dependencies, built in order):
 
@@ -182,8 +182,8 @@ evolution:                                # GA on/off / population / gates / rol
 | Block | Struct | Source |
 |---|---|---|
 | `kernel` | `KernelConfig` | `config.go:60` |
-| `agent_budget` (wallet) | `AgentBudgetConfig` | `config.go:141` |
-| `dag_execution` | `DAGExecutionConfig` | `config.go:157` |
+| `agent_budget` (wallet) | `AgentBudgetConfig` | `config.go:148` |
+| `dag_execution` | `DAGExecutionConfig` | `config.go:171` |
 
 **The "agent wallet" (`agent_budget`)** is a three-slot cap: `tokens` /
 `tools` / `deadline`, all-zero = unlimited. It is the "long-task safety
@@ -222,8 +222,8 @@ flowchart TD
 | Submit | `Submitter.Submit` | `internal/agentruntime/submit.go:151` |
 | Queue drain | `Scheduler.drain` | `internal/kernel/scheduler_dispatch.go:43` |
 | Select + acquire | Schedule/Acquire inside `drain` | `internal/kernel/scheduler_dispatch.go:43` |
-| Execute | `Scheduler.execute` | `internal/kernel/scheduler_execute.go:52` |
-| Quantum | `buildQuantumStep` | `internal/kernel/scheduler_quantum.go:38` |
+| Execute | `Scheduler.execute` | `internal/kernel/scheduler_execute.go:70` |
+| Quantum | `buildQuantumStep` | `internal/kernel/scheduler_quantum.go:62` |
 | Dispatch | `routerCognition.ExecuteStep` | `internal/fabric/agent/l2graph.go:388` |
 
 **`routerCognition` is the dispatcher**: one session agent declares its full
@@ -259,13 +259,13 @@ flowchart TD
 | Decision | Where | Rule |
 |---|---|---|
 | Retryable? | `classifyFailure` | `internal/fabric/task/failure.go:77` — explicit markers win (`MarkPermanent` / `MarkRetryable`: the producing layer knows best), a cause past the task's deadline is terminal, and **everything else is retryable**, exactly as in 0.3.2 (a bare `context.DeadlineExceeded` included). The verdict is recorded as `retryable` on the `task.failed` event, so "why did it try again" is answerable from the log alone. |
-| When? | `Fail` | `internal/fabric/task/fabric_lifecycle.go:242` — requeue only when the cause is retryable **and** budget remains. `BackoffBase` is the first delay and doubles per attempt, capped by `BackoffMax` (`internal/fabric/task/backoff.go:19`); unset means an immediate requeue, which is 0.3.2's behaviour. A waiting task is hidden from `ReadyTasks`/`ResumableTasks` and refused by `Acquire`, and `NextAttemptAt` is persisted, so a restart cannot make it retry early. |
-| Downstream? | `cascadeFailureLocked` | `internal/fabric/task/dag.go:160` — a terminal failure fails every transitive READY dependent, unless that dependent opted into `AllowPartial`: it stays READY with the failed predecessor recorded in `DegradedInputs`. That record is what unlocks it (`dependencySatisfied`, `internal/fabric/task/dag.go:113`): only recorded gaps count, so a second dependency that is still running keeps blocking. |
+| When? | `Fail` | `internal/fabric/task/fabric_lifecycle.go:288` — requeue only when the cause is retryable **and** budget remains. `BackoffBase` is the first delay and doubles per attempt, capped by `BackoffMax` (`internal/fabric/task/backoff.go:19`); unset means an immediate requeue, which is 0.3.2's behaviour. A waiting task is hidden from `ReadyTasks`/`ResumableTasks` and refused by `Acquire`, and `NextAttemptAt` is persisted, so a restart cannot make it retry early. |
+| Downstream? | `cascadeFailureLocked` | `internal/fabric/task/dag.go:178` — a terminal failure fails every transitive READY dependent, unless that dependent opted into `AllowPartial`: it stays READY with the failed predecessor recorded in `DegradedInputs`. That record is what unlocks it (`dependencySatisfied`, `internal/fabric/task/dag.go:131`): only recorded gaps count, so a second dependency that is still running keeps blocking. |
 
 **A deadline is not a lease expiry.** An expired lease means the execution rights
 lapsed: the task returns to READY and a replacement may resume it from its
 checkpoint (§12). `Task.Deadline` is an absolute cut-off — `ExpireDeadlines`
-(`internal/fabric/task/fabric_lifecycle.go:436`) takes it to terminal FAILED
+(`internal/fabric/task/fabric_lifecycle.go:514`) takes it to terminal FAILED
 through its own path (never requeued, even with budget left) and cascades, and
 `Acquire` refuses a task whose deadline has already passed, so nothing can be
 granted in the gap before the sweep runs.
@@ -292,10 +292,10 @@ score = capability_overlap × (1 - load) × confidence × (1 + priority)
 |---|---|---|---|
 | `capability_overlap` | [0,1] | **Gate**: can't do this capability → 0, never chosen (overlap *fraction*, not "any overlap counts") | `CapabilityOverlap` |
 | `1 - load` | [0,1] | idle scores higher; `load=1` (fully busy) → 0, yield. This is what makes "parallel if possible" work | `LoadTracker` (`load_tracker.go`) |
-| `confidence` | [0,1] | experience prior / measured: "has it succeeded at this before?" | `ConfidenceForMeasured` (`scheduler_execute.go:192`) |
+| `confidence` | [0,1] | experience prior / measured: "has it succeeded at this before?" | `ConfidenceForMeasured` (defined `load_tracker.go:235`, called `scheduler_execute.go:240`) |
 | `1 + priority` | ≥1 | priority boost; at `priority=0` the boost is 1. A busy high-priority agent can outscore an idle low-priority one, so the boost is deliberately un-capped | `scheduler.go:75` |
 
-**The three confidence tiers (most-asked, `scheduler_execute.go:176`)**:
+**The three confidence tiers (most-asked, `scheduler_execute.go:238`)**:
 
 ```
 for each candidate (agentID, task capability):
@@ -304,12 +304,12 @@ for each candidate (agentID, task capability):
   ③ no prior → the neutral value stands (historical default)
 ```
 
-This is where GA lands on the hot path: `SetAgentConfidence` (`load_tracker.go:15`) lets the
+This is where GA lands on the hot path: `SetAgentConfidence` (`load_tracker.go:183`) lets the
 evolution feedback loop **override an agent's per-capability confidence in real time**,
 effective from the next drain — GA does not change code, it changes "how trustworthy this
 agent is for this kind of task".
 
-**Candidate pool and two non-obvious points (`buildCandidates`, `scheduler_execute.go:97`)**:
+**Candidate pool and two non-obvious points (`buildCandidates`, `executor_registry.go:135`)**:
 
 ```
 candidates = registered + unbound + capability-overlapping + idle executors
@@ -320,15 +320,15 @@ candidates = registered + unbound + capability-overlapping + idle executors
 
 | Point | Why | Source |
 |---|---|---|
-| **Budget filter before schedule** | distinguishes "no agent matched" (`ErrNoCapableCandidate`, should alert) vs "matching agents are all over budget" (should wait for budget recovery) | `scheduler_execute.go:159` |
+| **Budget filter before schedule** | distinguishes "no agent matched" (`ErrNoCapableCandidate`, should alert) vs "matching agents are all over budget" (should wait for budget recovery) | `scheduler_execute.go:212` (call) / `scheduler_governance.go:92` (impl) |
 | **`TryBegin` admission gate** | the candidate snapshot is built *before* `Schedule`, so two concurrent goroutines can both read `load=0`; `TryBegin` uses the load counter as an atomic gate, preventing "two tasks both think they got the same idle agent" | `load_tracker.go:82` |
 
 **Winner (`Pick`) and explainability (`ScheduleDecision`)**:
 
 ```
-all candidates sorted by score descending (ties broken stably by capability-overlap, no flapping) → highest wins
+all candidates sorted by score descending (sort.SliceStable over the build order; ties take the first, no overlap tiebreak) → highest wins
 each Schedule records one ScheduleDecision: every candidate + four-factor breakdown + winner + epoch
-   stored in a DecisionRecorder (ring of 200, decision_recorder.go:26/58)
+   stored in a DecisionRecorder (ring of 200, decision_recorder.go:22)
 ```
 
 > The panel can show "TASK-184 ↓ agent-7f21 ↓ Acquire ↓ epoch=42" plus each candidate's
@@ -339,9 +339,9 @@ each Schedule records one ScheduleDecision: every candidate + four-factor breakd
 |---|---|
 | Score formula `Score`/`ScoreBreakdown` | `internal/fabric/task/scheduler.go:44/71` |
 | Candidate scoring `scoreCandidates` | `internal/kernel/decision_recorder.go:107` |
-| Budget filter + confidence resolution | `internal/kernel/scheduler_execute.go:159/192` |
-| `LoadTracker` (Begin/End/TryBegin/SetAgentConfidence) | `internal/kernel/load_tracker.go` |
-| Decision record `ScheduleDecision` | `internal/kernel/decision_recorder.go:42` |
+| Budget filter + confidence resolution | `internal/kernel/scheduler_execute.go:212/240` |
+| `LoadTracker` (Begin/End/TryBegin/SetAgentConfidence) | `internal/kernel/load_tracker.go` (`SetAgentConfidence` :183) |
+| Decision record `ScheduleDecision` | `internal/kernel/decision_recorder.go:45` |
 
 ### 4.3 State Codes & the "Why Not Chosen" Diagnosis (StopReason + Admissibility)
 
@@ -587,16 +587,16 @@ flowchart TB
     L1 -->|prior written into LLM prompt| n1
 ```
 
-**Injection point** (`cmd/ares/serve_peer.go` `injectToolClassDAG`, verbatim
-comment: "the L1 graph is NOT compiled into taskfabric — it is a capability
-catalog, not an execution plan (L1 != L2)"):
+**Injection point** (`cmd/ares/serve_peer.go` `injectToolClassDAG`; verbatim code
+comment: "The L1 graph is NOT compiled into taskfabric — it is a capability
+catalog, not an execution plan (L1 ≠ L2)"):
 
-- At boot, `injectToolClassDAG` (`serve_peer.go:511`) scans
+- At boot, `injectToolClassDAG` (`serve_peer.go:517`) scans
   `toolBinder.GetToolSchemas()` to build L1 and feeds it to the evolution system.
 - The planner checks L1 constraints before growing a tool node
   (`internal/fabric/agent/l2graph.go` `CountToolClass`).
 
-> Note: there is also a **LiveDAG** (`buildLiveAgentDAG`, `serve_peer.go:536`)
+> Note: there is also a **LiveDAG** (`buildLiveAgentDAG`, `serve_peer.go:557`)
 > = "one node per peer agent", the **agent-pool topology** that the
 > evolution structural patches act on (via `UpdateLiveDAG`). It is a
 > different thing from the L1 tool-class graph.
@@ -610,7 +610,7 @@ calls `web_search`:
 
 | Tool | What | Function | Source |
 |---|---|---|---|
-| `spawn_agent` | "hire a teammate" | `SpawnAgent` | `internal/agentsyscall/syscall.go:349` |
+| `spawn_agent` | "hire a teammate" | `SpawnAgent` | `internal/agentsyscall/syscall.go:350` |
 | `create_task` | "split this into subtasks" | `CreateTask` | `syscall.go:455` |
 | `ask_agent` | "ask a teammate" | `AskAgent` | `syscall.go:615` |
 | `create_plan` | grow a whole DAG at once | `CreatePlan` | `internal/agentsyscall/plan.go` |
@@ -710,18 +710,20 @@ flowchart LR
 | `Handoff` | point-to-point task ownership | `primitives.go:454` |
 | `Subscribe`/`Broadcast` | "I care about X" / "tell everyone who cares" | `primitives.go` |
 | Message struct | `Message` | `internal/agentipc/bus.go:14` |
-| Register / Unregister | `Register`/`Unregister` | `bus.go:131` |
+| Register / Unregister | `Register`/`Unregister` | `bus.go:131` / `:146` |
 
 **Who owns / releases resources** (layered):
 
 | Resource layer | Owner | Released by |
 |---|---|---|
 | In-flight message state (pending/channel/deadletter) | the Bus itself | `Request`'s `defer removePending` |
-| Agent life/death | Agent Fabric | `Bus.Unregister` when the agent is killed |
+| Agent life/death | Agent Fabric | ⚠️ No cleanup path today: `Kill`/`Retire` never touch IPC and `Bus.Unregister` has 0 production callers (dead code). Currently masked by "static subAgent registration at assembly + process-level bus singleton" — no live leak; but a future "dynamic spawn→Register→Kill" path would grow `handlers`/`subscribers` without bound, and a dead agent would still hit a stale handler (it should fast-fail `ErrAgentNotRegistered`) — a latent leak + stale-routing hazard |
 | Token/tool budget | scheduler governance | `consumeBudget` |
 
-**The Bus only moves messages; it owns and releases no resources.** When an
-agent dies, the fabric knows first, then unregisters it.
+**The Bus only moves messages; it owns and releases no resources.** The pending
+table is leak-free by `Request`'s `defer removePending` (locked by
+`bus_test.go:251`); but the agent-registry removal is NOT wired — the fabric's
+death path never calls `Bus.Unregister` (see the table above).
 
 ---
 
@@ -748,7 +750,7 @@ flowchart TB
 | Isolation layer | Mechanism | Source |
 |---|---|---|
 | Same-session admission serialized | per-session lock `lockAdmission` | `internal/agentruntime/session.go:67` |
-| Cross-session tasks independent | unique task-ID prefix `sess-N-*`; deps only within a session | `session.go` |
+| Cross-session tasks independent | unique task-ID prefix `sess/<sessionID>/…`; deps only within a session | `session.go` |
 | Global resource cap | `maxConcurrent` + `agent_budget` + `kernel.resources` | the scheduler |
 | Reaper protection | `KeepSet`: a live session is never touched | `session.go:311` |
 
@@ -805,9 +807,9 @@ never requeued by this sweep (see §4.1).
 |---|---|---|
 | Recovery subsystem | `Recovery` | `internal/aresrecovery/recovery.go:21` |
 | Lease-expiry sweep | `RequeueExpiredLeases` | `recovery.go:171` |
-| In-place revive | `RestartAgent` (death snapshot) | `recovery.go:274` |
-| Full recovery chain | `RecoverFromAgentDeath` | `recovery.go:384` |
-| Kernel recovery loop | `runKernelRecoveryLoop` | `cmd/ares/kernel_loop.go:275` |
+| In-place revive | `RestartAgent` (death snapshot) | `recovery.go:287` |
+| Full recovery chain | `RecoverFromAgentDeath` | `recovery.go:397` |
+| Kernel recovery loop | `runKernelRecoveryLoop` | `cmd/ares/kernel_loop.go:328` |
 
 ### 12.1 Task-failure degradation (new in 0.3.3, sits right next to the agent layer)
 
@@ -831,20 +833,22 @@ judge of "is this failure worth retrying?" with a three-rule precedence:
 2. ErrTaskDeadlineExceeded → terminal: past the absolute deadline, do not burn
    the remaining retry budget
 3. Everything else is retryable (= 0.3.2 behaviour): a misclassification costs
-   at most one retry, never a task (verbatim: "a misclassification costs a
-   retry rather than a task")
+   at most one retry, never a task ("a misclassification costs a retry rather
+   than a task" — CHANGELOG.md:32; this line is from the changelog, NOT a code
+   comment)
 ```
 
-**The six new `Task` fields added in 0.3.3** (`internal/fabric/task/task.go`):
+**The seven new `Task` fields added in 0.3.3** (`internal/fabric/task/task.go`):
 
 | Field | Line | What |
 |---|---|---|
 | `Deadline` | `task.go:30` | absolute cut-off; `ExpireDeadlines` takes its own terminal path (no requeue), `Acquire` refuses expired |
-| `RetryPolicy` | `task.go:32` (struct at `:91`) | retry budget: `MaxRetries` total / `Attempts` used; `CanRetry` (`:104`) = `Attempts < MaxRetries` |
-| `BackoffBase`/`BackoffMax` | `task.go:37/39` | retry delay doubles, capped; `0` = immediate retry (old behaviour) |
+| `RetryPolicy` | `task.go:32` (struct at `:125`) | retry budget: `MaxRetries` total / `Attempts` used; `CanRetry` (`:137`) = `Attempts < MaxRetries` |
+| `BackoffBase` | `task.go:37` | first retry delay, doubles per attempt; `0` = immediate retry (old behaviour) |
+| `BackoffMax` | `task.go:39` | cap on the backoff growth |
 | `NextAttemptAt` | `task.go:45` | `Acquire` refuses before this instant; **persisted**, so a restart cannot retry early |
 | `AllowPartial` | `task.go:68` | run with a gap even when a predecessor dies permanently (a creation-time policy) |
-| `DegradedInputs` | `task.go:72` | records "which predecessors are the gap" — the very record that unblocks scheduling |
+| `DegradedInputs` | `task.go:74` | records "which predecessors are the gap" — the very record that unblocks scheduling |
 
 **The degradation (partial-input) mechanism** (`AllowPartial` + `DegradedInputs`):
 
@@ -887,8 +891,8 @@ flowchart LR
 |---|---|---|
 | Dispatcher | `handleChaos` | `cmd/ares/agent_routes_chaos.go:27` |
 | Random kill | `chaosKillRandomFabric` | `agent_routes_chaos.go:188` |
-| Force recover sweep | `chaosRecoverSweep` | `agent_routes_chaos.go:236` |
-| List live agents | `liveFabricAgents` | `agent_routes_chaos.go:249` |
+| Force recover sweep | `chaosRecoverSweep` | `agent_routes_chaos.go:239` |
+| List live agents | `liveFabricAgents` | `agent_routes_chaos.go:254` |
 
 **GA quiet window**: while an evolution generation is mid-flight
 (`GenerationActive`), chaos pauses injections so a half-tested fault doesn't
@@ -904,7 +908,7 @@ disturb a GA cycle about to make a decision.
 > **Correction**: `DreamCycle` (`dream_cycle.go:304`) is a lightweight shell
 > of the same GA engine and is **off in production**
 > (`bootstrap` `EnableDreamCycle=false`). Production actually drives
-> `GenomePopulationAdapter.Run` (`genome_wiring.go:38`), which carries the full
+> `GenomePopulationAdapter.Run` (`genome_wiring_run.go:46`), which carries the full
 > safety-gate suite.
 
 ```mermaid
@@ -940,11 +944,12 @@ change) + `Target` (where) + `Value` (to what) + `Rollback` (inverse). It is
 dispatched by Target to the Graph / Planner / Recovery / Knowledge / Memory
 PatchExecutors.
 
-**Effect on running tasks: none.** GA changes L1 (capability/strategy layer),
-not L2 (session execution plan). Tool nodes already compiled into fabric tasks
-in a running session are not rebuilt by an L1 patch; a changed prompt template
-is only picked up by the next new session / next plan quantum. Worst case
-"new strategy got worse" → the monitor detects it within 30s → auto rollback.
+**Effect on running tasks: layered — do not blanket-claim "none".**
+
+- **Already-grown L2 nodes are not rebuilt retroactively**: a GA patch changes L1 (capability/strategy layer) and does not rebuild tool nodes already compiled into fabric tasks in a running session — that part really is unaffected.
+- **But the prompt template and L1 metadata are re-read every quantum**: the planner walks `activeStrategy` → `GetActiveStrategy` → `store.GetActive(ctx)` per quantum (`planner_cognition.go:297`) with no cache layer; `isToolEnabled`/`l1Priors`/`toolBudgetRemaining` likewise read L1 metadata fresh each quantum. So after a GA template change, **the next plan quantum of the SAME running session uses the new template** (locked by `l1_prior_test.go:132`: "visible to the next quantum without rebuilding the planner").
+- **The only thing truly frozen at submit time is `CheckpointEnvelope.StrategyID`** — a fitness/cost attribution label (`checkpoint_strategy_test.go:91` locks that a mid-flight promote does not re-credit the new strategy). It is a different thing from "the prompt fed to the LLM"; do not use it to conclude "running tasks are unaffected".
+- Worst case "new strategy got worse" → the monitor detects it within 30s → auto rollback.
 
 **G1/G2/G3 safety gates** (loose to tight):
 
@@ -1017,7 +1022,7 @@ evidence of "the Leader was removed."
 | events / sessions / checkpoints tables | `CREATE TABLE IF NOT EXISTS` | `migrate.go:33/55/132/153` |
 | Retention (opt-in) | `events_retention_days`, default = **never delete** | `bootstrap_builder.go:83-91` |
 | Hourly TTL cleanup | `startExpiryCleanupWorker` + `CleanupExpired` | `bootstrap_builder.go:527` / `maintenance_worker.go:60` |
-| Evidence-row TTL | registered on the same worker, S-10 tenant-scoped | `bootstrap_builder.go:303-306` / `bootstrap_steps.go:50-56` |
+| Evidence-row TTL | registered on the same worker, S-10 tenant-scoped | `bootstrap_builder.go:302-307` / `bootstrap_steps.go:48-57` |
 
 **Tenant guard = "Scheme B"** (worth memorizing): DB-layer RLS is
 **deliberately NOT enabled** (the `migrate_storage.go:47-52` comment names it a
@@ -1026,7 +1031,7 @@ evidence of "the Leader was removed."
 (`pool.go:172-238`). `true` = transaction scope, and the connection is
 defensively cleared before return to the pool (`pool.go:215` so no tenant
 leaks across requests). **SQL-injection guard**: every identifier passes
-`validateSQLIdentifier` (`security.go:23-40`: regex + length + quoting).
+`validateSQLIdentifier` (`security.go:29-40`: regex + length + quoting).
 
 ---
 
@@ -1051,7 +1056,7 @@ flowchart TB
 **The current pipeline is rule-based (no LLM):** `DefaultNormalizer`
 (strips control chars), `DefaultSummarizer` (truncates to first 200 chars),
 `defaultPlanner` (`containsAny` keyword + weight)
-(`internal/knowledge/pipeline/normalizer.go` / `planner/default.go`).
+(`internal/knowledge/pipeline/normalizer.go` / `internal/knowledge/planner/default.go`).
 It is assembled in Bootstrap step ② `wireAKGLoop`
 (`bootstrap_builder.go` `assembleExperience`); **if AKG is unavailable the
 system warns and degrades, still fully functional** (BETA never blocks the hot
@@ -1095,9 +1100,9 @@ flowchart LR
 | Distill gate | `ShouldDistill` (success **and** failure both eligible; only content-length filters) | `distillation_service.go` `ShouldDistill` |
 | **Stored indirect-injection guard** | `fenceUntrusted`: task content wrapped in `---UNTRUSTED-TASK-DATA---` fences, preventing a "stored into the experience store then RAG-injected back into a prompt" persistent-injection path | `distillation_service.go` `buildExtractionPrompt` |
 | Distillation wiring | `wireDistillation` + `subscribeDistillationEvents` (subscribes `task.completed`) | `internal/ares_bootstrap/bootstrap_steps.go:26` / `:105` |
-| Read-side retrieval | `MemoryRetriever` (vector, defaults `MinScore=0.4` / `TopK=5`) | `internal/runtime/memory/context/memory_retriever.go:65` |
+| Read-side retrieval | `MemoryRetriever` (vector, defaults `MinScore=0.4` / `TopK=5`) | `internal/runtime/memory/context/memory_retriever.go:43-52` |
 | Scheduler-side prior | `ExperiencePrior` injected at spawn (truncated to 4096 runes) | `internal/fabric/agent/lifecycle.go:49` / `planner_cognition.go:186` (`maxExperiencePriorRunes`) |
-| Cost / threshold knobs | `DistillationThreshold` / `MaxDistilledTasks` / `DistilledTaskTTL` | `internal/runtime/memory/manager.go:102/116/125` |
+| Cost / threshold knobs | `DistillationThreshold` / `MaxDistilledTasks` / `DistilledTaskTTL` | `internal/runtime/memory/manager.go:106/116/125` |
 | Async vector backfill | `embeddingEnqueuer` (default synchronous; with a queue it persists the row first, then backfills the vector async so the event loop never blocks) | `distillation_service.go` `WithEmbeddingEnqueuer` |
 
 **Token cost**: distillation runs an LLM extraction (30s timeout) — one of the
@@ -1132,7 +1137,7 @@ flowchart TB
 | MCP manager | `MCPManager` (transport_stdio / transport_server) | `internal/runtime/protocol/mcp/` |
 | **Progressive disclosure** | the server keeps the **full** tool set; each task is fed only the **relevant subset** (saves tokens) | `cmd/ares/serve_wiring.go:215` |
 | Capability searcher | `registerCapabilitySearch` (envcap): makes the skills catalog a searchable tool capability | `cmd/ares/agent_routes_tools.go:280` |
-| L1 tool-class graph | `buildToolClassDAG(toolBinder.GetToolSchemas())` | `cmd/ares/serve_peer.go:515` |
+| L1 tool-class graph | `buildToolClassDAG(toolBinder.GetToolSchemas())` | `cmd/ares/serve_peer.go:521` (call) / `:628` (definition) |
 
 **What makes "tool discovery" distinctive**: instead of dumping every tool
 schema into the LLM at once (token explosion), it **registers the full set but
@@ -1150,7 +1155,7 @@ configs on the machine and auto-detects usable providers**.
 | Layer | What | When | Source |
 |---|---|---|---|
 | **① Service discovery** | Scan Claude/Cursor/VSCode/ARES configs + PATH binaries; find which MCP servers exist | every 5min (default) + self-healing loop | `internal/discovery/engine.go` |
-| **② Tool discovery** | connect + `ListTools` + `OnChange` dynamic add/remove | boot + server notifications | `internal/runtime/protocol/mcp/client.go:186` |
+| **② Tool discovery** | connect + `ListTools` + `OnChange` dynamic add/remove | boot + server notifications | `internal/runtime/protocol/mcp/client.go:186` (`ListTools`; `OnChange` callback :408) |
 | **③ Tool selection** | full set registered, only a relevant subset fed to the LLM (progressive disclosure + envcap) | at LLM call time | `cmd/ares/serve_wiring.go:215` |
 
 ```mermaid
@@ -1177,7 +1182,7 @@ flowchart TB
 - **Self-healing background loop**: `StartAutoDiscovery`'s goroutine recovers
   its own panics and restarts with exponential backoff (`1s/2s/4s...30s cap`).
 - **Gated**: `Discovery.Enabled` defaults to **false**
-  (`bootstrap_builder.go:493`); when off you configure MCP manually.
+  (zero-value default, `internal/ares_config/config_server.go`); when off you configure MCP manually.
 
 | Concern | Function | Source |
 |---|---|---|
@@ -1194,8 +1199,8 @@ flowchart TB
 | Entry | Scenario | Source |
 |---|---|---|
 | `ares serve` | production long-running (HTTP + background loops) | `cmd/ares/serve.go` |
-| `ares start` / SDK | embedded (in-process agent, shares the L2 core) | `sdk/` + `internal/agentruntime` |
-| Other CLI subcommands | `status` / `doctor` / `chaos` / `evolution` | `cmd/ares/main.go` (cobra) |
+| `ares run` / SDK | embedded (in-process agent, shares the L2 core) | `sdk/` + `internal/agentruntime` |
+| Other CLI subcommands | `status` / `doctor` / `evolution` / `arena` (chaos drills also via HTTP `/api/chaos/`) | `cmd/ares/main.go` (cobra) |
 
 **Two entries, one semantics**: both `serve` and the SDK drive the L2
 execution core in `internal/agentruntime` (session registry + compile
@@ -1238,10 +1243,10 @@ HITL / MCP / full-app — the living documentation of "how to use the system."
 
 | Mechanism | Effect | Source |
 |---|---|---|
-| Wildcard bind requires auth | refuse to start unauthenticated | `cmd/ares/serve.go:292` |
+| Wildcard bind requires auth | refuse to start unauthenticated | `cmd/ares/serve.go:300` (check at :315) |
 | Path-traversal guard | `SetAllowedConfigDir` confines config reads to a directory | `internal/ares_config/config.go` |
 | Read interfaces need permission | `PermRead` gates introspect / config reads | `agent_routes_task_read.go` |
-| SQL identifier validation | `validateSQLIdentifier` blocks injection | `internal/storage/postgres/security.go:23` |
+| SQL identifier validation | `validateSQLIdentifier` blocks injection | `internal/storage/postgres/security.go:29` |
 | Tenant kernel-enforced | `kctx.CallerID` / `tenantctx` override LLM args | `internal/agentsyscall/syscall.go` |
 
 **The one through-line**: fail closed wherever it can, never trust the LLM or
@@ -1328,7 +1333,7 @@ flowchart TB
 | Complexity explosion | ReAct is one loop; 0.3.x is planner + L2 graph + incremental compile + scheduler + toolCognition + checkpoint |
 | More latency | tool results must "go into the fabric → next plan quantum reads", several hops more than ReAct's immediate feed-back; **unfriendly to rapid trial-and-error** |
 | Token cost | every plan quantum re-assembles context and re-calls the LLM, burning more than ReAct |
-| Wiring fragility | `PlannerDeps` has 9 fields (`planner_cognition.go:31`); miss any and it degrades |
+| Wiring fragility | `PlannerDeps` has 9 fields (`planner_cognition.go:32`); miss any and it degrades |
 
 ### 22.5 There is also an "outer round" (evolution)
 
@@ -1369,7 +1374,7 @@ same kind":
 | Changed by | **GA evolution** (patch on metadata) | **LLM** (grow nodes while running) |
 | Compiled to tasks? | **No** (constraint catalog only) | **Yes** → fabric tasks, run by the scheduler |
 
-Source: L1 built at `cmd/ares/serve_peer.go:515`; L2 at
+Source: L1 built at `cmd/ares/serve_peer.go:521`; L2 at
 `internal/fabric/agent/l2graph.go`; the L1→L2 gating in
 `planner_cognition.go growToolNodes` (checks `isToolEnabled` /
 `toolBudgetRemaining` / `l1Priors` before growing a node).
@@ -1437,7 +1442,7 @@ flowchart LR
 | Technique | Fixes | Source |
 |---|---|---|
 | Hard filter first (`WHERE tenant_id AND embedding IS NOT NULL`) | ①③ | `internal/storage/postgres/vector.go:91` |
-| **HybridSearch** (vector cosine + lexical keyword, fused) | ①④ | `internal/knowledge/store.go:55` |
+| **HybridSearch** (vector cosine + lexical keyword, fused) | ①④ | `internal/knowledge/store.go:59` (interface; impls in `store/postgres` etc.) |
 | TopK + MinScore gates (default `RAGTopK:5 / MinScore:0.4`) | ①③ | `internal/runtime/memory/manager.go:429-430` |
 | Quality metadata in scoring (Extraction/Consistency/Freshness/Usage) | ③ | `internal/knowledge/object.go:96` (weights in `quality.go:31`) |
 | Experience dedup / conflict merge (similarity threshold) | ③ | `internal/runtime/memory/experience/conflict_resolver.go:15` |
@@ -1505,7 +1510,7 @@ Plus three (by cost-effectiveness):
 
 Loading the death snapshot, binding task-X and resuming from `StepCheckpoint`
 happen **outside** `RestartAgent` — in the caller (`runKernelRecoveryLoop`,
-`cmd/ares/kernel_loop.go:336`) and in the scheduler.
+`cmd/ares/kernel_loop.go:328`) and in the scheduler.
 
 ```mermaid
 sequenceDiagram
@@ -1530,16 +1535,17 @@ sequenceDiagram
 
 | Step | Key point | Source |
 |---|---|---|
-| budget check (lifetime-cumulative) | "5 total", not "5 consecutive" — prevents the reset-loop | `recovery.go:277` |
-| atomic reserve | check+increment in one shot; claim the slot before the sleep | `recovery.go:283` |
-| exponential backoff | prevents a crash-restart storm | `recovery.go:310` |
-| same-ID arbitration | death snapshot drives same-ID in-place revival; provenance/audit continuous | `recovery.go:326` |
-| spawn via CognitionFactory | builds a "real cognition", not an empty shell | `recovery.go:151` |
-| load the brain | A's LLM context/tool history moves into B | `recovery.go:340` |
-| bind + resume (**caller side**) | *not* in `RestartAgent`: `runKernelRecoveryLoop` binds task-X, the scheduler resumes from `StepCheckpoint` | `kernel_loop.go:336` |
+| budget check (lifetime-cumulative) | "5 total", not "5 consecutive" — prevents the reset-loop | `recovery.go:288-295` |
+| atomic reserve | check+increment in one shot; claim the slot before the sleep | `recovery.go:296-305` |
+| exponential backoff | prevents a crash-restart storm | `recovery.go:323-337` (delay computed at :329) |
+| same-ID arbitration | death snapshot drives same-ID in-place revival; provenance/audit continuous | `recovery.go:339-351` |
+| spawn via CognitionFactory | builds a "real cognition", not an empty shell | `recovery.go:139-155` |
+| load the brain | A's LLM context/tool history moves into B | `recovery.go:352-356` |
+| release the death snapshot | a successful revival consumes the snapshot | `recovery.go:357-361` |
+| bind + resume (**caller side**) | *not* in `RestartAgent`: `runKernelRecoveryLoop` binds task-X, the scheduler resumes from `StepCheckpoint` | `cmd/ares/kernel_loop.go` (`runKernelRecoveryLoop` :328) |
 
-> `RecoverTaskCheckpoint` (`recovery.go:193`) and `RecoverFromAgentDeath`
-> (`recovery.go:371`) are marked TEST/CHAOS-ONLY; `RestartAgent` is the
+> `RecoverTaskCheckpoint` (`recovery.go:222`) and `RecoverFromAgentDeath`
+> (`recovery.go:397`) are marked TEST/CHAOS-ONLY; `RestartAgent` is the
 > production path.
 
 ### 25.4 Two recovery modes
@@ -1577,7 +1583,7 @@ flowchart TB
         c["SessionMaxHistory=500<br/>AddMessage drops the oldest past 500<br/>(session.go:23)"]
     end
     subgraph read[2 read layer BuildContext]
-        w["MaxHistory(default 10-50)<br/>take only the most recent N<br/>(manager_impl.go:563)"]
+        w["MaxHistory(default 10-50)<br/>take only the most recent N<br/>(manager_impl.go:565)"]
         cl["ContextCleaner.Clean<br/>rule-based cleaning (NOT LLM)"]
     end
     subgraph rag[3 RAG injection]
@@ -1592,7 +1598,7 @@ flowchart TB
 | Layer | What | Source |
 |---|---|---|
 | ① storage cap | each session stores at most `SessionMaxHistory=500` messages, oldest dropped past the cap (prevents long-session OOM, a bug that was fixed) | `context/session.go:23` `defaultMaxSessionMessages=500` |
-| ② read truncation | `BuildContext` takes only the **most recent `MaxHistory` (10-50)** messages, not the full history | `manager_impl.go:563` `messages[len-maxHistory:]` |
+| ② read truncation | `BuildContext` takes only the **most recent `MaxHistory` (10-50)** messages, not the full history | `manager_impl.go:565` `messages[len-maxHistory:]` |
 | ② rule cleaning | `ContextCleaner.Clean` does "role-differential compression" on the truncated messages | `context/cleaner.go` |
 | ③ RAG injection | prepends retrieved relevant experience/knowledge snippets (current input is the query) | `manager_rag.go:17` `retrieveContextString` |
 
@@ -1767,13 +1773,13 @@ drive §19's envcap capability search, not the L1 graph.
 
 | Subscriber | Subscribes to | Why |
 |---|---|---|
-| **Scheduler** `scheduler.go:315` | `task.created/ready/completed/failed/yielded` (5) | event-driven drain; `yielded` skips the poll interval between quanta (§4) |
-| **Recovery loop** `kernel_loop.go:290` | `task.expired/failed/acquired/yielded` (4) | lease / failure -> recovery |
-| **answer-fail release** `peer_assembly.go:432` | `task.failed` | answer failed -> release the session (idle TTL is the backstop) |
+| **Scheduler** `scheduler.go:321` | `task.created/ready/completed/failed/yielded` (5) | event-driven drain; `yielded` skips the poll interval between quanta (§4) |
+| **Recovery loop** `kernel_loop.go:343` | `task.expired/failed/acquired/yielded` (4) | lease / failure -> recovery |
+| **answer-fail release** `peer_assembly.go:424` (subscribe) / `:440` (release) | `task.failed` | answer failed -> release the session (idle TTL is the backstop) |
 | **Distillation** `bootstrap_steps.go:112` | `task.completed/failed` | distill experience (§18, success **and** failure) |
-| **GA fitness** `ares_evolution/observer.go:216` (+ `scheduler.go:433`) | `task.completed/failed/agent.stopped` | turn outcomes into strategy samples / `KindFitness` evidence (§14). Note: `ExecutionAttribution` is written **inline** by the kernel scheduler (`kernel/scheduler_quantum.go:258`), not by a subscriber |
+| **GA fitness** `ares_evolution/observer.go:216` (+ `scheduler.go:433`) | `task.completed/failed/agent.stopped` | turn outcomes into strategy samples / `KindFitness` evidence (§14). Note: `ExecutionAttribution` is written **inline** by the kernel scheduler (`kernel/scheduler_quantum.go:290`), not by a subscriber |
 | **skill outcome writer** `skill_outcome_writer.go:81` | `task.completed/failed` | write task outcomes into skills experience |
-| **Observability** `serve_wiring.go:384` (`EventFilter{}` = match-all) | every event | flight record / panel replay (§15) |
+| **Observability** `serve_wiring.go:396` (`EventFilter{}` = match-all) | every event | flight record / panel replay (§15) |
 
 ### 28.2 The core insight
 
@@ -1841,6 +1847,6 @@ principal is recorded as `ApprovalBy` for audit.
 persists byte-for-byte identically to 0.3.2/0.3.3 — pinned by
 `TestDefaultPathPayloadHasNoNewKeys`.
 
-> **Source-location note**: line numbers are a v0.3.2 snapshot and may drift as
-> the dev branch moves. Function names / file paths are more stable than line
+> **Source-location note**: line numbers were re-verified against the current
+> tree on 2026-10-12. Function names / file paths are more stable than line
 > numbers — locate by symbol when in doubt.
