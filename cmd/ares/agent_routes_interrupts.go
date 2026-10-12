@@ -92,15 +92,13 @@ func (h *actionHandler) routeResolveInterrupt(w http.ResponseWriter, r *http.Req
 		return
 	}
 	approver = princ.Subject
-	// Compute the blast radius BEFORE resolving so the approver (and the
-	// audit trail) can see how many downstream tasks a reject will cascade
-	// to (R3: blast radius transparency). After resolve the decision is no
-	// longer pending, so ApprovalBlastRadius would return zero.
-	var blastRadius taskfabric.BlastRadius
-	if decision == taskfabric.ApprovalDecisionRejected {
-		blastRadius = h.kernel.fabric.ApprovalBlastRadius(id)
-	}
-	if err := h.kernel.fabric.ResolveApproval(id, decision, req.Feedback, approver); err != nil {
+	// Resolve the approval and compute the blast radius atomically under
+	// the SAME fabric lock. This eliminates the TOCTOU window between a
+	// separate ApprovalBlastRadius call and ResolveApproval: the blast
+	// radius reported to the approver is exactly what the reject cascaded
+	// (R3 + R5: atomic blast radius + resolve).
+	blastRadius, err := h.kernel.fabric.ResolveApprovalWithBlastRadius(id, decision, req.Feedback, approver)
+	if err != nil {
 		switch {
 		case errors.Is(err, taskfabric.ErrTaskNotFound):
 			w.WriteHeader(http.StatusNotFound)
@@ -125,7 +123,9 @@ func (h *actionHandler) routeResolveInterrupt(w http.ResponseWriter, r *http.Req
 		resp["state"] = string(tk.State)
 	}
 	// On reject, surface the blast radius so the approver (and the audit
-	// trail) can see how many downstream tasks were cascaded (R3).
+	// trail) can see how many downstream tasks were cascaded (R3). The
+	// blast radius was computed atomically with the resolve under the same
+	// lock, so it exactly reflects the cascaded set (R5: no TOCTOU).
 	if decision == taskfabric.ApprovalDecisionRejected {
 		resp["blast_radius"] = blastRadius
 	}

@@ -87,6 +87,30 @@ none of this execute and persist exactly as before — pinned by
   core can reference them without violating the layering gate
   (`TestFabricCoreMustNotImportRuntime`).
 
+- **HITL approval SLA, reject blast-radius, agent PAUSED** (increment on the
+  approval gate): a step may set `ApprovalTimeout` — a pending gate past its SLA
+  is auto-rejected by `Fabric.ExpireApprovals` (run in the recovery sweep after
+  deadline-expiry, before lease-requeue) with the same cascade as a manual
+  reject, so a gate cannot stall a plan forever; the SLA is persisted and folded
+  on restore. A fabric-wide fallback (`kernel.approval_sla`, default off) is
+  applied in the single create chokepoint so a gate created via any path —
+  direct `Fabric.Create` as well as `CompilePlan` — inherits an SLA when it sets
+  no per-task one, closing the window where a forgotten SLA meant an indefinite
+  stall; a per-task `ApprovalTimeout` always wins and leaving the fabric default
+  zero preserves the deliberate "wait until a human resolves it" behaviour. `POST /api/interrupts/{id}/resolve` now resolves and computes the
+  reject blast radius (`cascaded_fail` / `allow_partial_degraded`) atomically
+  under one fabric lock (`ResolveApprovalWithBlastRadius`), so the number the
+  approver sees is exactly what cascaded, and an anonymous principal is refused
+  (401). Approve now also emits `task.ready` so a scheduler subscribed to
+  lifecycle events drains the newly-schedulable task without a sweep delay. The
+  agent lifecycle `StateSuspended` is renamed `StatePaused` to end the collision
+  with the task-layer `SUSPENDED` (the wire value stays `"SUSPENDED"` for event
+  /snapshot compatibility), and an execution-layer `busy` flag now excludes an
+  agent from scheduling candidates while it runs a quantum (`IsIdle` reads it;
+  set before the quantum and cleared via defer so a panic cannot strand the
+  agent). Default (no `ApprovalTimeout`, no `interrupt`) stays byte-for-byte
+  compatible.
+
 ### Fixed
 
 - **Deterministic L1 priors ordering**

@@ -391,6 +391,13 @@ kernel:
   # dag_execution:
   #   max_plan_depth: 10              # growth-depth guard (0 = default 10)
   #   reaper_grace: 30s               # terminal-task reaper grace (0 = 30s)
+  #
+  # approval_sla: fallback deadline for a human to resolve a HITL approval
+  #   gate that carries no per-step timeout. A positive duration (e.g. "24h")
+  #   makes a forgotten gate auto-reject via the recovery sweep instead of
+  #   stalling the plan forever; unset/empty leaves the net off (the gate waits
+  #   until a human resolves it). A per-step `interrupt` timeout always wins.
+  # approval_sla: 24h
 
 # ── Tool system ──────────────────────────────────────────────
 tools:

@@ -61,6 +61,15 @@ func (a *peerAssembly) assembleFabric() error {
 	// mirrors flipKernelToTaskFabric but runs directly at startup (no
 	// legacy path to flip from).
 	kernel.fabric = taskfabric.NewFabric()
+	// HITL approval SLA safety net: a positive kernel.approval_sla makes every
+	// RequiresApproval task that carries no per-step timeout inherit it, so a
+	// forgotten gate expires instead of stalling the plan forever. Empty or
+	// invalid leaves the net off (gate waits until a human resolves it).
+	if raw := a.cfg.Kernel.ApprovalSLA; raw != "" {
+		if d, err := time.ParseDuration(raw); err == nil && d > 0 {
+			kernel.fabric = kernel.fabric.WithDefaultApprovalSLA(d)
+		}
+	}
 	// Stamp every submitted task with the strategy that was active at
 	// submission time (evolution loop closure), so runtime fitness samples
 	// stay attributed to the strategy that produced them across promotes.

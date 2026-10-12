@@ -10,14 +10,17 @@ import (
 )
 
 // fabricExecutor returns a CapabilityExecutor adapter for a live fabric agent,
-// or nil when the agent is unknown, not IDLE, or has no execution body
-// (managed but not schedulable). Called when Schedule wins with a fabric agent
-// that is not in the static executor registry.
+// or nil when the agent is unknown or has no execution body (managed but not
+// schedulable). Called when Schedule wins with a fabric agent that is not in
+// the static executor registry. IsIdle is NOT checked here: the caller
+// (executeWithCandidates) has already Acquired the task by the time this runs,
+// and a concurrent drain may have set the agent's R4 busy flag. Rejecting the
+// agent here would strand the leased task with a "stale winner" path even
+// though the agent is alive and executable. The IsIdle check belongs in the
+// candidate-building phase (appendFabricCandidates), not in the post-Schedule
+// resolution.
 func (s *Scheduler) fabricExecutor(agentID string) CapabilityExecutor {
 	if s.agents == nil {
-		return nil
-	}
-	if !s.agents.IsIdle(agentID) {
 		return nil
 	}
 	a, err := s.agents.Get(agentID)

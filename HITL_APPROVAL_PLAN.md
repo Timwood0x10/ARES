@@ -375,3 +375,32 @@ approve 后任务会被调度、可能已 COMPLETED；此时再 reject 会走到
 - **(a) 放最后（倾向）**：过期仍优先报 `ErrTaskDeadlineExceeded`（更可操作），且不改动既有两条守护的相对优先级；
 - (b) 放最前：审批优先，报 `ErrTaskAwaitingApproval`。
 - 影响：决定 §8 用例 `TestApprovalGate_AcquireRefusesPending` 与 deadlin/backoff 用例的相对断言。
+
+---
+
+## 附录 F：rev2 落地增量（2026-10-11，已实现）
+
+> 在 rev1 的审批门之上落了三块增量 + 一次去重，均已带测试、`make check` 绿。按 `code_rules_v2.md` 实现。
+
+### F.1 已实现
+
+1. **审批 SLA（R1）**：`PlanStep.ApprovalTimeout`(相对) → `CompilePlan` 解析为绝对 `Task.ApprovalTimeout`；`Fabric.ExpireApprovals` 在恢复 sweep 中（deadline 之后、lease requeue 之前，`runSweepChain`）自动 reject 超时的待批门，走与手动 reject 同一条 `failTerminalLocked`+级联;SLA 进事件 payload + restore 折叠(`restoreKeyApprovalTimeout`)。只处理 `StateReady`（审批门挡 Acquire,待批任务不可能到 LEASED/RUNNING/SUSPENDED;限定 READY 规避 `SUSPENDED→FAILED` 非法迁移的僵尸风险)。
+   - **兜底（rev3 补）**：SLA 原先只在 `CompilePlan` 路径设,`fabric.Create` 直建的 `RequiresApproval` 任务 timeout=0 → 永不过期 → 无限滞留。现加 `Fabric.WithDefaultApprovalSLA(d)`,在**唯一创建瓶颈** `createLocked`(Create 与 CompilePlan 都经此)对无显式 timeout 的待批门套用默认 SLA;生产经 `kernel.approval_sla`(`cmd/ares/peer_assembly.go`)注入。语义:默认 0 = 关(全局"等到人决定");设正值 → "忘了设"的门也会过期。per-task timeout 永远优先。这把"故意无限等"与"忘了设"从**不可分**变成**operator 可选的安全阀**。
+2. **拒绝影响面预览(R3)+ 原子化(消 TOCTOU)**：`BlastRadius{cascaded_fail, allow_partial_degraded}`;`ResolveApprovalWithBlastRadius` 在同一把锁内先算 blast 再 resolve,HTTP handler 用它,返回数即实际级联数。
+3. **匿名拒绝(R6)**:`POST /api/interrupts/{id}/resolve` 对 nil principal 返回 401,`ApprovalBy` 记 `princ.Subject`。
+4. **approve 唤醒(闭环)**:approve 后发 `EventTaskReady`,`scheduler.go` 的触发集含 `EventTaskReady` → 立即 drain,无 sweep 延迟。
+5. **agent `StatePaused` 改名(R5)**:`StateSuspended`→`StatePaused`,wire 值仍 `"SUSPENDED"`;并补 `busy` 执行态桥(`SetBusy`/`IsBusy`,`IsIdle` 读之,`scheduler_execute` 跑 quantum 前置、defer 清除)。
+6. **去重(§5.1)**:`ResolveApproval` 与 `ResolveApprovalWithBlastRadius` 抽出共享 `resolveApprovalPreflightLocked` + `resolveApprovalLocked` 单一真相核心,防漂移。
+
+### F.2 测试(§7)
+
+- `internal/fabric/task/approval_sla_test.go`:SLA 自动 reject + 级联(严格/AllowPartial) + 零 timeout 不过期 + 重启后仍可过期;`CompilePlan` 相对→绝对;blast 预览计数(含传递);`ResolveApprovalWithBlastRadius` blast==实际级联/approve 零 blast/幂等;approve 发 `task.ready`。
+- `internal/fabric/agent/busy_test.go`:busy 桥排除调度 + `-race` 并发安全。
+
+### F.3 M4 决定:**暂不接 `runtime.InterruptPlugin`,显式搁置**
+
+计划 rev1 的 M4 原拟"接 `InterruptPlugin` 观测 + 反转 `runtime/architecture_test.go:54` 守护"。实现时核实后**撤回**:
+- `InterruptPlugin` 是 **WorkflowHook 平面**的观测器(`AfterStep` 回调,runtime engine 执行路径),而本审批门的 `interrupt.created`/`interrupt.resolved` 走的是 **taskfabric 事件存储平面**。注册它**观测不到**审批事件 → 属"空转接线",反转守护等于让守护说谎(违反 §0.2 禁止假实现)。
+- HITL 已有真实消费端:`GET /api/interrupts`(待批查询)+ 事件存储(既有 flight/event 面可读)。`InterruptPlugin` 冗余。
+- 真正的审批可观测闭环 = 订阅事件存储的 `interrupt.*` 并上面板,属 0.3.3 计划显式搁置的"观测轮"(C1),需独立设计。
+- **结论**:M4 搁置,`runtime/architecture_test.go:54` 的 `NewInterruptPlugin` 白名单保留(它仍是真未接线的 capability reserve)。要做观测闭环请走观测轮,别用假接线凑数。

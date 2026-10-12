@@ -236,7 +236,8 @@ func (f *Fabric) record(ctx context.Context, a *Agent, typ AgentEventType, paylo
 type AgentView struct {
 	// Identity is the stable agent identifier.
 	Identity string `json:"identity"`
-	// State is the lifecycle state (IDLE/RUNNING/SUSPENDED/RETIRED).
+	// State is the lifecycle state (IDLE/PAUSED/RETIRED). The wire value for
+	// PAUSED stays "SUSPENDED" (see AgentState) for event/snapshot compat.
 	State AgentState `json:"state"`
 	// Capabilities are the declared capabilities (copied).
 	Capabilities []string `json:"capabilities"`

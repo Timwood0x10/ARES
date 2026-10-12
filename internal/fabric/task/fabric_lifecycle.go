@@ -1,6 +1,7 @@
 package taskfabric
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"time"
@@ -57,6 +58,26 @@ func (f *Fabric) createLocked(t *Task, strategyID string, pending *[]*pendingApp
 	cp.Lease = nil
 	cp.CreatedAt = f.now()
 	cp.UpdatedAt = cp.CreatedAt
+	// HITL SLA safety net: a RequiresApproval task created without its own
+	// ApprovalTimeout inherits the fabric default. This is the single choke
+	// point for EVERY create path (direct Create AND CompilePlan, which both
+	// land here), so a gate can no longer be born with no SLA just because the
+	// caller forgot. A per-task ApprovalTimeout (e.g. from PlanStep) is already
+	// set by now and wins; a zero fabric default leaves it zero = wait forever.
+	if cp.RequiresApproval && cp.ApprovalTimeout.IsZero() && f.defaultApprovalSLA > 0 {
+		cp.ApprovalTimeout = cp.CreatedAt.Add(f.defaultApprovalSLA)
+	}
+	// Make the "no safety net" case observable instead of silent: a gate that
+	// requires approval but has neither a per-task ApprovalTimeout nor a fabric
+	// default will wait forever (ExpireApprovals skips a zero timeout). The net
+	// is off by design (backward compatible), so this is a one-shot WARN at
+	// birth — not a per-sweep gauge — to avoid log spam for a persistent state
+	// while still surfacing "this gate can hang indefinitely" to operators.
+	if cp.RequiresApproval && cp.ApprovalTimeout.IsZero() {
+		log.Warn(context.Background(), "createLocked",
+			"approval gate created without an SLA; it will wait indefinitely until a human resolves it — set a per-step interrupt timeout or kernel.approval_sla to bound it",
+			"task_id", cp.ID)
+	}
 	// Stamp the submission-time strategy attribution onto the task's
 	// checkpoint envelope (once per Create; a pre-stamped envelope wins).
 	stampStrategyAttribution(&cp, strategyID)
@@ -522,6 +543,20 @@ func (f *Fabric) ExpireDeadlines() []string {
 // ApprovalDecisionApproved and ApprovalDecisionRejected are the two allowed
 // decision values for ResolveApproval. They are the string forms stored in
 // Task.ApprovalDecision.
+//
+// Approval-gate sub-state transition table (Task.ApprovalDecision), only
+// meaningful while Task.RequiresApproval is true:
+//
+//	decision   → allowed transitions
+//	────────   ──────────────────────────────────────────────
+//	""          (pending) → "approved" (gate opens, task stays READY)
+//	""          (pending) → "rejected" (task driven READY→FAILED + cascade)
+//	"approved"  (terminal for the gate; task runs normally)
+//	"rejected"  (terminal for the gate; task is FAILED)
+//
+// The gate never reopens: once non-empty, the only legal re-resolve is the
+// identical decision (idempotent no-op). A different decision after one is
+// set returns ErrApprovalAlreadyResolved.
 const (
 	ApprovalDecisionApproved = "approved"
 	ApprovalDecisionRejected = "rejected"
@@ -531,24 +566,23 @@ const (
 // boolean approval outcome (true = approved, false = rejected).
 const payloadKeyApproved = "approved"
 
-// ResolveApproval is the human band-in entry point for the HITL approval gate
-// It does NOT require ownership — like
-// ExpireDeadlines, it is an out-of-band decision that operates under f.mu
-// directly.
+// payloadKeyFeedback is the EventInterruptResolved payload key carrying the
+// human feedback text (reject reason / approve note / auto-reject message).
+const payloadKeyFeedback = "feedback"
+
+// ResolveApproval is the human-in-the-loop entry point for the HITL approval
+// gate. It does NOT require ownership — like ExpireDeadlines, it is an
+// out-of-band decision that operates under f.mu directly.
 //
-// approve: the task stays READY (no state change) and becomes schedulable on
-// the next scheduler tick (approvalCleared now returns true). An
-// EventInterruptResolved event is recorded with approved=true.
+// approve: the task stays READY (no state change) and becomes schedulable
+// (approvalCleared now returns true). reject: the task is driven to FAILED
+// via failTerminalLocked (READY→FAILED is a legal transition) with the usual
+// cascade. The mutation + event ordering lives in resolveApprovalLocked, the
+// single source shared with ResolveApprovalWithBlastRadius.
 //
-// reject: the task is driven to FAILED via failTerminalLocked (READY→FAILED is
-// a legal transition), which also fires cascadeFailureLocked for downstream
-// dependents. An EventInterruptResolved event is recorded with approved=false
-// and the feedback text.
-//
-// Idempotency: resolving with the same decision is a no-op. Resolving with a
-// different decision after one is already set returns
-// ErrApprovalAlreadyResolved. Resolving a task that is no longer in a
-// resolvable state (already terminal) also returns ErrApprovalAlreadyResolved.
+// Idempotency: resolving with the same decision is a no-op. A different
+// decision after one is already set, or a task that is already terminal,
+// returns ErrApprovalAlreadyResolved.
 //
 // Args:
 //   - id: the task id.
@@ -560,51 +594,95 @@ const payloadKeyApproved = "approved"
 //   - error: ErrTaskNotFound / ErrApprovalNotRequired /
 //     ErrInvalidApprovalDecision / ErrApprovalAlreadyResolved.
 func (f *Fabric) ResolveApproval(id, decision, feedback, by string) error {
-	if decision != ApprovalDecisionApproved && decision != ApprovalDecisionRejected {
-		return ErrInvalidApprovalDecision
-	}
 	pending := make([]*pendingAppend, 0, 2)
 	f.mu.Lock()
 	defer f.flushAppends(&pending)
 	defer f.mu.Unlock()
+	t, proceed, err := f.resolveApprovalPreflightLocked(id, decision)
+	if err != nil || !proceed {
+		return err
+	}
+	return f.resolveApprovalLocked(t, decision, feedback, by, &pending)
+}
+
+// resolveApprovalPreflightLocked validates that task id may be resolved with
+// decision. Caller must hold f.mu. It returns (t, proceed, err): proceed is
+// false with a nil error when the call is an idempotent no-op (the same
+// decision is already recorded), so both public wrappers short-circuit
+// without duplicating the guard logic (and thus cannot drift apart).
+func (f *Fabric) resolveApprovalPreflightLocked(id, decision string) (*Task, bool, error) {
+	// Decision validation lives HERE (not in the public wrappers) so both
+	// ResolveApproval and ResolveApprovalWithBlastRadius are guaranteed to
+	// reject an invalid decision identically — the single-guard promise this
+	// helper exists for. A wrapper that validated on its own could drift.
+	if decision != ApprovalDecisionApproved && decision != ApprovalDecisionRejected {
+		return nil, false, ErrInvalidApprovalDecision
+	}
 	t, ok := f.tasks[id]
 	if !ok {
-		return ErrTaskNotFound
+		return nil, false, ErrTaskNotFound
 	}
 	if !t.RequiresApproval {
-		return ErrApprovalNotRequired
+		return nil, false, ErrApprovalNotRequired
 	}
 	// Idempotency: same decision → no-op.
 	if t.ApprovalDecision == decision {
-		return nil
+		return t, false, nil
 	}
 	// Already resolved with a different decision, or task is terminal.
-	if t.ApprovalDecision != "" ||
-		t.State == StateCompleted || t.State == StateFailed {
-		return ErrApprovalAlreadyResolved
+	if t.ApprovalDecision != "" || t.State == StateCompleted || t.State == StateFailed {
+		return nil, false, ErrApprovalAlreadyResolved
 	}
+	return t, true, nil
+}
+
+// resolveApprovalLocked applies a validated, non-no-op approval decision to
+// task t and records the lifecycle events. Caller must hold f.mu and must
+// have passed resolveApprovalPreflightLocked. It is the single source of
+// truth for the approve/reject mutation so ResolveApproval and
+// ResolveApprovalWithBlastRadius can never drift apart.
+//
+// Ordering (reject): failTerminalLocked runs FIRST; only on its success are
+// the approval fields stamped and interrupt.resolved recorded, so a failed
+// transition never leaves a half-mutated task with a durable event that
+// contradicts its actual state. Approve stamps the fields, records
+// interrupt.resolved, then emits task.ready so a scheduler subscribed to
+// lifecycle events drains immediately instead of waiting up to one sweep.
+func (f *Fabric) resolveApprovalLocked(t *Task, decision, feedback, by string, pending *[]*pendingAppend) error {
+	// Stamp the approval fields BEFORE the terminal transition so the
+	// authoritative task.failed event (recorded inside failTerminalLocked
+	// through the must-persist payload) carries WHO rejected and WHY — the
+	// durable audit chain, not only the interrupt.resolved event. The
+	// "only a pending READY gate is resolvable" preflight guard makes
+	// READY→FAILED legal, so the rollback is a safety net that should never
+	// run; if the transition ever did fail, the fields are restored so the
+	// task is never left half-mutated (§3.6 state consistency).
+	prevDecision, prevFeedback := t.ApprovalDecision, t.ApprovalFeedback
+	prevBy, prevAt := t.ApprovalBy, t.ApprovalAt
 	t.ApprovalDecision = decision
 	t.ApprovalFeedback = feedback
 	t.ApprovalBy = by
 	t.ApprovalAt = f.now()
-	if decision == ApprovalDecisionApproved {
-		// No state change: the task stays READY. The approval gate
-		// (approvalCleared) now returns true so the scheduler picks it up.
-		pending = append(pending, f.recordWithExtrasLocked(t,
-			EventType(ares_events.EventInterruptResolved), map[string]any{
-				payloadKeyApproved: true,
-			}))
-		return nil
+	if decision == ApprovalDecisionRejected {
+		if err := f.failTerminalLocked(t, ErrInterruptRejected, false, pending); err != nil {
+			t.ApprovalDecision, t.ApprovalFeedback = prevDecision, prevFeedback
+			t.ApprovalBy, t.ApprovalAt = prevBy, prevAt
+			return err
+		}
 	}
-	// Reject: drive to FAILED via failTerminalLocked (READY→FAILED is legal).
-	// failTerminalLocked records task.failed and fires cascadeFailureLocked.
-	// We also record an interrupt.resolved event for observability.
-	pending = append(pending, f.recordWithExtrasLocked(t,
-		EventType(ares_events.EventInterruptResolved), map[string]any{
-			payloadKeyApproved: false,
-			"feedback":         feedback,
-		}))
-	return f.failTerminalLocked(t, ErrInterruptRejected, false, &pending)
+	extras := map[string]any{payloadKeyApproved: decision == ApprovalDecisionApproved}
+	if decision == ApprovalDecisionRejected {
+		extras[payloadKeyFeedback] = feedback
+	}
+	*pending = append(*pending, f.recordWithExtrasLocked(t,
+		EventType(ares_events.EventInterruptResolved), extras))
+	if decision == ApprovalDecisionApproved {
+		// task.ready signals "newly schedulable" without a state change so a
+		// scheduler subscribed to lifecycle events drains without a sweep
+		// delay. Observability-only (never folded by restore).
+		*pending = append(*pending, f.recordLocked(t, EventTaskReady))
+	}
+	return nil
 }
 
 // ApprovalView is the read-only snapshot of one pending approval gate,
@@ -677,6 +755,39 @@ func (f *Fabric) ApprovalBlastRadius(id string) BlastRadius {
 	return f.blastRadiusLocked(id)
 }
 
+// ResolveApprovalWithBlastRadius resolves an approval gate and returns the
+// blast radius that was computed atomically under the SAME lock as the
+// resolve. This eliminates the TOCTOU window between a separate
+// ApprovalBlastRadius call and a ResolveApproval call: the blast radius
+// reported to the approver is exactly what the reject cascaded.
+//
+// For approve the blast radius is always zero (no cascade). For reject it
+// reflects the dependents that were cascaded to FAILED by this very call.
+// Returns ErrApprovalAlreadyResolved (with a zero BlastRadius) when the
+// task is already resolved, so the caller can distinguish a no-op from a
+// real resolve.
+func (f *Fabric) ResolveApprovalWithBlastRadius(id, decision, feedback, by string) (BlastRadius, error) {
+	pending := make([]*pendingAppend, 0, 2)
+	f.mu.Lock()
+	defer f.flushAppends(&pending)
+	defer f.mu.Unlock()
+	t, proceed, err := f.resolveApprovalPreflightLocked(id, decision)
+	if err != nil || !proceed {
+		return BlastRadius{}, err
+	}
+	// Compute the blast radius BEFORE the mutation, under the same lock: it
+	// is the exact set of dependents a reject will cascade, so the number
+	// reported to the approver matches what actually cascades (no TOCTOU).
+	var br BlastRadius
+	if decision == ApprovalDecisionRejected {
+		br = f.blastRadiusLocked(id)
+	}
+	if err := f.resolveApprovalLocked(t, decision, feedback, by, &pending); err != nil {
+		return BlastRadius{}, err
+	}
+	return br, nil
+}
+
 // blastRadiusLocked computes the blast radius for task id. Caller must hold
 // f.mu. It mirrors cascadeFailureLocked's traversal but is read-only: it
 // counts dependents instead of failing them.
@@ -715,6 +826,17 @@ func (f *Fabric) blastRadiusLocked(rootID string) BlastRadius {
 	return br
 }
 
+// approvalTimeoutFeedback is the single source of truth for the timeout
+// rejection text. Used in the ApprovalFeedback field, the interrupt.resolved
+// event payload, and matches ErrApprovalExpired's message. Keeping it in one
+// place prevents the three from drifting apart.
+const approvalTimeoutFeedback = "approval gate timed out"
+
+// approvalSLAPrincipal is the ApprovalBy value stamped by the auto-reject
+// sweep so an audit trail can distinguish system SLA expiry from a human
+// reject.
+const approvalSLAPrincipal = "system:approval-sla"
+
 // ExpireApprovals auto-rejects every pending approval gate whose
 // ApprovalTimeout has passed. It is the approval-SLA enforcement mechanism
 // (R1): a task whose gate has been open too long is driven to FAILED via
@@ -724,7 +846,24 @@ func (f *Fabric) blastRadiusLocked(rootID string) BlastRadius {
 //
 // A task with a zero ApprovalTimeout is never expired by this sweep — its
 // gate stays open until a human resolves it. Only pending tasks
-// (ApprovalDecision == "" and still in a live state) are eligible.
+// (ApprovalDecision == "" and still in StateReady) are eligible. The
+// approval gate blocks Acquire, so a RequiresApproval task that has not
+// been approved can never leave READY — listing other states (LEASED/
+// RUNNING/SUSPENDED) would be a latent bug if the gate were ever bypassed,
+// because the state machine does not allow SUSPENDED→FAILED and
+// failTerminalLocked would return error after the task fields had already
+// been mutated, leaving a zombie (decision set, event persisted, but not
+// FAILED). Only StateReady is processed so the transition is always legal.
+//
+// Ordering: failTerminalLocked runs FIRST. Only on its success are the
+// approval fields set and the interrupt.resolved event recorded — so a
+// failed transition never leaves the task in a half-mutated state.
+//
+// Iteration safety: failTerminalLocked calls cascadeFailureLocked which
+// mutates sibling tasks' State (transition to FAILED) but does NOT add or
+// remove keys from f.tasks, so the range over f.tasks is safe under Go's
+// map iteration semantics. If cascadeFailureLocked ever gains the ability
+// to create tasks, the range must be converted to a pre-snapshot of keys.
 func (f *Fabric) ExpireApprovals() []string {
 	pending := make([]*pendingAppend, 0, 1)
 	f.mu.Lock()
@@ -739,24 +878,35 @@ func (f *Fabric) ExpireApprovals() []string {
 		if t.ApprovalTimeout.IsZero() || !now.After(t.ApprovalTimeout) {
 			continue
 		}
-		switch t.State {
-		case StateReady, StateLeased, StateRunning, StateSuspended:
-		default:
+		// Only StateReady is eligible: the approval gate blocks Acquire, so
+		// a pending approval task cannot reach LEASED/RUNNING/SUSPENDED.
+		// Limiting it to StateReady keeps READY→FAILED legal, so the stamp
+		// below is never rolled back in practice.
+		if t.State != StateReady {
 			continue
 		}
+		// Stamp the auto-reject fields BEFORE the terminal transition so the
+		// authoritative task.failed event carries WHO (system SLA) and WHY —
+		// the same durable audit chain as a manual reject. On the (guarded-
+		// impossible) transition failure the fields are rolled back so the
+		// task is never left half-mutated.
 		t.ApprovalDecision = ApprovalDecisionRejected
-		t.ApprovalFeedback = "approval gate timed out"
-		t.ApprovalBy = "system:approval-sla"
+		t.ApprovalFeedback = approvalTimeoutFeedback
+		t.ApprovalBy = approvalSLAPrincipal
 		t.ApprovalAt = now
+		if err := f.failTerminalLocked(t, ErrApprovalExpired, false, &pending); err != nil {
+			t.ApprovalDecision, t.ApprovalFeedback = "", ""
+			t.ApprovalBy, t.ApprovalAt = "", time.Time{}
+			continue
+		}
+		// Transition succeeded: record the interrupt.resolved event AFTER
+		// task.failed so the durable log order is failed → resolved.
 		pending = append(pending, f.recordWithExtrasLocked(t,
 			EventType(ares_events.EventInterruptResolved), map[string]any{
 				payloadKeyApproved: false,
-				"feedback":         "approval gate timed out",
+				payloadKeyFeedback: approvalTimeoutFeedback,
 				"auto":             true,
 			}))
-		if err := f.failTerminalLocked(t, ErrApprovalExpired, false, &pending); err != nil {
-			continue
-		}
 		expired = append(expired, t.ID)
 	}
 	return expired

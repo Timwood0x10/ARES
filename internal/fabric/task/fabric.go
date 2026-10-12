@@ -109,6 +109,19 @@ type Fabric struct {
 	// the active-strategy fallback downstream.
 	strategyStamp func() string
 
+	// defaultApprovalSLA is the fallback human-decision deadline applied in
+	// createLocked to any RequiresApproval task that carries no explicit
+	// ApprovalTimeout — the single safety net that covers EVERY create path
+	// (direct Create and CompilePlan alike), not just CompilePlan. Zero (the
+	// default) disables the net: a gate with no per-task and no fabric SLA
+	// waits indefinitely, preserving pre-SLA behaviour. Guarded by mu.
+	//
+	// This is the knob that separates "intentionally wait forever" from
+	// "forgot to set an SLA": with a positive fabric default a forgotten
+	// per-task timeout still expires; leaving the default zero is the
+	// deliberate fabric-wide "wait forever" choice.
+	defaultApprovalSLA time.Duration
+
 	// flushSeq/flushedSeq gate durable appends into strict causal order
 	// (concurrent flushAppends must not land out of order in the store's
 	// version sequence). flushSeq is assigned under f.mu in recordLocked —
@@ -140,8 +153,25 @@ func (f *Fabric) WithClock(now func() time.Time) *Fabric {
 	return f
 }
 
+// WithDefaultApprovalSLA sets the fallback human-decision deadline applied to
+// any RequiresApproval task created without its own ApprovalTimeout. It closes
+// the gap where a gate created via a path that does not set a per-task SLA
+// (e.g. a direct Fabric.Create) would otherwise wait forever: a positive
+// default makes a forgotten SLA expire via ExpireApprovals, while a per-task
+// ApprovalTimeout always wins. Zero (the default) keeps the net off — the
+// deliberate fabric-wide "wait until a human resolves it" behaviour. Guarded
+// by mu.
+func (f *Fabric) WithDefaultApprovalSLA(d time.Duration) *Fabric {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if d > 0 {
+		f.defaultApprovalSLA = d
+	}
+	return f
+}
+
 // WithConfidenceSource wires the experience-derived confidence
-// Skill-first — Score's Confidence comes from ares_skills.Experience
+// (Skill-first — Score's Confidence comes from ares_skills.Experience
 // BestMatch SuccessRate). Schedule fills candidates that do not declare a
 // confidence with the provider's prior. Nil detaches. Guarded by mu.
 //

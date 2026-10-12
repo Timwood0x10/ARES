@@ -989,3 +989,32 @@ agents:
 		}
 	})
 }
+
+// TestLoad_KernelApprovalSLA verifies the kernel.approval_sla YAML key parses
+// into KernelConfig.ApprovalSLA (the HITL approval SLA safety-net knob). The
+// value is a duration string consumed at fabric construction; empty is the
+// default (net off).
+func TestLoad_KernelApprovalSLA(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.yaml")
+	content := `
+server:
+  host: "localhost"
+  port: 8080
+llm:
+  provider: "ollama"
+  model: "llama3.2"
+kernel:
+  approval_sla: "24h"
+`
+	if err := os.WriteFile(configPath, []byte(content), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Kernel.ApprovalSLA != "24h" {
+		t.Errorf("Kernel.ApprovalSLA = %q, want 24h", cfg.Kernel.ApprovalSLA)
+	}
+}

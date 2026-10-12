@@ -181,12 +181,11 @@ func (f *Fabric) recordWithExtrasLocked(t *Task, typ EventType, extras map[strin
 		if len(t.DegradedInputs) > 0 {
 			payload[restoreKeyDegradedInputs] = append([]string(nil), t.DegradedInputs...)
 		}
-		// HITL approval-gate events . Published by
-		// HITL approval gate : the policy
-		// and the runtime decision state are persisted so a restart does not
-		// turn a pending gate into an open one (security: a pending task
-		// must remain blocked) or lose a resolved decision. Written only
-		// when RequiresApproval is true, so the default path keeps its exact
+		// HITL approval-gate events: the approval policy and the runtime
+		// decision state are persisted so a restart does not turn a pending
+		// gate into an open one (security: a pending task must remain
+		// blocked) or lose a resolved decision. Written only when
+		// RequiresApproval is true, so the default path keeps its exact
 		// payload (byte-for-byte compatible).
 		if t.RequiresApproval {
 			payload[restoreKeyRequiresApproval] = true
@@ -198,6 +197,12 @@ func (f *Fabric) recordWithExtrasLocked(t *Task, typ EventType, extras map[strin
 			}
 			if t.ApprovalFeedback != "" {
 				payload[restoreKeyApprovalFeedback] = t.ApprovalFeedback
+			}
+			if t.ApprovalBy != "" {
+				payload[restoreKeyApprovalBy] = t.ApprovalBy
+			}
+			if !t.ApprovalAt.IsZero() {
+				payload[restoreKeyApprovalAt] = t.ApprovalAt.Format(time.RFC3339)
 			}
 			if !t.ApprovalTimeout.IsZero() {
 				payload[restoreKeyApprovalTimeout] = t.ApprovalTimeout.Format(time.RFC3339)

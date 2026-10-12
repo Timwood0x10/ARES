@@ -106,6 +106,11 @@ const (
 	restoreKeyApprovalMessage  = "approval_message"
 	restoreKeyApprovalDecision = "approval_decision"
 	restoreKeyApprovalFeedback = "approval_feedback"
+	// restoreKeyApprovalBy / restoreKeyApprovalAt carry the audit identity of
+	// a resolved gate (who decided, and when). Persisted so "who rejected this
+	// task" survives a restart instead of living only in memory.
+	restoreKeyApprovalBy = "approval_by"
+	restoreKeyApprovalAt = "approval_at"
 	// restoreKeyApprovalTimeout is the approval SLA (absolute instant). It
 	// rides the creation event like the other approval-policy keys so a
 	// restart does not lose the SLA (a lost SLA = a gate that can never
@@ -468,6 +473,14 @@ func foldApproval(p map[string]any, t *Task) {
 	}
 	if s := restoreString(p, restoreKeyApprovalFeedback); s != "" {
 		t.ApprovalFeedback = s
+	}
+	if s := restoreString(p, restoreKeyApprovalBy); s != "" {
+		t.ApprovalBy = s
+	}
+	if s := restoreString(p, restoreKeyApprovalAt); s != "" {
+		if ts, err := time.Parse(time.RFC3339, s); err == nil {
+			t.ApprovalAt = ts
+		}
 	}
 	if s := restoreString(p, restoreKeyApprovalTimeout); s != "" {
 		if ts, err := time.Parse(time.RFC3339, s); err == nil {

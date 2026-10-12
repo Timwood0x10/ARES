@@ -173,6 +173,24 @@ func (s *Scheduler) handleStaleWinner(taskID, winner string, epoch uint64) error
 	return nil
 }
 
+// resolveExecutor resolves the winning agent to a CapabilityExecutor.
+// When a fabric is wired it tries the fabric's live agent first; only when
+// no live fabric agent exists does it fall back to the static executor
+// registry. Returns (executor, fallback) where fallback is true when the
+// executor came from the static registry (for observability logging).
+func (s *Scheduler) resolveExecutor(winner string) (CapabilityExecutor, bool) {
+	if s.agents != nil {
+		if exec := s.fabricExecutor(winner); exec != nil {
+			return exec, false
+		}
+	}
+	exec, ok := s.LookupExecutor(winner)
+	if !ok || exec == nil {
+		return nil, false
+	}
+	return exec, true
+}
+
 // executeWithCandidates runs the shared Schedule → Acquire → RunQuantum →
 // finalize path for a prebuilt candidate list. The task capability is read
 // for attribution at the outcome boundary.
@@ -259,26 +277,31 @@ func (s *Scheduler) executeWithCandidates(ctx context.Context, taskID string, ca
 	// recovery affect it), so a same-id static registration must not shadow
 	// it. Only when the fabric has no live agent for the winner (legacy
 	// mode, or a recovery-bound static executor) fall back to the registry.
-	var executor CapabilityExecutor
-	var ok bool
-	if s.agents != nil {
-		executor = s.fabricExecutor(winner)
-	}
+	executor, fallback := s.resolveExecutor(winner)
 	if executor == nil {
-		executor, ok = s.LookupExecutor(winner)
-		if !ok || executor == nil {
-			return s.handleStaleWinner(taskID, winner, epoch)
-		}
+		return s.handleStaleWinner(taskID, winner, epoch)
+	}
+	if fallback {
 		// N-3 observability: in peer mode the fabric had no live agent for the
 		// winner, yet a static registration exists (legacy mode or a
 		// recovery-bound executor). Correctness is fenced — a stale holder's
 		// completion is rejected by the epoch token — but the dispatch stays
 		// visible instead of silent so a dead agent's lingering static
 		// registration can be spotted in logs.
-		if s.agents != nil {
-			log.Debug(ctx, "executeWithCandidates",
-				"kernel scheduler: peer-mode dispatch fell back to a static registration",
-				"task_id", taskID, "winner", winner)
+		log.Debug(ctx, "executeWithCandidates",
+			"kernel scheduler: peer-mode dispatch fell back to a static registration",
+			"task_id", taskID, "winner", winner)
+	}
+	// Determine whether the winner is a live fabric agent so we can bridge
+	// the R4 busy flag. The fabricExecutor path above already confirmed the
+	// agent was IDLE at selection time; setting busy here closes the window
+	// between candidate build and quantum start so a concurrent drain cannot
+	// hand the same agent a second task. The flag is cleared via defer so a
+	// panic or early return never strands the agent as permanently busy.
+	var fabricAgent *agentfabric.Agent
+	if s.agents != nil {
+		if a, err := s.agents.Get(winner); err == nil && a != nil {
+			fabricAgent = a
 		}
 	}
 	// Track the busy slot while the quantum runs so the next Schedule sees the
@@ -333,16 +356,32 @@ func (s *Scheduler) executeWithCandidates(ctx context.Context, taskID string, ca
 		}
 		return nil
 	}
+	// R4 busy bridge: set the fabric agent's busy flag BEFORE the quantum
+	// starts so concurrent drains cannot schedule the same agent. Cleared via
+	// defer so a panic or early return always releases it — without defer a
+	// panic would leave busy=true forever, permanently excluding the agent
+	// from scheduling (capacity leak).
+	if fabricAgent != nil {
+		fabricAgent.SetBusy(true)
+	}
+	busyCleared := false
+	clearBusy := func() {
+		if fabricAgent != nil && !busyCleared {
+			fabricAgent.SetBusy(false)
+			busyCleared = true
+		}
+	}
 	// Panic guard: registered IMMEDIATELY after the busy slot is taken, so the
 	// whole span it protects — user hooks (beforeQuantum runs third-party
 	// plugin code), heartbeat setup, the quantum itself — cannot leak the
-	// winner's LoadTracker slot. A panic anywhere in that span would otherwise
-	// unwind past this function with load never decremented: Score multiplies
-	// by (1-clamp01(load)) = 0, so the agent is permanently unschedulable (the
-	// pre-fix gap: the guard used to be registered only after the heartbeat
-	// setup, leaving beforeQuantum panics leaking the slot). The deferred
-	// release only fires on the panic path: the normal path clears the flag
-	// right after endQuantumOutcome, so there is no double-release.
+	// winner's LoadTracker slot or the R4 busy flag. A panic anywhere in that
+	// span would otherwise unwind past this function with load never
+	// decremented: Score multiplies by (1-clamp01(load)) = 0, so the agent is
+	// permanently unschedulable (the pre-fix gap: the guard used to be
+	// registered only after the heartbeat setup, leaving beforeQuantum panics
+	// leaking the slot). The deferred release only fires on the panic path:
+	// the normal path clears the flag right after endQuantumOutcome, so there
+	// is no double-release.
 	slotReleased := false
 	var stopHeartbeat func()
 	defer func() {
@@ -353,6 +392,7 @@ func (s *Scheduler) executeWithCandidates(ctx context.Context, taskID string, ca
 			if stopHeartbeat != nil {
 				stopHeartbeat()
 			}
+			clearBusy()
 			if !slotReleased {
 				// Log BEFORE releasing: the stack trace is the only forensic
 				// trail for the panic, and the load slot is released so the
@@ -397,6 +437,7 @@ func (s *Scheduler) executeWithCandidates(ctx context.Context, taskID string, ca
 	retries := quantumRetries(err)
 	// Release the busy slot and attribute the outcome (see endQuantumOutcome).
 	stopHeartbeat()
+	clearBusy()
 	s.afterQuantum(ctx, taskID, winner, err)
 	s.endQuantumOutcome(winner, tk.Capability, taskID, err, quantumLatency, retries)
 	slotReleased = true

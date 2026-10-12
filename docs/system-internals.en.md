@@ -343,6 +343,93 @@ each Schedule records one ScheduleDecision: every candidate + four-factor breakd
 | `LoadTracker` (Begin/End/TryBegin/SetAgentConfidence) | `internal/kernel/load_tracker.go` |
 | Decision record `ScheduleDecision` | `internal/kernel/decision_recorder.go:42` |
 
+### 4.3 State Codes & the "Why Not Chosen" Diagnosis (StopReason + Admissibility)
+
+The table above covers "**who gets picked**" (the score formula). But an agent often "**should not be picked**" — why? Since 0.3.3 the system turns "why not chosen" from a silent skip into 8 **diagnosable codes**.
+
+**`StopReason` (`internal/fabric/agent/stopreason.go`) — 8 reasons an agent is unschedulable / has left the fabric**:
+
+| Code | Meaning | Terminal? | Emitted by |
+|---|---|---|---|
+| `unknown` | zero value / unattributed | — | legacy paths |
+| `budget_reserved` | remaining budget < `MinRemainingRatio` (nearly spent, still a little but not safely) | no (reset on respawn) | `Admissibility` |
+| `budget_exhausted` | one dimension fully spent (tokens/tools/deadline) | no (reset on respawn) | `Admissibility` |
+| `deadline_exceeded` | wall-clock lifetime over | **yes** | `Admissibility` |
+| `capability_unfit` | the scheduled winner has no live executor | no (task → READY) | `scheduler_execute.go:146/158` |
+| `crashed` | killed (panic / operator / chaos) | **yes** (death snapshot can revive) | `Kill` (`lifecycle.go:323`) |
+| `recovery_exhausted` | revival budget spent, no more revivals | **yes** | `RestartAgent` refuses |
+| `retired` | graceful decommission | **yes** | `Retire` |
+
+**Design intent (verbatim comment)**:
+
+> "An agent out of budget is **NOT dead**: it stays IDLE, its cognition is intact,
+> and the fabric simply stops handing it work. Recording WHY is what keeps that
+> distinction visible instead of **collapsing every 'not serving' case into a
+> silent skip**."
+
+**Before: "out of budget" and "no executor" both looked like "not scheduled". Now 8
+codes separate the reasons; the log can answer "why wasn't it chosen".**
+
+**`Admissibility` (`governance.go:113`) — combines multiple reasons into one admission predicate**:
+
+```
+Admissibility(agentID) → (ok bool, reason StopReason, err error)
+  precedence:
+    1. deadline_exceeded  (hardest — once past it, unrecoverable)
+    2. budget_exhausted   (fully spent)
+    3. budget_reserved    (below MinRemainingRatio)
+```
+
+**What it fixes** (verbatim comment):
+
+> "Before this existed the two gates [pre-schedule filter + post-acquire quantum
+> gate] **each re-derived affordability**, and the reserve was expressible in
+> neither — a budget-starved agent was **indistinguishable from a missing
+> executor**."
+
+Both the pre-schedule filter and the post-acquire gate now call `Admissibility`,
+so **they cannot disagree** ("the two cannot disagree about who may run").
+
+**Two new sentinel errors on the hot path (`scheduler_execute.go:205-217`)**:
+
+| Sentinel | Meaning | Operator should… |
+|---|---|---|
+| `ErrNoCapableCandidate` | no agent matches the capability | **add agents** (capability pool too small) |
+| `ErrNoAffordableCandidate` (new in 0.3.3) | capable agents exist but all are over budget/deadline/reserve | **raise budget** (not add agents) |
+
+**Before: budget-too-small looked like "no capability" (the `07-hil` silent hang). Now the two are separate.**
+
+**The `busy` bridge (R4, `agent.go:81/171`)**: resolves the "two state systems
+say different things" problem between subAgent's `models.AgentStatus`
+(execution state) and fabric's `AgentState` (lifecycle state).
+
+```
+subAgent executing → SetBusy(true) → fabric IsIdle() = StateIdle && !a.busy
+  → when busy=true, IsIdle=false → scheduler will not pick it
+```
+
+**Effect**: the two state systems **align on "is it schedulable"**, no longer
+relying on `maxConcurrentPerAgent=1` as a backstop. Comment verbatim
+(`agent.go:81`): *"busy is the R4 bridge between subAgent execution state and
+fabric (there is no RUNNING lifecycle state)."*
+
+**`StopUnfit` immediate reclaim (`scheduler_execute.go:146/158`)**:
+
+```
+Before: winner was picked, its executor vanished → task stuck in lease until TTL expiry (minutes)
+Now:    handleStaleWinner → immediate ReleaseReason(taskID, winner, epoch, "capability_unfit")
+        → task back to READY (checkpoint preserved), next capable executor picks it up at once
+```
+
+| Location | Line |
+|---|---|
+| `StopReason` full definition (8 codes) | `internal/fabric/agent/stopreason.go:43-70` |
+| `Admissibility` (single admission predicate) | `internal/fabric/agent/governance.go:113` |
+| `reserveExhausted` | `internal/fabric/agent/governance.go` (just below `Admissibility`) |
+| `busy` bridge (`SetBusy` / `IsIdle`) | `internal/fabric/agent/agent.go:81/171`, `fabric.go:187` |
+| `StopUnfit` reclaim (`handleStaleWinner`) | `internal/kernel/scheduler_execute.go:140-170` |
+| `filterBudgetAffordable` + `ErrNoAffordableCandidate` | `internal/kernel/scheduler_execute.go:205-217` |
+
 ---
 
 ## 5. Quantization & Resource Budgets

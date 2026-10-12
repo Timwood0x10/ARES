@@ -103,6 +103,13 @@ type KernelConfig struct {
 	// (e.g. "5m" default, "45s" for snappy chaos/recovery demos). Empty keeps
 	// the scheduler default; invalid durations are ignored with a warning.
 	LeaseTTL string `yaml:"lease_ttl"`
+	// ApprovalSLA is the fabric-wide fallback deadline for a human to resolve
+	// a HITL approval gate that carries no per-step timeout (default off). A
+	// positive duration (e.g. "24h") makes a forgotten per-step SLA expire via
+	// ExpireApprovals instead of stalling the plan forever; empty/invalid/0
+	// leaves the net off (a gate with no SLA waits until a human resolves it).
+	// Parsed with time.ParseDuration at fabric construction.
+	ApprovalSLA string `yaml:"approval_sla"`
 	// LoopMaxIterations caps how many rounds the kernel loop clock advances
 	// (0 = unlimited). When the budget is exhausted the round clock stops
 	// advancing — the scheduler's task flow is never gated by it.

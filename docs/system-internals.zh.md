@@ -327,6 +327,92 @@ score = capability_overlap × (1 - load) × confidence × (1 + priority)
 | `LoadTracker`（Begin/End/TryBegin/SetAgentConfidence） | `internal/kernel/load_tracker.go` |
 | 决策记录 `ScheduleDecision` | `internal/kernel/decision_recorder.go:42` |
 
+### 4.3 状态码与不可调度的诊断（StopReason + Admissibility）
+
+上表讲的是"**选谁做**"（评分公式）。但一个 agent 经常"**不该被选**"——为什么？
+0.3.3 起这套系统把"为什么没被选"从"静默跳过"变成了 8 个**可诊断的异常码**。
+
+**`StopReason`（`internal/fabric/agent/stopreason.go`）——agent 不可调度/离场的 8 种原因**：
+
+| 码 | 语义 | 终态? | 谁发 |
+|---|---|---|---|
+| `unknown` | 零值 / 无归因 | — | legacy 路径 |
+| `budget_reserved` | 剩余预算 < `MinRemainingRatio`（快烧完，还有一点点但不安全） | 否（respawn 重置） | `Admissibility` |
+| `budget_exhausted` | 某维度烧完（token/工具/寿命） | 否（respawn 重置） | `Admissibility` |
+| `deadline_exceeded` | 墙钟寿命到 | **是** | `Admissibility` |
+| `capability_unfit` | 调度选中的 winner 没有活 executor | 否（任务回 READY） | `scheduler_execute.go:146/158` |
+| `crashed` | 被 Kill（panic / 操作者 / chaos） | **是**（death snapshot 可复活） | `Kill`（`lifecycle.go:323`） |
+| `recovery_exhausted` | 复活预算用完，不再复活 | **是** | `RestartAgent` 拒活 |
+| `retired` | 优雅退役 | **是** | `Retire` |
+
+**核心设计意图（注释原话）**：
+
+> "An agent out of budget is **NOT dead**: it stays IDLE, its cognition is intact,
+> and the fabric simply stops handing it work. Recording WHY is what keeps that
+> distinction visible instead of **collapsing every 'not serving' case into a
+> silent skip**."
+
+**之前"预算不够"和"没 executor"都表现成"不调度"；现在 8 码把原因区分开，日志能回答"为什么没选它"。**
+
+**`Admissibility`（`governance.go:113`）——把多个原因码组合成"单一准入判定"**：
+
+```
+Admissibility(agentID) → (ok bool, reason StopReason, err error)
+  优先级：
+    1. deadline_exceeded（最硬，过了不可能恢复）
+    2. budget_exhausted（完全烧完）
+    3. budget_reserved（低于 MinRemainingRatio）
+```
+
+**它解决的核心问题**（注释原话）：
+
+> "Before this existed the two gates [pre-schedule filter + post-acquire quantum
+> gate] **each re-derived affordability**, and the reserve was expressible in
+> neither — a budget-starved agent was **indistinguishable from a missing
+> executor**."
+
+现在调度器的 pre-schedule filter 和 post-acquire gate **都调 `Admissibility`，
+不可能两个门不一致**（"the two cannot disagree about who may run"）。
+
+**热路径的两个新 sentinel error（`scheduler_execute.go:205-217`）**：
+
+| sentinel | 语义 | 操作者该做啥 |
+|---|---|---|
+| `ErrNoCapableCandidate` | 没有能力匹配任何 agent | **加 agent**（能力池不够） |
+| `ErrNoAffordableCandidate`（0.3.3 新加） | 有能力匹配，但全超预算/deadline/reserve | **加预算**（不是加人） |
+
+**之前 budget too small 表现成"没能力"（`07-hil` 那个 case），现在分开。**
+
+**`busy` 桥（R4，`agent.go:81/171`）**：解决 subAgent 的
+`models.AgentStatus`（执行态）和 fabric 的 `AgentState`（生命周期态）两套状态
+"各说各话"的问题。
+
+```
+subAgent 执行中 → SetBusy(true) → fabric IsIdle() = StateIdle && !a.busy
+  → busy=true 时 IsIdle=false → 调度器不会选它
+```
+
+**效果**：两套状态在"能不能被调度"这个点上**对齐了**，不再靠 `maxConcurrentPerAgent=1`
+兜底。注释原话（`agent.go:81`）：*"busy is the R4 bridge between subAgent
+execution state and fabric (there is no RUNNING lifecycle state)."*
+
+**`StopUnfit` 即时 reclaim（`scheduler_execute.go:146/158`）**：
+
+```
+之前：winner 被选中后 executor 没了 → 任务挂在 lease 里等 TTL 过期（分钟级）
+现在：handleStaleWinner → 立即 ReleaseReason(taskID, winner, epoch, "capability_unfit")
+      → 任务回 READY（保 checkpoint），另一个 capable executor 马上接着跑
+```
+
+| 位置 | 行号 |
+|---|---|
+| `StopReason` 全量定义（8 码） | `internal/fabric/agent/stopreason.go:43-70` |
+| `Admissibility`（统一准入判定） | `internal/fabric/agent/governance.go:113` |
+| `reserveExhausted` | `internal/fabric/agent/governance.go`（`Admissibility` 下方） |
+| `busy` 桥（`SetBusy` / `IsIdle`） | `internal/fabric/agent/agent.go:81/171`、`fabric.go:187` |
+| `StopUnfit` reclaim（`handleStaleWinner`） | `internal/kernel/scheduler_execute.go:140-170` |
+| `filterBudgetAffordable` + `ErrNoAffordableCandidate` | `internal/kernel/scheduler_execute.go:205-217` |
+
 ---
 
 ## 5. 量子化与资源预算
