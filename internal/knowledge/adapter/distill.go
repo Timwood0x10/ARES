@@ -363,6 +363,7 @@ func (b *DistillBridge) persistAndPromote(ctx context.Context, objects []*knowle
 	if b.store == nil {
 		return nil
 	}
+	knowledge.StampWriteSchema(objects...)
 	if err := b.store.Save(ctx, objects...); err != nil {
 		return fmt.Errorf("distill bridge: save to store: %w", err)
 	}

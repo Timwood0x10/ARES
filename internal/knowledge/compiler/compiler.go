@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/Timwood0x10/ares/internal/knowledge"
 )
@@ -44,6 +45,22 @@ type CompileMetrics struct {
 	InputEdges       int     `json:"input_edges"`
 	OutputTokens     int     `json:"output_tokens"`
 	CompressionRatio float64 `json:"compression_ratio"`
+	// RawTokens estimates the token count of the underlying source material
+	// (每个节点的原文: Raw bytes, else Normalized, else Summary) the consumer
+	// would otherwise feed the model if it skipped AKG and used the raw
+	// records directly. It is the baseline the compiled context is measured
+	// against.
+	RawTokens int `json:"raw_tokens"`
+	// TokensSaved is RawTokens minus the PRIMARY (first requested) format's
+	// token count: how many tokens the compiled context saves relative to the
+	// raw source, for the format a consumer actually feeds the model. It is
+	// deliberately NOT RawTokens-OutputTokens: OutputTokens sums every
+	// requested format, which would understate the saving on a multi-format
+	// call (as if all formats were sent to the model at once). A negative value
+	// means the compiled form is larger than the raw material (no saving) and
+	// is reported as-is rather than clamped, so a regression stays visible.
+	// Zero when no format was compiled.
+	TokensSaved int `json:"tokens_saved"`
 }
 
 // Compiler compiles a WorkingGraph into LLM-ready contexts.
@@ -72,6 +89,17 @@ func (c *DefaultCompiler) Compile(_ context.Context, graph *knowledge.WorkingGra
 		InputEdges: len(graph.Edges),
 	}
 
+	// Baseline: the raw source tokens the consumer would spend without AKG.
+	for _, obj := range graph.Nodes {
+		metrics.RawTokens += estimateTokens(rawText(obj))
+	}
+
+	// primaryTokens is the token count of the FIRST requested format — the one
+	// a caller actually feeds the model. TokensSaved is measured against it,
+	// not against the cross-format sum below.
+	var primaryTokens int
+	var havePrimary bool
+
 	for _, f := range cfg.Formats {
 		var content string
 		var err error
@@ -93,11 +121,22 @@ func (c *DefaultCompiler) Compile(_ context.Context, graph *knowledge.WorkingGra
 			return nil, fmt.Errorf("format %s: %w", f, err)
 		}
 		formats[f] = content
-		metrics.OutputTokens += estimateTokens(content)
+		tokens := estimateTokens(content)
+		metrics.OutputTokens += tokens
+		if !havePrimary {
+			primaryTokens = tokens
+			havePrimary = true
+		}
 	}
 
 	if metrics.InputNodes > 0 {
 		metrics.CompressionRatio = float64(metrics.OutputTokens) / float64(metrics.InputNodes*50)
+	}
+	// Saving is measured against the primary format only. With no format
+	// compiled there is nothing to compare against, so the saving stays zero
+	// rather than reporting the whole raw baseline as saved.
+	if havePrimary {
+		metrics.TokensSaved = metrics.RawTokens - primaryTokens
 	}
 
 	return &CompiledContext{
@@ -399,4 +438,26 @@ func escapeXMLAttr(s string) string {
 func estimateTokens(s string) int {
 	// Rough estimate: ~4 chars per token for English text.
 	return len(s) / 4
+}
+
+// rawText returns the most complete source text for a node, used as the raw
+// baseline for TokensSaved: the original Raw bytes when present, else the
+// Normalized text, else the Summary. It reflects what a consumer would feed
+// the model if it used the record directly instead of the compiled context.
+//
+// Raw is only used when it is valid UTF-8 text: it can hold non-text bytes
+// (an attachment, a bytea column), and estimateTokens' len/4 estimate over
+// binary garbage would inflate the raw baseline and make the saving look
+// better than it is.
+func rawText(obj *knowledge.KnowledgeObject) string {
+	if obj == nil {
+		return ""
+	}
+	if len(obj.Raw) > 0 && utf8.Valid(obj.Raw) {
+		return string(obj.Raw)
+	}
+	if obj.Normalized != "" {
+		return obj.Normalized
+	}
+	return obj.Summary
 }

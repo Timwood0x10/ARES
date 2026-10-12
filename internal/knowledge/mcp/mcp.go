@@ -246,6 +246,8 @@ func (s *AKFService) handleCompileContext(ctx context.Context, input string) (st
 		"input_nodes":   compiled.Metrics.InputNodes,
 		"input_edges":   compiled.Metrics.InputEdges,
 		"output_tokens": compiled.Metrics.OutputTokens,
+		"raw_tokens":    compiled.Metrics.RawTokens,
+		"tokens_saved":  compiled.Metrics.TokensSaved,
 	}
 	data, _ := json.Marshal(result)
 	return string(data), nil
@@ -307,6 +309,7 @@ func (s *AKFService) handleDistillMemory(ctx context.Context, input string) (str
 	// promoted to active. Promotion is best-effort — a failure leaves the
 	// object persisted as a candidate rather than failing the whole call.
 	if s.store != nil {
+		knowledge.StampWriteSchema(obj)
 		if err := s.store.Save(ctx, obj); err != nil {
 			return "", fmt.Errorf("distill memory: save object %s: %w", obj.ID, err)
 		}

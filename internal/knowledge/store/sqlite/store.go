@@ -79,7 +79,12 @@ func (s *Store) initTables(ctx context.Context) error {
 			status TEXT NOT NULL DEFAULT '',
 			quality TEXT DEFAULT '',
 			relations TEXT DEFAULT '',
-			embedding_model TEXT NOT NULL DEFAULT ''
+			embedding_model TEXT NOT NULL DEFAULT '',
+			schema_version INTEGER NOT NULL DEFAULT 0,
+			valid_from TEXT NOT NULL DEFAULT '',
+			valid_until TEXT NOT NULL DEFAULT '',
+			observed_at TEXT NOT NULL DEFAULT '',
+			source_version TEXT NOT NULL DEFAULT ''
 		)`,
 		`CREATE TABLE IF NOT EXISTS akf_representations (
 			id TEXT PRIMARY KEY,
@@ -109,6 +114,14 @@ func (s *Store) initTables(ctx context.Context) error {
 		`ALTER TABLE akf_objects ADD COLUMN quality TEXT DEFAULT ''`,
 		`ALTER TABLE akf_objects ADD COLUMN relations TEXT DEFAULT ''`,
 		`ALTER TABLE akf_objects ADD COLUMN embedding_model TEXT NOT NULL DEFAULT ''`,
+		// 0.3.4: schema versioning + temporal fields. Additive; the defaults
+		// (version 0, empty times, empty source) reproduce pre-0.3.4 behaviour
+		// for rows written before this migration.
+		`ALTER TABLE akf_objects ADD COLUMN schema_version INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE akf_objects ADD COLUMN valid_from TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE akf_objects ADD COLUMN valid_until TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE akf_objects ADD COLUMN observed_at TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE akf_objects ADD COLUMN source_version TEXT NOT NULL DEFAULT ''`,
 	}
 	for _, m := range migrations {
 		if _, err := s.db.ExecContext(ctx, m); err != nil {
@@ -155,8 +168,8 @@ func (s *Store) Save(ctx context.Context, objects ...*knowledge.KnowledgeObject)
 		now := time.Now().UTC().Format(time.RFC3339)
 
 		res, err := s.db.ExecContext(ctx, `
-			INSERT INTO akf_objects (id, type, namespace, raw, normalized, summary, metadata, tags, confidence, version, created_at, updated_at, status, quality, relations, embedding_model)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			INSERT INTO akf_objects (id, type, namespace, raw, normalized, summary, metadata, tags, confidence, version, created_at, updated_at, status, quality, relations, embedding_model, schema_version, valid_from, valid_until, observed_at, source_version)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT (id) DO UPDATE SET
 				type = excluded.type,
 				namespace = excluded.namespace,
@@ -171,12 +184,19 @@ func (s *Store) Save(ctx context.Context, objects ...*knowledge.KnowledgeObject)
 				status = excluded.status,
 				quality = excluded.quality,
 				relations = excluded.relations,
-				embedding_model = excluded.embedding_model
+				embedding_model = excluded.embedding_model,
+				schema_version = excluded.schema_version,
+				valid_from = excluded.valid_from,
+				valid_until = excluded.valid_until,
+				observed_at = excluded.observed_at,
+				source_version = excluded.source_version
 			WHERE akf_objects.namespace = excluded.namespace
 		`, obj.ID, string(obj.Type), obj.Namespace, obj.Raw, obj.Normalized, obj.Summary,
 			string(metaJSON), tags, obj.Confidence, obj.Version,
 			obj.CreatedAt.UTC().Format(time.RFC3339), now,
-			string(obj.Status), qualityJSON, relationsJSON, obj.EmbeddingModel)
+			string(obj.Status), qualityJSON, relationsJSON, obj.EmbeddingModel,
+			obj.SchemaVersion, formatNullableTime(obj.ValidFrom), formatNullableTime(obj.ValidUntil),
+			formatNullableTime(obj.ObservedAt), obj.SourceVersion)
 		if err != nil {
 			return fmt.Errorf("save %q: %w", obj.ID, err)
 		}
@@ -223,7 +243,7 @@ func marshalRelations(rels []knowledge.Relation) string {
 
 func (s *Store) Get(ctx context.Context, tenantID, id string) (*knowledge.KnowledgeObject, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, type, namespace, raw, normalized, summary, metadata, tags, confidence, version, created_at, updated_at, status, quality, relations, embedding_model
+		SELECT id, type, namespace, raw, normalized, summary, metadata, tags, confidence, version, created_at, updated_at, status, quality, relations, embedding_model, schema_version, valid_from, valid_until, observed_at, source_version
 		FROM akf_objects WHERE id = ? AND namespace = ?`, id, tenantID)
 
 	obj, err := scanObject(row)
@@ -265,7 +285,7 @@ func (s *Store) Query(ctx context.Context, q knowledge.Query) ([]*knowledge.Know
 		conditions = append(conditions, "("+strings.Join(tagConditions, " OR ")+")")
 	}
 
-	query := "SELECT id, type, namespace, raw, normalized, summary, metadata, tags, confidence, version, created_at, updated_at, status, quality, relations, embedding_model FROM akf_objects"
+	query := "SELECT id, type, namespace, raw, normalized, summary, metadata, tags, confidence, version, created_at, updated_at, status, quality, relations, embedding_model, schema_version, valid_from, valid_until, observed_at, source_version FROM akf_objects"
 	if len(conditions) > 0 {
 		query += " WHERE " + strings.Join(conditions, " AND ") //nolint:gosec // conditions use ? placeholders, values are parameterized
 	}
@@ -290,6 +310,13 @@ func (s *Store) Query(ctx context.Context, q knowledge.Query) ([]*knowledge.Know
 	for rows.Next() {
 		obj, err := scanObject(rows)
 		if err != nil {
+			// A row written by a newer build is unreadable here, but it must not
+			// take down the whole query: skip just that row and keep serving the
+			// rest. (Get stays fail-closed for single-record reads.)
+			if errors.Is(err, knowledge.ErrSchemaVersionTooNew) {
+				slog.Warn("sqlite store: skipping object with newer schema version", "error", err)
+				continue
+			}
 			return nil, err
 		}
 		results = append(results, obj)
@@ -318,7 +345,7 @@ func (s *Store) Search(ctx context.Context, tenantID, text string, _ string, lim
 		limit = 20
 	}
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, type, namespace, raw, normalized, summary, metadata, tags, confidence, version, created_at, updated_at, status, quality, relations, embedding_model
+		SELECT id, type, namespace, raw, normalized, summary, metadata, tags, confidence, version, created_at, updated_at, status, quality, relations, embedding_model, schema_version, valid_from, valid_until, observed_at, source_version
 		FROM akf_objects
 		WHERE (normalized LIKE ? OR summary LIKE ?) AND namespace = ?
 		ORDER BY created_at DESC
@@ -332,6 +359,13 @@ func (s *Store) Search(ctx context.Context, tenantID, text string, _ string, lim
 	for rows.Next() {
 		obj, err := scanObject(rows)
 		if err != nil {
+			// A row written by a newer build is unreadable here, but it must not
+			// take down the whole query: skip just that row and keep serving the
+			// rest. (Get stays fail-closed for single-record reads.)
+			if errors.Is(err, knowledge.ErrSchemaVersionTooNew) {
+				slog.Warn("sqlite store: skipping object with newer schema version", "error", err)
+				continue
+			}
 			return nil, err
 		}
 		results = append(results, obj)
@@ -404,6 +438,32 @@ func parseTimeField(raw, what, id string) time.Time {
 	return t
 }
 
+// formatNullableTime encodes a temporal column that may be unset. A nil
+// pointer stores the empty string (the column default), round-tripping back to
+// nil via parseNullableTimeField so "no bound / unknown" survives persistence
+// without a sentinel date.
+func formatNullableTime(t *time.Time) string {
+	if t == nil || t.IsZero() {
+		return ""
+	}
+	return t.UTC().Format(time.RFC3339)
+}
+
+// parseNullableTimeField decodes a nullable temporal column. An empty string
+// (the column default for a never-set field) maps to nil, which the knowledge
+// layer reads as "no bound / unknown". A non-empty but unparseable value
+// degrades to nil and is logged, matching parseTimeField's contract.
+func parseNullableTimeField(raw, what, id string) *time.Time {
+	if raw == "" {
+		return nil
+	}
+	t := parseTimeField(raw, what, id)
+	if t.IsZero() {
+		return nil
+	}
+	return &t
+}
+
 // scanObject scans a row into a KnowledgeObject.
 type scanner interface {
 	Scan(dest ...interface{}) error
@@ -415,10 +475,12 @@ func scanObject(row scanner) (*knowledge.KnowledgeObject, error) {
 	var raw []byte
 	var metaJSON, tagsStr, createdAtStr, updatedAtStr string
 	var statusStr, qualityJSON, relationsJSON, embeddingModel string
+	var validFromStr, validUntilStr, observedAtStr string
 
 	if err := row.Scan(&obj.ID, &typeStr, &ns, &raw, &norm, &summary, &metaJSON, &tagsStr,
 		&obj.Confidence, &obj.Version, &createdAtStr, &updatedAtStr,
-		&statusStr, &qualityJSON, &relationsJSON, &embeddingModel); err != nil {
+		&statusStr, &qualityJSON, &relationsJSON, &embeddingModel,
+		&obj.SchemaVersion, &validFromStr, &validUntilStr, &observedAtStr, &obj.SourceVersion); err != nil {
 		return nil, err
 	}
 
@@ -432,6 +494,9 @@ func scanObject(row scanner) (*knowledge.KnowledgeObject, error) {
 	}
 	obj.CreatedAt = parseTimeField(createdAtStr, "object", obj.ID)
 	obj.UpdatedAt = parseTimeField(updatedAtStr, "object", obj.ID)
+	obj.ValidFrom = parseNullableTimeField(validFromStr, "object.valid_from", obj.ID)
+	obj.ValidUntil = parseNullableTimeField(validUntilStr, "object.valid_until", obj.ID)
+	obj.ObservedAt = parseNullableTimeField(observedAtStr, "object.observed_at", obj.ID)
 	obj.Status = knowledge.ObjectStatus(statusStr)
 	obj.EmbeddingModel = embeddingModel
 	// Unmarshal quality/relations best-effort: malformed JSON is ignored.
@@ -445,6 +510,13 @@ func scanObject(row scanner) (*knowledge.KnowledgeObject, error) {
 		_ = json.Unmarshal([]byte(relationsJSON), &obj.Relations)
 	}
 	_ = json.Unmarshal([]byte(metaJSON), &obj.Metadata)
+
+	// Normalise a stored record to the current schema on read: a pre-0.3.4
+	// row scans with schema_version 0 and gets stamped to the current version;
+	// a row written by a newer build is refused loudly rather than misread.
+	if err := knowledge.MigrateObject(&obj); err != nil {
+		return nil, err
+	}
 
 	return &obj, nil
 }
@@ -461,7 +533,7 @@ func (s *Store) HybridSearch(ctx context.Context, req knowledge.HybridSearchRequ
 	conditions, args := hybridConditions(req)
 	args = append(args, hybridRecallLimit(req))
 	//nolint:gosec // conditions are static WHERE fragments; values use ? placeholders.
-	query := `SELECT id, type, namespace, raw, normalized, summary, metadata, tags, confidence, version, created_at, updated_at, status, quality, relations, embedding_model
+	query := `SELECT id, type, namespace, raw, normalized, summary, metadata, tags, confidence, version, created_at, updated_at, status, quality, relations, embedding_model, schema_version, valid_from, valid_until, observed_at, source_version
 		FROM akf_objects` + conditions + ` ORDER BY updated_at DESC LIMIT ?`
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -474,6 +546,10 @@ func (s *Store) HybridSearch(ctx context.Context, req knowledge.HybridSearchRequ
 	for rows.Next() {
 		obj, err := scanObject(rows)
 		if err != nil {
+			if errors.Is(err, knowledge.ErrSchemaVersionTooNew) {
+				slog.Warn("sqlite store: skipping object with newer schema version", "error", err)
+				continue
+			}
 			return nil, err
 		}
 		candidates = append(candidates, obj)
@@ -641,7 +717,7 @@ func (s *Store) ListByStatus(ctx context.Context, ns string, status knowledge.Ob
 		args = append(args, string(status))
 	}
 	//nolint:gosec // conditions are static WHERE fragments; values use ? placeholders.
-	query := `SELECT id, type, namespace, raw, normalized, summary, metadata, tags, confidence, version, created_at, updated_at, status, quality, relations, embedding_model
+	query := `SELECT id, type, namespace, raw, normalized, summary, metadata, tags, confidence, version, created_at, updated_at, status, quality, relations, embedding_model, schema_version, valid_from, valid_until, observed_at, source_version
 		FROM akf_objects WHERE ` + strings.Join(conditions, " AND ") + " ORDER BY created_at DESC"
 	if limit > 0 {
 		query += " LIMIT ?"
@@ -657,6 +733,13 @@ func (s *Store) ListByStatus(ctx context.Context, ns string, status knowledge.Ob
 	for rows.Next() {
 		obj, err := scanObject(rows)
 		if err != nil {
+			// A row written by a newer build is unreadable here, but it must not
+			// take down the whole query: skip just that row and keep serving the
+			// rest. (Get stays fail-closed for single-record reads.)
+			if errors.Is(err, knowledge.ErrSchemaVersionTooNew) {
+				slog.Warn("sqlite store: skipping object with newer schema version", "error", err)
+				continue
+			}
 			return nil, err
 		}
 		results = append(results, obj)
