@@ -73,6 +73,16 @@ type RestartPolicy struct {
 	Backoff time.Duration
 	// MaxBackoff caps the backoff growth.
 	MaxBackoff time.Duration
+	// IdleAgentTTL is how long an agent may go without starting a quantum before
+	// idle reclamation retires it and gives its resource claim back to the pool
+	// (defect A-factory3 / P1-6). Zero DISABLES reclamation and keeps every agent
+	// for the process's lifetime — which is what the pool did before this knob
+	// existed, so the zero value stays the documented pre-fix behaviour.
+	//
+	// It lives on the restart policy because both answer "what happens to an
+	// agent that is not working": restart handles one that died, reclamation
+	// handles one that is simply not needed any more.
+	IdleAgentTTL time.Duration
 }
 
 // DefaultRestartPolicy is a sane production default: 5 attempts, 1s backoff
@@ -80,8 +90,13 @@ type RestartPolicy struct {
 func DefaultRestartPolicy() RestartPolicy {
 	return RestartPolicy{
 		MaxRestarts: 5,
-		Backoff:     1 * time.Second,
-		MaxBackoff:  30 * time.Second,
+		// Reclamation is ON by default (ten minutes of inactivity, one holder per
+		// capability kept): the pool leak it fixes is silent and unbounded, so a
+		// default that kept every agent forever would keep leaking in every
+		// deployment that never heard of the knob.
+		IdleAgentTTL: agentfabric.DefaultAgentReclaimPolicy().IdleTTL,
+		Backoff:      1 * time.Second,
+		MaxBackoff:   30 * time.Second,
 	}
 }
 
@@ -367,6 +382,24 @@ func (r *Recovery) RestartCount(agentID string) int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.restarts[agentID]
+}
+
+// ReclaimIdleAgents retires the agents that have been idle longer than the
+// policy's window, releasing their resource claims back to the pool, and returns
+// them in id order. A zero IdleAgentTTL disables it and returns nil.
+//
+// It is the pool's only reclamation path in production: without it, every
+// spawned agent holds its claim for the life of the process, so a configured
+// budget fills up and stays full (ErrResourceQuotaExceeded on all later spawns)
+// and the agents themselves accumulate. See agentfabric.AgentReclaimPolicy.
+func (r *Recovery) ReclaimIdleAgents(ctx context.Context) []agentfabric.IdleAgent {
+	return r.agents.ReclaimIdle(ctx, agentfabric.AgentReclaimPolicy{
+		IdleTTL: r.policy.IdleAgentTTL,
+		// One holder per capability is an invariant, not a knob: retiring the
+		// last agent able to serve a capability would turn a quota leak into
+		// tasks that can never be scheduled at all.
+		KeepPerCapability: 1,
+	})
 }
 
 // RevivableSnapshot exposes the agent fabric's death-snapshot matching the

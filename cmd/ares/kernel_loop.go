@@ -271,13 +271,32 @@ func runSweepChain(
 	}
 	// Recovery closed loop: requeue the tasks whose lease expired THIS sweep.
 	requeued := recovery.RequeueExpiredLeases()
-	if len(requeued) == 0 {
-		return
+	if len(requeued) > 0 {
+		log.Info(ctx, "runKernelRecoveryLoop",
+			"kernel recovery loop: requeued expired task(s)",
+			"count", len(requeued), "task_ids", requeued)
+		bindReplacements(requeued)
 	}
-	log.Info(ctx, "runKernelRecoveryLoop",
-		"kernel recovery loop: requeued expired task(s)",
-		"count", len(requeued), "task_ids", requeued)
-	bindReplacements(requeued)
+	// Idle agent reclamation runs LAST and unconditionally (defect A-factory3 /
+	// P1-6): it is what hands back the claims of agents nothing is using, so a
+	// sweep that requeued no task must not skip it. Running it after the requeue
+	// and bind steps means a task that expired this sweep has already had its
+	// replacement bound before any agent is retired.
+	reclaimed := recovery.ReclaimIdleAgents(ctx)
+	if len(reclaimed) > 0 {
+		log.Info(ctx, "runKernelRecoveryLoop",
+			"kernel recovery loop: reclaimed idle agent(s), releasing their resource claims",
+			"count", len(reclaimed), "agent_ids", reclaimIDs(reclaimed))
+	}
+}
+
+// reclaimIDs flattens reclaimed agents to their ids for the sweep's log line.
+func reclaimIDs(reclaimed []agentfabric.IdleAgent) []string {
+	out := make([]string, 0, len(reclaimed))
+	for _, a := range reclaimed {
+		out = append(out, a.Identity)
+	}
+	return out
 }
 
 // runKernelRecoveryLoop is the Kernel-level event-driven recovery loop. It

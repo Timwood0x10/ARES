@@ -113,16 +113,29 @@ func (f *Fabric) Spawn(ctx context.Context, spec SpawnSpec) (*Agent, error) {
 	// spawn leaves the fabric untouched (validate first,
 	// then mutate).
 	if !f.canAllocateLocked(claim) {
+		// The message carries the accounting on purpose (defect P1-6): a bare
+		// ErrResourceQuotaExceeded reads as "the pool is broken", while the
+		// snapshot shows the steady state that actually caused it — claims held by
+		// agents nothing will ever release. Logged once per rejection, this is
+		// what turns a silent false-death into a diagnosable one.
+		allocated, budget := f.quotaSnapshotLocked()
 		f.mu.Unlock()
-		return nil, ErrResourceQuotaExceeded
+		return nil, fmt.Errorf("%w: requested %v, allocated %v of budget %v",
+			ErrResourceQuotaExceeded, claim, allocated, budget)
 	}
 	a := &Agent{
-		Identity:       id,
-		Capabilities:   append([]string(nil), spec.Capabilities...),
-		State:          StateIdle,
-		Parent:         spec.ParentID,
-		Priority:       spec.Priority,
-		SpawnedAt:      f.now(),
+		Identity:     id,
+		Capabilities: append([]string(nil), spec.Capabilities...),
+		State:        StateIdle,
+		Parent:       spec.ParentID,
+		Priority:     spec.Priority,
+		SpawnedAt:    f.now(),
+		// The agent inherits the fabric's clock so its activity stamps are
+		// comparable with the fabric's own timestamps (WithClock in tests); it
+		// starts ACTIVE, because a freshly spawned agent is waiting for work, not
+		// idle — reclamation measures inactivity since the last quantum.
+		clock:          f.now,
+		lastActiveAt:   f.now(),
 		resources:      claim,
 		taskContext:    cloneMap(spec.TaskContext),
 		privateContext: make(map[string]any),

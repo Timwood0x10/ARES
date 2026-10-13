@@ -2,6 +2,7 @@ package agentfabric
 
 import (
 	"context"
+	"time"
 
 	"github.com/Timwood0x10/ares/internal/core/models"
 	llmcore "github.com/Timwood0x10/ares/internal/llmcore"
@@ -105,15 +106,33 @@ type ToolBinder interface {
 func (a *Agent) ExecuteStep(ctx context.Context, task *models.Task) (*StepOutcome, error) {
 	a.mu.RLock()
 	c := a.cognition
-	revived := a.revived
 	a.mu.RUnlock()
 	if c == nil {
 		return nil, ErrAgentNotExecutable
 	}
+	// A quantum is the unit of ACTIVITY, so this is the only place the stamp
+	// moves. It is taken after the capability guard on purpose: a rejected call
+	// is not activity, and counting it would keep an agent that cannot execute
+	// from ever looking idle to the reclaimer.
+	a.mu.Lock()
+	a.lastActiveAt = a.now()
+	revived := a.revived
+	a.mu.Unlock()
 	if task != nil {
 		task.Payload = withExecutingAgent(task.Payload, a.Identity, revived)
 	}
 	return c.ExecuteStep(ctx, task)
+}
+
+// now reports the fabric clock captured at spawn, falling back to the wall clock
+// for an agent built outside Spawn (hand-built values in tests).
+//
+// Callers must hold a.mu: clock belongs to the guarded block.
+func (a *Agent) now() time.Time {
+	if a.clock == nil {
+		return time.Now()
+	}
+	return a.clock()
 }
 
 // executingAgentKey is the reserved task-payload key carrying the identity of

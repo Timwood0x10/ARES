@@ -69,7 +69,7 @@ type Agent struct {
 	// the fabric lock during spawn/kill/retire.
 	resources map[string]float64
 
-	mu             sync.RWMutex // guards cognitive, privateContext, taskContext, state, load, cognition, busy, revived
+	mu             sync.RWMutex // guards cognitive, privateContext, taskContext, state, load, cognition, busy, revived, clock, lastActiveAt
 	cognitive      CognitiveState
 	privateContext map[string]any
 	taskContext    map[string]any // shared task state (read-only view for the agent)
@@ -87,6 +87,18 @@ type Agent struct {
 	// Recover; never cleared, because a revived agent stays revived for its whole
 	// life. Guarded by mu.
 	revived bool
+	// clock is the fabric's clock captured at spawn, so every timestamp this
+	// agent derives agrees with the ones the fabric reasons about (a WithClock
+	// fabric in tests, the wall clock in production). Nil on an agent built
+	// outside Spawn — see now(). Guarded by mu.
+	clock func() time.Time
+	// lastActiveAt is when this agent last started a quantum. Idle reclamation
+	// uses it: an agent may be retired only when it is IDLE, not busy, and
+	// inactive longer than the policy window. SpawnedAt deliberately does NOT
+	// serve here — being spawned long ago says nothing about being idle now, and
+	// retiring a working agent is the one outcome the sweep must never produce.
+	// Guarded by mu.
+	lastActiveAt time.Time
 	// busy is the R4 bridge between subAgent execution state and fabric
 	// scheduling state. When true the agent is executing a quantum and must
 	// NOT be offered as a scheduling candidate, even though its lifecycle

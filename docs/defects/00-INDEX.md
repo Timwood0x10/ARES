@@ -38,7 +38,7 @@
 | P1-3 | **R1** ivfflat `lists=100` 写死 | 数据量大召回率掉（无 HNSW 选项） |
 | P1-4 | **D(retrieval)** embedding 死信 | 向量生成失败的行落 `embedding_dead_letter` → **该经验对检索永久不可见且静默** |
 | P1-5 | **I1** `ask_agent` 不回写 | 协作是"触发"不是"对话"，答案 C-1 未闭环，拿不到 |
-| P1-6 | **A-factory3** agent quota 泄漏 | claim/release 漏释放 = **agent 池假死**（`ErrResourceQuotaExceeded`） |
+| P1-6 | **A-factory3** agent quota 泄漏 **〔已修 2026-10-13〕** | claim/release 漏释放 = **agent 池假死**（`ErrResourceQuotaExceeded`） |
 | P1-7 | **S-mcp-S2** MCP 挂了工具静默消失 | server 连不上/断连 → 它的工具没进/留在 Registry，LLM **不知道自己少了什么**，会白调不存在的工具 |
 
 ## P2 · 打磨 / 可观测 / 规模化（不急，但要知道）

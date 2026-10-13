@@ -256,6 +256,47 @@ run a quantum (it can still be managed by [lifecycle])"。（初稿锚点 `:121/
 - **建议**：给 quota claim 加**TTL / 孤儿回收**（周期扫描"引用了 quota 但 agent 已不在池"的
   泄漏 claim 并回收），别只靠 kill/retire 两个显式出口。
 
+**核实 + 修复（2026-10-13）——症状成立，但根因与本文描述不同（重要）**
+
+1. **计数器在构造上是平衡的，不是记账 bug**：`f.allocated` 只由 `allocateLocked`/`releaseLocked`
+   维护；`Spawn` 在**注册 agent 的同一临界区**内 allocate（中间无失败路径），`Kill`（删注册表 +
+   release）与 `Retire`（release + 置 RETIRED，幂等）各释放一次。**不存在**"claim 还在、agent 已不在池"
+   的状态——所以本文建议里"扫描引用了 quota 但 agent 已不在池的 claim"**打不到目标**。
+2. **真机制：生产从不释放**。`Kill` 的调用方只有 `chaos.go` / `sandbox.go` /
+   `agent_routes_chaos.go`；`Retire` 的唯一调用方是 `chaos.go`。即**生产只 spawn、永不 kill/retire**
+   → 每个 agent 的 claim 终生占着，且全仓无回收（与本文"无孤儿回收/TTL"一致）。
+3. **后果按配置分两档**：`resourceBudget` 默认空且仓库内无装配点 → 默认部署不会撞
+   `ErrResourceQuotaExceeded`；但一旦运维配上预算（想给池子上限时必然要配），第 N 次 spawn 后
+   **永久假死**。**与配额无关的另一半更硬**：`f.agents` 随运行无界增长，每个 agent 自带一份
+   Cognition（LLM 客户端/工具束）→ 内存与句柄的持续泄漏，默认配置下同样发生。
+4. **同源路径（panic 不 kill）**：`scheduler_execute.go` 的 panic 恢复分支注释写明"the load slot is
+   released so the agent stays schedulable"——**刻意保活**、不 kill、配额不释放 → 崩溃过的 agent
+   变成"带配额的僵尸"，下次还会被调度再 panic（白烧任务 retry 预算）。
+
+**已实施（A + C）**
+
+- **A · idle 回收 sweep**：`internal/fabric/agent/reclaim.go` 新增 `AgentReclaimPolicy`
+  （`IdleTTL` 0=关闭 / `KeepPerCapability`）与 `Fabric.ReclaimIdle`：
+  - 只回收 **IDLE + 非 busy + 最后活跃超过窗口**的 agent（新增 `Agent.lastActiveAt`，
+    在 `ExecuteStep` 的唯一入口盖戳，时钟取自 fabric 的 `WithClock` 以便测试注入；`SpawnedAt`
+    **刻意不用**——"很久以前创建"不等于"现在空闲"）；
+  - **能力保底**：不回收任一能力的最后一个持有者，且按 id 确定的贪心顺序决策——
+    否则会把"配额泄漏"换成"任务永远没有候选"（正是 A-F3/P2-4 那类静默饥饿）；
+  - 退休走**既有 `Retire`**（唯一释放路径、幂等、事件一致），sweep 只是多一个触发器，
+    不引入第二套记账；扫描与退休**不嵌锁**（先扫后 unlock 再 Retire）。
+- **默认开**：`RestartPolicy.IdleAgentTTL` 默认 = `DefaultAgentReclaimPolicy().IdleTTL`（10 分钟，
+  保底 1）；0 = 关闭。10 分钟远大于一个量子（秒级）、远小于进程寿命。
+- **接线**：`Recovery.ReclaimIdleAgents(ctx)` → `runSweepChain` **最后且无条件**执行
+  （原实现在 `requeued == 0` 时提前 return，会让回收被跳过；已改为条件日志 + 继续），
+  并把回收数量与 id 打进既有 sweep 日志。
+- **C · 去静默**：新增 `Fabric.QuotaSnapshot()`（allocated/budget 快照，拷贝返回）；
+  `Spawn` 撞额度时错误信息**带上 `requested/allocated/budget`**（此前是裸错误，读起来像"池子坏了"）。
+- **测试**：`reclaim_test.go`（额度返还可再 spawn 的**真回归**、能力保底、跳过活跃/busy、
+  0 窗口关闭）+ `reclaim_default_test.go`（锁"默认开"）。
+
+**未做（B，独立小修，未动）**：panic 恢复分支改为 kill（顺带喂 `StopCrashed` 快照给 revival 路径）。
+它只治"僵尸"，不治"只 spawn 不 retire"，且牵动 revival 语义，**单列**。
+
 ### A4 · `Retire` 不 kill 子 agent（invariant #1）→ 可能累积孤儿 〔取舍 · 需意识〕
 
 `Retire`（`lifecycle.go:258` "does **NOT kill its children** (invariant #1:
