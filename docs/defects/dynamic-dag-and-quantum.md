@@ -79,7 +79,7 @@ L2 增长深度默认上限 **10 轮**（`DefaultMaxPlanDepth = 10`，`planner_c
 
 ### D2 · L1 约束全拦 → 会话"正常地"啥都没跑 〔缺陷-需可观测〕
 
-`growToolNodes` 返回 `grown==0`（LLM 想调的工具**全被 L1 的 `enabled=false`/`budget` 拦掉**）→ **不新长 plan，直接强制出 answer**（`planner_cognition.go:343` 注释 "All tool calls were skipped by L1 constraints... Force an answer so the session terminates"）。
+`growToolNodes` 返回 `grown==0`（LLM 想调的工具**全被 L1 的 `enabled=false`/`budget` 拦掉**）→ **不新长 plan，直接强制出 answer**（`planner_cognition.go:348` 注释 "All tool calls were skipped by L1 constraints (enabled=false, per-agent allowlist, or budget exhausted)... Force an answer so the session terminates"；同处已补"聚合告警 + `l1_blocked` 成因标签"，见 2026-10-13 修复段）。
 
 - **坑**：L1 配错（把关键工具误设 `enabled=false`），会话会**"看起来正常出了个答案"，其实一个工具都没跑**。
 - **与 D1 同源**：都是"提前交差且静默"。

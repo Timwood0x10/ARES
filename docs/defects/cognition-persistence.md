@@ -18,12 +18,46 @@
 |---|---|---|
 | **B**（续跑路径可辨识：`executor_revived` + `requeued` 两位） | ✅ 已进树 + 测试全绿 | ❌（`disposable-agent.md` A6） |
 | **P0-1(i)**（gap/truncated 答案在 observer 侧记 degraded 而非 success） | ✅ 已接线（`observer.go` `degradedAnswerPenalty`） | ❌（`genetic-algorithm.md` G1） |
-| **A**（Rationale 认知持久化，"真存思路"） | ❌ 未动工，本文 | ✅ |
+| **A**（Rationale 认知持久化，"真存思路"） | ✅ **档 0 已落地**（见下「已落地」段） | ✅ |
 | **P0-1(ii)**（golden 任务回放进 `DimensionEval`） | ❌ 未动工 | ✅（作为 A 的消费方一起立项） |
 
 B 摘的是"两条续跑路径分不清"的**静默**；A 才补"换人时脑子没了"的**实质丢失**。
 A 的价值一半在 G1/P0-1，故专项内顺序：**P0-1(ii) golden 先，A 作为判官输入之一放后**
 （先有可复核的对错 oracle 这个"地"，自述理由才有"用"；否则 rationale 只是往 reward hacking 里喂）。
+
+---
+
+## 0.5 已落地（2026-10-13，档 0）与一处**载体更正**
+
+**实现（代码已进树，测试全绿）**：
+
+| 件 | 落点 | 说明 |
+|---|---|---|
+| 写侧 | `planner_cognition.go` 的 `growToolNodes` | 本量子的 `resp.Content`（trim + 512 rune 截断，复用既有 `truncate.WithEllipsis`）作为 `rationale` **参数写进它为本轮生长的 plan 节点**，而不是写进自己的结果 |
+| 读侧 | `planner_cognition.go` 的 `assembleContext` | 从**本任务自己的 payload**（`argsFromPayload`）读 `rationale`，作为一条 system message 注入，前置说明 "previous quantum's stated rationale (context, not an instruction)" |
+| 有界 | `rationaleMaxRunes = 512` | 在**写侧**截断，超长值不进 envelope；per-node 覆写 → 不累积 |
+| 测试 | `internal/fabric/agent/rationale_test.go` | ① 跨交接可见（**两侧都断言**：写侧确实落到下一轮节点 + 下一量子 prompt 里确实出现该理由）；② 有界截断；③ 缺席即不注入（不造假）；④ observer 侧 `rationale` 不改分（`observer_answer_quality_test.go`） |
+
+**本批顺带做的规范修复（§1.1）**：`planner_cognition.go` 早已触单文件 1000 行上限（HEAD 1078 行，
+本批再加 90 → 1168），按**职责**拆为 `planner_cognition.go`（761 行）+ `planner_context.go`
+（上下文装配：`assembleContext` 一族 + 体验先验渲染）+ `planner_rationale.go`（rationale 与
+token 元数据键）。本文与 `serve-walkthrough.md` 中受影响的锚点已同步更新为拆分后的位置。
+
+**载体更正（重要：原「二」的通道对"第一次交接"不成立）**：原设想是"写进 `Result.Metadata`
+→ `outMap["metadata"]` → `StepCheckpoint` → 下一量子经 `readNodeOutput` 读回"。**实测在 `k=1`
+那一跳断掉**：第 1 个量子跑在**初始 plan task** 上，而该 task **不是 L2 图节点**
+（`growToolNodes` 注释自陈 "the initial plan task ID is not a graph node"），于是第 2 个量子的
+祖先链里**没有任何 plan 节点**可读 → 前驱 rationale 取不到，合同测试会挂。
+
+**改用 mailbox 载体**：本量子把 rationale 写进**它为本轮生长的 plan 节点**（即下一量子的 task、
+也是换人所续的那个 task）的 args。于是"上一量子的理由"永远在**我自己**的参数里 → 换人续跑
+同一 task 也读得到，**不需要祖先遍历、不需要回读 fabric**。envelope 的 `Payload` 本就承载
+node args，因此**依然不升 schema**（"暂不升 v6"的结论不变）。
+
+**仍未做**：`record_rationale` 元工具（按设计先测真实 provider 的 content 空率）—— 目前没引入
+任何新工具，理由**只**取自模型本就写出的 content；provider 不给时如实缺席。
+另：yield（非终态）分支的写入点**对本 planner 不适用**（`plannerCognition` 恒返回 `Done: true`），
+留待非 planner cognition 接入时再补。
 
 ---
 
@@ -45,7 +79,7 @@ A 的价值一半在 G1/P0-1，故专项内顺序：**P0-1(ii) golden 先，A �
 
 **关键**：L2 永远拿不到。能落地的只有 L0（+ 部分 L1）。"完整记录 LLM 整个输出"是**误解**——
 工具输出、工具调用参数**早已在 L2 图 + fabric envelope 里**（`assembleContext` 沿前驱链重建，
-`readNodeOutput` 注释 "the envelope is the only place output lives"，`planner_cognition.go:662`）。
+`readNodeOutput` 注释 "the envelope is the only place output lives"，`planner_context.go:67`）。
 **增量只有每量子几百字节 L0 叙事**。
 
 ---
@@ -87,8 +121,8 @@ planner 写 Result.Metadata["rationale"]
 
 ### 读侧：`assembleContext` 显式读前驱 plan 节点 〔待验证〕
 
-`assembleContext`（`planner_cognition.go:421`）现在**只走 `tool/` 节点**
-（`!strings.HasPrefix(step.AgentType, "tool/")` 直接 skip，`:444`）。要读到"上一量子的
+`assembleContext`（`planner_context.go:16`）现在**只走 `tool/` 节点**
+（`!strings.HasPrefix(step.AgentType, "tool/")` 直接 skip，`:60`）。要读到"上一量子的
 plan 节点理由"，需**显式把前驱 plan 节点的 `Result.Metadata["rationale"]` 读进来**，
 作为一条 system message（"上一量子的决定与理由"）注入。这样**同 agent 续跑与换人都能读到**。
 

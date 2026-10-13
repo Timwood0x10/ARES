@@ -142,9 +142,11 @@
 
 ## P0 专项：未做 / 待做（2026-10-13，"认知持久化"专项的完整清单）
 
-> 状态：**B 的代码已进树且 B-4 专项锁定测试已写、B-5 台账已回填。
+> 状态：**B 的代码已进树且 B-4 专项锁定测试已写、B-5 台账已回填。**
 > P0-1(i) observer 侧接线已落地（gap/truncated 答案记 degraded 而非 success）。
-> A（Rationale）与 P0-1(ii) golden 任务回放未动工。全部改动未提交。
+> **A（Rationale）档 0 已落地**（写/读两侧 + 4 条合同测试；**载体更正**——原
+> `res.Metadata → StepCheckpoint` 通道对"第一次交接"不成立，改用 plan 节点 args mailbox，
+> 详见 `cognition-persistence.md` §0.5）；P0-1(ii) golden 任务回放仍未动工。全部改动未提交。
 
 ### 一、B · 续跑路径可辨识（A6）——代码已落地，测试已写，台账已回填 ✅
 
@@ -170,7 +172,13 @@
 - **两个正交位，不合成 `requeue_fresh | snapshot_revive` 枚举**：合成枚举在"被交接 + 完成者也是复活体"的组合下无位可放——与 P0-3"成因/来源压成一个标签会丢信息"的实测教训同源。派生规则：`executor_revived=true` → **带脑续跑**；`requeued=true && !executor_revived` → **白盘续跑**；`!requeued` → 首次运行。
 - `Requeued=true` **不证明**换了人：fabric **故意**不持久化前任 owner（`withExecutingAgent` 的注释载明落盘的历史坑），它只断言"被退回过池子"。
 
-### 二、A · Rationale（认知持久化，方案 A）——形状已议定，未动工
+### 二、A · Rationale（认知持久化，方案 A）——**档 0 已落地（2026-10-13）**
+
+> 落点、载体的**更正**（原 `res.Metadata → StepCheckpoint` 通道对**第一次交接**不成立，改用
+> plan 节点的 args mailbox）、测试与"仍未做"（`record_rationale` 元工具），详见
+> `cognition-persistence.md` §0.5「已落地与载体更正」。以下为原始设计记录，与 §0.5 冲突处以 §0.5 为准。
+
+### 二·原始设计记录 · Rationale（认知持久化，方案 A）
 
 > 详细设计（存什么 / 如何存、摘要分档、可靠性上限、Merkle 取舍、合同测试清单）见
 > `cognition-persistence.md`。本节是清单，该文件是设计展开。

@@ -360,22 +360,31 @@ func tokenUsageFromCheckpoint(cp any) (input, output int) {
 // StepCheckpoint, or absent keys yield zero values, never an error — the
 // observer then scores on outcome and latency alone instead of inventing facts.
 func terminalCheckpointFacts(cp any) (inTokens, outTokens int, bodySource string, truncated bool) {
+	inTokens, outTokens, meta := stepCheckpointMetadata(cp)
+	bs, _ := meta[ares_events.EventKeyAnswerBodySource].(string)
+	tr, _ := meta[ares_events.EventKeyAnswerTruncated].(bool)
+	return inTokens, outTokens, bs, tr
+}
+
+// stepCheckpointMetadata decodes a checkpoint ONCE and returns the cumulative
+// token spend plus the result-metadata sub-map. Several consumers under the
+// fabric mutex need several facts from the same envelope (token totals for the
+// cost channel, answer quality for the degraded channel, rationale for the next
+// quantum), and one walk keeps that a single decode.
+//
+// Callers must not mutate the returned map: it belongs to the decoded envelope.
+func stepCheckpointMetadata(cp any) (inTokens, outTokens int, meta map[string]any) {
 	dc, err := DecodeCheckpoint(cp)
 	if err != nil {
-		return 0, 0, "", false
+		return 0, 0, nil
 	}
 	inTokens, outTokens = dc.InputTokens, dc.OutputTokens
-	meta, ok := dc.StepCheckpoint.(map[string]any)
+	sc, ok := dc.StepCheckpoint.(map[string]any)
 	if !ok {
-		return inTokens, outTokens, "", false
+		return inTokens, outTokens, nil
 	}
-	m, ok := meta[stepCheckpointMetadataKey].(map[string]any)
-	if !ok {
-		return inTokens, outTokens, "", false
-	}
-	bs, _ := m[ares_events.EventKeyAnswerBodySource].(string)
-	tr, _ := m[ares_events.EventKeyAnswerTruncated].(bool)
-	return inTokens, outTokens, bs, tr
+	meta, _ = sc[stepCheckpointMetadataKey].(map[string]any)
+	return inTokens, outTokens, meta
 }
 
 // stepCheckpointMetadataKey is the sub-map the scheduler's done branch puts the

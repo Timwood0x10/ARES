@@ -102,6 +102,28 @@ func TestDegradedAnswerStillOutscoresFailure(t *testing.T) {
 		"truncated answer must outscore failure")
 }
 
+// TestRationaleIsNotACorrectnessSignal locks the reliability ceiling the design
+// records: a rationale is MODEL-AUTHORED, so its presence must not move the
+// score at all. It is a judge input for P0-1(ii) and a continuation aid for the
+// next quantum — never a correctness channel on its own, which is exactly how a
+// reward-hacking strategy would try to use it ("the reasoning looks right").
+func TestRationaleIsNotACorrectnessSignal(t *testing.T) {
+	obs := &RuntimeObserver{}
+
+	withRationale := completedWithAnswerQuality(ares_events.AnswerBodySourceSupplied, false)
+	withRationale.Payload["rationale"] = "I chose this order because it is the correct approach."
+	plain := completedWithAnswerQuality(ares_events.AnswerBodySourceSupplied, false)
+
+	scored, ok := obs.eventToSample(withRationale)
+	require.True(t, ok)
+	baseline, ok := obs.eventToSample(plain)
+	require.True(t, ok)
+
+	assert.Equal(t, baseline.Score, scored.Score,
+		"a self-reported rationale must not raise the score")
+	assert.Equal(t, baseline.Success, scored.Success)
+}
+
 // TestGapAnswerEqualsFailureScore locks the harshest case: a gap answer
 // (nothing produced) is scored identically to a failure. This is the P0-1
 // fix's core assertion — "did less and lied about finishing" must not beat a
