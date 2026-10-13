@@ -420,6 +420,11 @@ func (f *Fabric) Fail(id, agentID string, epoch uint64, cause error) error {
 		// A zero delay leaves NextAttemptAt zero: immediately runnable, exactly
 		// as before backoff existed.
 		t.NextAttemptAt = nextAttemptAt(f.now(), t.RetryPolicy.Attempts, t.BackoffBase, t.BackoffMax)
+		// A retry is a continuation too (defect A6): the next attempt may land on
+		// another agent, with only the checkpoint carried over. Durable via the
+		// task.failed event recorded just below (its retryable flag is the fold
+		// signal), unlike the observability-only task.ready that follows.
+		t.Requeued = true
 		// Record the failure while the failing agent is still attached —
 		// the terminal/requeue event must not lose the actor. Ownership is
 		// cleared only after the event is captured, so the following
@@ -592,6 +597,11 @@ func (f *Fabric) CheckExpiredLeases() []string {
 		if err := t.transition(StateReady); err != nil {
 			continue
 		}
+		// The work is now continued rather than started (defect A6): the task
+		// keeps its checkpoint but lost its owner, so whoever acquires it next
+		// resumes someone else's progress. The task.expired event below is what
+		// makes this durable — restore folds the flag straight back from it.
+		t.Requeued = true
 		// Record the expiry while the dead agent is still attached — the
 		// terminal event must identify whose lease expired. Ownership is
 		// cleared only after the event is captured.

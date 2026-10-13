@@ -8,7 +8,9 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/core/models"
+	"github.com/Timwood0x10/ares/internal/fabric/task"
 	"github.com/Timwood0x10/ares/internal/fabric/task/workflow/engine"
 	kctx "github.com/Timwood0x10/ares/internal/kernel/ctx"
 	llmcore "github.com/Timwood0x10/ares/internal/llmcore"
@@ -509,7 +511,7 @@ const answerContentKey = "content"
 // (the plan hit the growth-depth upper bound and the answer was forced).
 // answerCognition copies it into the terminal result metadata so external
 // callers can distinguish "completed" from "hit the depth bound".
-const answerTruncatedKey = "truncated"
+const answerTruncatedKey = ares_events.EventKeyAnswerTruncated
 
 // answerCauseKey is the arg a planner stamps on the answer node recording WHY
 // the session ended, and the metadata key the terminal result carries it under.
@@ -551,17 +553,23 @@ const (
 // gap). One label cannot carry both, and whichever it dropped was exactly what a
 // consumer needed — "is this a real answer?" reads this key (or the depth-guard
 // truncation marker), "why did growth stop?" reads answerCauseKey.
-const answerBodySourceKey = "answer_body_source"
+// The wire strings are defined ONCE in ares_events (EventKeyAnswerBodySource and
+// the AnswerBodySource* values) because three packages touch them — the producer
+// here, the carrier in fabric/task, and the consumer in runtime/ares_evolution.
+// These local names are this package's vocabulary for that one contract; a
+// rename only has to happen in ares_events, and every user then fails to compile
+// instead of drifting apart silently.
+const answerBodySourceKey = ares_events.EventKeyAnswerBodySource
 
 const (
 	// answerBodySupplied: the body is the content the producer put on the node.
-	answerBodySupplied = "supplied"
+	answerBodySupplied = ares_events.AnswerBodySourceSupplied
 	// answerBodySynthesized: the body was reconstructed by M4.2 synthesis over
 	// the predecessor history — a real answer, but not one the model handed over.
-	answerBodySynthesized = "synthesized"
+	answerBodySynthesized = ares_events.AnswerBodySourceSynthesized
 	// answerBodyGap: no body existed; the result carries the explicit gap
 	// (unansweredBody). This is the degraded ending.
-	answerBodyGap = "gap"
+	answerBodyGap = ares_events.AnswerBodySourceGap
 )
 
 // unansweredBody is the body emitted when a terminal answer node carries no
@@ -630,7 +638,8 @@ var _ Cognition = (*answerCognition)(nil)
 // terminal result metadata so external callers can tell the endings apart
 // without parsing the body: answerCauseKey (why growth stopped), answerBodySourceKey
 // (whether a real answer was emitted at all) and the depth-guard truncation
-// marker.
+// marker. Two further keys report WHO carried the session (defect A6):
+// executorRevivedKey and the scheduler's requeued flag.
 func (c *answerCognition) ExecuteStep(ctx context.Context, task *models.Task) (*StepOutcome, error) {
 	args := argsFromPayload(task.Payload)
 	body, ok := args[answerContentKey].(string)
@@ -667,6 +676,23 @@ func (c *answerCognition) ExecuteStep(ctx context.Context, task *models.Task) (*
 	result.Metadata[answerBodySourceKey] = bodySource
 	if truncated, truncatedOK := args[answerTruncatedKey].(bool); truncatedOK && truncated {
 		result.Metadata[answerTruncatedKey] = true
+	}
+	// Who finished the session, and whether the work was continued (defect A6).
+	// Both are read from the raw payload, not from args: they are unprefixed
+	// envelope-namespace keys (executorRevivedKey is stamped by the executing
+	// agent at dispatch, taskfabric.PayloadKeyRequeued by the scheduler), while
+	// argsFromPayload exposes only the arg. namespace.
+	//
+	// The pair answers the question the two continuation paths used to hide: a
+	// session finished by an agent whose executor_revived is true was continued
+	// WITH a dead agent's brain; requeued without it was continued on a blank
+	// slate. They are reported separately on purpose — "why the session ended"
+	// (the cause above) and "who carried it" are independent facts.
+	if revived, revivedOK := task.Payload[executorRevivedKey].(bool); revivedOK {
+		result.Metadata[executorRevivedKey] = revived
+	}
+	if requeued, requeuedOK := task.Payload[taskfabric.PayloadKeyRequeued].(bool); requeuedOK && requeued {
+		result.Metadata[taskfabric.PayloadKeyRequeued] = true
 	}
 	if c.sessions != nil && strings.TrimSpace(task.SessionID) != "" {
 		// The session ends here: drop the graph handle and stop the

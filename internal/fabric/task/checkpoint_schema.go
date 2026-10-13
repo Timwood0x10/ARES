@@ -3,6 +3,8 @@ package taskfabric
 import (
 	"encoding/json"
 	"errors"
+
+	"github.com/Timwood0x10/ares/internal/ares_events"
 )
 
 // CurrentCheckpointSchemaVersion is the version of the checkpoint envelope
@@ -341,12 +343,46 @@ func sessionIDFromCheckpoint(cp any) string {
 // (recordLocked's terminal-event payload) treat 0,0 as "emit nothing".
 // Pure in-memory decode, safe under the fabric mutex.
 func tokenUsageFromCheckpoint(cp any) (input, output int) {
+	in, out, _, _ := terminalCheckpointFacts(cp)
+	return in, out
+}
+
+// terminalCheckpointFacts extracts, in ONE decode, everything the terminal event
+// payload needs from a checkpoint: the cumulative token spend (the observer's
+// cost channel) and the answer-quality signals (its degraded-answer channel).
+//
+// One decode rather than one per fact: the terminal stamping path runs under the
+// fabric mutex, and both facts live in the same envelope — the envelope's totals
+// plus the StepCheckpoint's "metadata" sub-map, which the scheduler's done
+// branch builds as outMap["metadata"] = res.Metadata.
+//
+// Best-effort by contract: a nil/undecodable checkpoint, a non-map
+// StepCheckpoint, or absent keys yield zero values, never an error — the
+// observer then scores on outcome and latency alone instead of inventing facts.
+func terminalCheckpointFacts(cp any) (inTokens, outTokens int, bodySource string, truncated bool) {
 	dc, err := DecodeCheckpoint(cp)
 	if err != nil {
-		return 0, 0
+		return 0, 0, "", false
 	}
-	return dc.InputTokens, dc.OutputTokens
+	inTokens, outTokens = dc.InputTokens, dc.OutputTokens
+	meta, ok := dc.StepCheckpoint.(map[string]any)
+	if !ok {
+		return inTokens, outTokens, "", false
+	}
+	m, ok := meta[stepCheckpointMetadataKey].(map[string]any)
+	if !ok {
+		return inTokens, outTokens, "", false
+	}
+	bs, _ := m[ares_events.EventKeyAnswerBodySource].(string)
+	tr, _ := m[ares_events.EventKeyAnswerTruncated].(bool)
+	return inTokens, outTokens, bs, tr
 }
+
+// stepCheckpointMetadataKey is the sub-map the scheduler's done branch puts the
+// quantum's result metadata under (outMap["metadata"] = res.Metadata) inside the
+// StepCheckpoint. It is the layout half of the answer-quality contract: the keys
+// INSIDE it are the ares_events ones, this is only the box they arrive in.
+const stepCheckpointMetadataKey = "metadata"
 
 // MarshalCheckpoint JSON-encodes a checkpoint value. When the value is a
 // *CheckpointEnvelope, it marshals directly. When it is any other type, it

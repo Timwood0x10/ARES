@@ -47,6 +47,8 @@ CognitiveState = {
    **自述的理由（CoT）** —— 它从未被持久化到任何载体。
 4. **`CognitiveState.Context` 仍是 opaque `any`**（`agent.go`），且 planner 不往里写 CoT：
    原地复活带的是这份状态，**带多少完全取决于生产者**。本文描述准确。
+5. **B 已按正交两位落地（2026-10-13）**：续跑路径现已可辨识——`executor_revived`（复活位）
+   与 `requeued`（回队位）从 agent→payload→终态 metadata 全链贯通。详见 A6「修复」段。
 
 **修复方案（需拍板 —— 属规范 §0.4 的方向性变更，未擅自实施）**
 
@@ -110,7 +112,7 @@ CognitiveState = {
 
 ---
 
-## A6 · "复活"与"换人"是两条耐久度不同的路，且选哪条常取决于时序 〔取舍 · 需可观测〕
+## A6 · "复活"与"换人"是两条耐久度不同的路，且选哪条常取决于时序 〔取舍 · 需可观测 · **B 已修 2026-10-13**〕
 
 | 路径 | 触发 | 带过去的 | 预算 |
 |---|---|---|---|
@@ -119,6 +121,25 @@ CognitiveState = {
 
 - **坑**：同一个"agent 没了"，**最终是原地复活还是换人，取决于"有没有 snapshot、snapshot 有没有被 A3 挤掉、recovery loop 有没有 wire 到"**。两条路"脑含量"不同（A1）、预算不同（A2），但**对上层常常是静默的**——你不知道任务是被"复活的原 agent"做完的，还是被"全新 agent"做完的。
 - **建议**：给"最终由哪种路径续跑"打标签/指标（`StopReason` 已有 `crashed` vs 无，但"实际续跑走 snapshot 还是 fresh"没单独记），让"续跑耐久度"可观测。
+
+**修复（2026-10-13，方案 B 已落地）**
+
+B（摘静默）已按**两个正交位**落地，让两条续跑路径可辨识：
+
+| 件 | 位置 | 说明 |
+|---|---|---|
+| agent 复活位 | `agent.go`（`Agent.revived`，mu 保护）+ `lifecycle.go` 的 `Recover` 置位 | `Recover` 是唯一入口，复活语义精确；事件带 `revived: true`；只置位不清除 |
+| 执行期戳记 | `executor.go`：`withExecutingAgent(payload, agentID, revived)` 盖 `executor_revived`（false 也盖） | "在场且 false" ≠ "缺席"；quantum-scoped，不落盘 |
+| task 回队事实 | `task.go` 新增 `Task.Requeued`；`fabric_lifecycle.go` 置位 | lease 过期 + 重试回队覆盖全部来源 |
+| 折叠（耐久） | `restore.go`：`foldRequeued` 从 `task.expired`/`task.failed(retryable)` 折叠 | 重启后从日志恢复标志 |
+| 派发期可见 | `scheduler_quantum.go`：`ToModelTask` 写 `requeued` payload | 仅 true 时写 → 缺席即"首次运行" |
+| 终态暴露 | `l2graph.go`：`answerCognition` 将两位写进终态 metadata | 从原始 payload 读，与 `answer_cause` 并列 |
+
+**测试**：`revived_test.go`（agent 位 + 事件 + 不清除）、`answer_continuation_test.go`（终态 metadata 四场景）、`requeued_test.go`（lease 过期 + 重试 + 恢复折叠 + 已知过近似）。
+
+**取舍（已写进代码注释）**：不用 `Lease.Epoch` 判"被交接"（全局计数无判别力）；两个正交位不合成枚举；`Requeued=true` 不证明换人（不持久化前任 owner）。
+
+**未做**：A（Rationale 认知持久化）与 P0-1 合并立项，待动工。
 
 ---
 
@@ -143,7 +164,7 @@ CognitiveState = {
 | A3 快照 1024 上限静默退化 | 隐患 | 中（prune 时打日志/指标） |
 | A4 快照 schema 版本挡复活 | 隐患 | 中（滚动升级做兼容读） |
 | A5 双状态码只对齐调度点 | 隐患 | 低（stopping 灰区，至少文档化） |
-| A6 复活 vs 换人静默 | 取舍 | 低（加可观测标签） |
+| A6 复活 vs 换人静默 | 取舍 · **B 已修** | 低（A 未做，与 P0-1 合并立项） |
 | 唯一写者/防风暴/provenance | ✅ 已做 | 无需动 |
 
 **可丢弃 agent 这块"创新可行性强"，核心（唯一写者 + 任务持久 + 两条复活路）是对的。**

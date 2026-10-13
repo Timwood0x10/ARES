@@ -33,7 +33,16 @@ type StrategySample struct {
 	// StrategyID is the ID of the active strategy when the sample was taken.
 	StrategyID string
 
-	// Success indicates whether the task completed successfully.
+	// Success indicates whether the task delivered a real answer: true for a
+	// normal completion, false for a terminal failure AND for a DEGRADED
+	// completion the answer path reported (a gap body, or an answer the depth
+	// guard forced) even though the task itself reached COMPLETED.
+	//
+	// Precedence when it appears to disagree with Score: Score is the graded
+	// value the fitness evidence carries — degradation is expressed there as a
+	// multiplier, the same way the cost and latency penalties are — so a consumer
+	// must not read Success=false as "ignore Score". A truncated answer is
+	// deliberately worth 0.5: more than a failure's 0, less than a real answer's 1.
 	Success bool
 
 	// Score is the normalized fitness score in [0,1].
@@ -116,6 +125,37 @@ func (o *RuntimeObserver) costPenalty(evt *ares_events.Event) float64 {
 		return 1
 	}
 	return 1.0 / (1.0 + float64(tokens)/float64(defaultTokenScale))
+}
+
+// degradedAnswerPenalty is the P0-1 signal: a completed task whose answer was a
+// gap body (no real answer produced) or was forced by the depth guard is
+// degraded, so the GA cannot reward "did less and lied about finishing".
+//
+// The signals ride the task.completed event payload; the fabric mirrors them out
+// of the checkpoint envelope's StepCheckpoint (see terminalCheckpointFacts).
+//
+// Contract: a gap answer scores 0 (indistinguishable from failure — it produced
+// nothing); a truncated answer scores 0.5 (something real came out under duress:
+// better than gap, worse than any genuine answer). Absent signals (non-answer
+// tasks, pre-fix envelopes) keep 1 — no penalty.
+//
+// What this factor is NOT: the mechanism by which the GA stops rewarding a
+// degraded ending. The Score is (the fitness evidence carries it, and the caller
+// multiplies it in the same way cost and latency penalties multiply in); the
+// Success flip that accompanies it is an annotation — see StrategySample.Success.
+func (o *RuntimeObserver) degradedAnswerPenalty(evt *ares_events.Event) (factor float64, degraded bool) {
+	if evt == nil || evt.Payload == nil {
+		return 1, false
+	}
+	bs, _ := evt.Payload[ares_events.EventKeyAnswerBodySource].(string)
+	tr, _ := evt.Payload[ares_events.EventKeyAnswerTruncated].(bool)
+	if bs == ares_events.AnswerBodySourceGap {
+		return 0, true
+	}
+	if tr {
+		return 0.5, true
+	}
+	return 1, false
 }
 
 // latencyPenalty computes the multiplicative latency factor for a completed
@@ -335,6 +375,18 @@ func (o *RuntimeObserver) eventToSample(evt *ares_events.Event) (StrategySample,
 		// latency — spend discounts success, never rescues failure, and an
 		// unaccounted task (no keys, pre-v4 envelope) keeps 1.
 		score *= o.costPenalty(evt)
+		// Degraded answer penalty (P0-1): a gap body or a depth-guard-forced
+		// answer is not a success. The factor is 0 for gap (nothing produced)
+		// and 0.5 for truncated (something real came out under duress). Score is
+		// the channel the fitness evidence carries, so the FACTOR is what stops
+		// the reward — multiplying in exactly as the cost/latency penalties do.
+		// Success is flipped alongside it so the sample also annotates the ending
+		// truthfully for readers that key on the flag; the two are not in
+		// conflict, see StrategySample.Success.
+		if factor, degraded := o.degradedAnswerPenalty(evt); degraded {
+			score *= factor
+			success = false
+		}
 	case ares_events.EventTaskFailed:
 		// 0.0 (already initialized). Failure is never penalty-rescued.
 	case ares_events.EventAgentStopped:

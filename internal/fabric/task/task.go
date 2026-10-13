@@ -59,6 +59,20 @@ type Task struct {
 	// subgraph that died of a root cause from one that executed and failed.
 	// Guarded by f.mu like every other Task field.
 	FailedDependency string
+	// Requeued reports that this task was returned to the pool after being owned
+	// at least once: a lease expiry (its owner died) or a retry requeue. It is the
+	// durability half of defect A6's question — is this the task's first run, or
+	// was work continued?
+	//
+	// It is a fact about the TASK and deliberately not an identity claim: the
+	// fabric does not persist who the previous owner was (the executing-agent
+	// stamp is quantum-scoped by design, see withExecutingAgent), so
+	// Requeued=true does NOT prove a DIFFERENT agent took over. Read it together
+	// with the finisher's own revive bit: requeued + a finisher that is not
+	// revived = work continued on a blank slate.
+	//
+	// Guarded by f.mu like every other Task field.
+	Requeued bool
 	// AllowPartial is the creation-time policy that lets this task run when a
 	// dependency fails permanently, instead of being failed by the cascade. The
 	// gap is not hidden: the failed predecessor's ID is recorded in

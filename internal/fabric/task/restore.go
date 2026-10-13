@@ -86,6 +86,16 @@ const (
 	restoreKeyInputTokens  = "input_tokens"
 	restoreKeyOutputTokens = "output_tokens"
 	restoreKeyTotalTokens  = "total_tokens"
+	// restoreKeyAnswerBodySource carries the terminal answer's body source on
+	// the task.completed event payload so the RuntimeObserver can downgrade a
+	// gap answer (P0-1). The string itself is defined in ares_events because the
+	// producer (fabric/agent) and the consumer (runtime/ares_evolution) share
+	// it; this is the fold/stamp name for that one contract.
+	restoreKeyAnswerBodySource = ares_events.EventKeyAnswerBodySource
+	// restoreKeyAnswerTruncated carries the depth-guard truncation marker on
+	// the task.completed event payload so the RuntimeObserver can downgrade a
+	// forced answer (P0-1); string shared through ares_events like the one above.
+	restoreKeyAnswerTruncated = ares_events.EventKeyAnswerTruncated
 	// restoreKeyLastError carries the terminal failure cause through a
 	// checkpoint's JSON round-trip (persist → restore): the value also lives
 	// inside the checkpoint envelope, but the map-decode path of
@@ -331,6 +341,7 @@ func (f *Fabric) foldRestoreEvent(ev *ares_events.Event) error {
 		foldRetryScheduling(p, t)
 		foldDegradation(p, t)
 		foldApproval(p, t)
+		foldRequeued(p, ev, t)
 		// Cascade provenance is durable: a task that was failed by a
 		// predecessor's cascade must stay distinguishable after a restart.
 		if fd := restoreString(p, restoreKeyFailedDependency); fd != "" {
@@ -486,6 +497,19 @@ func foldApproval(p map[string]any, t *Task) {
 		if ts, err := time.Parse(time.RFC3339, s); err == nil {
 			t.ApprovalTimeout = ts
 		}
+	}
+}
+
+// foldRequeued restores the requeue fact (defect A6). A lease expiry ALWAYS
+// returns the task to the pool, so folding it is unconditional. A retryable
+// task.failed requeues only while the retry budget lasts, so its retryable flag
+// folds too; the sole over-approximation is a task whose final attempt failed
+// retryably — that one goes terminal and is never scheduled again, so the flag
+// is never read.
+func foldRequeued(p map[string]any, ev *ares_events.Event, t *Task) {
+	if ev.Type == ares_events.EventTaskExpired ||
+		(ev.Type == ares_events.EventTaskFailed && restoreBool(p, payloadKeyRetryable)) {
+		t.Requeued = true
 	}
 }
 

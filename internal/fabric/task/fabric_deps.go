@@ -54,6 +54,14 @@ func (f *Fabric) SetDependencies(id string, deps []string) error {
 // context — a single source of truth across the producer and consumer.
 const PayloadKeyDegradedInputs = "degraded_inputs"
 
+// PayloadKeyRequeued is the task-payload key carrying Task.Requeued to the
+// executing quantum. The scheduler stamps it at dispatch (ToModelTask) and the
+// finisher reports it on the terminal result, so a caller can tell "this run
+// continued earlier work" from "this is the task's first run" without reading
+// fabric internals (defect A6). Exported so both sides — the scheduler that
+// writes it and the cognition that reads it — share one wire name.
+const PayloadKeyRequeued = "requeued"
+
 // recordDegradedInputLocked marks missing as an input the dependent is
 // proceeding without. It is the AllowPartial branch's whole action: the task
 // stays READY, the gap is recorded durably, and scheduling is unlocked because

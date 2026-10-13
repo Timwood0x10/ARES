@@ -363,6 +363,19 @@ func (s *Scheduler) ToModelTask(tk *taskfabric.Task) *models.Task {
 		}
 		t.Payload["checkpoint"] = dc.StepCheckpoint
 	}
+	// Whether this task is a first run or a continuation rides to the executor so
+	// the quantum that FINISHES it can report it (defect A6) — the task side of
+	// "was this work continued, and by whom". Stamped from the task rather than
+	// mirrored into the envelope payload: the payload is shared with the durable
+	// envelope (see copyPayloadMap), while this is task state the scheduler
+	// already owns at dispatch. Absent means "first run": the key is only written
+	// when true, and every dispatched quantum passes through here.
+	if tk.Requeued {
+		if t.Payload == nil {
+			t.Payload = make(map[string]any, 1)
+		}
+		t.Payload[taskfabric.PayloadKeyRequeued] = true
+	}
 	return t
 }
 

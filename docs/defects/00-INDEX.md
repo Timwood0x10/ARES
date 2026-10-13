@@ -12,6 +12,7 @@
 > - `recovery-and-fault-tolerance.md`（T-F task 失败 / A-F agent 失败）
 > - `retrieval-and-storage.md`（R 检索 / S-st 存储 / D embedding 死信）
 > - `service-loading-and-mcp.md`（S-mcp 服务发现/MCP 加载/工具注册）
+> - `cognition-persistence.md`（P0-4 / A / P0-1 认知持久化专项：存什么 / 如何存，Rationale 载体 + 摘要分档 + 为何不上 Merkle）
 >
 > **注意**：`A`（disposable 复活）与 `A`（agent 工厂）共用前缀，看文件名区分；
 > `S` 也撞：`S-mcp`=service-loading 的 S1-S6，`S-st`=retrieval-and-storage 的存储侧 S1-S3。
@@ -26,7 +27,7 @@
 | P0-1 | **G1** GA 无"做对没"信号 | fitness 只奖励"成功+快省"，没 accuracy → **越跑越会糊弄** | 认知/正确性没持久化 |
 | P0-2 | **T1+T2** LLM `create_task` 不校验 **〔已修 2026-10-12〕** | `create_task` 依赖不存在/成环 → **任务静默永不 READY**（`create_plan` 走 `CompilePlan`、operator 走自带 `findCycle`，都安全；**只有 `create_task` 旁路漏**） | 引用/边界没校验 |
 | P0-3 | **D1+D2** 提前交差不够可见 **〔已修 2026-10-12〕** | maxPlanDepth 撞墙 / L1 全拦 → 强制出 answer；**不标记成因**（D1 已有 Warn+计数，但无面板/告警规则） | 静默早停 |
-| P0-4 | **Q3+A-dispo1+A-F4** 认知有损 **〔已核实·待拍板 2026-10-12〕** | checkpoint/复活只带"进度"不带"思路" → 换人/续跑**丢推理链** | 认知/正确性没持久化 |
+| P0-4 | **Q3+A-dispo1+A-F4** 认知有损 **〔B 已动工 · A 与 P0-1 合并立项 2026-10-13〕** | checkpoint/复活只带"进度"不带"思路" → 换人/续跑**丢推理链**；A 的"存什么/如何存"见 `cognition-persistence.md` | 认知/正确性没持久化 |
 
 ## P1 · 该修（高频咬人 / 一处改受益一片）
 
@@ -135,6 +136,92 @@
    方案 **A**（envelope 加"有界 Decision/Rationale" + schema 升版 + 喂给下一量子）vs 方案 **B**
    （承认边界 + 让两条路径可辨识）。**A 动 schema 与 planner 的 prompt 语义，按规范 §0.4 未擅自实施**；
    详见 `disposable-agent.md` A1「核实 / 修复方案」段。
+5. **2026-10-13 拍板并动工**：采纳"**两步走**"——B（摘静默，立即做）+ A（Rationale）与 **P0-1 合并为同一个"认知持久化"专项**。B 的代码已落地（见下节「未做 / 待做」清单），A 与 P0-1 未动工。用户两条技术指示：epoch 用**每任务单调、局部解决**（实测发现 `f.epoch` 本就是**全局**计数、当"被交接"信号无判别力，遂改用 task 侧回队事实，不动栅栏令牌语义）；`RestoreFromStore` 折叠（已按此实现）。
+
+---
+
+## P0 专项：未做 / 待做（2026-10-13，"认知持久化"专项的完整清单）
+
+> 状态：**B 的代码已进树且 B-4 专项锁定测试已写、B-5 台账已回填。
+> P0-1(i) observer 侧接线已落地（gap/truncated 答案记 degraded 而非 success）。
+> A（Rationale）与 P0-1(ii) golden 任务回放未动工。全部改动未提交。
+
+### 一、B · 续跑路径可辨识（A6）——代码已落地，测试已写，台账已回填 ✅
+
+**已落地**：
+
+| 件 | 位置 | 说明 |
+|---|---|---|
+| agent 复活位 | `internal/fabric/agent/agent.go`（`Agent.revived`，mu 保护）+ `lifecycle.go` 的 `Recover` 置位 | `Recover` 是"把被保存认知装进 agent"的**唯一入口**（`RestartAgent` 走它），所以复活语义精确；`EventAgentRecovered` 事件新增 `revived: true`；**只置位不清除**（复活体终生是复活体） |
+| 执行期戳记 | `executor.go`：`Agent.ExecuteStep` 读位 → `withExecutingAgent(payload, agentID, revived)` 盖 `executor_revived`（**false 也盖**） | "在场且 false"必须能区别于"缺席"——没走这层包装的量子根本没回答过这个问题。按既有设计**不落盘**（quantum-scoped，注释载明落盘会把某量子的执行者误归到后续量子的历史坑） |
+| task 回队事实 | `internal/fabric/task/task.go` 新增 `Task.Requeued bool`；`fabric_lifecycle.go` 的 `CheckExpiredLeases` 与 `Fail` 的重试回队分支置位 | 两个置位点 = 租约过期（所有权人死亡）+ 重试回队，覆盖"工作被退回池子"的全部来源 |
+| 折叠（耐久） | `restore.go`：`EventTaskExpired` 无条件置位；`EventTaskFailed` 且 `retryable=true` 置位 | 唯一过近似：最后一次可重试失败（该任务终态、永不再被调度、标志永不被读） |
+| 派发期可见 | `internal/kernel/scheduler_quantum.go` 的 `ToModelTask`：`tk.Requeued` → payload `requeued`（键 = `taskfabric.PayloadKeyRequeued`，与 `PayloadKeyDegradedInputs` 同一跨包键契约） | 仅 true 时写 → **缺席即"首次运行"**；从 task 戳而非镜像进 envelope（payload 与耐久 envelope 共享，见 `copyPayloadMap`） |
+| 终态暴露 | `internal/fabric/agent/l2graph.go` 的 `answerCognition.ExecuteStep`：`executor_revived` + `requeued` 进终态 metadata（与 `answer_cause`/`answer_body_source` 并列） | 从**原始 payload** 读（两键都是无前缀 envelope 命名空间；`argsFromPayload` 只暴露 `arg.` 命名空间） |
+
+**已完成收尾**：
+
+1. **B-4 专项锁定测试 ✅**：`revived_test.go`（agent 位 + 事件 + 不清除）、`answer_continuation_test.go`（终态 metadata 四场景）、`requeued_test.go`（lease 过期 + 重试 + 恢复折叠 + 已知过近似）。
+2. **B-5 台账回填 ✅**：`disposable-agent.md` A6 段补"已修"记录 + A1 核实段补"B 已按正交两位落地"。
+
+**已明确的取舍（已写进代码注释，勿推翻）**：
+
+- **不用 `Lease.Epoch` 判"被交接"**：`f.epoch` 是 **fabric 全局**单调计数（`f.epoch++` 后赋给 `Lease.Epoch`），不是每任务单调 → `Epoch > 1` 对单任务无判别力；把它改成每任务单调等于改**栅栏令牌**的语义（安全机制），不做。
+- **两个正交位，不合成 `requeue_fresh | snapshot_revive` 枚举**：合成枚举在"被交接 + 完成者也是复活体"的组合下无位可放——与 P0-3"成因/来源压成一个标签会丢信息"的实测教训同源。派生规则：`executor_revived=true` → **带脑续跑**；`requeued=true && !executor_revived` → **白盘续跑**；`!requeued` → 首次运行。
+- `Requeued=true` **不证明**换了人：fabric **故意**不持久化前任 owner（`withExecutingAgent` 的注释载明落盘的历史坑），它只断言"被退回过池子"。
+
+### 二、A · Rationale（认知持久化，方案 A）——形状已议定，未动工
+
+> 详细设计（存什么 / 如何存、摘要分档、可靠性上限、Merkle 取舍、合同测试清单）见
+> `cognition-persistence.md`。本节是清单，该文件是设计展开。
+
+**载体决策（与原设想不同，暂不升 v6）**。证据链（全部已核实）：
+
+```
+planner 写 Result.Metadata[rationale]
+  → scheduler_quantum.go 终态分支：outMap["metadata"] = res.Metadata
+  → 该 map 作为 StepCheckpoint 进 envelope（StepCheckpoint 是 any，无版本门）
+  → 下一量子 readNodeOutput：fabric.Task(nodeID) → DecodeCheckpoint → StepCheckpoint
+```
+
+- `extractOutputContent` 与 `PlanLoop.collectOutput` 只读特定键 → **加键不破坏既有消费者**；
+- `readNodeOutput` 的注释原文："the envelope is the only place output lives (decision C)" → 下一量子**本来就从 envelope 读前驱输出**；
+- `res.Metadata` 已是**既定的跨包键契约**（token 通道 `tokenUsageFromResult`、P0-3 的 `answer_cause` 同走此路）；
+- **滑窗不需要**：L2 每轮是独立 task/节点（`SessionNodeID(sid, round, "plan", 0)`），每个节点的 envelope 只写一次 → 天然有界；yield 路径 `StepCheckpoint` 每量子**覆写** → 只留最新一份，不随 session 线性膨胀（规避 A3 那类"上限静默退化"坑的方式是形状选对，不是加淘汰）；
+- **动手前待验证一件事**：yield（非终态）分支走 `out.Checkpoint`（与终态的 `outMap` 不同源）→ planner 在同一会话多次 yield 的场景下 rationale 是否也随 `out.Checkpoint` 携带，需确认或补齐；
+- 若将来出现**外部契约**消费者，再把字段提升为 typed v6（forward-only、rollback 需 drain）——那时升版是自然演进，不是现在的预付成本。
+
+**写侧（A2，用户已倾向；A1 不采纳）**：同一次 LLM call 带出"本轮决定+理由"。**机制坑（已识别，动手前必须定）**：工具调用回合 `resp.Content` 通常为空（planner 正是以 `len(resp.ToolCalls) == 0` 判定最终答案）→ 需显式契约，三选一：
+1. `record_rationale` 专用工具（**倾向**：可校验、可截断、可测）；
+2. 首个工具调用 args 带 `rationale` 字段（模型易漏）；
+3. content 约定"要调工具必先写理由"（最便宜，但各 provider 对 tool-call 回合的 content 处理不一致，脆）。
+
+**读侧**：`assembleContext` 现在只走 `tool/` 节点（`!strings.HasPrefix(step.AgentType, "tool/")` 直接 skip）→ 需显式把**前驱 plan 节点**的 rationale 读进来（一条 message，标注"上一量子的决定与理由"），这样同 agent 续跑与换人**都**能读到"为什么"。
+
+**有界**：生产者侧硬上限（512~1024 char）+ 截断；per-node 覆写 → 无累积膨胀。
+
+**可靠性上限（必须写进设计）**：rationale 是**模型自述**，是 reward hacking 的喂食点（"理由写得漂亮" ≠ "做对了"）→ 只能当判官**输入之一**，须与真实工具结果对照判定，**不得**单独作为高权重 correctness 通道。
+
+**测试（合同测试，动手时写）**：换人后下一量子确实注入前驱 rationale（断言 `assembleContext` 的 message 序列含它）；有界截断；per-node 不累积；旧 envelope（无该键）空值兼容。
+
+### 三、P0-1（G1 · 正确率信号）——未动，两半拆开接
+
+| 半 | 现状 | 待做 |
+|---|---|---|
+| (i) 停止把 gap / 被迫交差 记为 success **〔已修 2026-10-13〕** | ✅ observer 侧已接线：`answer_body_source=gap` → score=0 且 Success=false；`truncated=true` → score=0.5 且 Success=false | 信号从 checkpoint envelope 经 `answerQualityFromCheckpoint` 提取 → `task.completed` 事件 payload → `degradedAnswerPenalty` 读取 |
+| (ii) 真正的 accuracy 维度 | 无 oracle | **golden 任务回放**进 `DimensionEval`（`FitnessWeights.DimensionEval` 权重槽已存在、默认 0.25，但运行时无人产出），权重须高于 cost/latency —— G1 文档的"最低成本做法" |
+
+**专项内顺序**：(i) 接线（信号现成，即得）→ (ii) golden（可复核的对错 oracle）→ A（Rationale）作为判官输入 + 续跑思路放最后。A 排后的理由：其价值一半在 G1，而 G1 的主信号来自**可复核的 golden**，不来自自述理由；先有 golden 这个"地"，rationale 才有"用"。
+
+### 四、其余未做（前几轮已记录的残留，集中在此防丢）
+
+| 项 | 状态 | 出处 |
+|---|---|---|
+| `SetDependencies` 无环/存在性校验 | 残留（宽松性供 L2 增长且已被测试锁死；但它能给**已存在**任务改边、可闭合环） | T1/T2「修复」段 |
+| `SearchSimilarTasks` 无 user 维度 | 残留（作用域已改按请求 `tenantctx`；user 隔离靠查询词"软"约束，硬隔离需加 scope 参数） | M5 旁路清点 |
+| `StoreExporter` 无人实现 | 残留（`ExportStore`/`ImportStore` 永远走 `Query`/`Save` 回退；接口只是扩展点） | plan 文档 §8.5 |
+| M2.5 关系门 / M4 `BuildReport` / M6 `TieredRetriever` 接生产 | 未排期（`TieredRetriever` 须先解其定义处自陈的两点：整店入内存 per query、需 namespace 来源） | plan 文档 §8.2 |
+| `create_plan`/operator 建图路径 | **无需动**（一个走 `CompilePlan`、一个自带 `findCycle`）——列出防误判 | T1 路径表 |
 
 **2026-10-12 · 源码比对修订（对 dev 分支逐条核对源码）**：对 7 个分文件全部缺陷 ID 逐条比对代码后，
 修正以下内容（各分文件内已就地标注"更正/实测"）：

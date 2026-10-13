@@ -366,6 +366,11 @@ func (f *Fabric) Recover(ctx context.Context, agentID string, cognitive Cognitiv
 		cognitive.SchemaVersion = CognitiveStateSchemaVersion
 	}
 	a.cognitive = cognitive
+	// Recover is the ONLY path that installs a preserved cognitive state, so it is
+	// also the only place "this agent is a revived one" becomes true (defect A6).
+	// Set under a.mu with the state it describes; the executor reads it when it
+	// stamps the quantum payload.
+	a.revived = true
 	if a.State == StatePaused {
 		a.State = StateIdle
 	}
@@ -373,6 +378,7 @@ func (f *Fabric) Recover(ctx context.Context, agentID string, cognitive Cognitiv
 	f.mu.Unlock()
 	f.record(ctx, a, EventAgentRecovered, map[string]any{
 		"has_checkpoint": cognitive.Checkpoint != nil,
+		"revived":        true,
 	})
 	return nil
 }

@@ -69,7 +69,7 @@ type Agent struct {
 	// the fabric lock during spawn/kill/retire.
 	resources map[string]float64
 
-	mu             sync.RWMutex // guards cognitive, privateContext, taskContext, state, load, cognition, busy
+	mu             sync.RWMutex // guards cognitive, privateContext, taskContext, state, load, cognition, busy, revived
 	cognitive      CognitiveState
 	privateContext map[string]any
 	taskContext    map[string]any // shared task state (read-only view for the agent)
@@ -78,6 +78,15 @@ type Agent struct {
 	// (spawn/kill/recover) but cannot run a quantum until injected via
 	// SpawnSpec.CognitionFactory. Guarded by mu.
 	cognition Cognition
+	// revived reports that this agent's cognitive state was installed from a DEAD
+	// agent's preserved snapshot (Fabric.Recover) instead of being accumulated by
+	// living through its own quanta. It is the one bit that makes the two
+	// continuation paths distinguishable from the outside (defect A6): work
+	// finished by a revived agent continued WITH the dead agent's brain, while the
+	// same work finished by a fresh agent continued on a blank slate. Set only by
+	// Recover; never cleared, because a revived agent stays revived for its whole
+	// life. Guarded by mu.
+	revived bool
 	// busy is the R4 bridge between subAgent execution state and fabric
 	// scheduling state. When true the agent is executing a quantum and must
 	// NOT be offered as a scheduling candidate, even though its lifecycle

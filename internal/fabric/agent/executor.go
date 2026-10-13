@@ -105,12 +105,13 @@ type ToolBinder interface {
 func (a *Agent) ExecuteStep(ctx context.Context, task *models.Task) (*StepOutcome, error) {
 	a.mu.RLock()
 	c := a.cognition
+	revived := a.revived
 	a.mu.RUnlock()
 	if c == nil {
 		return nil, ErrAgentNotExecutable
 	}
 	if task != nil {
-		task.Payload = withExecutingAgent(task.Payload, a.Identity)
+		task.Payload = withExecutingAgent(task.Payload, a.Identity, revived)
 	}
 	return c.ExecuteStep(ctx, task)
 }
@@ -124,18 +125,36 @@ func (a *Agent) ExecuteStep(ctx context.Context, task *models.Task) (*StepOutcom
 // (argsFromPayload extracts the arg. namespace only).
 const executingAgentKey = "executing_agent_id"
 
+// executorRevivedKey is the reserved task-payload key reporting whether the
+// agent executing THIS quantum is a revived one (see Agent.revived).
+// Unprefixed like session_id and executingAgentKey, so it rides the envelope
+// namespace and never reaches tool args (argsFromPayload extracts only the arg.
+// namespace).
+//
+// It answers defect A6's question from the outside: work whose
+// executor_revived is true was continued WITH a dead agent's brain; the same
+// work with false was continued on a blank slate. Like executingAgentKey it is
+// quantum-scoped: it reports the FINISHER, not a property of the task.
+const executorRevivedKey = "executor_revived"
+
 // withExecutingAgent returns a copy of payload stamped with the executing
-// agent's identity. The copy is load-bearing: the payload map the scheduler
+// agent's identity and whether that agent is a revived one. The copy is
+// load-bearing: the payload map the scheduler
 // hands down is the SAME map referenced by the durable checkpoint envelope
 // (ToModelTask → DecodeCheckpoint does not copy), so an in-place write would
 // persist one quantum's executor into the envelope and mis-attribute later
 // quanta to a dead or preempted agent. The stamp is quantum-scoped by
 // construction: it lives only on the models.Task given to the Cognition.
-func withExecutingAgent(payload map[string]any, agentID string) map[string]any {
-	out := make(map[string]any, len(payload)+1)
+//
+// The revive bit is stamped even when false: "present and false" must be
+// distinguishable from "absent", because a quantum that did not run through
+// this wrapper never answered the question at all.
+func withExecutingAgent(payload map[string]any, agentID string, revived bool) map[string]any {
+	out := make(map[string]any, len(payload)+2)
 	for k, v := range payload {
 		out[k] = v
 	}
 	out[executingAgentKey] = agentID
+	out[executorRevivedKey] = revived
 	return out
 }
