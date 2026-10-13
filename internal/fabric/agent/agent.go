@@ -69,7 +69,7 @@ type Agent struct {
 	// the fabric lock during spawn/kill/retire.
 	resources map[string]float64
 
-	mu             sync.RWMutex // guards cognitive, privateContext, taskContext, state, load, cognition, busy, revived, clock, lastActiveAt
+	mu             sync.RWMutex // guards cognitive, privateContext, taskContext, state, load, cognition, busy, revived, clock, lastActiveAt, retiredAt
 	cognitive      CognitiveState
 	privateContext map[string]any
 	taskContext    map[string]any // shared task state (read-only view for the agent)
@@ -106,6 +106,11 @@ type Agent struct {
 	// value — it was removed as unused). The scheduler's IsIdle check
 	// therefore also reads this flag. Guarded by mu.
 	busy bool
+	// retiredAt is when Retire decommissioned this agent; zero on a live agent.
+	// It is the age basis for reaping the tombstone (Fabric.ReapRetired): a
+	// retired record is kept queryable on purpose, and without an age on the
+	// record that retention could not be bounded at all. Guarded by mu.
+	retiredAt time.Time
 	// governance is the budget state (see governance.go). Nil when the
 	// agent was spawned without budgets.
 	governance *governanceState
@@ -199,6 +204,32 @@ func (a *Agent) SetBusy(busy bool) {
 	a.mu.Lock()
 	a.busy = busy
 	a.mu.Unlock()
+}
+
+// TryBeginQuantum claims this agent for one quantum, setting the busy flag and
+// reporting true ONLY IF the agent is IDLE and not already busy. It is the
+// guarded form of SetBusy(true) and the dispatch path must use it.
+//
+// Why the guard rather than IsIdle followed by SetBusy: those two are not atomic
+// together, so the agent can leave IDLE in between — in production idle
+// reclamation retires it. The quantum would then run against an agent whose
+// execution body Retire has already released, failing a task for a reason that
+// has nothing to do with the task. Contending for this lock is what makes the
+// decision single-winner: the sweep's retire and this claim cannot both succeed,
+// and the loser acts on the truth (the sweep skips a busy agent; this reports
+// false for one that just retired).
+//
+// A caller that gets false must release the task lease and let the next drain
+// re-schedule — never fall back to SetBusy, which is exactly the unguarded write
+// this replaces.
+func (a *Agent) TryBeginQuantum() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.State != StateIdle || a.busy {
+		return false
+	}
+	a.busy = true
+	return true
 }
 
 // IsBusy reports whether the agent is currently executing a quantum (R4

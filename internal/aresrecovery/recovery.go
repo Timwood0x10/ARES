@@ -83,6 +83,13 @@ type RestartPolicy struct {
 	// agent that is not working": restart handles one that died, reclamation
 	// handles one that is simply not needed any more.
 	IdleAgentTTL time.Duration
+	// RetiredAgentRetention is how long a retired agent's record stays queryable
+	// before the sweep reaps it. Reclamation retires; it can never remove, so
+	// without this the registry keeps one record per spawn for the process's
+	// lifetime. Zero DISABLES reaping (records stay) — the zero value is the
+	// pre-fix behaviour, and it is the safe direction to fail: a kept record
+	// costs bytes, a removed one costs the lookup.
+	RetiredAgentRetention time.Duration
 }
 
 // DefaultRestartPolicy is a sane production default: 5 attempts, 1s backoff
@@ -95,8 +102,11 @@ func DefaultRestartPolicy() RestartPolicy {
 		// default that kept every agent forever would keep leaking in every
 		// deployment that never heard of the knob.
 		IdleAgentTTL: agentfabric.DefaultAgentReclaimPolicy().IdleTTL,
-		Backoff:      1 * time.Second,
-		MaxBackoff:   30 * time.Second,
+		// Reaping is ON by default for the same reason, one step later: retirements
+		// happen continuously in peer mode, and each one leaves a record.
+		RetiredAgentRetention: agentfabric.DefaultRetiredAgentRetention,
+		Backoff:               1 * time.Second,
+		MaxBackoff:            30 * time.Second,
 	}
 }
 
@@ -393,13 +403,28 @@ func (r *Recovery) RestartCount(agentID string) int {
 // budget fills up and stays full (ErrResourceQuotaExceeded on all later spawns)
 // and the agents themselves accumulate. See agentfabric.AgentReclaimPolicy.
 func (r *Recovery) ReclaimIdleAgents(ctx context.Context) []agentfabric.IdleAgent {
+	if r.policy.IdleAgentTTL <= 0 {
+		return nil
+	}
+	// "Nobody is using it" is decided on TASK OWNERSHIP, not on the activity
+	// clock: an agent whose task was dispatched but whose quantum has not started
+	// yet holds a lease while still looking idle. Only this layer can make that
+	// call — it is the one that can see both fabrics — and LeaseSnapshot reports
+	// live leases only (never terminal), so an empty set is the normal case for a
+	// quiet pool.
+	inUse := make(map[string]struct{})
+	for _, lease := range r.tasks.LeaseSnapshot() {
+		if lease.Owner != "" {
+			inUse[lease.Owner] = struct{}{}
+		}
+	}
 	return r.agents.ReclaimIdle(ctx, agentfabric.AgentReclaimPolicy{
 		IdleTTL: r.policy.IdleAgentTTL,
 		// One holder per capability is an invariant, not a knob: retiring the
 		// last agent able to serve a capability would turn a quota leak into
 		// tasks that can never be scheduled at all.
 		KeepPerCapability: 1,
-	})
+	}, inUse)
 }
 
 // RevivableSnapshot exposes the agent fabric's death-snapshot matching the

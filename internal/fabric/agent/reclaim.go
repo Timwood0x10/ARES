@@ -39,6 +39,11 @@ type AgentReclaimPolicy struct {
 // that does not. Ten minutes is orders of magnitude longer than a quantum (the
 // scheduler's units are seconds) and far shorter than a process lifetime — the
 // window where the pool grows but no work is in flight.
+//
+// Cost of a sweep: O(pool) to scan, plus one retired event per reclaimed agent.
+// Steady state reclaims only what aged past the window, so the batches are small;
+// the FIRST sweep after enabling may reclaim everything already idle, which is
+// why it runs inside the kernel loop's own tick rather than on demand.
 func DefaultAgentReclaimPolicy() AgentReclaimPolicy {
 	return AgentReclaimPolicy{IdleTTL: 10 * time.Minute, KeepPerCapability: 1}
 }
@@ -57,24 +62,42 @@ type IdleAgent struct {
 	Resources map[string]float64
 }
 
-// ReclaimIdle retires every agent that is IDLE, not busy, and has been inactive
-// longer than the policy window, as far as the per-capability floor allows. It
-// returns the retired agents in id order.
+// ReclaimIdle retires every agent that is IDLE, not busy, named in no live
+// lease, and inactive longer than the policy window — as far as the
+// per-capability floor allows. It returns the retired agents in id order.
 //
-// Retirement goes through the existing Retire, deliberately: that is the single
-// release path the quota already trusts, it is idempotent, and it records the
-// same agent.retired event an operator-initiated retire does — reclamation adds
-// a trigger, not a second bookkeeping scheme.
+// inUse names the agent ids the caller KNOWS to be busy with real work: in
+// production the owners of live task leases (taskfabric.LeaseSnapshot). They are
+// never reclaimed, and they count towards the capability floor. This is a
+// parameter rather than something the agent fabric derives because task
+// ownership lives in the OTHER fabric — the agent fabric cannot see it, and
+// guessing from the busy flag alone would miss an agent whose task was dispatched
+// but whose quantum has not started yet.
 //
-// Agents holding a live task are not identified here (the agent fabric cannot
-// see task ownership), and it does not need to: the busy flag covers a quantum
-// in flight, and a retired agent's leased or suspended task is reclaimed by the
-// task fabric's own lease recovery — the same path an operator retire relies on.
+// Retirement goes through retireLocked, deliberately: that is the single release
+// path Retire uses, it is idempotent, and it emits the same agent.retired event
+// an operator-initiated retire does — reclamation adds a trigger, not a second
+// bookkeeping scheme.
+//
+// The scan, the floor decision and the release all happen in ONE f.mu critical
+// section, with the activity test re-evaluated there under the agent lock.
+// Deciding outside the lock and retiring later would let a task be dispatched in
+// between, retiring an agent whose quantum is already running and handing its
+// quota to another spawn while that work still holds the resources.
+//
+// Residual window, stated rather than hidden: a dispatcher that selected this
+// agent BEFORE the sweep took f.mu can still mark it busy afterwards, so the
+// agent would be retired with a quantum about to start and its freed quota could
+// be handed to another spawn. Closing that fully needs the dispatcher to
+// re-validate the agent's state when it marks it busy — a scheduler change, not a
+// fabric one. The lease filter above is what makes the window practically empty:
+// a dispatched quantum holds its task lease before it executes, so an agent with
+// work in flight is in inUse.
 //
 // The policy is a parameter rather than fabric state so one caller can sweep
 // harder or softer without reconfiguring the fabric. ReclaimIdle is safe to call
 // concurrently with itself and with every other fabric operation.
-func (f *Fabric) ReclaimIdle(ctx context.Context, policy AgentReclaimPolicy) []IdleAgent {
+func (f *Fabric) ReclaimIdle(ctx context.Context, policy AgentReclaimPolicy, inUse map[string]struct{}) []IdleAgent {
 	if policy.IdleTTL <= 0 {
 		return nil
 	}
@@ -83,26 +106,40 @@ func (f *Fabric) ReclaimIdle(ctx context.Context, policy AgentReclaimPolicy) []I
 		keep = 1
 	}
 
+	var reclaimed []IdleAgent
+	var retired []*Agent
+
 	f.mu.Lock()
 	candidates := f.idleCandidatesLocked(f.now(), policy.IdleTTL)
 	// The floor counts the agents that are NOT candidates, then grows as the
-	// sweep decides to KEEP a candidate. Evaluating it against the survivors
-	// instead of the current pool is what keeps a batch of same-capability
-	// candidates from collectively retiring a capability's last holders.
+	// sweep decides to KEEP one. Evaluating it against the survivors instead of
+	// the current pool is what stops a batch of same-capability candidates from
+	// collectively retiring a capability's last holders.
 	holders := make(map[string]int)
 	for id, a := range f.agents {
-		if candidates[id].Identity != "" {
+		_, isCandidate := candidates[id]
+		_, claimed := inUse[id]
+		// The floor baseline is every live agent the sweep will NOT retire: the
+		// non-candidates, plus the in-use candidates (they are certainly alive
+		// and staying). Counting in-use agents here rather than when the loop
+		// reaches them matters: they must protect the capability floor from the
+		// very first decision, otherwise an idle sibling processed first would
+		// see an empty floor and be kept too — leaving both alive.
+		if isCandidate && !claimed {
 			continue
 		}
 		for _, cap := range a.Capabilities {
 			holders[cap]++
 		}
 	}
-	f.mu.Unlock()
 
-	reclaimed := make([]IdleAgent, 0, len(candidates))
 	for _, id := range sortedCandidateIDs(candidates) {
 		c := candidates[id]
+		if _, claimed := inUse[id]; claimed {
+			// Someone is using it: it is already part of the floor baseline
+			// above, and it is not a reclamation target.
+			continue
+		}
 		breaches := false
 		for _, cap := range c.Capabilities {
 			if holders[cap] < keep {
@@ -117,13 +154,33 @@ func (f *Fabric) ReclaimIdle(ctx context.Context, policy AgentReclaimPolicy) []I
 			}
 			continue
 		}
-		if err := f.Retire(ctx, id); err != nil {
-			// Lost a race (already retired or killed between the scan and here).
-			// Not an error for the sweep: the goal — the claim is back — is met
-			// either way, and the next sweep sees the truth.
+		// Re-check activity HERE, in the same critical section as the release:
+		// the busy flag can flip between the scan above and this point, and the
+		// lock order (f.mu then a.mu) is the one IsIdle already establishes.
+		a := f.agents[id]
+		if a == nil {
+			continue
+		}
+		a.mu.RLock()
+		stillIdle := a.State == StateIdle && !a.busy
+		a.mu.RUnlock()
+		if !stillIdle {
+			continue
+		}
+		ta, err := f.retireLocked(id)
+		if err != nil {
+			// Lost a race with another trigger (already retired, or killed since
+			// the scan). Not an error for the sweep: the claim is back either way.
 			continue
 		}
 		reclaimed = append(reclaimed, c)
+		retired = append(retired, ta)
+	}
+	f.mu.Unlock()
+
+	// Events are emitted after the unlock: recording does I/O.
+	for _, a := range retired {
+		f.recordAgentRetired(ctx, a)
 	}
 	return reclaimed
 }

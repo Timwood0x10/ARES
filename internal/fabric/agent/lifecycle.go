@@ -2,6 +2,7 @@ package agentfabric
 
 import (
 	"context"
+	"errors"
 	"fmt"
 )
 
@@ -279,14 +280,36 @@ func (f *Fabric) Resume(ctx context.Context, agentID string) error {
 //   - error: ErrAgentNotFound / ErrAgentRetired.
 func (f *Fabric) Retire(ctx context.Context, agentID string) error {
 	f.mu.Lock()
+	a, err := f.retireLocked(agentID)
+	f.mu.Unlock()
+	if errors.Is(err, ErrAgentRetired) {
+		return nil // already retired: Retire is idempotent by contract
+	}
+	if err != nil {
+		return err
+	}
+	f.recordAgentRetired(ctx, a)
+	return nil
+}
+
+// retireLocked is Retire's lock-held form, shared with idle reclamation so both
+// triggers release through ONE path (reclamation adds a trigger, never a second
+// bookkeeping scheme).
+//
+// It returns the agent when THIS call retired it, ErrAgentRetired when a
+// previous call had already retired it, and ErrAgentNotFound when the id is
+// unknown. Caller must hold f.mu; callers record the event AFTER unlocking,
+// because recording does I/O and must not run under the fabric lock.
+func (f *Fabric) retireLocked(agentID string) (*Agent, error) {
 	a, ok := f.agents[agentID]
 	if !ok {
-		f.mu.Unlock()
-		return ErrAgentNotFound
+		return nil, ErrAgentNotFound
 	}
 	if a.State == StateRetired {
-		f.mu.Unlock()
-		return nil // idempotent
+		// Reported as a sentinel rather than (nil, nil) so every caller must
+		// state what it does with "already retired" — Retire treats it as
+		// success, reclamation as "not mine to count".
+		return nil, ErrAgentRetired
 	}
 	// (A RUNNING guard was removed with SetRunning/SetIdle: those transitions
 	// had zero production callers, so no agent could ever be RUNNING here.)
@@ -294,15 +317,30 @@ func (f *Fabric) Retire(ctx context.Context, agentID string) error {
 	a.resources = nil
 	a.mu.Lock()
 	a.State = StateRetired
+	a.retiredAt = f.now()
+	// A retired agent is a RECORD, not a worker: scheduling candidates must be
+	// StateIdle (see Fabric.IsIdle) and Retire is terminal, so this agent can
+	// never execute again — its runtime state is dead weight. It is also not
+	// small: cognition holds the execution body (LLM client and tool bundle) and
+	// cognitive holds the preserved state. Idle reclamation makes retiring the
+	// COMMON path, so keeping either would leak exactly what reclamation exists
+	// to reclaim (defect A-factory3 / P1-6: the pool's memory grew with every
+	// spawn).
+	a.cognition = nil
+	a.cognitive = CognitiveState{}
 	a.mu.Unlock()
 	// Retire is terminal — any death snapshot from an earlier kill/revive
 	// cycle of this identity must not resurrect later.
 	f.snapshots.clear(agentID)
-	f.mu.Unlock()
+	return a, nil
+}
+
+// recordAgentRetired emits the retirement event. Kept out of the locked section
+// by both callers: recording does I/O.
+func (f *Fabric) recordAgentRetired(ctx context.Context, a *Agent) {
 	f.record(ctx, a, EventAgentRetired, map[string]any{
 		PayloadKeyStopReason: StopRetired.String(),
 	})
-	return nil
 }
 
 // Kill forcefully terminates an agent (non-graceful; e.g. crash). Unlike

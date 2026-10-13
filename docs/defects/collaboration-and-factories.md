@@ -297,6 +297,28 @@ run a quantum (it can still be managed by [lifecycle])"。（初稿锚点 `:121/
 **未做（B，独立小修，未动）**：panic 恢复分支改为 kill（顺带喂 `StopCrashed` 快照给 revival 路径）。
 它只治"僵尸"，不治"只 spawn 不 retire"，且牵动 revival 语义，**单列**。
 
+**第二轮复核（2026-10-13，针对回收实现自审）：三条真问题 + 修**
+
+| # | 问题（真） | 证据 | 修法 |
+|---|---|---|---|
+| F1 | **只还额度、不还内存**：`Retire` 只清 `resources`，**不清 `cognition`** → 我的 sweep 修了"池假死"，但每个退休 agent 的 Cognition（LLM 客户端 + 工具束）**仍被永久引用**，`f.agents` 里的墓碑持续增长 | `lifecycle.go` 的 Retire 正文逐行核对 | `Retire` 拆出 `retireLocked`，在置 RETIRED 的同一 `a.mu` 临界区内**释放 `cognition` 与 `cognitive`**。安全性有据：候选条件要求 `StateIdle && !busy`（`Fabric.IsIdle`），而 Retire 是终态，故退休 agent **永不再执行**；且 `Retire` 本就 `snapshots.clear`，复活被拒（`Recover` 对 RETIRED 有守护） |
+| F2 | **决策与退休跨两个临界区（TOCTOU）**：扫描后解锁、再调 `Retire` 重取锁 → 期间任务可被派发到该 agent → **把正在运行的 agent 退休掉，其额度却已放回池子可被新 spawn 领走**（配额超卖） | 原实现 `f.mu.Unlock()` 后才逐个 `Retire` | ① 扫描 + 保底 + `a.mu` 复核活动性 + 释放**全部收敛到同一个 `f.mu` 临界区**（锁序沿用 `IsIdle` 的 f.mu → a.mu）；② 新增 `inUse` 参数：由 `Recovery` 用 task fabric 的 `LeaseSnapshot()`（**只含非终态**租约）构造 owner 集合传入 → **持有活租约者永不回收**，覆盖"已派发、量子未启动"这个 busy 标志看不见的窗口 |
+| F3 | **保底基线漏算 inUse 者**（**被我自己新写的测试当场抓到**）：同能力下"一个在用 + 一个空闲"时，空闲者先被处理、看到空基线而**保留**，结果两个都不回收 | `TestReclaimIdle_SkipsAgentsInUse` 首版失败 | 把 inUse 的候选**从基线起就计入**保底（它们确定存活且不会被回收），而非等循环走到才计入 |
+
+- **附带（linter 抓到）**：`retireLocked` 原返回 `(nil, nil)` 表达"已退休"被 `nilnil` 判为语义含糊
+  → 改为返回哨兵 `ErrAgentRetired`，公开 `Retire` 仍保持**幂等返回 nil**（契约不变）。
+- **测试**：`TestRetireReleasesRuntimeState`（退休后 `ExecuteStep` 必须 `ErrAgentNotExecutable`
+  且额度归零，**同时**记录仍在）、`TestReclaimIdle_SkipsAgentsInUse`；既有 `TestRetire*` 三条全绿
+  （证明丢弃 cognition 未破坏既有契约）。
+- **残余（如实记录，未做）**：
+  1. `f.agents` 的**墓碑本身没有回收器** —— 每次 spawn 留一个小编录（Identity + capabilities，
+     重状态已释放）。task fabric 有 `reaper.go` 回收终态任务，agent 侧无对称物：属**独立特性**。
+  2. `Kill` 的**死亡快照**（`captureFromAgent` → `f.snapshots`）会持有认知状态，且生产调用方仅
+     chaos；快照保留期由 revival 决策决定，**无 TTL** —— 非主路径，未动。
+  3. **派发窗口的理论残余**：在 sweep 取 `f.mu` **之前**已被调度器选中的 agent，仍可能在之后被
+     置 busy。彻底关闭需要**调度器在置 busy 时复核状态**（属调度器改动，非 fabric 改动）；
+     活租约过滤已把窗口压到实际为空（派发先取租约）。已在 `ReclaimIdle` 注释中显式写明，不隐藏。
+
 ### A4 · `Retire` 不 kill 子 agent（invariant #1）→ 可能累积孤儿 〔取舍 · 需意识〕
 
 `Retire`（`lifecycle.go:258` "does **NOT kill its children** (invariant #1:
