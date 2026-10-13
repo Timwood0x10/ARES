@@ -19,7 +19,7 @@
 | **B**（续跑路径可辨识：`executor_revived` + `requeued` 两位） | ✅ 已进树 + 测试全绿 | ❌（`disposable-agent.md` A6） |
 | **P0-1(i)**（gap/truncated 答案在 observer 侧记 degraded 而非 success） | ✅ 已接线（`observer.go` `degradedAnswerPenalty`） | ❌（`genetic-algorithm.md` G1） |
 | **A**（Rationale 认知持久化，"真存思路"） | ✅ **档 0 已落地**（见下「已落地」段） | ✅ |
-| **P0-1(ii)**（golden 任务回放进 `DimensionEval`） | ❌ 未动工 | ✅（作为 A 的消费方一起立项） |
+| **P0-1(ii)**（golden 任务回放进 `DimensionEval`） | 🟡 **第一步已落地（2026-10-13）**：证据链路打通（见 §0.6）；golden 判据待拍板 | ✅（作为 A 的消费方一起立项） |
 
 B 摘的是"两条续跑路径分不清"的**静默**；A 才补"换人时脑子没了"的**实质丢失**。
 A 的价值一半在 G1/P0-1，故专项内顺序：**P0-1(ii) golden 先，A 作为判官输入之一放后**
@@ -58,6 +58,30 @@ node args，因此**依然不升 schema**（"暂不升 v6"的结论不变）。
 任何新工具，理由**只**取自模型本就写出的 content；provider 不给时如实缺席。
 另：yield（非终态）分支的写入点**对本 planner 不适用**（`plannerCognition` 恒返回 `Done: true`），
 留待非 planner cognition 接入时再补。
+
+---
+
+## 0.6 已落地（2026-10-13，P0-1(ii) 第一步：`dimension_eval` 证据链路打通）
+
+**做了什么**（详见 `genetic-algorithm.md` G1「修复」段）：把"评测层 → fitness"的 accuracy 通道接通 ——
+`Evidence.Value`（payload `{"value": 0..1}`，与门分**同一条归一规则**）、`DimensionJudgeSource` 导出、
+aggregator 改按 **kind** 过滤（原先按 kind 字符串当 source 查，永远 0 命中）、payload 解析改为
+`*float64`（**无标量不再被当成 0.0 计入**）、生产 `setupEvaluators` 开
+`WithDimensionAveraging()` + `WithEvidenceStore(evStore)`（**此前根本没接桥**）。
+
+**实机反证**：查询退回修复前形态 → 端到端测试失败（真生产者→真消费者）。
+
+**仍未做（需你拍板后才动，别当成已完成）**：
+1. **oracle 形态**：参考答案精确/包含匹配 / rubric+LLM judge / 分层？（四维提示词**已含**
+   `{{.ExpectedOutput}}` —— 参照物本来就喂给判官了）；
+2. **golden 语料**：现仅 `test/eval/basic.yaml`、`test/eval/tools.yaml` 两份小样例，规模远不够；
+3. **触发方式**：离线 / 定时 / evolution 前；
+4. 因此 **"gap / truncated 交差在 golden 回放里必须低分"这条合同测试尚未落地** —— 通了的是**链路**，
+   不是**判据**。`rationale`（A 的产出）作为判官输入之一，也排在 oracle 之后。
+5. **信号的量级目前很薄（必须写出来，别把"通道已通"读成"已防住糊弄"）**：判据是判官拿 `ExpectedOutput`
+   比对，而 golden 语料只有 `test/eval/basic.yaml` + `test/eval/tools.yaml` 两份小样例。所以现在 GA 拿到的
+   是一层**很薄的正确率**；**真正"防 reward hacking"要等语料扩到能代表任务面之后才兑现**。这一批交付的准确
+   表述是"**正确率信号从 0 变成非 0，且链路可复核**"，不是"GA 已经会做对了"。
 
 ---
 

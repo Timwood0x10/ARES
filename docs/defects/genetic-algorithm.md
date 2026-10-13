@@ -43,6 +43,38 @@ maxPlanDepth=10 撞墙 / L1 全拦
 
 **后果**：GA 选育会偏好"**少做、早收、gap 交差**"的策略——不是往"做得更对"漂，是往"**做得更少但看起来成功**"漂。这是经典 **reward hacking**：没有 oracle/golden 答案判"做对没"，fitness 只有"快省"信号，**越跑越聪明 ≈ 越跑越会糊弄**。
 
+**修复（2026-10-13，P0-1(ii) 第一步：把 `dimension_eval` 通道真正打通）**
+
+- **核实到的断裂是"两处字符串对不上"，而非缺机制**（机制齐全：判决器有四维 rubrics、桥能落 `KindDimensionEval`、
+  aggregator 有权重 0.25）：
+  1. `DimensionJudgeBridge` 写 `Source = "dimension_judge"`（按 `Evidence.Source` 契约=**verifier 名**），
+     而 `fitness_aggregator` 的查询要的是 source `"dimension_eval"`（那是 **kind** 字符串）→ **全仓无任何生产者写这个
+     source**，查询**永远 0 命中**，0.25 的权重**静默地什么都没加权**；
+  2. 桥写出的 payload 是完整 `Evidence` 诊断结构，**没有 `"value"` 数值键**，而 aggregator 只从 payload 里
+     `{"value": 0..1}` 取数 → 即便 source 对齐也读不到数。
+- **修法（不另造路径）**：`Evidence` 增 `Value float64 json:"value"`（= 四维归一均值，与判官给门的分**同一条
+  规则** `normalizedDimensionMean`，一处实现两处读，防漂移）；`DimensionJudgeSource` 导出；aggregator 改按
+  **kind 过滤**（`Source: ""` = 不限来源）并说明为何 kind 才是契约。
+- **顺带修掉一个"静默错误信号"**：payload 解析原用 `Value float64`，**缺失即 0.0 且落在 [0,1] 内被计入** →
+  一条旧格式/无标量记录会把该来源的均值**拉向 0**（读起来像"全都做错了"）。改为 `*float64` + 必须存在。
+- **接线**：`setupEvaluators` 开 `WithDimensionAveraging()` + `WithEvidenceStore(evStore)`（`ProvideEvolution`
+  新增变参 `WithEvalEvidenceStore`，由 `comp.EvidenceStore` 传入）。**此前生产根本没接桥**，故通道恒空。
+- **已记录的代价（非副作用）**：门的评分从"一个总评分"变为"四维 rubric 均值"。两者都归一到 [0,1]，故
+  `min_score` 的**刻度不变**，但**测量的量变了** —— 对比历史门判定的人需要知道这点。
+- **实机反证（§7.1）**：把 aggregator 的查询退回修复前的 `"dimension_eval"` →
+  `TestAggregator_ReadsDimensionAccuracyFromTheBridge` 失败（"the accuracy signal … must be visible to the
+  aggregator"）；恢复即通过。
+- **测试**：`dimension_evidence_value_test.go`（payload 带 `value`；门分与 fitness 标量同源）、
+  `fitness_aggregator_dimension_test.go`（**真生产者→真消费者**端到端 + 无标量必须被跳过）、
+  `provide_evolution_eval_wiring_test.go`（生产装配落证据 + 无 store 时行为不变）。
+- **仍未做（P0-1(ii) 的第二步，需拍板）**：**golden 判据**本身 —— ① oracle 形态（`ExpectedOutput` 精确/包含匹配
+  vs rubric+LLM judge vs 分层；注：四维提示词**已含** `{{.ExpectedOutput}}`，即参照物已喂给判官）；
+  ② golden 语料来源与规模（现仅 `test/eval/basic.yaml`、`tools.yaml` 两份小样例）；③ 触发方式（离线/定时/evolution 前）。
+  故**"gap 交差在 golden 回放里必须低分"这条合同测试尚未落地** —— 现在通了的是**证据链路**，不是**判据**。
+- **量级提醒（别过度解读本批）**：语料仍是两份小样例、判据是 `ExpectedOutput` 比对，所以这批交付的准确表述是
+  "**正确率信号从 0 变成非 0（且链路可复核）**"，**不是**"GA 已经会做对了"。真正防糊弄取决于语料扩到能代表
+  任务面之后。另：门的评分量纲不变（0..1）但**被测量的量变了**，这一点应随 commit 信息一起告知运维。
+
 - **注意**：这是**方向性缺陷**，不是"GA 会崩"。GA 能正常跑、能出策略、有安全门——只是**优化目标本身是错的**。
 - **建议（上 GA 的硬前置）**：给 fitness 加"正确率信号"。最低成本做法是 **golden 任务回放**（对一批已知答案的任务跑新旧策略，用正确率作为**独立维度**进权重，且**必须高于 cost/latency 权重**）；进一步把 gap body / truncated 答案在 outcome 层面**降级为非 success**（`answerTruncatedKey=true` 或 `unansweredBody` 时，observer 记为 degraded 而非 success），让"早交差"拿不到高分。
 

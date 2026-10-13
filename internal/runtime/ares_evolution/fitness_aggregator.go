@@ -247,8 +247,18 @@ func (a *RuntimeFitnessAggregator) WindowAt(ctx context.Context, strategyID stri
 		{name: toolCallEvidenceSource, weight: cfg.Weights.ToolCall, strategyID: strategyID, optIn: true},
 	}
 
-	// Also query dimension_eval evidence.
-	dimMean, dimCount, dimLastAt := a.querySourceMeanAt(ctx, store, "dimension_eval", evidence.KindDimensionEval, cfg.WindowSize, "", since, until)
+	// Also query dimension_eval evidence — the accuracy signal (defect G1 / P0-1:
+	// "the runtime observe path produces no correctness signal").
+	//
+	// Filtered by KIND ONLY, and that is the fix, not an oversight: Evidence.Source
+	// names the VERIFIER that produced a record (see the Evidence.Source contract;
+	// the dimension judge writes "dimension_judge"), while this query used to ask
+	// for source == "dimension_eval" — the KIND string, which no producer ever
+	// wrote. The result was zero samples forever, so the DimensionEval weight
+	// (0.25) silently contributed nothing to fitness and GA optimised without any
+	// correctness signal at all. The kind is the contract here: one producer, one
+	// meaning, and the payload carries the scalar (`value`, 0..1) read below.
+	dimMean, dimCount, dimLastAt := a.querySourceMeanAt(ctx, store, "", evidence.KindDimensionEval, cfg.WindowSize, "", since, until)
 
 	perSource := make(map[string]sourceStat)
 	totalCount := 0
@@ -396,7 +406,13 @@ func (a *RuntimeFitnessAggregator) querySourceMeanScopedAt(ctx context.Context, 
 			continue
 		}
 		var fe struct {
-			Value float64 `json:"value"`
+			// Value is a POINTER so "absent" stays distinguishable from 0.0. A
+			// record whose producer wrote no scalar (an older build, or a
+			// diagnosis-only record) must be SKIPPED, not counted: folding it in
+			// as 0.0 drags this whole source's mean toward zero, which reads as
+			// "everything failed" — a silently WRONG signal, worse than an absent
+			// one.
+			Value *float64 `json:"value"`
 			// StrategyID/ToolStepID remain in the unmarshal target so a
 			// store implementation WITHOUT PayloadFilter support (third-party
 			// Store impls) still gets correct results via the client-side
@@ -407,7 +423,7 @@ func (a *RuntimeFitnessAggregator) querySourceMeanScopedAt(ctx context.Context, 
 		if err := json.Unmarshal(ev.Payload, &fe); err != nil {
 			continue
 		}
-		if fe.Value < 0 || fe.Value > 1 {
+		if fe.Value == nil || *fe.Value < 0 || *fe.Value > 1 {
 			continue
 		}
 		if strategyID != "" && fe.StrategyID != strategyID {
@@ -416,7 +432,7 @@ func (a *RuntimeFitnessAggregator) querySourceMeanScopedAt(ctx context.Context, 
 		if toolStepID != "" && fe.ToolStepID != toolStepID {
 			continue
 		}
-		sum += fe.Value
+		sum += *fe.Value
 		count++
 		if ev.Timestamp.After(lastAt) {
 			lastAt = ev.Timestamp

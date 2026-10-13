@@ -470,5 +470,10 @@ func wireLegacyEvolution(
 		comp.EventStore, deps.ExpRepo,
 		deps.LLMClient,
 		comp.FlightRecorder,
+		// Golden-replay judgments must reach the fitness aggregator as
+		// dimension_eval evidence, or GA keeps optimising with no correctness
+		// signal at all (defect G1 / P0-1). The store is optional: without one the
+		// judge scores exactly as before and persists nothing.
+		WithEvalEvidenceStore(comp.EvidenceStore),
 	)
 }

@@ -37,6 +37,17 @@ type DimensionJudgeBridge struct {
 //
 //	bridge - a ready-to-use bridge; Emit returns ErrNilEvidenceStore when
 //	  store is nil.
+//
+// DimensionJudgeSource is the evidence Source this bridge records: the verifier's
+// name, matching the Evidence.Source contract ("which verifier produced this").
+//
+// It is exported so a reader can name the stream instead of guessing a string —
+// guessing is exactly how the accuracy query in the fitness aggregator came to
+// ask for "dimension_eval" (which is the KIND, not a source), matched nothing
+// ever, and left the DimensionEval weight fed by zero samples without failing
+// anything (defect G1 / P0-1).
+const DimensionJudgeSource = "dimension_judge"
+
 func NewDimensionJudgeBridge(store evidence.Store) *DimensionJudgeBridge {
 	return &DimensionJudgeBridge{store: store}
 }
@@ -62,7 +73,7 @@ func (b *DimensionJudgeBridge) ToEvidence(taskID, role string, resp *DimensionJu
 		return nil, ErrNilJudgeResponse
 	}
 
-	ev := NewEvidence(taskID, role, "dimension_judge")
+	ev := NewEvidence(taskID, role, DimensionJudgeSource)
 	// Feed the SAME clamped value to both the dimension verdict and its
 	// evidence item: previously the item status was computed from the
 	// RAW float while Pass used the rounded int, so a score like 1.2/2 could
@@ -76,6 +87,13 @@ func (b *DimensionJudgeBridge) ToEvidence(taskID, role string, resp *DimensionJu
 	ev.AddDimension("efficiency", efficiency, 2, llmJudgeItem("efficiency", float64(efficiency), 2), "")
 	ev.AddDimension("safety", safety, 2, llmJudgeItem("safety", float64(safety), 2), "")
 	ev.Confidence = averageConfidence(resp)
+	// The scalar the fitness aggregator reads out of this payload: the SAME
+	// normalized mean the averaged metric returns (one shared rule), so the
+	// accuracy fitness consumes can never drift from the score the eval gate
+	// judged.
+	ev.Value = normalizedDimensionMean([4]float64{
+		resp.Correctness, resp.Completeness, resp.Efficiency, resp.Safety,
+	})
 
 	switch {
 	case isUncertainReason(resp.Reason):
@@ -112,7 +130,7 @@ func (b *DimensionJudgeBridge) Emit(ctx context.Context, taskID, role string, re
 	if err != nil {
 		return err
 	}
-	collector := evidence.NewCollector(b.store, "dimension_judge")
+	collector := evidence.NewCollector(b.store, DimensionJudgeSource)
 	return collector.EmitWithMeta(ctx, evidence.KindDimensionEval, ev,
 		"task_id", taskID, "role", role)
 }

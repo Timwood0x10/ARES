@@ -9,6 +9,7 @@ import (
 
 	"github.com/Timwood0x10/ares/internal/ares_config"
 	"github.com/Timwood0x10/ares/internal/ares_events"
+	"github.com/Timwood0x10/ares/internal/evidence"
 	evolution "github.com/Timwood0x10/ares/internal/runtime/ares_evolution"
 	"github.com/Timwood0x10/ares/internal/runtime/eval"
 	experience "github.com/Timwood0x10/ares/internal/runtime/memory/experience"
@@ -50,9 +51,16 @@ func ProvideEvolution(
 	expRepo repositories.ExperienceRepositoryInterface,
 	llmClient eval.LLMClient,
 	fr *flight.FlightRecorder,
+	options ...EvolutionOption,
 ) (*EvolutionComponents, error) {
 	if eventStore == nil || expRepo == nil {
 		return nil, errors.New("bootstrap: evolution skipped (missing dependencies)")
+	}
+	var o evolutionOptions
+	for _, opt := range options {
+		if opt != nil {
+			opt(&o)
+		}
 	}
 
 	// 1. Flight → Experience adapter (reuses the shared recorder — do NOT
@@ -100,7 +108,7 @@ func ProvideEvolution(
 	// 3. Evaluators (optional — requires LLM client).
 	var evalRegistry *eval.EvaluatorRegistry
 	if llmClient != nil {
-		evalRegistry, err = setupEvaluators(llmClient)
+		evalRegistry, err = setupEvaluators(llmClient, o.evalEvidenceStore)
 		if err != nil {
 			// Register already subscribed to the EventStore on its own
 			// background goroutine; without Shutdown that goroutine leaks
@@ -123,11 +131,50 @@ func ProvideEvolution(
 	}, nil
 }
 
-func setupEvaluators(llmClient eval.LLMClient) (*eval.EvaluatorRegistry, error) {
-	judge, err := eval.NewLLMJudgeEvaluator(llmClient,
+// EvolutionOption configures ProvideEvolution. Variadic so an added optional
+// dependency does not breach the parameter-count rule and does not churn every
+// call site.
+type EvolutionOption func(*evolutionOptions)
+
+// evolutionOptions holds the resolved options of one ProvideEvolution call.
+type evolutionOptions struct {
+	// evalEvidenceStore is the shared evidence store handed to the eval
+	// evaluators. Wired, golden-replay judgments are persisted as dimension_eval
+	// evidence — the only correctness signal the runtime path can produce for GA
+	// fitness (defect G1 / P0-1). Left nil, evaluation behaves exactly as before
+	// and nothing is persisted.
+	evalEvidenceStore evidence.Store
+}
+
+// WithEvalEvidenceStore wires store into the evaluators built by
+// ProvideEvolution, so that judging the golden suite leaves behind the accuracy
+// evidence the fitness aggregator reads.
+func WithEvalEvidenceStore(store evidence.Store) EvolutionOption {
+	return func(o *evolutionOptions) { o.evalEvidenceStore = store }
+}
+
+// setupEvaluators builds the production evaluator registry.
+//
+// The judge runs the DIMENSION path: its four-rubric judgment is the only
+// producer of dimension_eval evidence (dimension_judge.go), so leaving it off —
+// which is what this wiring did — is why the fitness aggregator's DimensionEval
+// weight (0.25) had nothing to weigh and GA optimised on outcome + cost/latency
+// alone.
+//
+// Recorded, deliberate consequence: the eval gate's score becomes the mean of
+// four rubric scores instead of one overall judgment. Both normalize to [0,1] so
+// min_score keeps its scale, but the quantity measured changes — an operator
+// comparing historical gate verdicts should know that.
+func setupEvaluators(llmClient eval.LLMClient, evStore evidence.Store) (*eval.EvaluatorRegistry, error) {
+	judgeOpts := []eval.LLMJudgeOption{
 		eval.WithChinesePrompt(),
 		eval.WithScale(eval.ScaleOneToTen),
-	)
+		eval.WithDimensionAveraging(),
+	}
+	if evStore != nil {
+		judgeOpts = append(judgeOpts, eval.WithEvidenceStore(evStore))
+	}
+	judge, err := eval.NewLLMJudgeEvaluator(llmClient, judgeOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("create llm judge: %w", err)
 	}

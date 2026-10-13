@@ -77,6 +77,29 @@ Output strictly in JSON format with no additional text:
 // dimensionMaxScores holds the maximum possible score for each dimension.
 var dimensionMaxScores = [4]float64{3, 3, 2, 2}
 
+// normalizedDimensionMean returns the mean of the four rubric scores, each
+// clamped into [0,1] against its own maximum, rounded to three decimals.
+//
+// It is the ONE rule for that number on purpose: the averaged metric handed back
+// to the eval gate and the scalar written into the evidence payload
+// (Evidence.Value) that the fitness aggregator reads must be the same number. Two
+// copies of this arithmetic would drift, and a drifted accuracy signal is worse
+// than an absent one — it is silently wrong.
+func normalizedDimensionMean(scores [4]float64) float64 {
+	var sum float64
+	for i, s := range scores {
+		normalized := s / dimensionMaxScores[i]
+		if normalized > 1.0 {
+			normalized = 1.0
+		}
+		if normalized < 0.0 {
+			normalized = 0.0
+		}
+		sum += normalized
+	}
+	return math.Round((sum/4.0)*1000) / 1000
+}
+
 // evaluateWithDimensions evaluates using per-dimension scoring and returns the average.
 func (e *LLMJudgeEvaluator) evaluateWithDimensions(ctx context.Context, tc TestCase, result TestResult) ([]EvalScore, error) {
 	prompt, err := e.renderDimensionPrompt(tc, result)
@@ -95,19 +118,7 @@ func (e *LLMJudgeEvaluator) evaluateWithDimensions(ctx context.Context, tc TestC
 	}
 
 	// Average the four normalized dimension scores.
-	var sum float64
-	for i, s := range dimResp.Scores {
-		normalized := s / dimensionMaxScores[i]
-		if normalized > 1.0 {
-			normalized = 1.0
-		}
-		if normalized < 0.0 {
-			normalized = 0.0
-		}
-		sum += normalized
-	}
-	avgScore := sum / 4.0
-	avgScore = math.Round(avgScore*1000) / 1000
+	avgScore := normalizedDimensionMean(dimResp.Scores)
 
 	// Production bridge: persist the structured dimension diagnosis into the
 	// universal evidence store when wired, so the evolution Diagnoser can

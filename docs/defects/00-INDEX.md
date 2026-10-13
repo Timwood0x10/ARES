@@ -24,7 +24,7 @@
 
 | # | 缺陷 | 一句话 | 共因 |
 |---|---|---|---|
-| P0-1 | **G1** GA 无"做对没"信号 | fitness 只奖励"成功+快省"，没 accuracy → **越跑越会糊弄** | 认知/正确性没持久化 |
+| P0-1 | **G1** GA 无"做对没"信号 〔证据链路已通 2026-10-13；**golden 判据待拍板**〕 | fitness 只奖励"成功+快省"，没 accuracy → **越跑越会糊弄** | 认知/正确性没持久化 |
 | P0-2 | **T1+T2** LLM `create_task` 不校验 **〔已修 2026-10-12〕** | `create_task` 依赖不存在/成环 → **任务静默永不 READY**（`create_plan` 走 `CompilePlan`、operator 走自带 `findCycle`，都安全；**只有 `create_task` 旁路漏**） | 引用/边界没校验 |
 | P0-3 | **D1+D2** 提前交差不够可见 **〔已修 2026-10-12〕** | maxPlanDepth 撞墙 / L1 全拦 → 强制出 answer；**不标记成因**（D1 已有 Warn+计数，但无面板/告警规则） | 静默早停 |
 | P0-4 | **Q3+A-dispo1+A-F4** 认知有损 **〔B 已动工 · A 与 P0-1 合并立项 2026-10-13〕** | checkpoint/复活只带"进度"不带"思路" → 换人/续跑**丢推理链**；A 的"存什么/如何存"见 `cognition-persistence.md` | 认知/正确性没持久化 |
@@ -110,6 +110,22 @@
 ---
 
 ## 修订记录
+
+**2026-10-13 · P0-1(ii) 第一步：golden → `dimension_eval` 证据链路打通**：
+
+- **核实**：`dimension_eval` 的机制三件都在（四维判决器 / `DimensionJudgeBridge` / 权重 0.25），断的是
+  **两处字符串契约**——桥写 Source `"dimension_judge"`（`Evidence.Source` 契约=verifier 名），而 aggregator
+  按 Source `"dimension_eval"`（kind 名）查 → **全仓无此生产者，查询永远 0 命中**；且 payload 无 `"value"`
+  数值键。**生产 `setupEvaluators` 还根本没接桥**。于是 0.25 的权重一直**静默空转**，GA 只吃 outcome+快省。
+- **修**：`Evidence.Value`（payload `{"value":0..1}`，与门分共用 `normalizedDimensionMean` 一条规则）、
+  `DimensionJudgeSource` 导出、aggregator 按 **kind** 查询、payload 解析改 `*float64`
+  （**无标量不再被当成 0.0 计入**，避免把均值拉向 0 的静默错误）、`setupEvaluators` 开
+  `WithDimensionAveraging()` + `WithEvidenceStore`（`ProvideEvolution` 新增变参 `WithEvalEvidenceStore`）。
+- **实机反证（§7.1）**：查询退回修复前形态 → 端到端测试失败；恢复即过。
+- **代价已记录**：门的评分由"一个总评分"变为"四维 rubric 均值"。同属 [0,1]，`min_score` 刻度不变，
+  但**测量的量变了**。
+- **未做（待拍板，勿当已完成）**：oracle 形态 / golden 语料规模 / 触发方式 —— 故
+  **"gap 交差在 golden 回放里必须低分"的合同测试尚未落地**；通了的是**证据链路**，不是**判据**。
 
 **2026-10-13 · P1 修复（agent 资源回收闭环 + MCP 可用性）**：
 
