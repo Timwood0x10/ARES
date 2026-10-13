@@ -445,13 +445,39 @@ type CreateTaskArgs struct {
 
 // CreateTaskResult is the return value of the create_task tool.
 type CreateTaskResult struct {
-	TaskID string `json:"task_id"`
-	State  string `json:"state"`
+	TaskID string `json:"task_id,omitempty"`
+	State  string `json:"state,omitempty"`
+	// Rejected names why the task was NOT created, when the Kernel refused a
+	// request the MODEL can correct. Empty on success.
+	//
+	// The refusal travels as a RESULT rather than as a tool error on purpose: a
+	// tool error fails the quantum, and because the L2-projected tasks are not
+	// AllowPartial the fabric then cascades FAILED through the whole downstream
+	// subgraph — one hallucinated id cost the session branch. Returned here, the
+	// model reads the reason and the offending ids and fixes its own call.
+	Rejected string `json:"rejected,omitempty"`
+	// MissingDependencies lists the dependency ids that do not resolve to a task
+	// in the fabric. Set only when Rejected is
+	// CreateTaskRejectedUnresolvedDeps.
+	MissingDependencies []string `json:"missing_dependencies,omitempty"`
 }
+
+// CreateTaskRejectedUnresolvedDeps is the CreateTaskResult.Rejected value for a
+// refusal caused by dependencies that do not resolve. It is wire-visible — the
+// model reads it — so it is a stable identifier, not prose. Any further
+// rejection class gets its own value.
+const CreateTaskRejectedUnresolvedDeps = "unresolved_dependencies"
 
 // CreateTask is the Kernel syscall behind the create_task tool. It creates
 // a real Task Fabric task (Create → READY) so the scheduler can pick it up
 // and execute it via the normal Schedule → Acquire → RunQuantum path.
+//
+// A dependency that does not resolve to a task already in the fabric is an
+// error here (the task was NOT created), reported as
+// taskfabric.ErrDependencyUnresolved / *taskfabric.DependencyResolutionError.
+// The model-facing binding in BindTools converts exactly that class into a
+// CreateTaskResult the model can act on, so the session branch survives a
+// hallucinated id; every other error still fails the call.
 func (k *Kernel) CreateTask(ctx context.Context, args CreateTaskArgs) (*CreateTaskResult, error) {
 	if k.fabric == nil {
 		return nil, errors.New("agentsyscall: task fabric not wired")
@@ -486,7 +512,42 @@ func (k *Kernel) CreateTask(ctx context.Context, args CreateTaskArgs) (*CreateTa
 		Checkpoint: tenantStampedEnvelope(ctx, args.Payload),
 	}
 
-	if err := k.fabric.Create(task); err != nil {
+	// Fail the tool call on an unresolvable edge instead of installing it. The
+	// fabric's default Create is permissive because a batch submission may carry
+	// a legitimate forward reference; this path has no batch — the LLM names
+	// dependencies by task id, one node at a time — so every id it passes must
+	// already exist. Left unchecked, a typo / a harvested predecessor / a
+	// guessed id is not an error anywhere: depsSatisfiedLocked treats a missing
+	// dependency as unsatisfied FOREVER, so the task and every task behind it
+	// would wait silently in READY-forever limbo.
+	//
+	// What the caller sees when this fires is a LOUD failure, not a retry hint:
+	// a tool error fails the quantum (it is not returned to the model as a tool
+	// result), so the tool task FAILS carrying the missing id as its cause, and
+	// because L2-projected tasks are not AllowPartial the fabric's cascade
+	// marks the downstream subgraph FAILED too, each naming the culprit via
+	// Task.FailedDependency — which is what the submission view surfaces
+	// (internal/agentruntime/await.go). The trade is deliberate: the defect was
+	// a chain that hung forever with nothing reported, and a visible failure
+	// beats an invisible stall. It does cost the branch, so a model that
+	// fabricated an id loses that round rather than getting a second chance
+	// inside the same quantum.
+	//
+	// No separate cycle walk is needed: with every edge required to resolve to
+	// an already-existing task, creation order is a topological order, and the
+	// one remaining cycle shape — a task naming its own id — is rejected by the
+	// same check.
+	//
+	// The caller-facing rule this imposes: a dependency id must name a task the
+	// model was TOLD about — ids are minted by the Kernel and returned in
+	// CreateTaskResult, so a model can only reuse ids it has seen. Chaining
+	// within one turn still works (create A, then create B depending on A),
+	// because a round's tool calls are grown as a serial chain (growToolNodes),
+	// so A's create has already landed when B's runs. Guessing an id that does
+	// not exist yet is refused — which is the point: it is indistinguishable
+	// from a typo or a harvested predecessor, and accepting it stranded the
+	// whole downstream chain.
+	if err := k.fabric.Create(task, taskfabric.WithResolvedDependencies()); err != nil {
 		return nil, fmt.Errorf("agentsyscall: create task failed: %w", err)
 	}
 
@@ -725,7 +786,22 @@ func BindTools(binder ToolBinder, kernel *Kernel) {
 		if v, ok := args[paramPayload].(map[string]any); ok {
 			ct.Payload = v
 		}
-		return kernel.CreateTask(ctx, ct)
+		res, err := kernel.CreateTask(ctx, ct)
+		// A dependency that does not resolve is a mistake the MODEL can fix, so
+		// it comes back as a result the model reads and retries against — not as
+		// a tool error. A tool error fails the quantum (toolCognition), and since
+		// L2-projected tasks are not AllowPartial the fabric then cascades FAILED
+		// through the entire downstream subgraph: a single hallucinated id cost
+		// the whole session branch. ask_agent draws the same line for its
+		// no-reply case — an expected outcome is a result, not an error.
+		var depErr *taskfabric.DependencyResolutionError
+		if errors.As(err, &depErr) {
+			return &CreateTaskResult{
+				Rejected:            CreateTaskRejectedUnresolvedDeps,
+				MissingDependencies: depErr.Missing,
+			}, nil
+		}
+		return res, err
 	})
 	// create_plan is the whole-DAG planning entry. See plan.go. JSON
 	// round-trip keeps
@@ -802,7 +878,7 @@ func ToolSchemas() []ToolSchema {
 		},
 		{
 			Name:        CreateTaskTool,
-			Description: "Create a new task in the Task Fabric. The task enters READY state and the scheduler will assign it to a capable agent. Use this to decompose work into sub-tasks.",
+			Description: "Create a new task in the Task Fabric. The task enters READY state and the scheduler will assign it to a capable agent. Use this to decompose work into sub-tasks. Every dependency must be a task_id returned by an earlier create_task call: a dependency that does not name an existing task is refused, and the refusal reports the offending IDs instead of creating the task.",
 			Parameters: map[string]any{
 				paramType: paramTypeObject,
 				paramProperties: map[string]any{
@@ -811,9 +887,10 @@ func ToolSchemas() []ToolSchema {
 						paramDescription: "The required capability for this task (e.g. 'coder', 'reviewer').",
 					},
 					"dependencies": map[string]any{
-						paramType:        paramTypeArray,
-						paramItems:       map[string]any{paramType: paramTypeString},
-						paramDescription: "Prerequisite task IDs that must complete before this task runs.",
+						paramType:  paramTypeArray,
+						paramItems: map[string]any{paramType: paramTypeString},
+						paramDescription: "Prerequisite task IDs that must complete before this task runs. Each must be a task_id " +
+							"returned by an earlier create_task call — IDs are minted by the server, so an ID you have not been given does not exist.",
 					},
 					paramPayload: map[string]any{
 						paramType:        paramTypeObject,

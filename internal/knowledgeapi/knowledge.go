@@ -17,10 +17,22 @@
 // This package holds the canonical definitions previously exposed as
 // api/knowledge (M5 migration); api/knowledge is now a pure forwarding layer.
 //
-// Beta: this package is part of the AKG (Autonomous Knowledge Graph)
-// subsystem and is currently BETA. The API is not yet stable and may
-// change between minor releases. Do not depend on it in production
-// without pinning a version. Feedback welcome.
+// Stability: the AKG API is FROZEN as of 0.3.4 (see the README's Status table).
+// This package carries the frozen type domain, so the previous "currently BETA,
+// not yet stable, do not depend on it in production" notice contradicted the
+// release stance and has been replaced.
+//
+// What is stable: the core types re-exported here (KnowledgeObject,
+// WorkingGraph, Representation, Relation, Evidence) and the KnowledgeStore
+// contract. Schema versioning and the temporal fields are additive, so a zero
+// value keeps the pre-0.3.4 behaviour.
+//
+// How the freeze is extended: new needs are met with optional capabilities
+// probed by type assertion (knowledge.NamespaceLister,
+// knowledge.RepresentationLister) — never by adding a method to a frozen
+// interface. The pipeline interfaces (Normalizer, EntityMatcher, Validator,
+// Summarizer) stay extension points in that same sense: they exist to be
+// implemented, so adding an optional behaviour must not widen their contract.
 package knowledgeapi
 
 import (

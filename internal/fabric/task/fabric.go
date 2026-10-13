@@ -26,6 +26,16 @@ var (
 	ErrTaskNotReady = errors.New("taskfabric: task not ready for acquire")
 	// ErrTaskExists: a task with this id already exists.
 	ErrTaskExists = errors.New("taskfabric: task already exists")
+	// ErrDependencyUnresolved: a dependency id on the strict create path
+	// (WithResolvedDependencies) does not name a task already in the fabric —
+	// or is empty, or names the task itself.
+	//
+	// It is a sentinel rather than a plain error because the distinction
+	// matters to the caller: depsSatisfiedLocked treats a MISSING dependency as
+	// unsatisfied forever, so an accepted dangling edge is not a task that
+	// fails, it is a task (and every task behind it) that waits for something
+	// that will never arrive, silently.
+	ErrDependencyUnresolved = errors.New("taskfabric: dependency does not resolve to a task")
 	// ErrNoCapableCandidate: no candidate scored > 0 for the task's required
 	// capability, so Schedule could not pick an executor.
 	ErrNoCapableCandidate = errors.New("taskfabric: no capable candidate")

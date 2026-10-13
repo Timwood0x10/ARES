@@ -24,9 +24,9 @@
 | # | 缺陷 | 一句话 | 共因 |
 |---|---|---|---|
 | P0-1 | **G1** GA 无"做对没"信号 | fitness 只奖励"成功+快省"，没 accuracy → **越跑越会糊弄** | 认知/正确性没持久化 |
-| P0-2 | **T1+T2** LLM `create_task` 不校验 | `create_task` 依赖不存在/成环 → **任务静默永不 READY**（`create_plan` 走 `CompilePlan`、operator 走自带 `findCycle`，都安全；**只有 `create_task` 旁路漏**） | 引用/边界没校验 |
-| P0-3 | **D1+D2** 提前交差不够可见 | maxPlanDepth 撞墙 / L1 全拦 → 强制出 answer；**不标记成因**（D1 已有 Warn+计数，但无面板/告警规则） | 静默早停 |
-| P0-4 | **Q3+A-dispo1+A-F4** 认知有损 | checkpoint/复活只带"进度"不带"思路" → 换人/续跑**丢推理链** | 认知/正确性没持久化 |
+| P0-2 | **T1+T2** LLM `create_task` 不校验 **〔已修 2026-10-12〕** | `create_task` 依赖不存在/成环 → **任务静默永不 READY**（`create_plan` 走 `CompilePlan`、operator 走自带 `findCycle`，都安全；**只有 `create_task` 旁路漏**） | 引用/边界没校验 |
+| P0-3 | **D1+D2** 提前交差不够可见 **〔已修 2026-10-12〕** | maxPlanDepth 撞墙 / L1 全拦 → 强制出 answer；**不标记成因**（D1 已有 Warn+计数，但无面板/告警规则） | 静默早停 |
+| P0-4 | **Q3+A-dispo1+A-F4** 认知有损 **〔已核实·待拍板 2026-10-12〕** | checkpoint/复活只带"进度"不带"思路" → 换人/续跑**丢推理链** | 认知/正确性没持久化 |
 
 ## P1 · 该修（高频咬人 / 一处改受益一片）
 
@@ -108,6 +108,33 @@
 ---
 
 ## 修订记录
+
+**2026-10-12 · P0 修复进展（逐条先核实再修）**：
+
+1. **P0-2（T1+T2）已修**：核对确认 `Create`/`createLocked` 对 `Dependencies` **零校验**，且
+   `depsSatisfiedLocked` 把"依赖不存在"当**永久不满足**（`ReferencedDependencies` 注释原文承认此机制）。
+   修法 = `Fabric.Create` 新增**显式严格选项** `WithResolvedDependencies()`（与插入同一临界区校验，
+   新哨兵 `ErrDependencyUnresolved`），`create_task` 启用；**默认保持宽松**，因为 `runCollabGraph`
+   依赖图内前向引用（提交顺序建节点）。**拒绝在模型边界转成可读结果**（`CreateTaskResult.Rejected`
+   + `MissingDependencies`，`errors.As(*DependencyResolutionError)` 识别）而非工具错误 ——
+   否则会判量子失败并经 `cascadeFailureLocked` 炸掉整条下游子图。
+2. **T2 未加独立环检测（结构性覆盖）**：存在性校验后"创建序即拓扑序"，独立环遍历在 `create_task`
+   路径不可达（自引用形态已显式拒绝）—— 加它会是被规范禁止的空壳机制。真正需要环检测的是
+   `SetDependencies`（残留，未修，其宽松性供 L2 增长且已被测试锁死）。
+   详见 `collaboration-and-factories.md` 的 T1/T2「修复」段。
+3. **P0-3（D1+D2）已修**：核实结论 = D1 **机制已在**（Warn + canary 计数 + `truncated`），缺的是
+   **外部可见性**；D2 **确实完全无标记**。修法 = 答案节点两把**正交**键进终态 metadata：
+   `answer_cause`（`planned`/`depth_capped`/`l1_blocked`/`unlabeled`）与
+   `answer_body_source`（`supplied`/`synthesized`/`gap`），外加 D2 的聚合告警。
+   **未自造 metrics 设施**（仓库无 metrics 包），复用既有的"终态 metadata + 日志"机制。
+   **未做**：outcome 层降级（属 G1/P0-1，`answer_body_source` 正是它要读的信号）。
+4. **P0-4（Q3/A1/A-F4）已核实，未修 —— 待拍板**：机制成立，但**边界更正**：生产恢复是
+   `runKernelRecoveryLoop` 的 **requeue（零认知转移）**，`RecoverTaskCheckpoint` 是
+   **TEST/CHAOS-ONLY**（`cmd/` 无调用方）；`CheckpointEnvelope` 逐字段确认**无 reasoning 字段**；
+   L2 图上"先 A 后 B"**可由图结构推出**，真正丢的是模型**自述理由**。
+   方案 **A**（envelope 加"有界 Decision/Rationale" + schema 升版 + 喂给下一量子）vs 方案 **B**
+   （承认边界 + 让两条路径可辨识）。**A 动 schema 与 planner 的 prompt 语义，按规范 §0.4 未擅自实施**；
+   详见 `disposable-agent.md` A1「核实 / 修复方案」段。
 
 **2026-10-12 · 源码比对修订（对 dev 分支逐条核对源码）**：对 7 个分文件全部缺陷 ID 逐条比对代码后，
 修正以下内容（各分文件内已就地标注"更正/实测"）：

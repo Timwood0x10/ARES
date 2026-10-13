@@ -270,6 +270,7 @@ func (c *plannerCognition) ExecuteStep(ctx context.Context, task *models.Task) (
 		// be able to distinguish "completed" from "hit the depth bound".
 		return c.growAnswerNode(ctx, g, task, "", nil, map[string]any{
 			answerTruncatedKey: true,
+			answerCauseKey:     answerCauseDepthCapped,
 		})
 	}
 
@@ -332,7 +333,11 @@ func (c *plannerCognition) ExecuteStep(ctx context.Context, task *models.Task) (
 
 	// No tool calls: the LLM gave a final answer. Grow an answer node.
 	if len(resp.ToolCalls) == 0 {
-		return c.growAnswerNode(ctx, g, task, resp.Content, resp, nil)
+		// The normal ending is labelled explicitly so a consumer can tell it
+		// apart from the forced ones (D1/D2) without inspecting the body.
+		return c.growAnswerNode(ctx, g, task, resp.Content, resp, map[string]any{
+			answerCauseKey: answerCausePlanned,
+		})
 	}
 
 	// Tool calls: grow tool nodes + a new plan node depending on them.
@@ -341,10 +346,18 @@ func (c *plannerCognition) ExecuteStep(ctx context.Context, task *models.Task) (
 		return nil, fmt.Errorf("agentfabric: planner cognition: grow nodes: %w", err)
 	}
 	if grown == 0 {
-		// All tool calls were skipped by L1 constraints (enabled=false
-		// or budget exhausted). Force an answer so the session terminates
-		// instead of looping on a planner that can never grow a tool.
-		return c.growAnswerNode(ctx, g, task, resp.Content, resp, nil)
+		// All tool calls were skipped by L1 constraints (enabled=false,
+		// per-agent allowlist, or budget exhausted). Force an answer so the
+		// session terminates instead of looping on a planner that can never grow
+		// a tool — and label the ending (D2): the result used to be a
+		// success-looking COMPLETED with no tool ever run and nothing recording
+		// why. The per-tool skips are logged individually by growToolNodes; this
+		// is the aggregate fact ("nothing could run") that none of them states.
+		c.logger.Warn("planner: every tool call skipped by L1 constraints, forcing answer",
+			"session", sessionID, "requested", len(resp.ToolCalls))
+		return c.growAnswerNode(ctx, g, task, resp.Content, resp, map[string]any{
+			answerCauseKey: answerCauseL1Blocked,
+		})
 	}
 
 	result := models.NewTaskResult(task.TaskID, task.AgentType)

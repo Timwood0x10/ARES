@@ -301,6 +301,10 @@ func TestPlannerCognition_MaxDepthForcesAnswer(t *testing.T) {
 		"depth guard must not stamp its literal into the answer node content")
 	require.Equal(t, "", got,
 		"depth-guard answer node must be content-less so synthesis/gap-body applies")
+	// D1: the ending is labelled, not merely logged — a truncated answer used to
+	// reach external callers as an ordinary COMPLETED result.
+	require.Equal(t, answerCauseDepthCapped, dc.Payload[argMetadataPrefix+answerCauseKey],
+		"the depth-guarded ending must carry its cause on the answer node")
 }
 
 // TestReaper_HarvestsTerminalTasks verifies the reaper: terminal tasks

@@ -511,6 +511,59 @@ const answerContentKey = "content"
 // callers can distinguish "completed" from "hit the depth bound".
 const answerTruncatedKey = "truncated"
 
+// answerCauseKey is the arg a planner stamps on the answer node recording WHY
+// the session ended, and the metadata key the terminal result carries it under.
+//
+// "COMPLETED" alone hides endings that are NOT the model simply finishing: the
+// growth-depth guard forcing an answer (D1) and L1 constraints skipping EVERY
+// tool call so no tool ever ran (D2) both produce a success-looking result. An
+// external caller could not tell them from a normal completion.
+const answerCauseKey = "answer_cause"
+
+// The answerCause* values are a closed set and wire-visible: a caller (or a
+// dashboard) keys on these strings, so they are stable identifiers, not prose.
+// Extending the set is a contract change.
+const (
+	// answerCausePlanned: the model produced a final answer (its turn carried no
+	// tool calls) and the planner grew the terminal node for it — the normal
+	// completion.
+	answerCausePlanned = "planned"
+	// answerCauseDepthCapped: the growth-depth guard grew the answer because the
+	// L2 graph hit its depth bound (D1). The node is content-less on purpose;
+	// the body comes from synthesis or the gap fallback.
+	answerCauseDepthCapped = "depth_capped"
+	// answerCauseL1Blocked: the model asked for tools but L1 constraints (tool
+	// disabled, per-agent allowlist, or budget) skipped EVERY one of them, so
+	// no tool could ever run in this session (D2).
+	answerCauseL1Blocked = "l1_blocked"
+	// answerCauseUnlabeled: the terminal node carried no cause — a producer other
+	// than the planner (a direct/SDK caller) grew it. Reported as unattributed
+	// rather than guessed as "planned", which would dress an unknown ending up as
+	// a normal one.
+	answerCauseUnlabeled = "unlabeled"
+)
+
+// answerBodySourceKey is the arg a producer may set — and always the metadata
+// key the terminal result carries — recording where the emitted body CAME FROM.
+//
+// It is a separate fact from the cause on purpose: a session can end because the
+// depth guard forced an answer (cause) AND have no body to emit at all (source =
+// gap). One label cannot carry both, and whichever it dropped was exactly what a
+// consumer needed — "is this a real answer?" reads this key (or the depth-guard
+// truncation marker), "why did growth stop?" reads answerCauseKey.
+const answerBodySourceKey = "answer_body_source"
+
+const (
+	// answerBodySupplied: the body is the content the producer put on the node.
+	answerBodySupplied = "supplied"
+	// answerBodySynthesized: the body was reconstructed by M4.2 synthesis over
+	// the predecessor history — a real answer, but not one the model handed over.
+	answerBodySynthesized = "synthesized"
+	// answerBodyGap: no body existed; the result carries the explicit gap
+	// (unansweredBody). This is the degraded ending.
+	answerBodyGap = "gap"
+)
+
 // unansweredBody is the body emitted when a terminal answer node carries no
 // supplied content. It states the absence instead of reading like a result:
 // nothing has summarized anything, and a success-sounding constant here would
@@ -573,24 +626,46 @@ var _ Cognition = (*answerCognition)(nil)
 
 // ExecuteStep completes the terminal node with the answer content supplied
 // on the node; a content-less node completes with the synthesized answer
-// when synthesis is wired, else with the explicit gap body. A node stamped
-// with the depth-guard truncation marker carries it into the terminal
-// result metadata so external callers can detect the truncation.
+// when synthesis is wired, else with the explicit gap body. Three facts ride the
+// terminal result metadata so external callers can tell the endings apart
+// without parsing the body: answerCauseKey (why growth stopped), answerBodySourceKey
+// (whether a real answer was emitted at all) and the depth-guard truncation
+// marker.
 func (c *answerCognition) ExecuteStep(ctx context.Context, task *models.Task) (*StepOutcome, error) {
-	body, ok := argsFromPayload(task.Payload)[answerContentKey].(string)
-	if !ok || strings.TrimSpace(body) == "" {
+	args := argsFromPayload(task.Payload)
+	body, ok := args[answerContentKey].(string)
+	supplied := ok && strings.TrimSpace(body) != ""
+	// cause says WHY the session ended; the planner stamps it on the node it
+	// grows. A node grown without a stamp (a direct/SDK caller) is reported as
+	// unattributed — unless it carried a body, in which case it is a supplied
+	// answer, which is the normal shape.
+	cause := answerCauseUnlabeled
+	if stamped, stampedOK := args[answerCauseKey].(string); stampedOK && stamped != "" {
+		cause = stamped
+	} else if supplied {
+		cause = answerCausePlanned
+	}
+	// bodySource says where the body CAME FROM. Kept separate from the cause: a
+	// forced ending can still produce a real (synthesized) answer, and a normal
+	// ending can produce no answer at all.
+	bodySource := answerBodySupplied
+	if !supplied {
 		body = c.synthesizeAnswer(ctx, task)
+		bodySource = answerBodySynthesized
 	}
 	if strings.TrimSpace(body) == "" {
 		body = unansweredBody
+		bodySource = answerBodyGap
 		c.logAnswerGap(task)
 	}
 	result := models.NewTaskResult(task.TaskID, task.AgentType)
 	result.SetSuccess([]*models.RecommendItem{{ItemID: task.TaskID, Content: body}}, "answer node terminated session")
-	if truncated, ok := argsFromPayload(task.Payload)[answerTruncatedKey].(bool); ok && truncated {
-		if result.Metadata == nil {
-			result.Metadata = make(map[string]any)
-		}
+	if result.Metadata == nil {
+		result.Metadata = make(map[string]any)
+	}
+	result.Metadata[answerCauseKey] = cause
+	result.Metadata[answerBodySourceKey] = bodySource
+	if truncated, truncatedOK := args[answerTruncatedKey].(bool); truncatedOK && truncated {
 		result.Metadata[answerTruncatedKey] = true
 	}
 	if c.sessions != nil && strings.TrimSpace(task.SessionID) != "" {

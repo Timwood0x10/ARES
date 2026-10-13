@@ -151,6 +151,9 @@ stale-winner 恢复分两处：**hint 接线**在 `scheduler_recovery.go`（`Wit
 - **坑**：agent 层"换人续跑"这条最常用路径，**续的是"进度"不是"思路"**。对"强依赖推理链"的
   任务，换人后可能**走偏**（前驱输出在，但"为什么这么排"丢了）。
 - **建议**：同 A1/Q3——**把关键推理步骤结构化进认知/checkpoint**，别让它默认有损。
+- **核实（2026-10-12）**：`RecoverTaskCheckpoint` 实为 **TEST/CHAOS-ONLY**（`cmd/` 无调用方），
+  envelope 亦确认无 reasoning 字段。**待拍板方案 A/B** 及判断见 `disposable-agent.md` A1「核实 /
+  修复方案」段。
 
 ---
 

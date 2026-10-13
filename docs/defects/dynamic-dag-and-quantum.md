@@ -34,6 +34,9 @@ planner（想，长节点）和 tool（做，执行）是**两类量子，中间
 - 只有**原地复活**（`RestartAgent` + death snapshot，`recovery.go`）才把 `CognitiveState`（认知/脑子）带过去。
 - **坑**：默认路径是**有损续跑**——"接着做" ≠ "接着想"。对"步骤可重放"任务没问题；对"推理链依赖上下文"的任务，replacement 可能走偏。**这是"agent 可丢弃"的隐形成本。**
 - **建议**：把关键推理步骤纳入 checkpoint（哪怕摘要），或对"强依赖上下文"的任务强制走原地复活而非换人。
+- **核实（2026-10-12）**：机制成立，且边界需精确化（生产恢复是 **requeue**、根本不是认知转移；
+  L2 图上"先 A 后 B"可由**图结构**推出，丢的是模型**自述理由**）。方案 A/B 与判断详见
+  `disposable-agent.md` A1「核实 / 修复方案」段。
 
 ### Q4 · 抢占粒度粗 + 单 agent 串行 〔取舍〕
 
@@ -63,6 +66,17 @@ L2 增长深度默认上限 **10 轮**（`DefaultMaxPlanDepth = 10`，`planner_c
 - **性质**：10 是防 runaway 的保护，但也**封顶了合法复杂度**。
 - **建议**：把 `ForcedAnswers` 接进 metrics/面板并配阈值告警（现在只有 canary 计数 + 一条 Warn 日志），让"深度掐断"在面板上可见。
 
+**修复（2026-10-12，已核实：缺的是"可见性"，不是机制）**
+
+- **实证与本文一致**：撞墙**已有** `logger.Warn` + `forcedAnswers` canary 计数 + `truncated=true` 进结果
+  metadata（`planner_cognition.go`）。**缺的是"外部调用方能不能看出来"** —— 之前只有日志。
+- **修法**：答案节点新增 `answer_cause` 参数（`l2graph.go`），深度守卫盖 `depth_capped`；
+  `answerCognition` 复制进终态结果 metadata，与既有 `truncated` 并列。
+- **没有自造 metrics 设施**：全仓无 metrics 包（`internal/metrics` 不存在）。按规范 §10（不引依赖）
+  与 §0.4（不自造机制），"可见化"落在**仓库既有机制**上 —— 终态结果 metadata + 日志，这正是
+  `truncated` 一直以来的做法。面板/告警规则由消费该 metadata 的一侧决定，不再需要新管道。
+- **测试**：深度守卫用例（`planner_cognition_test.go`）新增"成因必须落到答案节点 payload"断言。
+
 ### D2 · L1 约束全拦 → 会话"正常地"啥都没跑 〔缺陷-需可观测〕
 
 `growToolNodes` 返回 `grown==0`（LLM 想调的工具**全被 L1 的 `enabled=false`/`budget` 拦掉**）→ **不新长 plan，直接强制出 answer**（`planner_cognition.go:343` 注释 "All tool calls were skipped by L1 constraints... Force an answer so the session terminates"）。
@@ -70,6 +84,23 @@ L2 增长深度默认上限 **10 轮**（`DefaultMaxPlanDepth = 10`，`planner_c
 - **坑**：L1 配错（把关键工具误设 `enabled=false`），会话会**"看起来正常出了个答案"，其实一个工具都没跑**。
 - **与 D1 同源**：都是"提前交差且静默"。
 - **建议**：出 answer 时**标明成因**（"被 L1 拦" vs "正常完成" vs "深度掐断"），别混进正常 `COMPLETED`。
+
+**修复（2026-10-12，已核实缺陷成立 → 已修）**
+
+- **实证**：`grown == 0` 分支出答案时**不带任何标记**（`planner_cognition.go`），与"模型正常给出答案"
+  在终态结果上**完全无法区分** —— 本文描述准确。
+- **修法**：该分支盖 `answer_cause = l1_blocked`，并补一条**聚合告警**（"every tool call skipped by L1
+  constraints"，带 requested 计数）：`growToolNodes` 的逐工具跳过日志各报一条，**没有任何一条**说
+  "这一轮一个工具都没跑成"。
+- **设计要点 —— 两把键，别压成一个**：实现中一度把"为什么停"与"有没有答案"合成单一标签，结果
+  "深度掐断 + 合成失败 → 只剩 gap body"会把成因**覆盖掉**（被新测试当场抓到）。现拆为：
+  - `answer_cause`：`planned` / `depth_capped` / `l1_blocked` / `unlabeled`（非 planner 生产者未盖章）
+  - `answer_body_source`：`supplied` / `synthesized` / `gap`（是否真的产出了答案）
+  两者**正交**：强制结束仍可能产出真答案（合成），正常结束也可能完全没答案（gap）。
+- **测试**：`answer_cause_test.go`（两把键 × 5 场景，含"`depth_capped` 不因 gap 而丢失"这条回归）+
+  `l1_constraint_test.go` 断言被强制出的答案节点带 `l1_blocked`。
+- **未做（属 G1）**：没有把 gap/forced 答案在 **outcome 层**降级为非 success —— 那是 P0-1 的
+  "正确率信号"决策（改 fitness 语义），本轮只做"可见"。`answer_body_source` 正是 G1 要读的信号。
 
 ### D3 · Reconcile 全量对账：快，但 O(节点) + 拿锁 + RUNNING desync 〔隐患-规模化〕
 

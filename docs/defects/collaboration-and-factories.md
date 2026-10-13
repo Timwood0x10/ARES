@@ -105,6 +105,54 @@ dead-letter"）。
   `CompilePlan` 的 `resolveDependencies`，对"依赖已存在的 task ID"做 `existing` 检查，不存在 → 拒绝/告警），
   或在 sweep 时对"依赖 N 分钟仍全未满足"打 `unresolvable_dependency` 指标。
 
+**修复（2026-10-12，已核实缺陷成立 → 已修）**
+
+- **实证（机制被 fabric 自己的注释承认）**：`ReferencedDependencies`（`fabric_deps.go`）写明
+  "**depsSatisfiedLocked treats a missing dependency as unsatisfied forever**, so deleting a referenced
+  predecessor would strand its dependents permanently"；reaper（`reaper.go`）正是为此跳过被引用任务。
+  而 `Create`→`createLocked` 对 `Dependencies` **只 copy slice、零校验**（`fabric_lifecycle.go`）。
+  两处合起来 = 悬挂边**永久静默不满足**，与本文描述一致。
+- **修法（分层，不破坏 batch）**：`Fabric.Create` 增加**显式严格选项** `WithResolvedDependencies()`
+  （`fabric_lifecycle.go`）：拒绝"依赖 id 不存在 / 空 id / 自引用"，语义为
+  `ErrDependencyUnresolved`（新哨兵错误，`fabric.go`）；检验与插入**同一临界区**，避免
+  "校验通过 → 并发 Delete 依赖 → 边悬挂"的 TOCTOU。`create_task` 启用该选项（`syscall.go`）。
+- **为什么默认必须保持宽松（关键约束，勿"顺手统一"）**：`runCollabGraph` 按**提交顺序**建节点
+  （`cmd/ares/agent_routes_tasks.go`），图内**前向引用合法** —— 在 `Create` 基础路径上无条件校验会
+  打掉它。所以严格性是**每个调用点显式选择**，而非新的默认。
+- **未改且非缺陷**：`SetDependencies`（`fabric_deps.go`）**故意**允许未解析 id，供 L2 增量增长
+  （`workflow_plan_incremental_test.go:101-102` 把 `"c"` 不存在锁成合法行为）。它是同类静默风险的
+  另一个入口，但不是漏 —— 见 T2 残留。
+- **测试**：`fabric/task/fabric_dependency_resolution_test.go`（严格模式 6 例 + **锁死默认宽松路径**
+  的前向引用行为）、`agentsyscall/create_task_deps_test.go`（悬挂拒绝且 fabric 不留痕 + 合法链式
+  依赖仍可用且被 gate）。
+- **复核结论（2026-10-12 自审补充）**：
+  1. **同轮链式调用不会被误拒**：`growToolNodes` 把一轮内的多个工具节点**串行链式**生长
+     （`prev = nodeID`，代码内有显式设计注释），所以"先 `create_task A`、再 `create_task B(依赖 A)`"
+     在 B 执行时 A 必已落地。**但**模型无法知道同轮 A 的 id（id 由 Kernel 铸造、只在结果里返回），
+     所以真实契约是"**依赖必须来自模型被告知过的 id**"。
+  2. **拒绝的爆破半径是"整条下游级联失败"，不是"带洞继续"**：工具报错会**判量子失败**
+     （不是把错误当工具结果回给模型）；又因 L2 投影任务**不是** `AllowPartial`，
+     `cascadeFailureLocked` 会把下游子图一并标 FAILED（各自记 `FailedDependency`），
+     最终由 `internal/agentruntime/await.go` 呈现给调用方。**取舍**：缺陷本是"永久静默卡死",
+     换成"**可见失败**"是对的，代价是这一轮分支作废（不静默、也不假装成功）。
+  3. **爆破半径已消除（2026-10-12 续修）**：把该拒绝在**模型边界**转成"可读结果"，
+     既不判量子失败、也不动 `AllowPartial`/syscall 契约：
+     - `CreateTaskResult` 新增 `Rejected`（闭合取值，首个值
+       `CreateTaskRejectedUnresolvedDeps = "unresolved_dependencies"`）与 `MissingDependencies`；
+     - `BindTools` 的 `create_task` 闭包用 `errors.As` 识别
+       `*taskfabric.DependencyResolutionError` 并**返回结果（nil error）**，其余错误照旧返回；
+       `Kernel.CreateTask` 本身的错误契约**不变**（程序化调用方仍能区分"没建成"）；
+     - 失败原因**一次报全**：fabric 侧改为收集**所有**不可解析 id（新增类型化错误
+       `DependencyResolutionError{TaskID, Missing}`，`errors.Is(ErrDependencyUnresolved)` 仍成立），
+       因为面向模型重试时"一次只报一个"会每次浪费一个量子；
+     - 工具描述与 `dependencies` 参数说明补上规则："依赖必须是更早的 `create_task` 返回过的
+       task_id —— id 由服务端铸造，你没拿到过的 id 不存在"（照 `ask_agent` 的 `no-reply` 先例：
+       可预期的结果走 result，不走 error）。
+     - **测试**：`TestBindToolsCreateTaskSurfacesUnresolvedDependencies`（经 binder 调用：无 error、
+       `Rejected` 正确、缺失 id 报全、fabric 不留痕、`Kernel.CreateTask` 仍报错、合法调用仍建任务）
+       —— 这正是上一轮自审标出的**覆盖缺口**；fabric 侧新增
+       `TestCreate_WithResolvedDependencies_ReportsEveryMissingID`。
+
 ### T2 · LLM 的 `create_task` 无环检测 → 依赖成环永不 READY 〔缺陷〕
 
 同样看路径：**`create_plan` 走 `CompilePlan` 有环检测**（`detectPlanCycle`，DFS 三色，
@@ -119,6 +167,23 @@ dead-letter"）。
   环可能是**跨量子分次长出来的**——单次 `Create` 的局部视角根本看不到"全图已闭合"。
 - **建议**：`create_task` 建图后做一次**增量环检查**（或至少"目标能否被拓扑完成"的可达性探测），
   把环挡在建图时而非留给运行时。
+
+**修复（2026-10-12，已核实 → 由 T1 的修复结构性覆盖，未加独立环检测）**
+
+- **可达性更正（重要）**：本文描述的"跨量子成环"A→B→A **今天确实可达，但前提正是 T1 的缺口**
+  （`create_task` 接受指向**尚不存在** id 的边，所以两个节点可以互相指向对方，各自等一个"还不存在"
+  的对方）。存在性校验落地后：新节点**每条边都必须指向已存在任务** ⇒ **创建序本身就是拓扑序**，
+  经新节点无法闭合任何环。
+- **唯一残留形态 = 自引用**（任务把自身 id 写进依赖）：`create_task` 的 id 由 Kernel 铸造，理论上
+  只有"猜中未来 id"能命中 —— 已由同一校验**显式拒绝**（`resolvedDependenciesLocked` 检查 `dep == t.ID`）。
+- **故未新增独立环检测**：在 T1 修复后，`create_task` 路径上的图遍历是**不可达代码**（规范 §0.2
+  禁"空壳/假机制"、§0.4 不做假想路径的机制）。本文原建议的"增量环检查/可达性探测"在此路径被
+  存在性校验覆盖。
+- **真正需要环检测的是 `SetDependencies`（残留，未修）**：它能给**已存在**任务改边，因此可以闭合环
+  （`SetDependencies(X, [Y])` 且 Y 已依赖 X），且它**故意**允许未解析 id（见 T1"未改且非缺陷"）。
+  L2 增量增长确实需要"先建边后落节点"的宽松性，但"可闭合环"不是它需要的宽松性 —— 要收紧需先确认
+  `planprojection` 协调器的调用顺序（`coordinator.go` 四处调用点），属**新增校验 + 需评估影响面**，
+  未在本轮动。
 
 ### T3 · "依赖 gate 全靠 ReadyTasks 过滤，Acquire 不查依赖" 〔取舍 · 需配套告警〕
 

@@ -32,6 +32,34 @@ CognitiveState = {
 - **建议**：要么明确"复活到底要带什么"（把关键推理/工具中间态结构化进 `CognitiveState`，别留 opaque any），要么**在文档/运维层面承认"可丢弃 = 换人是有损的，原地复活才有脑"**，两条路径的"脑含量"必须可辨识。
 - **与 Q3 的关系**：Q3 从"任务 checkpoint"侧讲"丢推理链"，A1 从"agent 复活"侧讲同一个根因（认知没被结构化持久化）。**修一处两边都受益。**
 
+**核实（2026-10-12：机制成立，"换人有损"的边界需精确化）**
+
+1. **生产路径不是"传认知"，而是 requeue（零转移）**：`RecoverTaskCheckpoint` 自带注释标明
+   **TEST/CHAOS-ONLY**（`recovery.go`，全仓调用方只有 chaos / sandbox / 测试，`cmd/` 无调用）。
+   生产恢复是 `runKernelRecoveryLoop`（`cmd/ares/kernel_loop.go`）：lease 过期 → **requeue 回 READY**,
+   **不带任何认知**，随后任何 agent 领走。所以本文结论成立，但更准确的说法是
+   "**默认换人根本不带认知**"，而非"带了但很薄"。
+2. **非生产的 `RecoverTaskCheckpoint` 也不更有脑**：它把**整份 envelope** 同时塞进
+   `Context` 与 `Checkpoint`（`recovery.go` 的 `SetCognitiveState`）—— 而 envelope 里
+   **没有任何 reasoning 字段**（`checkpoint_schema.go` 逐字段核对确认），所以塞进去的仍是"进度"。
+3. **L2 planner 路径上"思路"有相当一部分其实是耐久的**：plan/tool 节点的**结构与先后**就在
+   L2 图里（`assembleContext` 沿前驱链重建），"先 A 后 B"可由**图结构**推出。真正丢失的是模型
+   **自述的理由（CoT）** —— 它从未被持久化到任何载体。
+4. **`CognitiveState.Context` 仍是 opaque `any`**（`agent.go`），且 planner 不往里写 CoT：
+   原地复活带的是这份状态，**带多少完全取决于生产者**。本文描述准确。
+
+**修复方案（需拍板 —— 属规范 §0.4 的方向性变更，未擅自实施）**
+
+- **方案 A（真修，additive + schema 升版）**：给 `CheckpointEnvelope` 增一个**有界**的
+  `Decision`/`Rationale` 字段（planner 每个量子写"本轮决定了什么 + 理由摘要"），并让
+  `assembleContext` 把它喂给下一量子 —— 于是**同 agent 续跑与换人**都看得到"为什么"。
+  代价：envelope schema 升版（§6.1）+ prompt/token 成本 + 需定"有界"策略。
+- **方案 B（承认边界，可立即做）**：即本文"建议"的第二条 —— 在运维/文档层面承认
+  "可丢弃 = 换人有损、原地复活才有脑"，并让两条路径**可辨识**（例如在结果/事件上标明
+  "本任务在 requeue 后由新 agent 继续"）。B 不减少丢失，只消除**静默**。
+- **判断**：A 才是"让可丢弃真能恢复思路"；但它动 schema 与 planner 的 prompt 语义，
+  **不做半套**，需先定方案再动手。
+
 ---
 
 ## A2 · 复活预算是"lifetime 累积"（非连续）→ 长期存活但偶发挂的 agent 会被永久拒活 〔隐患〕
