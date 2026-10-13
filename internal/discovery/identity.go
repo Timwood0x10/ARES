@@ -215,3 +215,17 @@ func normalizeEndpoint(endpoint string) string {
 func extractName(record DiscoveryRecord) string {
 	return normalizeEndpoint(record.Endpoint)
 }
+
+// ServiceKey returns the canonical identity key for an endpoint — the same key
+// mergeRecords groups by and ServiceIdentity.ID/Name are set to.
+//
+// It is exported for consumers that must join a DISCOVERED service onto a thing
+// identified by an endpoint in another namespace. The MCP manager is the case in
+// point: it knows servers by the operator's config name, discovery knows them by
+// endpoint, and without a shared key the two can only ever be joined by
+// coincidence (an operator who happens to name the config entry exactly like the
+// normalized endpoint). Reusing this function rather than re-deriving the rule is
+// what keeps that join exact when the rule changes.
+func ServiceKey(endpoint string) string {
+	return normalizeEndpoint(endpoint)
+}

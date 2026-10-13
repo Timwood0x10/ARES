@@ -887,6 +887,46 @@ Graph / Planner / Recovery / Knowledge / Memory 各 PatchExecutor。
 
 **GA 闭环**：跑得越多 → 成绩数据越多 → 进化越准 → 策略越好 → 跑得越好。
 
+### 14.1 GA 不需要 LLM 参与是怎么做到的（热/冷路径解耦）
+
+GA 循环本身（打分 → 选育 → 门 → 部署）**不产生任何 LLM 调用**。关键在于两条时间线解耦：
+
+```
+热路径（任务执行中）                     冷路径（空闲 GA）
+┌─────────────────────────┐          ┌──────────────────────────────┐
+│ plannerCognition        │          │ GenomePopulationAdapter.Run  │
+│ 量子调 LLM：长节点/填参  │ ──────▶  │                              │
+│ toolCognition 跑工具    │          │ ① Score: ReplayScorer.Score  │
+│ 任务结束写事件总线       │  把        │   查 evidence store：        │
+│ ExecutionAttribution    │  结果      │   该 StrategyID 的历史均值  │
+│ {StrategyID,Success,    │  写入      │   （纯 DB 读，零 LLM）       │
+│  TokenCost,Latency}     │  证据      │ ② Evolve: 按分排序+交叉    │
+└─────────────────────────┘          │   +变异（纯字符串/算术）      │
+                                     │ ③ G1/G2/G3 门（数值判断）     │
+                                     │ ④ Deploy：写 L1 metadata     │
+                                     └──────────────────────────────┘
+```
+
+**LLM 只在热路径被调用**（planner 每次量子拆节点时）。GA 读的是任务结束时内核
+`kernel/scheduler_quantum.go:258` 内联写入的 `ExecutionAttribution` 记录
+（哪个 strategy 跑的、成功与否、花了几 token、多快）——这条记录**早就存在**，GA 不需要重新问 LLM。
+
+**打分路径（默认 LLM-free）**：
+
+| 配置 | scorer | LLM 调用 |
+|---|---|---|
+| 默认（`evolution.llm_scoring` 未开） | `ReplayScorer` 查 evidence store + heuristic 兜底（常数 50.0） | **零** |
+| 冷启动无记录 | 返回 `ColdStartScore=0.5`（中性，不偏向） | **零** |
+| 可选开 `evolution.llm_scoring` | `TieredScorer` 里挂 LLM Judge（`genome_wiring_idle.go:155`） | 有，但受 `MaxLLMCallsPerGeneration` 预算限制，超了降级回 heuristic |
+
+**选育路径**：`pop.EvolveAfterScoring`（`genome_wiring_run.go:76`）按 fitness 数值排序 →
+淘汰弱者 → 对存活者做 `PromptTemplate` 字符串交叉 + `Params`（temperature 等浮点）算术变异。
+**全部是字符串拼接和数值运算，无 LLM。**
+
+> **总结**：GA 进化的是"用哪套 prompt + 参数跑任务"，而"这套参数效果如何"的数据
+> 是任务执行时 LLM 已经帮你采好、写在 evidence store 里的。GA 只是事后"算分→淘汰→繁殖"，
+> 不需要再调 LLM 做评测。这是**热路径产生数据、冷路径消费数据**的经典解耦。
+
 ---
 
 ## 15. 观测与控制面（introspect）

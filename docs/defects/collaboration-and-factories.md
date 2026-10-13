@@ -283,7 +283,9 @@ run a quantum (it can still be managed by [lifecycle])"。（初稿锚点 `:121/
   - **能力保底**：不回收任一能力的最后一个持有者，且按 id 确定的贪心顺序决策——
     否则会把"配额泄漏"换成"任务永远没有候选"（正是 A-F3/P2-4 那类静默饥饿）；
   - 退休走**既有 `Retire`**（唯一释放路径、幂等、事件一致），sweep 只是多一个触发器，
-    不引入第二套记账；扫描与退休**不嵌锁**（先扫后 unlock 再 Retire）。
+    不引入第二套记账；**扫描 + 保底决策 + 活动性复核 + 释放收敛在同一 `f.mu` 临界区**
+    （第二轮复核 F2 已改；锁序 f.mu → a.mu，与 `IsIdle` 一致。原文此处写"不嵌锁、先扫后
+    unlock 再 Retire"是初版说法，已被 F2 取代，与本节 F2 行一致）。
 - **默认开**：`RestartPolicy.IdleAgentTTL` 默认 = `DefaultAgentReclaimPolicy().IdleTTL`（10 分钟，
   保底 1）；0 = 关闭。10 分钟远大于一个量子（秒级）、远小于进程寿命。
 - **接线**：`Recovery.ReclaimIdleAgents(ctx)` → `runSweepChain` **最后且无条件**执行
@@ -310,14 +312,13 @@ run a quantum (it can still be managed by [lifecycle])"。（初稿锚点 `:121/
 - **测试**：`TestRetireReleasesRuntimeState`（退休后 `ExecuteStep` 必须 `ErrAgentNotExecutable`
   且额度归零，**同时**记录仍在）、`TestReclaimIdle_SkipsAgentsInUse`；既有 `TestRetire*` 三条全绿
   （证明丢弃 cognition 未破坏既有契约）。
-- **残余（如实记录，未做）**：
-  1. `f.agents` 的**墓碑本身没有回收器** —— 每次 spawn 留一个小编录（Identity + capabilities，
-     重状态已释放）。task fabric 有 `reaper.go` 回收终态任务，agent 侧无对称物：属**独立特性**。
-  2. `Kill` 的**死亡快照**（`captureFromAgent` → `f.snapshots`）会持有认知状态，且生产调用方仅
-     chaos；快照保留期由 revival 决策决定，**无 TTL** —— 非主路径，未动。
-  3. **派发窗口的理论残余**：在 sweep 取 `f.mu` **之前**已被调度器选中的 agent，仍可能在之后被
-     置 busy。彻底关闭需要**调度器在置 busy 时复核状态**（属调度器改动，非 fabric 改动）；
-     活租约过滤已把窗口压到实际为空（派发先取租约）。已在 `ReclaimIdle` 注释中显式写明，不隐藏。
+**第三轮（2026-10-13，三处残余全部处理）**
+
+| # | 残余 | 结论与修法 |
+|---|---|---|
+| A | `f.agents` 墓碑无回收器 | **已修**：新增 `Fabric.ReapRetired(ctx, retention)`（`reap.go`，task fabric `reaper.go` 的对称物）+ 策略位 `RetiredAgentRetention`（默认 1h，零值**禁用**=`ReapRetired` 的安全方向）+ sweep 第五步。**状态转移表写进函数 doc**（§11）：`(absent) --Spawn--> IDLE --Retire--> RETIRED --ReapRetired(retention)--> (absent)`；年龄基准是**退休时刻**（`retiredAt`）而非 spawn 时刻，未盖章的墓碑**永不回收**（否则零值会被读成"开天辟地时就退休了"）。`f.children` 的 provenance 边**故意保留**（与 `Kill` 现有语义一致，invariant #1/#7）。测试：`reap_test.go`（保留期/零值禁用/未盖章保护） |
+| B | `Kill` 死亡快照"无 TTL" | **更正 + 补齐**：先核实到它**本来就有界** —— `snapshotStore` 自带上限 `maxDeathSnapshots=1024`（`snapshot.go`），按 `DiedAt` 淘汰最旧，**且已有测试锁定**（`TestSnapshotStoreBounded`）。**我上一轮"无 TTL"的说法不准确。** 但 cap 只限**条数不限字节**，而每条含一份认知状态 → 补上**年龄上限** `defaultDeathSnapshotRetention = 1h`（`save` 内按最新死亡时刻为基准裁剪），语义安全：复活消费发生在死亡后数秒内，且 `findByCapability` 偏好最新。测试：新增 `TestSnapshotStoreRetention`；同时把 `TestSnapshotStoreBounded` 的时间间隔从分钟改秒，**否则它会被年龄裁剪接管、悄悄不再测 cap** |
+| C | 派发窗口残余 | **已修（含调度器侧，非仅 fabric）**：置 busy 从无条件写改为**守卫取用** `Agent.TryBeginQuantum()`（IDLE 且非 busy 才成功，与 `Retire` 争同一把 `a.mu`，**单赢家**）；调度器新增准入闸 `Scheduler.admitWinner`（抽函数，顺带把 `executeWithCandidates` 的圈复杂度从 32 压回门禁内），取用失败即 `EndNeutral` 释放 slot + `Release` 租约 → 下一轮 drain 重新调度到活 agent。配合既有 `inUse` 活租约过滤，窗口**结构性关闭**：要么 sweep 先退休（取用返回 false），要么调度器先取用（sweep 看到 busy 而跳过）。测试：`quantum_claim_test.go`（IDLE/BUSY/RETIRED/SUSPENDED 穷尽表） |
 
 ### A4 · `Retire` 不 kill 子 agent（invariant #1）→ 可能累积孤儿 〔取舍 · 需意识〕
 

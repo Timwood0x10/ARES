@@ -194,6 +194,48 @@ func (s *Scheduler) resolveExecutor(winner string) (CapabilityExecutor, bool) {
 // executeWithCandidates runs the shared Schedule → Acquire → RunQuantum →
 // finalize path for a prebuilt candidate list. The task capability is read
 // for attribution at the outcome boundary.
+// admitWinner takes everything a quantum needs from the winner, in order, before
+// it starts: the concurrency slot, the fabric agent's busy claim, and (on either
+// failure) the release of what was already taken. It reports false when the
+// winner cannot start a quantum right now, having given back the slot and the
+// lease (epoch-fenced, checkpoint preserved) so the next drain re-schedules the
+// task — exactly like the budget gate in the caller.
+//
+// Two gates, two different stale-snapshot hazards, and both must be atomic:
+//   - the concurrency slot (tracker.TryBegin): the candidate snapshot was built
+//     before Schedule, so two concurrent drain goroutines could both see this
+//     agent idle and hand it two tasks — two quanta on one agent process, whose
+//     cognitive state is not reentrant.
+//   - the busy claim (Agent.TryBeginQuantum): the agent can leave IDLE between
+//     that snapshot and here, most often because idle reclamation retired it —
+//     and retiring releases its execution body, so proceeding would fail the task
+//     for a reason that has nothing to do with the task.
+//
+// Extracted from executeWithCandidates to keep its cyclomatic complexity inside
+// the gate; the two failure branches are the same shape on purpose.
+func (s *Scheduler) admitWinner(
+	ctx context.Context, taskID, winner string, epoch uint64, agent *agentfabric.Agent,
+) bool {
+	if !s.tracker.TryBegin(winner, maxConcurrentPerAgent) {
+		if releaseErr := s.fabric.Release(taskID, winner, epoch); releaseErr != nil {
+			log.Error(ctx, "executeWithCandidates",
+				"kernel scheduler: release for busy winner failed", releaseErr,
+				"task_id", taskID, "winner", winner)
+		}
+		return false
+	}
+	if agent != nil && !agent.TryBeginQuantum() {
+		s.tracker.EndNeutral(winner)
+		if releaseErr := s.fabric.Release(taskID, winner, epoch); releaseErr != nil {
+			log.Error(ctx, "executeWithCandidates",
+				"kernel scheduler: release for a winner that left IDLE failed", releaseErr,
+				"task_id", taskID, "winner", winner)
+		}
+		return false
+	}
+	return true
+}
+
 func (s *Scheduler) executeWithCandidates(ctx context.Context, taskID string, cands []taskfabric.Candidate) error {
 	tk, err := s.fabric.Task(taskID)
 	if err != nil {
@@ -341,28 +383,8 @@ func (s *Scheduler) executeWithCandidates(ctx context.Context, taskID string, ca
 			"task_id", taskID, "winner", winner, "reason", reason.String())
 		return nil
 	}
-	// Admission gate: take the winner's busy slot ATOMICALLY before the quantum
-	// starts. The candidate snapshot above was built before Schedule, so two
-	// concurrent drain goroutines could both see this agent idle and hand it two
-	// different tasks — running two quanta on one agent process at once, whose
-	// cognitive state is not reentrant. A full gate releases the lease
-	// (epoch-fenced, checkpoint preserved) so the next drain re-schedules the
-	// task onto a free agent, exactly like the budget gate above.
-	if !s.tracker.TryBegin(winner, maxConcurrentPerAgent) {
-		if releaseErr := s.fabric.Release(taskID, winner, epoch); releaseErr != nil {
-			log.Error(ctx, "executeWithCandidates",
-				"kernel scheduler: release for busy winner failed", releaseErr,
-				"task_id", taskID, "winner", winner)
-		}
+	if !s.admitWinner(ctx, taskID, winner, epoch, fabricAgent) {
 		return nil
-	}
-	// R4 busy bridge: set the fabric agent's busy flag BEFORE the quantum
-	// starts so concurrent drains cannot schedule the same agent. Cleared via
-	// defer so a panic or early return always releases it — without defer a
-	// panic would leave busy=true forever, permanently excluding the agent
-	// from scheduling (capacity leak).
-	if fabricAgent != nil {
-		fabricAgent.SetBusy(true)
 	}
 	busyCleared := false
 	clearBusy := func() {

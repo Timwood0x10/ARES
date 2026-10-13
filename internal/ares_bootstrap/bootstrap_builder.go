@@ -506,6 +506,12 @@ func (b *bootstrapBuilder) wirePlatform() error {
 		return fmt.Errorf("bootstrap: wire discovery: %w", err)
 	default:
 		comp.Discovery = discoveryComp
+		// Discovery's health verdicts are the only signal for a half-dead MCP
+		// server (answers a probe, but slow or erroring); before this the flag
+		// was updated and read by nobody (defect S-mcp-S4).
+		if comp.MCP != nil {
+			SubscribeMCPHealthToDiscovery(discoveryComp.Engine, comp.MCP)
+		}
 	}
 
 	// 11. System Runtime: register the assembled component graph

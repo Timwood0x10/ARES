@@ -235,9 +235,10 @@ func runKernelQuotaLoop(ctx context.Context, mgr *aresrecovery.EvolutionAwareQuo
 	}
 }
 
-// runSweepChain executes the three-step recovery sweep: deadline expiry,
-// approval SLA expiry, and lease requeue. Extracted from runKernelRecoveryLoop
-// to keep that function under the cyclomatic-complexity gate.
+// runSweepChain executes the recovery sweep: deadline expiry, approval SLA
+// expiry, lease requeue, idle agent reclamation, and retired-record reaping.
+// Extracted from runKernelRecoveryLoop to keep that function under the
+// cyclomatic-complexity gate.
 //
 // Ordering rationale:
 //  1. ExpireTaskDeadlines — a task past its absolute deadline must fail
@@ -249,6 +250,12 @@ func runKernelQuotaLoop(ctx context.Context, mgr *aresrecovery.EvolutionAwareQuo
 //     auto-reject to operators).
 //  3. RequeueExpiredLeases — requeue the tasks whose lease expired THIS sweep
 //     (not all READY tasks), then give each one an execution body.
+//  4. ReclaimIdleAgents — give back the resource claim of agents nothing is
+//     using. Runs last of the task steps so a task that expired this sweep has
+//     already had its replacement bound before any agent can be retired.
+//  5. ReapRetiredAgents — drop the registry records of agents retired long ago.
+//     Last because it is the only step that deletes rather than restores, and it
+//     must never race the step that creates tombstones.
 func runSweepChain(
 	ctx context.Context,
 	recovery *aresrecovery.Recovery,
@@ -287,6 +294,17 @@ func runSweepChain(
 		log.Info(ctx, "runKernelRecoveryLoop",
 			"kernel recovery loop: reclaimed idle agent(s), releasing their resource claims",
 			"count", len(reclaimed), "agent_ids", reclaimIDs(reclaimed))
+	}
+	// Tombstone reaping runs after reclamation and unconditionally (defect
+	// A-factory3 / P1-6, second half): reclamation retires but never removes, so
+	// without this step the registry keeps one record per spawn for the process's
+	// lifetime. Retention is far longer than a tick, so it cannot delete the
+	// tombstone the step above just created.
+	reaped := recovery.ReapRetiredAgents(ctx)
+	if len(reaped) > 0 {
+		log.Info(ctx, "runKernelRecoveryLoop",
+			"kernel recovery loop: reaped retired agent record(s)",
+			"count", len(reaped), "agent_ids", reaped)
 	}
 }
 

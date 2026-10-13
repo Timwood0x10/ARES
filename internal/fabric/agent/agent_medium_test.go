@@ -163,12 +163,16 @@ func TestRecordReadsAgentStateUnderLock(t *testing.T) {
 func TestSnapshotStoreBounded(t *testing.T) {
 	s := newSnapshotStore()
 	total := maxDeathSnapshots + 500
-	base := time.Now().Add(-time.Duration(total) * time.Minute)
+	// Spaced in SECONDS so every death lands inside the retention window: this
+	// test is about the COUNT cap, and a minute-spaced population would be pruned
+	// by age (TestSnapshotStoreRetention) instead, quietly turning it into a test
+	// of something else.
+	base := time.Now().Add(-time.Duration(total) * time.Second)
 	for i := 0; i < total; i++ {
 		s.save(fmt.Sprintf("agent-%d", i), AgentSnapshot{
 			Cognitive:    CognitiveState{SchemaVersion: CognitiveStateSchemaVersion},
 			Capabilities: []string{"code"},
-			DiedAt:       base.Add(time.Duration(i) * time.Minute),
+			DiedAt:       base.Add(time.Duration(i) * time.Second),
 		})
 	}
 
@@ -182,6 +186,34 @@ func TestSnapshotStoreBounded(t *testing.T) {
 		"the death snapshot store must be bounded")
 	assert.False(t, oldestGone, "the oldest deaths must be evicted first")
 	assert.True(t, newestKept, "the newest deaths must be retained")
+}
+
+// TestSnapshotStoreRetention pins the AGE bound alongside the count cap: the cap
+// limits entries and every entry carries a dead agent's cognitive state, so a
+// full store is not a memory bound. An entry nobody revived well past the revival
+// window could never be revived anyway — recovery reacts within seconds of the
+// death, and findByCapability prefers the freshest one.
+func TestSnapshotStoreRetention(t *testing.T) {
+	s := newSnapshotStore()
+	now := time.Now()
+	s.save("stale", AgentSnapshot{
+		Cognitive: CognitiveState{SchemaVersion: CognitiveStateSchemaVersion},
+		DiedAt:    now.Add(-2 * defaultDeathSnapshotRetention),
+	})
+	s.save("fresh", AgentSnapshot{
+		Cognitive: CognitiveState{SchemaVersion: CognitiveStateSchemaVersion},
+		DiedAt:    now,
+	})
+
+	s.mu.RLock()
+	_, staleKept := s.byID["stale"]
+	_, freshKept := s.byID["fresh"]
+	size := len(s.byID)
+	s.mu.RUnlock()
+
+	assert.False(t, staleKept, "a snapshot past the retention window must be dropped")
+	assert.True(t, freshKept, "and the fresh one must survive")
+	assert.Equal(t, 1, size)
 }
 
 // ── planner growth idempotency ──

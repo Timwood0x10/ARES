@@ -117,6 +117,26 @@ GA 出的补丁改的是 **L1（能力/策略层）**，不影响**正在跑的 
 
 ---
 
+## G7 · 澄清：空闲 GA 为什么不需要 LLM 参与（热/冷路径解耦）〔说明 · 非缺陷〕
+
+GA 循环（`GenomePopulationAdapter.Run`）本身**零 LLM 调用**，常被误以为"进化要靠 LLM 评测"：
+
+- **打分**：`ReplayScorer.Score`（`replay_scorer.go:219`）只是查 evidence store 里
+  该 `StrategyID` 的历史 fitness 均值（纯 DB 读）；无记录返回 `ColdStartScore=0.5`。
+  默认配置（`evolution.llm_scoring` 关）scorer 全是数值路径，无 LLM。
+- **选育**：`pop.EvolveAfterScoring`（`genome_wiring_run.go:76`）按分排序 → 淘汰 →
+  `PromptTemplate` 字符串交叉 + `Params` 浮点变异，纯拼接/算术。
+- **数据从哪来**：任务**执行时**（热路径 planner 量子）LLM 产生成绩，内核在
+  `kernel/scheduler_quantum.go:258` 内联写 `ExecutionAttribution{StrategyID, Success,
+  TokenCost, Latency}` 进事件总线 → observer 转成 `KindFitness` 证据入库。
+  GA 是**事后消费**这些已存在的记录，不重跑 LLM 评测。
+- **唯一可选的 LLM 介入**：`evolution.llm_scoring=true` 时 `TieredScorer` 挂 LLM Judge
+  （`genome_wiring_idle.go:155`），受 `MaxLLMCallsPerGeneration` 预算限制，超预算降级 heuristic。
+
+> 已同步写入 `docs/system-internals.zh.md` §14.1 / `.en.md` §14.1。
+
+---
+
 ## 相关：answer 三态与 success 判定（供 G1 定位）
 
 | 答案形态 | 出处 | 当前 outcome | 应为（G1 建议） |

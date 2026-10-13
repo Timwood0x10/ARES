@@ -23,22 +23,22 @@ const DefaultRetiredAgentRetention = time.Hour
 //
 // The record's whole life, which is what makes this safe to run unattended:
 //
-//	(absent) --Spawn--> IDLE --Retire--> RETIRED --ReapRetired--> (absent)
+//		(absent) --Spawn--> IDLE --Retire--> RETIRED --ReapRetired--> (absent)
 //
-//   - Only RETIRED records are eligible. IDLE (a live worker), SUSPENDED (work
-//     waiting to be resumed), and unknown ids are never touched.
-//   - The retention window is measured from Retire, not from spawn: an agent
-//     spawned an hour ago and retired a second ago is not a candidate.
-//   - Reaping is not a correctness mechanism, exactly like the task reaper: the
-//     record's only readers are observability paths, and Retire already released
-//     everything a running system needs (quota, execution body, revival
-//     snapshot). A process-tree edge to a reaped parent survives as provenance,
-//     the same way it already does for Kill — invariant #1/#7 keep the causal
-//     graph readable after the node is gone.
-//   - A record whose retirement time is unset is never reaped. That is not
-//     defensive coding: retiredAt is the only age basis, and a zero value would
-//     read as "retired at the beginning of time", which would make reaping a
-//     fresh tombstone.
+//	  - Only RETIRED records are eligible. IDLE (a live worker), SUSPENDED (work
+//	    waiting to be resumed), and unknown ids are never touched.
+//	  - The retention window is measured from Retire, not from spawn: an agent
+//	    spawned an hour ago and retired a second ago is not a candidate.
+//	  - Reaping is not a correctness mechanism, exactly like the task reaper: the
+//	    record's only readers are observability paths, and Retire already released
+//	    everything a running system needs (quota, execution body, revival
+//	    snapshot). A process-tree edge to a reaped parent survives as provenance,
+//	    the same way it already does for Kill — invariant #1/#7 keep the causal
+//	    graph readable after the node is gone.
+//	  - A record whose retirement time is unset is never reaped. That is not
+//	    defensive coding: retiredAt is the only age basis, and a zero value would
+//	    read as "retired at the beginning of time", which would make reaping a
+//	    fresh tombstone.
 //
 // A retention of zero or less disables reaping and returns nil. Counts are small
 // and the scan is in-memory, but a cancelled ctx stops it: this runs on the

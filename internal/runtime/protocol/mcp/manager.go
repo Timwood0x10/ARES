@@ -33,7 +33,18 @@ type MCPServerStatus struct {
 	Version   string    `json:"version"`
 	Error     string    `json:"error,omitempty"`
 	ConnAt    time.Time `json:"connected_at,omitempty"`
+	// HealthNote explains a server known to be unusable — the reason and since
+	// when — and is empty when it is usable. It is read from the shared
+	// availability cell (see ServerHealth), so the operator view and the tools'
+	// own refusals cannot disagree about which servers are down.
+	HealthNote string `json:"health_note,omitempty"`
 }
+
+// ErrServerNotManaged is returned by SetServerHealth for a name this manager
+// neither runs nor is configured for. Discovery reports on every service it
+// watches and most of those are not MCP servers, so the caller is expected to
+// read this as "not mine" rather than as a fault.
+var ErrServerNotManaged = errors.New("mcp: server is not managed by this manager")
 
 // MCPManager manages multiple MCPClient instances and their tool registrations.
 type MCPManager struct {
@@ -44,6 +55,12 @@ type MCPManager struct {
 	// toolChangeHandler, when set, is invoked after every tools/listChanged
 	// refresh so consumers (e.g. the skill catalog) can re-index on demand.
 	toolChangeHandler func()
+	// health holds one availability cell per server name, shared with that
+	// server's client and tools (see ServerHealth). The cell outlives the client
+	// on purpose: when a server never connects there is no client to carry the
+	// mark, and that is exactly the case an operator needs to be able to read.
+	// Guarded by mu.
+	health map[string]*ServerHealth
 }
 
 // SetToolChangeHandler registers a callback invoked after every
@@ -92,7 +109,71 @@ func NewMCPManager(config *MCPManagerConfig, registry *core.Registry) (*MCPManag
 		clients:  make(map[string]*managedClient),
 		registry: registry,
 		config:   config,
+		health:   make(map[string]*ServerHealth),
 	}, nil
+}
+
+// SetServerHealth records an external health verdict for one server: healthy
+// flips its cell back to available, unhealthy marks it unavailable with the given
+// reason, and either way the tool-change handler is notified so the published
+// tool list carries the new state.
+//
+// This is the consumer side of the discovery engine's MCP health check
+// (S-mcp-S4: the engine updated svc.Healthy and emitted discovery.health.changed
+// and nothing read it). That check is also the only signal for a HALF-DEAD
+// server — one whose process answers a probe but is slow or erroring — because no
+// transport-level signal distinguishes it from a healthy one.
+//
+// The manager never probes on its own: this records what somebody else observed,
+// so a deployment with discovery switched off never invents an outage.
+func (m *MCPManager) SetServerHealth(name string, healthy bool, reason string) error {
+	if !m.knowsServer(name) {
+		return fmt.Errorf("%w: %s", ErrServerNotManaged, name)
+	}
+	cell := m.serverHealth(name)
+	if healthy {
+		cell.MarkAvailable()
+	} else {
+		cell.MarkUnavailable(reason)
+	}
+	m.notifyToolChange()
+	return nil
+}
+
+// knowsServer reports whether name is a server this manager runs or is
+// configured for. Takes m.mu; the caller must hold no lock (serverHealth takes
+// the write lock, so the two cannot nest).
+func (m *MCPManager) knowsServer(name string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if _, ok := m.clients[name]; ok {
+		return true
+	}
+	if m.config != nil {
+		for _, sc := range m.config.Servers {
+			if sc.Name == name {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// serverHealth returns the availability cell for a server, creating it on first
+// use (the zero MCPManager must stay usable). Takes m.mu; a cell is shared by
+// design, so callers must not copy or replace it.
+func (m *MCPManager) serverHealth(name string) *ServerHealth {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.health == nil {
+		m.health = make(map[string]*ServerHealth)
+	}
+	cell, ok := m.health[name]
+	if !ok {
+		cell = NewServerHealth()
+		m.health[name] = cell
+	}
+	return cell
 }
 
 // Start connects to all enabled auto_start servers.
@@ -192,19 +273,39 @@ func (m *MCPManager) connectWithTransport(ctx context.Context, name string, sc *
 		m.notifyToolChange()
 	}
 
+	// The transport dying on its own must not leave its tools looking usable
+	// (S-mcp-S5). Two things follow from the notice: the shared cell is marked
+	// unavailable — by the client itself, in the same goroutine that saw the
+	// failure — and consumers re-read the tool list here. The tools are NOT
+	// unregistered: an outage the caller can diagnose ("server is down since T")
+	// is strictly more useful than a tool that vanished (S-mcp-S2).
+	onDisconnect := func(reason string) {
+		log.Warn("mcp: server disconnected, its tools are marked unavailable",
+			"server", sc.Name, "reason", reason)
+		m.notifyToolChange()
+	}
+	health := m.serverHealth(sc.Name)
+
 	client := NewMCPClient(MCPClientConfig{
-		ServerName: sc.Name,
-		Transport:  sc.Transport,
-		Timeout:    sc.Timeout,
-		OnChange:   onChange,
+		ServerName:   sc.Name,
+		Transport:    sc.Transport,
+		Timeout:      sc.Timeout,
+		OnChange:     onChange,
+		OnDisconnect: onDisconnect,
+		Health:       health,
 	})
 
 	// Use a background lifetime context so the MCP subprocess survives
 	// after the caller's context is cancelled (e.g. skill_activate returns
 	// and its dispatcher cancels ctx, killing lazily-spawned servers).
 	if err := client.ConnectWithLifetime(ctx, context.Background(), transport); err != nil {
+		// Record why on the shared cell: a server that fails to connect has no
+		// client and no tools, so without this the only trace was a log line and
+		// the operator view said only "not connected" (S-mcp-S2).
+		health.MarkUnavailable(fmt.Sprintf("connect failed: %v", err))
 		return fmt.Errorf("connect: %w", err)
 	}
+	health.MarkAvailable()
 
 	mc := &managedClient{
 		client: client,
@@ -363,6 +464,9 @@ func (m *MCPManager) ListServers() []MCPServerStatus {
 			Connected: mc.client.IsConnected(),
 			ToolCount: mc.client.ToolCount(),
 			ConnAt:    mc.connAt,
+			// A connected client whose transport died reports the truth here
+			// instead of looking healthy (nil-safe: no cell means available).
+			HealthNote: m.health[mc.config.Name].UnavailableNote(),
 		}
 		// The client does not expose a server version string; leaving Version
 		// empty avoids filling the status field with a misleading state value.
@@ -375,16 +479,74 @@ func (m *MCPManager) ListServers() []MCPServerStatus {
 			if !sc.Enabled || seen[sc.Name] {
 				continue
 			}
-			// Configured but never connected: report the disconnected state.
+			// Configured but never connected: report the disconnected state, and the
+			// recorded reason when there is one (a failed connect marks the cell —
+			// this is where S-mcp-S2's "server X is down" becomes visible).
 			statuses = append(statuses, MCPServerStatus{
-				Name:      sc.Name,
-				Connected: false,
-				Error:     "not connected",
+				Name:       sc.Name,
+				Connected:  false,
+				Error:      "not connected",
+				HealthNote: m.health[sc.Name].UnavailableNote(),
 			})
 		}
 	}
 
 	return statuses
+}
+
+// MCPServerEndpoint is the transport identity of one managed server: the strings
+// another subsystem derives a service identity from. It carries configured data
+// only — the manager deliberately does not know how that other side normalizes
+// endpoints, so the join stays the caller's business.
+type MCPServerEndpoint struct {
+	// Name is the operator's configured server name (the manager's namespace).
+	Name string
+	// Command is the stdio command/launcher ("" for a server that is not stdio).
+	Command string
+	// URL is the SSE endpoint ("" for a server that is not SSE).
+	URL string
+}
+
+// ServerEndpoints reports every server this manager is configured for or
+// connected to, with the transport it was configured with. Callers use it to
+// join an externally-identified service onto a managed server — the two sides
+// name the same server differently, so the join needs the endpoint.
+//
+// Configured-but-not-connected servers are included on purpose: an outage
+// verdict is exactly about a server that is not usable, and those are the ones
+// with no live client to read the endpoint from.
+func (m *MCPManager) ServerEndpoints() []MCPServerEndpoint {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	out := make([]MCPServerEndpoint, 0, len(m.clients))
+	seen := make(map[string]bool, len(m.clients))
+	appendServer := func(name string, transport TransportConfig) {
+		if name == "" || seen[name] {
+			return
+		}
+		seen[name] = true
+		ep := MCPServerEndpoint{Name: name}
+		if transport.Stdio != nil {
+			ep.Command = transport.Stdio.Command
+		}
+		if transport.SSE != nil {
+			ep.URL = transport.SSE.URL
+		}
+		out = append(out, ep)
+	}
+	for _, mc := range m.clients {
+		appendServer(mc.config.Name, mc.config.Transport)
+	}
+	if m.config != nil {
+		for _, sc := range m.config.Servers {
+			if !sc.Enabled {
+				continue
+			}
+			appendServer(sc.Name, sc.Transport)
+		}
+	}
+	return out
 }
 
 // GetClient returns the MCPClient for a named server.

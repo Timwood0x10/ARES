@@ -39,7 +39,7 @@
 | P1-4 | **D(retrieval)** embedding 死信 | 向量生成失败的行落 `embedding_dead_letter` → **该经验对检索永久不可见且静默** |
 | P1-5 | **I1** `ask_agent` 不回写 | 协作是"触发"不是"对话"，答案 C-1 未闭环，拿不到 |
 | P1-6 | **A-factory3** agent quota 泄漏 **〔已修 2026-10-13〕** | claim/release 漏释放 = **agent 池假死**（`ErrResourceQuotaExceeded`） |
-| P1-7 | **S-mcp-S2** MCP 挂了工具静默消失 | server 连不上/断连 → 它的工具没进/留在 Registry，LLM **不知道自己少了什么**，会白调不存在的工具 |
+| P1-7 | **S-mcp-S2** MCP 挂了工具静默消失 〔已修 2026-10-13〕 | server 连不上/断连 → 它的工具没进/留在 Registry，LLM **不知道自己少了什么**，会白调不存在的工具 |
 
 ## P2 · 打磨 / 可观测 / 规模化（不急，但要知道）
 
@@ -56,8 +56,8 @@
 | P2-9 | **S-st-S1/S-st-S2** 维度写死·共实例 | 1024 锁死（换模型=重嵌）；向量与事件账本共 PG 无隔离 |
 | P2-10 | **R4/R6** RAG 默认关·阈值 0.4 | 记忆复用不显式开就不走；高维余弦 0.4 偏弱（知边界） |
 | P2-11 | **S-mcp-S1** 工具名撞车 first-wins | 两个 server 同名工具只有先连的活，后到的 skip（**已有 warn，但 `winner` 标签误导**） |
-| P2-12 | **S-mcp-S4** health 标了没人消费 | discovery 标 `Healthy=false` 但 MCP Manager 不摘工具 → 半死 server 工具仍可调 |
-| P2-13 | **S-mcp-S5** transport 自动断连不摘工具 | 断连后工具留 Registry 变"僵尸"（execute 才报 connection refused） |
+| P2-12 | **S-mcp-S4** health 标了没人消费 〔已修 2026-10-13；**复核后补端点 join**〕 | discovery 标 `Healthy=false` 但 MCP Manager 不摘工具 → 半死 server 工具仍可调 |
+| P2-13 | **S-mcp-S5** transport 自动断连不摘工具 〔已修 2026-10-13〕 | 断连后工具留 Registry 变"僵尸"（execute 才报 connection refused） |
 | P2-14 | **S-mcp-S3/S6** discovery 默认关·工具规模 | 工具集启动时定死（不随网络发现）；工具越多 LLM 选择越稀释 |
 
 ---
@@ -104,11 +104,43 @@
 - **R3 hybrid 融合**（0.7 向量 / 0.3 lexical，已接生产 RAG）、**G1 的 `DimensionEval` 维度**（默认权重 0.25，只是运行时 observer 不产出）、**T-F1 的 `ErrInvalidArgument` 自动永久化**（`markPermanentStepCause`）、**S-mcp-S1 的撞名 warn 日志**（`manager.go:455`）——见各分文件"更正"段
 - PG/pgvector 分工（向量表 vs 关系表，不混一张表）
 - G3 样本门槛/冷启动中性（`MinTasksBeforeEvolve` 在 `dream_cycle.go`，非 `dream_cycle_ga.go`）、G6 进化改 L1 不在跑任务无感
+- **G7** 说明项（非缺陷）：空闲 GA 零 LLM 调用——热路径（planner 量子）产生 ExecutionAttribution 成绩，冷路径（`ReplayScorer` 查 evidence store + 纯算术选育）事后消费，数据/评测解耦；可选 LLM Judge（`evolution.llm_scoring`）默认关且受 `MaxLLMCallsPerGeneration` 预算限制。详见 `genetic-algorithm.md` G7 + `system-internals.zh.md` §14.1
 - **MCP/工具注册**：多 server 连接隔离（一个挂不连一个）、手动注册不被 discovery 误删（#51）、热重连先删旧再注新、Registry 拒绝重复名、discovery 默认关
 
 ---
 
 ## 修订记录
+
+**2026-10-13 · P1 修复（agent 资源回收闭环 + MCP 可用性）**：
+
+1. **P1-6 的三处残余全部处理**（详见 `collaboration-and-factories.md` A3「第三轮」）：
+   - **A 墓碑回收器**：`Fabric.ReapRetired` + 策略位 `RetiredAgentRetention`（默认 1h）+ sweep 第五步；
+     状态转移表进 doc（§11），年龄基准 = 退休时刻，未盖章的墓碑永不回收。
+   - **B 死亡快照**：先核实**本来就有 count cap（1024）+ 已有测试锁定**（**更正我上轮"无 TTL"的说法**），
+     再补**年龄上限 1h**（cap 只限条数不限字节）；并修正 `TestSnapshotStoreBounded` 的时间间隔，
+     否则它会被年龄裁剪接管、悄悄不再测 cap。
+   - **C 派发窗口**：置 busy 改**守卫取用** `Agent.TryBeginQuantum`（与 Retire 单赢家）+ 调度器准入闸
+     `Scheduler.admitWinner`（抽函数压回圈复杂度门禁），配合活租约过滤，窗口结构性关闭。
+2. **P1-7 / P2-12 / P2-13 已修**（详见 `service-loading-and-mcp.md` 的 S2/S4/S5「修复」段）：
+   新增**每 server 一个可用性单元** `ServerHealth`（单源真相）：transport 自行死亡 / 连接失败 /
+   discovery 健康判决三个写入方，工具执行与工具描述两个读取方 → 工具不再"静默消失"、不再"变僵尸"，
+   且 **S4 的"标了没人消费"有了真消费者**（先核实 `discovery/health.go` 确有 `MCPHealthChecker`，
+   事件名即 server 名，是真路径而非死接线）。
+3. **未做（如实记录）**：不往 LLM 上下文注入系统提示（要动 planner 的 prompt 组装，属另一条路径）；
+   `Kill` 快照的"字节量"上限靠年龄（1h）而非按字节裁剪；`f.children` 的 provenance 边故意保留。
+4. **复核修正（review 抓到，均已修；原"已修"标记属超前/漏改）**：
+   - **S4 的 join key 断在命名空间**（真断裂，且**被我自己的手工对齐测试掩盖**）：discovery 用
+     **端点派生身份**、manager 用**运维手填 config name**，中间无映射层 → 自动发现的 MCP server 的健康
+     判决一律 `ErrServerNotManaged` 被**静默丢弃**，只有名字恰好等于归一 endpoint 才生效。已导出
+     `discovery.ServiceKey`（复用同一归一规则）+ `MCPManager.ServerEndpoints()`（纯数据）+
+     `mcpHealthJoin.resolve` **端点 join**，并保留**直接同名**这条；未管理服务改为**每身份一次、
+     上限 32 条**上报（超限自身也明说），不再静默。**实机反证**：禁用端点 join → 测试以
+     `the health verdict must reach the managed server …; got ""` 失败。端到端测试断言走公开
+     `ListServers().HealthNote`（运维/模型实际读的那份），不再手工对齐名字。
+   - `collaboration-and-factories.md` 中"扫描与退休**不嵌锁**"与同文件 F2 行冲突（第二轮漏改）→ 已改为
+     "收敛在同一 `f.mu` 临界区"。
+   - `ServerHealth.since` 由 wall clock 改为**可注入时钟**（与 fabric `WithClock` 纪律一致），并加
+     确定性断言（原先只断言"非零"，测不出时长）。
 
 **2026-10-12 · P0 修复进展（逐条先核实再修）**：
 

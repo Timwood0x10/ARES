@@ -26,6 +26,16 @@ type MCPClientConfig struct {
 	Transport  TransportConfig
 	Timeout    time.Duration
 	OnChange   func()
+	// OnDisconnect is called when the connection dies on its own (a transport
+	// error, not Close or a cancelled lifetime), with a human-readable reason.
+	// The manager uses it to re-publish the tool list so consumers stop offering
+	// tools that cannot work (S-mcp-S5: a dead server's tools stayed in the
+	// registry and only failed when called).
+	OnDisconnect func(reason string)
+	// Health is the shared availability cell for this server, owned by the
+	// manager. nil is allowed (a client built outside a manager); the cell's
+	// methods are nil-safe, so the disconnect path can always report.
+	Health *ServerHealth
 }
 
 // TransportConfig selects and configures a transport.
@@ -52,6 +62,15 @@ type MCPClient struct {
 	eg         errgroup.Group
 	connected  atomic.Bool
 
+	// onDisconnect is invoked once when the receive loop ends on its own — the
+	// server went away, as opposed to Close() or a cancelled lifetime. Nil is
+	// allowed. Guarded by mu.
+	onDisconnect func(reason string)
+	// health is the shared availability cell for this server, owned by the
+	// manager. Nil for a client built outside a manager; the cell's methods are
+	// nil-safe so the disconnect path does not have to branch. Guarded by mu.
+	health *ServerHealth
+
 	// notifySlots bounds concurrently running notification handlers:
 	// each notification spawned an unbounded goroutine, so a malicious or
 	// buggy server flooding notifications allocated goroutines without limit
@@ -71,13 +90,23 @@ func NewMCPClient(config MCPClientConfig) *MCPClient {
 	}
 
 	return &MCPClient{
-		serverName:  config.ServerName,
-		tools:       make(map[string]*MCPToolDef),
-		pending:     make(map[int64]chan *JSONRPCMessage),
-		onChange:    config.OnChange,
-		timeout:     timeout,
-		notifySlots: make(chan struct{}, maxConcurrentNotifications),
+		serverName:   config.ServerName,
+		tools:        make(map[string]*MCPToolDef),
+		pending:      make(map[int64]chan *JSONRPCMessage),
+		onChange:     config.OnChange,
+		timeout:      timeout,
+		notifySlots:  make(chan struct{}, maxConcurrentNotifications),
+		onDisconnect: config.OnDisconnect,
+		health:       config.Health,
 	}
+}
+
+// Health returns the server's shared availability cell (nil when the client was
+// built without one). Callers read or mark it; the cell's methods are nil-safe.
+func (c *MCPClient) Health() *ServerHealth {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.health
 }
 
 // Connect starts the transport and performs the MCP initialize handshake.
@@ -119,6 +148,19 @@ func (c *MCPClient) ConnectWithLifetime(ctx, lifetimeCtx context.Context, transp
 		err := c.receiveLoop()
 		if err != nil && c.ctx.Err() == nil {
 			c.connected.Store(false)
+			// The connection died on its own — the ctx check above is what
+			// separates this from Close()/lifetime cancellation. Marking the
+			// shared cell is what stops the server's tools from being offered as
+			// if they worked; the callback is what makes consumers re-read the
+			// tool list now rather than at the next unrelated refresh.
+			reason := fmt.Sprintf("transport closed: %v", err)
+			c.health.MarkUnavailable(reason)
+			c.mu.RLock()
+			onDisconnect := c.onDisconnect
+			c.mu.RUnlock()
+			if onDisconnect != nil {
+				onDisconnect(reason)
+			}
 			log.Warn("mcp: receive loop exited with error", "error", err)
 		}
 		return err

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/Timwood0x10/ares/internal/tools/resources/base"
 	"github.com/Timwood0x10/ares/internal/tools/resources/core"
@@ -53,8 +54,30 @@ func NewMCPTool(client *MCPClient, def *MCPToolDef) (*MCPTool, error) {
 	}, nil
 }
 
+// Description returns the tool description, with the server's availability note
+// appended when the server is known to be unusable. It shadows BaseTool's method
+// deliberately: the description is what the model reads in the tool list, so it
+// is the one channel that can tell the model "the tool is still here, but its
+// server is down" without new prompt plumbing (S-mcp-S2 — a tool that simply
+// vanished left the model convinced it had misremembered the name).
+func (t *MCPTool) Description() string {
+	desc := t.BaseTool.Description()
+	if note := t.client.Health().UnavailableNote(); note != "" {
+		return desc + " [" + note + "]"
+	}
+	return desc
+}
+
 // Execute delegates the tool call to the MCP server.
+//
+// It checks the server's shared availability FIRST. Once the transport is known
+// to be dead, calling through would fail with a raw transport error ("connection
+// closed") that says nothing about why or since when — and the tool would still
+// advertise itself as usable, which is the zombie S-mcp-S5 describes.
 func (t *MCPTool) Execute(ctx context.Context, params map[string]interface{}) (core.Result, error) {
+	if health := t.client.Health(); !health.IsAvailable() {
+		return core.NewErrorResult(unavailableToolMessage(t.Name(), t.serverName, health)), nil
+	}
 	result, err := t.client.CallTool(ctx, t.toolDef.Name, params)
 	if err != nil {
 		return core.NewErrorResult(err.Error()), nil
@@ -87,6 +110,24 @@ func (t *MCPTool) Close() error {
 // MCPTName returns the original tool name on the MCP server (without namespace).
 func (t *MCPTool) MCPTName() string {
 	return t.toolDef.Name
+}
+
+// unavailableToolMessage is the refusal a tool returns when its server is known
+// to be unusable. It names the tool by the name a caller actually uses (the
+// registered one, taken from the tool rather than rebuilt here, so the two cannot
+// drift), plus the server, the reason and the since stamp: a caller deciding what
+// to do next cannot act on "tool not found", and "connection closed" reads as a
+// transient blip rather than a dead server.
+func unavailableToolMessage(tool, server string, health *ServerHealth) string {
+	_, reason, since := health.State()
+	msg := fmt.Sprintf("mcp tool %s is unavailable: server %q is not usable", tool, server)
+	if reason != "" {
+		msg += ": " + reason
+	}
+	if !since.IsZero() {
+		msg += fmt.Sprintf(" (since %s)", since.UTC().Format(time.RFC3339))
+	}
+	return msg + "; use another tool, or retry once the server recovers"
 }
 
 // extractText concatenates text from all text-type content blocks.

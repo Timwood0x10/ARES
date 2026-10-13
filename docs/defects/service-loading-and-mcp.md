@@ -53,6 +53,18 @@ if err := m.ConnectServer(ctx, sc.Name); err != nil {
   不可用：[list]，原因是 server-X 连接失败"），别让 LLM 对着不存在的工具白调。
   或至少**在 Registry 里标"不可用"而非"不存在"**（两种状态对 LLM 的提示不同）。
 
+**修复（2026-10-13，已核实 → 按"标不可用而非不存在"落地）**
+
+- **实证**：连接失败时 `manager.go` 只 `log.Error`；工具不进 Registry，**无任何"缺失说明"**。
+- **修法**：新增**每 server 一个可用性单元** `ServerHealth`（`mcp/health.go`，单源真相，含状态转移表）：
+  连接失败 → `MarkUnavailable("connect failed: …")`；成功 → `MarkAvailable()`。
+  `MCPServerStatus` 增 `health_note`，故 **"连不上"从"not connected"升级为可读的原因 + 起始时刻**。
+- **模型侧**：可用性标注走**工具描述**（`MCPTool.Description` 遮蔽 `BaseTool.Description`）——
+  工具列表本来就是模型读到的东西，所以"工具还在、但它的 server 挂了"这句话不需要新增 prompt 管道即可到达模型；
+  被调用时返回**点名 server + 原因 + 起始时刻**的拒绝（非 raw "connection closed"）。
+- **边界（未做）**：不主动往 LLM 上下文**注入系统提示**（那要动 planner 的 prompt 组装，属另一条路径）；
+  本修的效果是"模型从工具列表就能看出不可用"，而非"被告知它少了什么"。
+
 ---
 
 ## S3 · discovery 引擎默认关 → 工具集是"启动时定死的" 〔取舍〕
@@ -94,6 +106,42 @@ if oldHealthy != svc.Healthy {
 - **建议**：MCP Manager 订阅 `EventHealthChanged`（`discovery.health.changed`）：unhealthy → **临时摘该 server 的工具**
   （或标"降级"给 LLM），healthy → 恢复。
 
+**修复（2026-10-13，已核实"真路径"后接线）**
+
+- **先核实这是不是真路径**（不然就是死接线）：`internal/discovery/health.go` **确有** `MCPHealthChecker`
+  （连上去 initialize → list_tools → close 探活），事件载荷 `Event.Service.Identity.Name` **就是 MCP server 名**。
+  所以订阅是**真消费方**，不是空壳。discovery 默认关是 S3 那条已记录的取舍，与本修复无关。
+- **修法**：`MCPManager.SetServerHealth(name, healthy, reason)`（unhealthy → 标不可用 + `notifyToolChange`，
+  healthy → 恢复）；由 `SubscribeMCPHealthToDiscovery(engine, mgr)`（`provide_mcp.go`）订阅
+  `EventHealthChanged` 并在 `bootstrap_builder.go` 装配。**这是"半死"（进程在但慢/错）唯一能看见它的信号** ——
+  manager 自己的连接此时完全正常，所以复用该探测而非自造探活（§0.2）。
+- **未管理服务不误报**：discovery 报告所有服务，非本 manager 的服务返回哨兵 `ErrServerNotManaged`，
+  接线处显式跳过（**不是**静默忽略，是显式分支）。
+- **选择"标不可用"而非"摘工具"**：摘掉会让 `healthy → 恢复` 变成"重新注册"，进而与 S1 的撞名/注册竞态纠缠；
+  标记则是同一格子的翻转，且给出可诊断的拒绝（见 S5）。
+- **测试**：`health_test.go` 的 `TestSetServerHealth_ConsumesExternalVerdict`（翻转生效 + 通知 + 外来服务被拒）。
+
+**复核修正（2026-10-13 第二轮自审发现：join key 断在命名空间 —— 上面的"已修"当时是超前的）**
+
+- **断裂**：discovery 用 **endpoint 派生身份**（`normalizeEndpoint`：命令 basename 或 `scheme://host/path`），
+  manager 用 **运维手填的 config name**；`SetServerHealth(evt.Service.Identity.Name, …)` 直接拿一边的名字查另一边，
+  中间**没有映射层**。于是自动发现的 MCP server → `knowsServer` 查不到 → `ErrServerNotManaged` → 被接线处
+  `errors.Is` 当 "not mine" **静默丢弃**。只有当运维恰好把 config 的 name 写成与归一 endpoint 完全一致时才生效；
+  这个隐式契约**无文档、无校验、无测试**。
+- **被掩盖的原因（如实记录）**：`TestSetServerHealth_ConsumesExternalVerdict` 用的是**同名** config server，
+  手工对齐的测试正好盖住了生产 join 的断裂；全仓没有"自动发现名 → 命中 config"的测试。
+- **修法**：`discovery.ServiceKey(endpoint)` **导出**（join 复用同一条归一规则，而非在 MCP 侧重抄，避免漂移）；
+  `MCPManager.ServerEndpoints()` 暴露每个受管 server 的 **transport endpoint（纯数据）**；
+  `mcpHealthJoin.resolve` 按 **endpoint key → config name** 映射（配置热重载 → 每次事件重建表，避免陈旧表再次静默失配），
+  并保留**直接同名**这条 join（运维按 endpoint 命名的情况仍然可用）。
+- **未管理服务的处理（不再静默）**：先核实 discovery **只会产出 MCP 服务**（`binary.go` 有
+  `if !metadata.isMCP { return }`，filesystem provider 只解析 MCP 客户端配置）→ 所以"对不上"必是**真·未管理的
+  MCP server**，告警不是噪声。上报**每个身份一次**、并**上限 32 条**（超限时明确说"后续已抑制"，让沉默本身有解释）。
+  管理侧仍只标记自己运行的 server —— "自动纳管发现的服务"属更大特性（S3/P2-14）。
+- **测试（端到端，不再手工对齐）**：`provide_mcp_health_join_test.go` —— stdio 端点 join（`search` ↔ `/usr/local/bin/grep-mcp`）、
+  SSE URL join、直接同名 join、未管理服务不误用且只报一次、超限抑制；断言走**公开 status API**
+  （`ListServers().HealthNote`），即运维与模型实际读到的那份。
+
 ---
 
 ## S5 · 主动摘工具有 4 处，但"运行中 transport 自动断连"没有 〔缺陷 · 已坐实〕
@@ -118,6 +166,25 @@ if oldHealthy != svc.Healthy {
   "L1 全拦静默提前交差"、§recovery 的"任务静默坐着"同族：**系统里静默的不一致**。
 - **建议**：transport 层加 `onDisconnect` 回调 → 自动 `unregisterTools`（或标"不可用"），
   别让断连后的工具在 Registry 里变僵尸。
+
+**修复（2026-10-13，已核实 → 已修，且实机反证）**
+
+- **实证**：`client.go` 的 receiveLoop 退出分支只 `connected.Store(false)`（注释自称 "zombie that
+  looks healthy"），**不发事件、不回调 manager**，故 4 个 `unregisterTools` 调用点全都不覆盖它。
+- **修法（三层，一个单元格）**：
+  1. `MCPClientConfig.OnDisconnect` + `Health`；transport 自行死亡（`ctx.Err() == nil` 才成立，
+     即**不是** `Close()`/生命周期取消）→ `health.MarkUnavailable("transport closed: …")` + 回调；
+  2. 回调由 `connectWithTransport` 提供 → 记一条**带 server 名**的 Warn + `notifyToolChange()`
+     （消费者据此重新读工具列表）；
+  3. `MCPTool.Execute` **先查可用性**：不可用则返回点名 server/原因/起始时刻的拒绝，
+     `Description()` 在工具列表里标注 `[UNAVAILABLE: …]`。
+- **为什么不 `unregisterTools`**：摘掉会把可诊断的"宕机"退化成 "tool not found"（正是 S2 抱怨的那种困惑），
+  且恢复时要走重新注册（S1 撞名/注册竞态面）。标记 = 同一格子翻转，且**恢复免费**。
+- **实机反证（规范 §7.1）**：临时停用 `MarkUnavailable(reason)` → `TestTransportDeathMarksServerUnavailable`
+  **失败**（"a dead transport must mark the server unavailable"）；恢复后通过。非推断。
+- **测试**：`health_test.go` 的 `TestTransportDeathMarksServerUnavailable`（真实 mock transport 关闭流）、
+  `TestToolReportsUnavailableServer`（描述标注 + 拒绝点名）、`TestServerHealth_StateTransitions`
+  （含"重复标记不重置 since 时钟"与"恢复必须清空说明"两条易错边）。
 
 ---
 

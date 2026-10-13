@@ -200,6 +200,10 @@ func (a *Agent) Executable() bool {
 // while it is executing a quantum. The lifecycle state stays StateIdle
 // (there is no RUNNING lifecycle state); busy is the execution-layer signal
 // that complements it. Thread-safe; writes under the agent lock.
+//
+// The dispatch path uses TryBeginQuantum instead — it needs the claim, not a
+// bare write. SetBusy remains for clearing the flag and for callers that hold
+// the flag by construction (tests, and the deferred release).
 func (a *Agent) SetBusy(busy bool) {
 	a.mu.Lock()
 	a.busy = busy

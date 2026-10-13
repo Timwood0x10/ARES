@@ -965,6 +965,55 @@ is only picked up by the next new session / next plan quantum. Worst case
 **The GA closed loop**: more runs → more score data → sharper evolution →
 better strategy → better runs.
 
+### 14.1 How the Idle GA Evolves Without LLM Involvement (Hot/Cold Path Decoupling)
+
+The GA loop itself (score → select → cross/mutate → gate → deploy)
+**makes zero LLM calls**. The key is that two timelines are decoupled:
+
+```
+Hot path (task execution)                    Cold path (idle GA)
+┌─────────────────────────┐          ┌──────────────────────────────┐
+│ plannerCognition        │          │ GenomePopulationAdapter.Run  │
+│ quantum calls LLM:      │ ──────▶  │                              │
+│ grow nodes / fill args  │  writes  │ ① Score: ReplayScorer.Score  │
+│ toolCognition runs tools│  fitness  │   queries evidence store:    │
+│ task end writes event   │  records │   mean of this StrategyID's  │
+│ ExecutionAttribution    │  into    │   history (pure DB read,     │
+│ {StrategyID,Success,    │  store   │   zero LLM calls)            │
+│  TokenCost,Latency}     │          │ ② Evolve: sort by fitness,   │
+└─────────────────────────┘          │   crossover + mutation      │
+                                     │   (pure string/arithmetic)   │
+                                     │ ③ G1/G2/G3 gates (numeric)  │
+                                     │ ④ Deploy: write L1 metadata │
+                                     └──────────────────────────────┘
+```
+
+**LLM is only invoked in the hot path** (planner once per quantum to grow
+nodes). GA reads the `ExecutionAttribution` record that the kernel already
+inlined into the event bus at `kernel/scheduler_quantum.go:258` when the
+task finished — *which strategy ran, success or not, token cost, latency*.
+That record **already exists**; GA does not re-query the LLM.
+
+**Scoring path (default LLM-free)**:
+
+| Config | scorer | LLM calls |
+|---|---|---|
+| Default (`evolution.llm_scoring` off) | `ReplayScorer` reads evidence store + heuristic fallback (constant 50.0) | **zero** |
+| Cold start (no records) | returns `ColdStartScore=0.5` (neutral, no bias) | **zero** |
+| Optional `evolution.llm_scoring=true` | `TieredScorer` with LLM Judge (`genome_wiring_idle.go:155`) | yes, but budget-capped by `MaxLLMCallsPerGeneration`; over budget falls back to heuristic |
+
+**Evolution path**: `pop.EvolveAfterScoring` (`genome_wiring_run.go:76`)
+sorts by fitness → culls the weak → cross-bred `PromptTemplate` strings +
+arithmetic mutation on `Params` (temperature etc.). **Pure string
+concatenation and numeric arithmetic, no LLM.**
+
+> **Bottom line**: GA evolves "which prompt + parameter set to run tasks
+> with"; the data on "how that parameter set performed" was already
+> collected *during* task execution (by the LLM in the hot path) and
+> written to the evidence store. GA just does post-hoc "score → cull →
+> breed" — no LLM evaluation re-run needed. Classic
+> **hot-path-produces-data / cold-path-consumes-data** decoupling.
+
 ---
 
 ## 15. Observability & Control Plane (introspect)

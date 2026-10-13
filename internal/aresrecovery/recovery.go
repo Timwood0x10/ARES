@@ -427,6 +427,21 @@ func (r *Recovery) ReclaimIdleAgents(ctx context.Context) []agentfabric.IdleAgen
 	}, inUse)
 }
 
+// ReapRetiredAgents removes the registry records of agents retired longer ago
+// than the policy's retention window, and returns their ids in order. A zero
+// retention disables it and returns nil.
+//
+// It runs AFTER ReclaimIdleAgents in the sweep, and the order matters for the
+// unit of work rather than for safety: a sweep that reclaimed an agent this tick
+// should not also delete the record it just created (retention is far longer
+// than a tick, so this only ever reaps earlier sweeps' tombstones).
+func (r *Recovery) ReapRetiredAgents(ctx context.Context) []string {
+	if r.policy.RetiredAgentRetention <= 0 {
+		return nil
+	}
+	return r.agents.ReapRetired(ctx, r.policy.RetiredAgentRetention)
+}
+
 // RevivableSnapshot exposes the agent fabric's death-snapshot matching the
 // given capability (arbitration input). Found does not imply
 // allowed — RestartAgent still enforces the restart budget.
