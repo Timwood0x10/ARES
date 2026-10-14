@@ -366,6 +366,21 @@ func terminalCheckpointFacts(cp any) (inTokens, outTokens int, bodySource string
 	return inTokens, outTokens, bs, tr
 }
 
+// AnswerQualityFromCheckpoint reports the terminal answer provenance recorded in
+// a task checkpoint: the body source (one of the ares_events.AnswerBodySource*
+// values; "" when the envelope predates the key or the task is not an answer) and
+// whether the answer was forced by the planner's growth-depth guard.
+//
+// It is the exported form of terminalCheckpointFacts for consumers OUTSIDE the
+// fabric — the eval executor reads it so a judge is handed a runtime-derived fact
+// instead of having to guess from the answer's text. One extraction rule (this
+// delegation), not a second one: the two halves of P0-3 must agree on what "gap"
+// means.
+func AnswerQualityFromCheckpoint(cp any) (bodySource string, truncated bool) {
+	_, _, bodySource, truncated = terminalCheckpointFacts(cp)
+	return bodySource, truncated
+}
+
 // stepCheckpointMetadata decodes a checkpoint ONCE and returns the cumulative
 // token spend plus the result-metadata sub-map. Several consumers under the
 // fabric mutex need several facts from the same envelope (token totals for the

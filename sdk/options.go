@@ -87,6 +87,28 @@ type config struct {
 	// the runtime spawns (the L2 execution peer and syscall-spawned peers);
 	// zero value = unlimited per dimension (WithAgentGovernance).
 	gov agentfabric.Governance
+	// maxPlanDepth caps the L2 planner's plan/tool growth depth (0 = the
+	// planner's own default). It reaches the execution core as
+	// agentruntime.ExecutionConfig.MaxPlanDepth — the same bound cmd/ares
+	// configures — so an embedding application can bound a session's planning
+	// cost the way the server does (WithMaxPlanDepth).
+	maxPlanDepth int
+}
+
+// WithMaxPlanDepth caps how deep the L2 planner may grow its plan/tool graph
+// before it stops growing and answers with what it has (0 = the planner's
+// default). It exists because the runtime has always accepted this bound
+// (agentruntime.ExecutionConfig.MaxPlanDepth, wired by cmd/ares) while the SDK
+// assembly silently left it unset — an embedding application could not bound a
+// session's planning depth at all.
+func WithMaxPlanDepth(depth int) Option {
+	return func(c *config) error {
+		if depth < 0 {
+			return fmt.Errorf("sdk: max plan depth must not be negative, got %d", depth)
+		}
+		c.maxPlanDepth = depth
+		return nil
+	}
 }
 
 // memoryCfg holds memory subsystem configuration.

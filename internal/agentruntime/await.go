@@ -21,6 +21,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -95,20 +97,117 @@ func (e *StalledError) Error() string {
 // Unwrap exposes the sentinel so errors.Is(err, ErrSessionStalled) works.
 func (e *StalledError) Unwrap() error { return ErrSessionStalled }
 
-// SessionAnswer returns the first COMPLETED answer task's content for a
-// session. It scans fabric task ids (sess/<sid>/…/answer#…) rather than the
-// session graph: the answer body releases its session on success, so the
-// registry entry is already gone by the time the poll loop looks. The
-// SessionTaskPrefix boundary match keeps sibling sessions (sess-auto-1 vs
-// sess-auto-12) from shadowing each other.
+// SessionAnswer returns the adopted answer's content for a session. It scans
+// fabric task ids (sess/<sid>/…/answer#…) rather than the session graph: the answer
+// body releases its session on success, so the registry entry is already gone by the
+// time the poll loop looks. The SessionTaskPrefix boundary match keeps sibling
+// sessions (sess-auto-1 vs sess-auto-12) from shadowing each other.
 //
-// Returns ok=false when no completed answer task exists yet. An answer task
-// whose body is unreadable is skipped (it cannot be the terminal answer).
+// WHICH answer is adopted is decided in ONE place (adoptedAnswerTask) and shared
+// with SessionAnswerProvenance, deliberately: the body and the quality facts are
+// both reports about the same turn, and two independent selections cannot guarantee
+// that. "Newest" is part of that rule — see sessionAnswerTasks for why the previous
+// "first completed answer" was a coin flip rather than a rule.
+//
+// Returns ok=false when no completed answer task exists yet, or when the adopted one
+// has no readable body.
 func SessionAnswer(fabric *taskfabric.Fabric, sessionID string) (string, bool) {
-	if fabric == nil || sessionID == "" {
+	_, body, found := adoptedAnswerTask(fabric, sessionID)
+	if !found || body == "" {
 		return "", false
 	}
+	return body, true
+}
+
+// SessionAnswerProvenance reads the terminal answer's quality facts (defect
+// P0-3: where the body came from, and whether the answer was forced by the
+// depth guard) from the same answer task SessionAnswer reads its body from.
+//
+// It exists for consumers that must JUDGE the answer rather than display it: the
+// eval executor hands these facts to the judge, so a gap body is scored as a
+// non-answer instead of as terse prose (defect G1 — the runtime knows, the judge
+// should not have to guess from text).
+//
+// ok=false means no completed answer task exists yet. A completed answer that
+// recorded no facts reports ("", false, true): "no signal", which the shared
+// penalty rule treats as no-penalty — deliberately NOT the same as "healthy".
+//
+// The facts are read from the SAME answer SessionAnswer takes its body from
+// (adoptedAnswerTask), so a body and its provenance can never describe two different
+// turns. That is the whole reason the selection is shared rather than repeated: an
+// independent "newest answer" read here would pair one turn's text with another
+// turn's facts whenever the newest answer had no readable body — and the consumer of
+// this pair is the accuracy signal, which would then floor a turn it never saw.
+func SessionAnswerProvenance(fabric *taskfabric.Fabric, sessionID string) (bodySource string, truncated bool, ok bool) {
+	task, _, found := adoptedAnswerTask(fabric, sessionID)
+	if !found {
+		return "", false, false
+	}
+	// The facts come from the task envelope, not from decoding a body, so they are
+	// reported even when the adopted answer had no readable body: that is the
+	// documented "found, but no signal to pair with a body" shape.
+	bodySource, truncated = taskfabric.AnswerQualityFromCheckpoint(task.Checkpoint)
+	return bodySource, truncated, true
+}
+
+// adoptedAnswerTask is the ONE selection both readers use: it returns the answer
+// whose body AND quality facts are reported, so the two can never disagree.
+//
+// The rule, in order:
+//
+//  1. the newest completed answer with a READABLE body — sessionAnswerTasks is
+//     already newest-round-first, so this is a scan in that order. An earlier turn's
+//     readable answer is preferred over a newer unreadable one because a completed
+//     answer whose checkpoint carries no body is not a terminal answer at all (the
+//     body is what the scheduler wraps on completion), so reporting its facts as
+//     "the" answer would describe a turn whose result the caller never receives;
+//  2. otherwise the newest completed answer, reported with an empty body. This keeps
+//     the provenance contract's "found, no signal" case (a completed answer with no
+//     readable body still yields ("", false, true)) while making the pairing rule
+//     explicit instead of implied.
+//
+// found == false means no completed answer task exists at all.
+func adoptedAnswerTask(fabric *taskfabric.Fabric, sessionID string) (task *taskfabric.Task, body string, found bool) {
+	tasks := sessionAnswerTasks(fabric, sessionID)
+	if len(tasks) == 0 {
+		return nil, "", false
+	}
+	for _, tk := range tasks {
+		content, err := SessionAnswerContent(tk)
+		if err != nil || content == "" {
+			continue
+		}
+		return tk, content, true
+	}
+	return tasks[0], "", true
+}
+
+// sessionAnswerTasks returns the session's completed answer tasks, NEWEST GROWTH
+// ROUND FIRST, deterministic within a round.
+//
+// The order is the point, not a detail. The fabric's ID list is a map walk, so the
+// previous "first completed answer" was decided by Go's iteration order: a session
+// that answers more than once — an earlier turn of a re-admitted session, then the
+// live one — could hand two runs two different answers, and the eval provenance
+// could be read from a different turn than the body it is judged beside. Newest
+// round is the selection RULE here, not a tie-break applied after an arbitrary
+// pick. Within a round the order is the node id itself (a round grows answer#0
+// only, so this is total rather than a guess).
+//
+// The round is read from the node id (SessionNodeID: sess/<sid>/d<N>/answer#<seq>).
+// An id that does not carry one sorts oldest: it was not grown by the planner, so
+// it cannot be a later turn than one that was.
+func sessionAnswerTasks(fabric *taskfabric.Fabric, sessionID string) []*taskfabric.Task {
+	if fabric == nil || sessionID == "" {
+		return nil
+	}
 	prefix := agentfabric.SessionTaskPrefix(sessionID)
+	type candidate struct {
+		task  *taskfabric.Task
+		round int
+		id    string
+	}
+	var cands []candidate
 	for _, id := range fabric.IDs() {
 		if !strings.HasPrefix(id, prefix) || !strings.Contains(id, "/answer#") {
 			continue
@@ -117,13 +216,43 @@ func SessionAnswer(fabric *taskfabric.Fabric, sessionID string) (string, bool) {
 		if err != nil || tk.State != taskfabric.StateCompleted {
 			continue
 		}
-		content, err := SessionAnswerContent(tk)
-		if err != nil || content == "" {
-			continue
+		round, ok := sessionAnswerRound(prefix, id)
+		if !ok {
+			round = -1 // unranked: older than any node the planner grew
 		}
-		return content, true
+		cands = append(cands, candidate{task: tk, round: round, id: id})
 	}
-	return "", false
+	sort.Slice(cands, func(i, j int) bool {
+		if cands[i].round != cands[j].round {
+			return cands[i].round > cands[j].round
+		}
+		return cands[i].id < cands[j].id
+	})
+	out := make([]*taskfabric.Task, 0, len(cands))
+	for _, c := range cands {
+		out = append(out, c.task)
+	}
+	return out
+}
+
+// sessionAnswerRound extracts the growth round N from an L2 node id
+// (sess/<sid>/d<N>/answer#<seq>). ok=false when the id is not that shape: a
+// producer other than the planner (a direct/SDK caller) may grow an answer whose
+// id carries no round, and inventing one would order turns by accident.
+func sessionAnswerRound(prefix, id string) (int, bool) {
+	rest, ok := strings.CutPrefix(id, prefix)
+	if !ok {
+		return 0, false
+	}
+	segment, _, ok := strings.Cut(rest, "/")
+	if !ok || len(segment) < 2 || segment[0] != 'd' {
+		return 0, false
+	}
+	n, err := strconv.Atoi(segment[1:])
+	if err != nil {
+		return 0, false
+	}
+	return n, true
 }
 
 // SessionAnswerFailed reports whether any answer task of the session is

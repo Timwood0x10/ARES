@@ -149,13 +149,10 @@ func (o *RuntimeObserver) degradedAnswerPenalty(evt *ares_events.Event) (factor 
 	}
 	bs, _ := evt.Payload[ares_events.EventKeyAnswerBodySource].(string)
 	tr, _ := evt.Payload[ares_events.EventKeyAnswerTruncated].(bool)
-	if bs == ares_events.AnswerBodySourceGap {
-		return 0, true
-	}
-	if tr {
-		return 0.5, true
-	}
-	return 1, false
+	// The numbers come from the shared rule (ares_events.AnswerQualityPenalty),
+	// which the eval judge's deterministic floor also applies — see its doc for
+	// why a second copy of "gap=0, truncated=0.5" is not acceptable.
+	return ares_events.AnswerQualityPenalty(bs, tr)
 }
 
 // latencyPenalty computes the multiplicative latency factor for a completed

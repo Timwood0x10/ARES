@@ -76,8 +76,23 @@ aggregator 改按 **kind** 过滤（原先按 kind 字符串当 source 查，永
    `{{.ExpectedOutput}}` —— 参照物本来就喂给判官了）；
 2. **golden 语料**：现仅 `test/eval/basic.yaml`、`test/eval/tools.yaml` 两份小样例，规模远不够；
 3. **触发方式**：离线 / 定时 / evolution 前；
-4. 因此 **"gap / truncated 交差在 golden 回放里必须低分"这条合同测试尚未落地** —— 通了的是**链路**，
-   不是**判据**。`rationale`（A 的产出）作为判官输入之一，也排在 oracle 之后。
+4. **判据已部分落地（2026-10-13，真跑，非注入）**：`sdk/adversarial_e2e_test.go` 在 **SDK 的 L2 core** 上
+   真跑一次会话（零 LLM：`rt.llmSvc = mockLLMSvc`），链路为
+   `真会话 → SessionEvalExecutor 读回真实 provenance → Layer 0 floor → bridge.Emit → RuntimeFitnessAggregator.Window`：
+   - **gap 用例**：脚本每轮给空 content → 答案节点无 body → 运行时报 `gap` → floor 压到 **0**，
+     `PerSource["dimension_eval"].Mean ≤ 0 + 0.05` ✅；
+   - **对照用例**：同一 wiring 给真答案 → 报 `supplied` → `.Mean > 0.8` ✅（防"全低假绿"）。
+   - **truncated 用例：已真跑产出（2026-10-13，`t.Skip` 已删除）**。`sdk.WithMaxPlanDepth(1)` 下会话
+     真的迭代到增长上限（planner 日志 `max plan depth reached, depth=1 max=1`），答案节点带 `truncated`，
+     floor 压到 **0.5**。**当初 skip 的真因是一个缺陷，不是 seam 缺失**：节点 arg 在 engine 中**字符串化**
+     存储（`argsMetadata` 对每个值 `json.Marshal`），而 `answerCognition` 的读取处断言 `.(bool)` ——
+     `truncated` 被每个撞墙会话写入、被所有读取方读丢（`answer_cause` 是字符串所以没暴露）。后果是
+     P0-1(i) 的"`truncated=true` → score=0.5"在生产侧**从未生效**。已修（`answerArgTruncated` 读 wire 形状，
+     同时接受内存中的 bool），并在 `answer_truncation_test.go` 用**真实 wire 形状**（走 `argsMetadata`）
+     锁死 —— 旧测试传真 bool，恰恰掩盖了它。另：e2e 的脚本必须让"答案是合成的"那一跳拿到 content
+     （实测调用序：planner 第 1 轮要工具 → 答案节点合成），否则结局落 gap（penalty 0）而非中间档。
+   - 架构锁未破：复用 `rt.ensureL2()` 的 core，**未新增 `NewExecution` 调用点**。
+5. `rationale`（A 的产出）作为判官输入之一，仍排在 oracle 之后。
 5. **信号的量级目前很薄（必须写出来，别把"通道已通"读成"已防住糊弄"）**：判据是判官拿 `ExpectedOutput`
    比对，而 golden 语料只有 `test/eval/basic.yaml` + `test/eval/tools.yaml` 两份小样例。所以现在 GA 拿到的
    是一层**很薄的正确率**；**真正"防 reward hacking"要等语料扩到能代表任务面之后才兑现**。这一批交付的准确

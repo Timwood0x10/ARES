@@ -50,3 +50,25 @@ const (
 	// observer must not score as a success.
 	AnswerBodySourceGap = "gap"
 )
+
+// AnswerQualityPenalty is the ONE scoring rule for the degraded-answer signals
+// above: a gap body scores 0 (it produced nothing — indistinguishable from
+// failure), a depth-capped answer scores 0.5 (something real came out under
+// duress: better than nothing, worse than any genuine answer), and absent
+// signals keep 1 (no penalty — a non-answer task, or an envelope predating the
+// keys).
+//
+// It lives here, beside the wire names it interprets, because TWO scorers need
+// it: the runtime observer's fitness factor and the eval judge's deterministic
+// floor. Two copies of these numbers would drift apart, and a drifted penalty is
+// silently wrong rather than visibly broken — the same failure mode these keys
+// were centralised to prevent.
+func AnswerQualityPenalty(bodySource string, truncated bool) (factor float64, degraded bool) {
+	if bodySource == AnswerBodySourceGap {
+		return 0, true
+	}
+	if truncated {
+		return 0.5, true
+	}
+	return 1, false
+}

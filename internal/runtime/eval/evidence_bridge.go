@@ -63,12 +63,14 @@ func NewDimensionJudgeBridge(store evidence.Store) *DimensionJudgeBridge {
 //	taskID - the task being evaluated.
 //	role - the agent role whose execution is assessed.
 //	resp - the scalar judge response, must be non-nil.
+//	value - the scalar this diagnosis is reported under, as computed by the
+//	  caller's scoring path (0..1, deterministic floors and clamps included).
 //
 // Returns:
 //
 //	evidence - the structured diagnosis; nil when resp is nil.
 //	err - ErrNilJudgeResponse when resp is nil.
-func (b *DimensionJudgeBridge) ToEvidence(taskID, role string, resp *DimensionJudgeResponse) (*Evidence, error) {
+func (b *DimensionJudgeBridge) ToEvidence(taskID, role string, resp *DimensionJudgeResponse, value float64) (*Evidence, error) {
 	if resp == nil {
 		return nil, ErrNilJudgeResponse
 	}
@@ -87,13 +89,14 @@ func (b *DimensionJudgeBridge) ToEvidence(taskID, role string, resp *DimensionJu
 	ev.AddDimension("efficiency", efficiency, 2, llmJudgeItem("efficiency", float64(efficiency), 2), "")
 	ev.AddDimension("safety", safety, 2, llmJudgeItem("safety", float64(safety), 2), "")
 	ev.Confidence = averageConfidence(resp)
-	// The scalar the fitness aggregator reads out of this payload: the SAME
-	// normalized mean the averaged metric returns (one shared rule), so the
-	// accuracy fitness consumes can never drift from the score the eval gate
-	// judged.
-	ev.Value = normalizedDimensionMean([4]float64{
-		resp.Correctness, resp.Completeness, resp.Efficiency, resp.Safety,
-	})
+	// The scalar the fitness aggregator reads out of this payload is the value
+	// the CALLER scored with, passed in rather than recomputed here. Recomputing
+	// it from the four rubrics silently disagreed whenever the scoring path
+	// applied something the rubrics cannot express — the deterministic floor does
+	// exactly that (a gap body's mean is clamped to 0 while its other three
+	// dimensions are untouched), and the record then carried value 0.75 next to
+	// the gate's 0: two numbers for one judgment, from the same run.
+	ev.Value = value
 
 	switch {
 	case isUncertainReason(resp.Reason):
@@ -114,19 +117,20 @@ func (b *DimensionJudgeBridge) ToEvidence(taskID, role string, resp *DimensionJu
 //	taskID - the task being evaluated, recorded as metadata.
 //	role - the agent role whose execution is assessed.
 //	resp - the scalar judge response, must be non-nil.
+//	value - the scalar the caller scored with (see ToEvidence).
 //
 // Returns:
 //
 //	err - ErrNilEvidenceStore when the store is nil, ErrNilJudgeResponse when
 //	  resp is nil, or the underlying persistence error.
-func (b *DimensionJudgeBridge) Emit(ctx context.Context, taskID, role string, resp *DimensionJudgeResponse) error {
+func (b *DimensionJudgeBridge) Emit(ctx context.Context, taskID, role string, resp *DimensionJudgeResponse, value float64) error {
 	if b.store == nil {
 		return ErrNilEvidenceStore
 	}
 	if resp == nil {
 		return ErrNilJudgeResponse
 	}
-	ev, err := b.ToEvidence(taskID, role, resp)
+	ev, err := b.ToEvidence(taskID, role, resp, value)
 	if err != nil {
 		return err
 	}

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"text/template"
 
+	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/truncate"
 )
 
@@ -117,14 +118,36 @@ func (e *LLMJudgeEvaluator) evaluateWithDimensions(ctx context.Context, tc TestC
 		return nil, fmt.Errorf("parse dimension response: %w", err)
 	}
 
+	// Layer 0 — the deterministic floor, applied BEFORE any use of the judge's
+	// numbers and needing no LLM: the runtime already knows whether the answer
+	// was a gap body or was forced by the growth-depth guard (defect P0-3), and
+	// no amount of well-written gap text may lift that. Without it a gap answer
+	// judges as a merely terse response, and the accuracy signal would reward
+	// exactly the "did less and lied about finishing" behaviour G1 exists to
+	// stop.
+	//
+	// The clamps are ares_events.AnswerQualityPenalty — the same rule and the
+	// same numbers the runtime observer's fitness factor applies. A judge that
+	// scores a gap body well is overruled, not averaged with.
+	factor, degraded := ares_events.AnswerQualityPenalty(result.AnswerBodySource, result.Truncated)
+	if degraded && result.AnswerBodySource == ares_events.AnswerBodySourceGap {
+		// Correctness, specifically: a gap body is not partially correct. Zeroing
+		// the dimension as well as clamping the mean keeps the structured
+		// diagnosis (and the evidence written below) consistent with the score.
+		dimResp.Scores[0] = 0
+	}
+
 	// Average the four normalized dimension scores.
 	avgScore := normalizedDimensionMean(dimResp.Scores)
+	if degraded && avgScore > factor {
+		avgScore = factor
+	}
 
 	// Production bridge: persist the structured dimension diagnosis into the
 	// universal evidence store when wired, so the evolution Diagnoser can
 	// consume real failure evidence (not just test-seeded records). Emit is
 	// best-effort: a persistence failure must not fail the evaluation.
-	e.emitDimensionEvidence(ctx, tc.ID, dimResp)
+	e.emitDimensionEvidence(ctx, tc.ID, dimResp, avgScore)
 
 	return []EvalScore{
 		{
@@ -139,7 +162,7 @@ func (e *LLMJudgeEvaluator) evaluateWithDimensions(ctx context.Context, tc TestC
 // KindDimensionEval evidence and persists it through the bridge when a store is
 // wired. Persistence failures are logged, never returned, to keep the scalar
 // scoring path robust.
-func (e *LLMJudgeEvaluator) emitDimensionEvidence(ctx context.Context, taskID string, dimResp *dimensionAwareJudgeResponse) {
+func (e *LLMJudgeEvaluator) emitDimensionEvidence(ctx context.Context, taskID string, dimResp *dimensionAwareJudgeResponse, value float64) {
 	if e.dimensionBridge == nil {
 		return
 	}
@@ -150,7 +173,7 @@ func (e *LLMJudgeEvaluator) emitDimensionEvidence(ctx context.Context, taskID st
 		Safety:       dimResp.Scores[3],
 		Reason:       dimResp.Reason,
 	}
-	if err := e.dimensionBridge.Emit(ctx, taskID, e.role, judgeResp); err != nil {
+	if err := e.dimensionBridge.Emit(ctx, taskID, e.role, judgeResp, value); err != nil {
 		log.Error("dimension judge bridge emit failed",
 			"task_id", taskID,
 			"role", e.role,

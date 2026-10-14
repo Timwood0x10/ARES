@@ -94,6 +94,22 @@ type TestResult struct {
 	Metrics map[string]float64 `json:"metrics"`
 	// Timestamp is when the test was executed.
 	Timestamp time.Time `json:"timestamp"`
+	// AnswerBodySource is where the terminal answer's body CAME FROM, reported
+	// by an executor built on the real runtime (the ares_events.AnswerBodySource*
+	// set; "" when the executor cannot report it).
+	//
+	// The names are the shipped P0-3 wire names on purpose: a second vocabulary
+	// for the same fact is how the two halves of a system drift apart. It exists
+	// so a judge — or a deterministic floor — can tell a real answer from a gap
+	// body WITHOUT parsing prose.
+	AnswerBodySource string `json:"answer_body_source,omitempty"`
+	// Truncated reports that the answer was forced by the planner's growth-depth
+	// guard rather than produced by a free final turn (P0-3).
+	//
+	// Empty/false means "not reported" — an LLM-only executor has no runtime
+	// behind it — NOT "a healthy answer". The penalty rule distinguishes the two
+	// by treating absent signals as no-penalty.
+	Truncated bool `json:"truncated,omitempty"`
 }
 
 // EvalScore represents a single evaluation metric score.

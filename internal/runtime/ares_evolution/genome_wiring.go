@@ -100,6 +100,17 @@ type GenomePopulationAdapter struct {
 	// directly. The lifecycle runs verify gates before promoting.
 	lifecycle *StrategyLifecycle
 
+	// evidence, when set, is the runtime's measured fitness reader: the SAME
+	// aggregator the lifecycle gates deployments with (wired in genome_wiring_system
+	// alongside it, never a second aggregator). It is what makes selection consume
+	// the production signal instead of only the judge's opinion — see
+	// buildRunScorer/withMeasuredEvidence for the rule and P0-1(ii) for why the hop
+	// was missing.
+	evidence StrategyFitnessReader
+	// evidencePrior is the judge's weight in that blend, in samples of measured
+	// evidence (0 = defaultEvidencePriorSamples).
+	evidencePrior float64
+
 	// Coordinator bridge — when set, Run() submits evolution results
 	// to the new system's coordinator for decision and deployment.
 	coordinator *coordinator.UngatedPatcher

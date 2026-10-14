@@ -76,6 +76,11 @@ L2 增长深度默认上限 **10 轮**（`DefaultMaxPlanDepth = 10`，`planner_c
   与 §0.4（不自造机制），"可见化"落在**仓库既有机制**上 —— 终态结果 metadata + 日志，这正是
   `truncated` 一直以来的做法。面板/告警规则由消费该 metadata 的一侧决定，不再需要新管道。
 - **测试**：深度守卫用例（`planner_cognition_test.go`）新增"成因必须落到答案节点 payload"断言。
+- **更正（2026-10-13）**：上一段写的"`answerCognition` 复制进终态结果 metadata，与既有 `truncated` 并列"
+  里，**`truncated` 那一半当时是坏的** —— 节点 arg 在 engine 中按**字符串**存储（`argsMetadata` 会
+  `json.Marshal` 每个值），而复制处断言 `.(bool)`，于是 `truncated` 从未真正到达终态 metadata
+  （`answer_cause` 是字符串，所以它没事）。因此"外部调用方能不能看出来"这件事对 `truncated` **并未成立**，
+  只有 `answer_cause` 成立。已修（`answerArgTruncated` 按 wire 形状读取），两者现在都能被外部读到。
 
 ### D2 · L1 约束全拦 → 会话"正常地"啥都没跑 〔缺陷-需可观测〕
 

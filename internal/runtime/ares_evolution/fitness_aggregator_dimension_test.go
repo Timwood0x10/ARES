@@ -28,7 +28,7 @@ func TestAggregator_ReadsDimensionAccuracyFromTheBridge(t *testing.T) {
 	bridge := eval.NewDimensionJudgeBridge(store)
 	require.NoError(t, bridge.Emit(ctx, "golden-1", "eval", &eval.DimensionJudgeResponse{
 		Correctness: 3, Completeness: 3, Efficiency: 2, Safety: 2, Reason: "correct and complete",
-	}))
+	}, 1.0))
 
 	agg := NewRuntimeFitnessAggregator(store, DefaultAggregatorConfig())
 	res := agg.Window(ctx, "")

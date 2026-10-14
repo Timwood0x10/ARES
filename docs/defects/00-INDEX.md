@@ -24,7 +24,7 @@
 
 | # | 缺陷 | 一句话 | 共因 |
 |---|---|---|---|
-| P0-1 | **G1** GA 无"做对没"信号 〔证据链路已通 2026-10-13；**golden 判据待拍板**〕 | fitness 只奖励"成功+快省"，没 accuracy → **越跑越会糊弄** | 认知/正确性没持久化 |
+| P0-1 | **G1** GA 无"做对没"信号 〔证据链路已通 2026-10-13；**选育侧已接入**（同上日）；**golden 判据待拍板**〕 | fitness 只奖励"成功+快省"，没 accuracy → **越跑越会糊弄** | 认知/正确性没持久化 |
 | P0-2 | **T1+T2** LLM `create_task` 不校验 **〔已修 2026-10-12〕** | `create_task` 依赖不存在/成环 → **任务静默永不 READY**（`create_plan` 走 `CompilePlan`、operator 走自带 `findCycle`，都安全；**只有 `create_task` 旁路漏**） | 引用/边界没校验 |
 | P0-3 | **D1+D2** 提前交差不够可见 **〔已修 2026-10-12〕** | maxPlanDepth 撞墙 / L1 全拦 → 强制出 answer；**不标记成因**（D1 已有 Warn+计数，但无面板/告警规则） | 静默早停 |
 | P0-4 | **Q3+A-dispo1+A-F4** 认知有损 **〔B 已动工 · A 与 P0-1 合并立项 2026-10-13〕** | checkpoint/复活只带"进度"不带"思路" → 换人/续跑**丢推理链**；A 的"存什么/如何存"见 `cognition-persistence.md` | 认知/正确性没持久化 |
@@ -110,6 +110,68 @@
 ---
 
 ## 修订记录
+
+**2026-10-14 · 复核修复（量纲 P0、溯源配对、可观测与跨模块断言）**：
+
+1. **P0（真 bug，已修）：选育混合的量纲混用**。`withMeasuredEvidence` 把聚合器的 **[0,1]** `Mean` 与
+   **[0,100]** 的判官（`service.DeterministicScore` base 50、clamp [5,100]，LLM 提示词 "0 to 100"，
+   兜底 `ConstantScorer(50)`）直接相加，且注释**断定"两边都是 [0,1]"**。实测后果：0.95（优）与 0.2（差）
+   只差 ~1 分（都落在 ~13），信号被淹没且**证据越多分越低**。修法：`judgeScaleCeiling = 100` 把实测抬到
+   judge 量纲再混（结果仍留 judge 量纲）；更正 `scaleUpFitnessToCoordinator` 的错误声明（它把
+   `Strategy.Score` 算进 [0,1] 那侧，是温床）。测试改用**真实 0–100 judge**（旧测试用 0–1 假 judge，
+   正是它掩盖了 bug）+ 新增 `TestRunScorer_MeasuredEvidenceIsNotDrowned`。反证：去掉提升 →
+   0.95 实测 = **23.21**、0.2 实测 = **22.65**（不可区分），恢复后 93.75 / 37.5。
+2. **🟠（已修）：body 与 provenance 可能来自两轮**。两个读函数各自选择答案（一个"最新可读"、一个"绝对最新"），
+   在"最新答案 body 不可读"时会把 A 轮文字配 B 轮溯源，污染确定性 floor。修法：抽 `adoptedAnswerTask`
+   作为**唯一选择**（最新可读优先，全不可读时回退最新并如实报"无 body"），两个公开函数共用它。
+   测试：`TestSessionAnswer_AndProvenanceDescribeTheSameTurn`（反证：退回独立选择即失败）。
+3. **🟡（已补）**：回收日志打印 `id(STATE)`（`State` 字段真被下游消费，避免把"暂停回收"读成"空闲回收"）；
+   状态表补"SUSPENDED 且 busy → 保留"一行（防御"暂停只在量子边界"的不变量，并写明唯一触发者是未守卫的
+   `SetBusy`）；新增**跨模块集成测试** `suspended_handoff_test.go`：回收挂起 agent → 其任务经
+   `CheckExpiredLeases` 回 READY（checkpoint 完整）→ 另一 agent 接手，并顺带钉住**顺序依赖**
+   （`LeaseSnapshot` 不过滤过期租约，所以必须"先 requeue 后回收"，即 `runSweepChain` 的 3→4）。
+4. **文档口径**：G1 明确"floor + 溯源**实质缓解** reward hacking，但不替代正确率锚（golden 回放仍未做）"。
+
+**2026-10-13 · 复核修复（回收闭环的第三态与边；GA 选育读实测）**：
+
+1. **agent 回收：SUSPENDED 出口**（`collaboration-and-factories.md` A3「第四轮」D）。SUSPENDED 此前是
+   三个出口全不通的格子（不被调度、不被回收、无 `Resume` 生产调用方）→ 被挂起的 agent 永久占额度 +
+   Cognition。新增策略位 `SuspendedTTL`（默认 30m，零值禁用），复用**同一条** `retireLocked` 出口，状态覆盖
+   收敛到 `reclaimTTLFor` 一处；安全性靠既有租约机制（挂起任务保留租约 → 过期 requeue → drain 拾回）。
+2. **agent 回收：`f.children` 随回收清理**（同上 E）：边随记录一起删（含空列表删键），消除悬空引用并把
+   这个只增不减的结构**有界**到"注册表仍持有的 agent"。
+3. **GA：选育读实测 fitness**（`genetic-algorithm.md` G1 新增段）。此前生产证据只进晋升/回滚门，
+   选育仍只看判官 → 同一策略两套结论。现由 `popAdapter.evidence = agg`（**同一个**聚合器）接入，
+   打分按收缩估计 `(n·measured + k·judge)/(n+k)` 混合（k=3，无证据时与判官完全一致）。
+
+**2026-10-13 · 复核修复（H1/M1/L1/L2：truncated 真跑、provenance 确定性、文档对齐）**：
+
+1. **H1（高，真缺陷 + 真跑）**：`truncated` 档此前**没有真跑 e2e**，`TestAdversarialE2E_*` 是 `t.Skip`。
+   追查后**根因不是"SDK 到不了 planner 的 growth bound"，而是一个生产缺陷**：深度守卫确实触发
+   （planner 日志 `max plan depth reached, depth=1 max=1`），但答案节点的 arg 在 engine 里是
+   **字符串化**存储的（`argsMetadata` 对每个值 `json.Marshal`），而 `answerCognition` 的读取处断言
+   `.(bool)` —— 标记被每个撞墙会话写入、被**所有**读取方读丢（`answer_cause` 是字符串，所以只有它没暴露）。
+   后果：P0-1(i) 的"`truncated=true` → score=0.5"与 eval floor 的 truncated 档**在生产侧从未生效**。
+   **修**：`answerArgTruncated` 按 wire 形状读取（字符串 `"true"`/内存 bool 都可，非规范拼写不得当 true）；
+   `answer_truncation_test.go` 改为**走 `argsMetadata` 的真实 wire 形状**（旧测试传真 bool，正是它掩盖了缺陷）
+   并加 bool 形态与"非规范拼写不算 true"两条。**H1 的 e2e 现已真跑通过**（`t.Skip` 删除，脚本按实测调用序
+   给两次响应：planner 第 1 轮要工具 → 答案合成）。**实机反证**：停用该读取 → 单测报
+   `truncated marker must ride the result metadata`、e2e 报 `the depth guard must have forced the answer`
+   （正是当初 skip 的理由），恢复即绿。
+2. **M1（中）**：`SessionAnswer` / `SessionAnswerProvenance` 改为**确定性取"最新 round 的答案"**
+   （`sessionAnswerTasks`，按 `sess/<sid>/d<N>/…` 的 N 降序、同轮按 id），取代原先
+   `fabric.IDs()`（map 随机序）的"第一个匹配"。多轮会话（重入会话的上一轮 + 本轮）此前可能两次运行
+   取到不同的答案，且 body 与 provenance 可能来自不同轮次。**实机反证**：退回 map 序 → 新测试报
+   `iteration 0 must read the newest round's facts, not the map's luck`（重复 25 次迭代是刻意的，
+   单次断言对旧实现有一半概率假绿）。
+3. **L1（低）**：`test/eval/adversarial.yaml` 的 `adv-gap-001.runtime_requirement` 原文称 gap 由
+   "per-agent 空工具白名单"触发，与 e2e 实际路径（**空模型**：每轮无 content 无工具调用）不符。已改为如实描述，
+   并写明**决定 gap 的是"没有 content"而非"工具被跳过"**（L1 拦下工具但模型给了 content 时，终态是
+   `supplied` + `answer_cause=l1_blocked`，属另一档更高分的结局）。`adv-trunc-001` 补上 e2e 验证指针与
+   实测调用序约束。
+4. **L2（低）**：`eval.ProvenanceReporter` 的 doc 明确"**仅限串行 runner**"：该报告是 last-Execute 语义，
+   并发 runner 下每个 case 都会被判成"最后完成的那个 case"的事实，且**静默**（事实对任何 case 都像真的）；
+   需要并发就得上按 case id 键控的报告，而不是给它加锁。
 
 **2026-10-13 · P0-1(ii) 第一步：golden → `dimension_eval` 证据链路打通**：
 
@@ -264,7 +326,7 @@ planner 写 Result.Metadata[rationale]
 
 | 半 | 现状 | 待做 |
 |---|---|---|
-| (i) 停止把 gap / 被迫交差 记为 success **〔已修 2026-10-13〕** | ✅ observer 侧已接线：`answer_body_source=gap` → score=0 且 Success=false；`truncated=true` → score=0.5 且 Success=false | 信号从 checkpoint envelope 经 `answerQualityFromCheckpoint` 提取 → `task.completed` 事件 payload → `degradedAnswerPenalty` 读取 |
+| (i) 停止把 gap / 被迫交差 记为 success **〔已修 2026-10-13；同日补修 truncated 半场，见修订记录〕** | ✅ observer 侧已接线：`answer_body_source=gap` → score=0 且 Success=false；`truncated=true` → score=0.5 且 Success=false。**注**：`truncated` 这半场此前**在生产侧从未生效**（标记在节点 arg 的字符串化 wire 上被读丢），已于同日修复并真跑验证 | 信号从 checkpoint envelope 经 `answerQualityFromCheckpoint` 提取 → `task.completed` 事件 payload → `degradedAnswerPenalty` 读取 |
 | (ii) 真正的 accuracy 维度 | 无 oracle | **golden 任务回放**进 `DimensionEval`（`FitnessWeights.DimensionEval` 权重槽已存在、默认 0.25，但运行时无人产出），权重须高于 cost/latency —— G1 文档的"最低成本做法" |
 
 **专项内顺序**：(i) 接线（信号现成，即得）→ (ii) golden（可复核的对错 oracle）→ A（Rationale）作为判官输入 + 续跑思路放最后。A 排后的理由：其价值一半在 G1，而 G1 的主信号来自**可复核的 golden**，不来自自述理由；先有 golden 这个"地"，rationale 才有"用"。

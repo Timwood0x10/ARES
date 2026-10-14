@@ -157,6 +157,9 @@ func (r *Runtime) ensureL2() *agentruntime.Execution {
 			ChatClient:   &llmChatAdapter{svc: r.llmSvc},
 			ToolBinder:   binder,
 			CompileStore: r.eventStore,
+			// The planner's growth bound, when the embedding application set one
+			// (WithMaxPlanDepth): zero keeps the planner's own default.
+			MaxPlanDepth: r.maxPlanDepth,
 		})
 		if err != nil {
 			slog.Warn("sdk: L2 execution core not wired", "error", err)

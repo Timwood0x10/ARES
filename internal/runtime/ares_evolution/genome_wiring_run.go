@@ -130,7 +130,106 @@ func (a *GenomePopulationAdapter) Run(ctx context.Context) error {
 	return nil
 }
 
-// buildRunScorer constructs the scorer used for this evolution cycle.
+// StrategyFitnessReader reports the fitness a strategy has actually MEASURED in
+// the running system — the window RuntimeFitnessAggregator serves. It is an
+// interface rather than that concrete type so the adapter can be exercised without
+// an evidence store, and so the aggregation policy (weights, window, cold start)
+// stays owned by exactly one implementation.
+type StrategyFitnessReader interface {
+	// Window returns one strategy's aggregate runtime fitness: Mean in [0,1] and
+	// Count the sample size behind it (Count == 0 means "not measured").
+	Window(ctx context.Context, strategyID string) WindowResult
+}
+
+// defaultEvidencePriorSamples is the strength of the judge's opinion expressed in
+// samples of measured evidence: it takes this many samples before the runtime and
+// the judge carry equal weight. Three, so one lucky (or unlucky) measured run
+// cannot outvote the model's assessment, while a strategy with a track record is
+// decided by its record.
+const defaultEvidencePriorSamples = 3.0
+
+// judgeScaleCeiling is the upper bound of the scores genome.ScorerFunc produces in
+// this system, and the scale the blend must work in. The production judge is
+// service.DeterministicScore: base 50, clamped to [5,100]
+// (internal/runtime/ares_evolution/service/llm_scorer.go), with the LLM tier
+// prompted for "0 to 100"; the no-scorer fallback is genome.ConstantScorer(50). The
+// runtime's measured fitness is on the other scale (the aggregator's Mean is [0,1]),
+// so withMeasuredEvidence lifts the measured side onto this one instead of adding
+// two different units together. One constant, stated once: a scale mismatch at this
+// join is invisible in unit tests that invent their own scorer scale.
+const judgeScaleCeiling = 100.0
+
+// buildRunScorer constructs the scorer used for this evolution cycle, with the
+// runtime's measured evidence folded in when a reader is wired.
+//
+// This is the second half of P0-1(ii). The first half made the accuracy signal
+// reach the aggregator — which then only gated DEPLOYMENT (the staging shadow
+// score and rollback), leaving selection to the judge's opinion of a strategy's
+// text while the running system was measuring the same strategy and could say
+// something different. Selection and deployment now read the SAME aggregator: one
+// fitness signal, two consumers.
+func (a *GenomePopulationAdapter) buildRunScorer(ctx context.Context) genome.ScorerFunc {
+	base := a.baseRunScorer(ctx)
+	if a.evidence == nil {
+		return base
+	}
+	return a.withMeasuredEvidence(ctx, base)
+}
+
+// withMeasuredEvidence wraps a judge score with the strategy's measured fitness, as
+// a shrinkage toward the judge:
+//
+//	score = (n·measuredLifted + k·judge) / (n + k)
+//
+// with n the evidence sample count, k = the prior (defaultEvidencePriorSamples), and
+// measuredLifted = window.Mean · judgeScaleCeiling.
+//
+// The lift is not cosmetic. The two inputs do NOT share a scale, and an earlier
+// version of this function asserted in a comment that they did — the comment was
+// wrong and the blend silently drowned the runtime signal:
+//
+//   - the runtime's measured fitness is a window mean in [0,1] (RuntimeFitness-
+//     Aggregator's Mean, clamped);
+//   - the scorers wired as genome.ScorerFunc produce 0–100: the production judge is
+//     service.DeterministicScore (base 50, clamped [5,100], LLM tier prompted for
+//     "0 to 100" — internal/runtime/ares_evolution/service/llm_scorer.go) and the
+//     no-scorer fallback is genome.ConstantScorer(50).
+//
+// Mixing them unchanged means a 0.95 measurement (excellent) and a 0.2 measurement
+// (bad) land within ~1 point of each other on a ~13-point score, so the signal that
+// decides selection is the constant, and MORE evidence pushes the score further
+// away from the measured value. Both the lift and the scale of the RESULT matter:
+// the result stays in the judge's scale, because that is what every consumer of
+// Strategy.Score expects (thresholds, patch fitness, the coordinator).
+//
+// A strategy with no evidence keeps the judge's score EXACTLY, one with plenty of
+// evidence is decided by its record, and the prior is the ramp between: thin
+// evidence cannot swing a decision, which is why the measured number is not simply
+// substituted.
+//
+// Cost: one in-memory window read per scored candidate per generation (the scorer
+// is called serially by Population.ScoreAgents).
+func (a *GenomePopulationAdapter) withMeasuredEvidence(ctx context.Context, judge genome.ScorerFunc) genome.ScorerFunc {
+	prior := a.evidencePrior
+	if prior <= 0 {
+		prior = defaultEvidencePriorSamples
+	}
+	return func(s *mutation.Strategy) float64 {
+		base := judge(s)
+		if s == nil || s.ID == "" {
+			return base // nothing to look up: the judge's score stands
+		}
+		window := a.evidence.Window(ctx, s.ID)
+		if window.Count == 0 {
+			return base
+		}
+		n := float64(window.Count)
+		measured := window.Mean * judgeScaleCeiling
+		return (n*measured + prior*base) / (n + prior)
+	}
+}
+
+// baseRunScorer constructs the JUDGE half of this cycle's scorer.
 // It prefers the tiered (cache + budget-gated LLM + heuristic) pipeline and
 // falls back to the plain configured scorer when no tiered pipeline exists.
 //
@@ -141,7 +240,7 @@ func (a *GenomePopulationAdapter) Run(ctx context.Context) error {
 // Returns:
 //
 //	genome.ScorerFunc - the scorer to use for evolution.
-func (a *GenomePopulationAdapter) buildRunScorer(ctx context.Context) genome.ScorerFunc {
+func (a *GenomePopulationAdapter) baseRunScorer(ctx context.Context) genome.ScorerFunc {
 	if a.tieredScorer == nil {
 		return buildScorer(a.scorer)
 	}
@@ -474,10 +573,15 @@ func countUnevaluated(agents []*mutation.Strategy) int {
 
 // scaleUpFitnessToCoordinator converts a [0,1] FitnessGenome score to the
 // [0,100] scale the Coordinator uses. This is the single scale
-// conversion point: Strategy.Score and fitness_aggregator both operate in
-// [0,1], while PolicyGenome.ApplyFitnessThreshold and MinFitnessThreshold
-// operate in [0,100]. Clamping to 100 prevents a >1 fitness from inflating
-// past the Coordinator's ceiling.
+// conversion point: a genome's self-reported fitness and the fitness_aggregator's
+// window Mean both operate in [0,1], while PolicyGenome.ApplyFitnessThreshold and
+// MinFitnessThreshold operate in [0,100]. Clamping to 100 prevents a >1 fitness
+// from inflating past the Coordinator's ceiling.
+//
+// It is NOT the conversion for Strategy.Score, and this comment previously claimed
+// it was: the scorers that fill Strategy.Score produce 0–100 (see
+// judgeScaleCeiling), which is the opposite direction. Nothing here converts them,
+// and nothing should — the blend that combines the two scales does its own lift.
 func scaleUpFitnessToCoordinator(fitness float64) float64 {
 	scaled := fitness * 100.0
 	if scaled > 100.0 {

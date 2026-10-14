@@ -395,6 +395,13 @@ func attachSchedulerAndLifecycle(
 		lc := NewStrategyLifecycle(system.ActiveStrategyManager, agg, lcCfg, lcOpts...)
 		system.Lifecycle = lc
 		popAdapter.lifecycle = lc
+		// The SAME aggregator that gates deployment also feeds SELECTION (defect
+		// P0-1(ii), the hop that was missing): until this line the measured
+		// accuracy/outcome/cost of a strategy could stop it from being deployed
+		// while carrying no weight in whether it was selected and bred. Wired here,
+		// beside the lifecycle, because one signal with two consumers is the point —
+		// a second aggregator would drift from this one by construction.
+		popAdapter.evidence = agg
 	}
 }
 

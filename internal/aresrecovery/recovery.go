@@ -83,6 +83,14 @@ type RestartPolicy struct {
 	// agent that is not working": restart handles one that died, reclamation
 	// handles one that is simply not needed any more.
 	IdleAgentTTL time.Duration
+	// SuspendedAgentTTL is the same window for a SUSPENDED agent, which the same
+	// sweep retires. It is a separate knob and a LONGER default because a paused
+	// agent is not the same fact as an unused one: it had work, was deliberately
+	// paused with its checkpoint preserved, and its task still holds its lease.
+	// Zero DISABLES that arm, which is the pre-fix behaviour (a suspended agent
+	// was unreclaimable) and the safe direction to fail: keeping one costs its
+	// resources, retiring one prematurely costs the paused work.
+	SuspendedAgentTTL time.Duration
 	// RetiredAgentRetention is how long a retired agent's record stays queryable
 	// before the sweep reaps it. Reclamation retires; it can never remove, so
 	// without this the registry keeps one record per spawn for the process's
@@ -102,6 +110,11 @@ func DefaultRestartPolicy() RestartPolicy {
 		// default that kept every agent forever would keep leaking in every
 		// deployment that never heard of the knob.
 		IdleAgentTTL: agentfabric.DefaultAgentReclaimPolicy().IdleTTL,
+		// Suspended agents are reclaimed too (a paused agent is otherwise a
+		// permanent leak: nothing schedules it, nothing resumes it, and the reaper
+		// only removes RETIRED records). ON by default for the same reason as the
+		// idle window, with the longer window the policy documents.
+		SuspendedAgentTTL: agentfabric.DefaultAgentReclaimPolicy().SuspendedTTL,
 		// Reaping is ON by default for the same reason, one step later: retirements
 		// happen continuously in peer mode, and each one leaves a record.
 		RetiredAgentRetention: agentfabric.DefaultRetiredAgentRetention,
@@ -403,7 +416,7 @@ func (r *Recovery) RestartCount(agentID string) int {
 // budget fills up and stays full (ErrResourceQuotaExceeded on all later spawns)
 // and the agents themselves accumulate. See agentfabric.AgentReclaimPolicy.
 func (r *Recovery) ReclaimIdleAgents(ctx context.Context) []agentfabric.IdleAgent {
-	if r.policy.IdleAgentTTL <= 0 {
+	if r.policy.IdleAgentTTL <= 0 && r.policy.SuspendedAgentTTL <= 0 {
 		return nil
 	}
 	// "Nobody is using it" is decided on TASK OWNERSHIP, not on the activity
@@ -419,7 +432,8 @@ func (r *Recovery) ReclaimIdleAgents(ctx context.Context) []agentfabric.IdleAgen
 		}
 	}
 	return r.agents.ReclaimIdle(ctx, agentfabric.AgentReclaimPolicy{
-		IdleTTL: r.policy.IdleAgentTTL,
+		IdleTTL:      r.policy.IdleAgentTTL,
+		SuspendedTTL: r.policy.SuspendedAgentTTL,
 		// One holder per capability is an invariant, not a knob: retiring the
 		// last agent able to serve a capability would turn a quota leak into
 		// tasks that can never be scheduled at all.

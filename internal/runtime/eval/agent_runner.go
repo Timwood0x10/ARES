@@ -87,6 +87,15 @@ func (r *AgentTestRunner) RunSingle(ctx context.Context, testCase TestCase) (Tes
 	result.ToolsUsed = toolsUsed
 	result.TokensUsed = tokensUsed
 
+	// Provenance is reported by executors that have a runtime behind them (the
+	// optional, type-asserted half of AgentExecutor). Recording it here — rather
+	// than inside each executor — keeps one place where a result learns where its
+	// answer came from, and leaves an executor that cannot report it untouched
+	// (absent = "no signal", which the penalty rule scores as no-penalty).
+	if reporter, ok := r.executor.(ProvenanceReporter); ok {
+		result.AnswerBodySource, result.Truncated = reporter.AnswerProvenance()
+	}
+
 	if err != nil {
 		result.Error = err.Error()
 	}

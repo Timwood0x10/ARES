@@ -674,7 +674,7 @@ func (c *answerCognition) ExecuteStep(ctx context.Context, task *models.Task) (*
 	}
 	result.Metadata[answerCauseKey] = cause
 	result.Metadata[answerBodySourceKey] = bodySource
-	if truncated, truncatedOK := args[answerTruncatedKey].(bool); truncatedOK && truncated {
+	if answerArgTruncated(args) {
 		result.Metadata[answerTruncatedKey] = true
 	}
 	// Who finished the session, and whether the work was continued (defect A6).
@@ -802,6 +802,31 @@ func argsMetadata(args map[string]any) map[string]string {
 		md[argMetadataPrefix+k] = stringify(v)
 	}
 	return md
+}
+
+// answerArgTruncated reports whether the depth-guard truncation marker rides this
+// answer node's args.
+//
+// It reads the value in the shape the WIRE carries, not the shape the producer
+// wrote. argsMetadata stores node args as strings (the engine's node metadata is
+// a map[string]string), so the planner's bool arrives here as the JSON text
+// "true". A bare .(bool) assertion therefore never fires in production: every
+// depth-capped session stamped the marker and none read it, which silently
+// deleted the depth-capped tier from BOTH scorers that key on it — the fitness
+// observer's penalty and the eval judge's deterministic floor (defect P0-1(ii)
+// half). The in-memory bool is accepted too, because the fact is the same one
+// whichever layer encoded it; the string form is only "true"/"false" since
+// stringify renders it with json.Marshal, so no other spelling is tolerated and
+// an absent/false marker stays absent.
+func answerArgTruncated(args map[string]any) bool {
+	switch v := args[answerTruncatedKey].(type) {
+	case bool:
+		return v
+	case string:
+		return v == "true"
+	default:
+		return false
+	}
 }
 
 // argsFromPayload re-extracts the tool arguments from a node's payload,

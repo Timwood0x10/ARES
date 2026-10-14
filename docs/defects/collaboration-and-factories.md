@@ -312,6 +312,15 @@ run a quantum (it can still be managed by [lifecycle])"。（初稿锚点 `:121/
 - **测试**：`TestRetireReleasesRuntimeState`（退休后 `ExecuteStep` 必须 `ErrAgentNotExecutable`
   且额度归零，**同时**记录仍在）、`TestReclaimIdle_SkipsAgentsInUse`；既有 `TestRetire*` 三条全绿
   （证明丢弃 cognition 未破坏既有契约）。
+**第四轮（2026-10-13，复核后补齐"只进不出"的最后两个格子）**
+
+| # | 缺口（真） | 为什么是真缺口 | 修法 |
+|---|---|---|---|
+| D | **SUSPENDED 是第三态，却没有任何出口** | 回收候选要求 `StateIdle`、reaper 只收 `StateRetired`、候选池要求 `StateIdle`（PAUSED 永不被调度），而 `Resume` **全仓生产调用方为零**（唯一 `Suspend` 写入者是 chaos）→ 一个被挂起的 agent **永久占着资源额度 + Cognition 直到进程结束**。这正是本轮要消灭的那类泄漏，只是换了格子 | 新增策略位 `SuspendedTTL`（默认 30m，**是 IdleTTL 的 3 倍**：挂起是刻意行为；零值**禁用**=安全方向），由**同一条 `retireLocked` 出口**回收（`reclaimTTLFor` 是覆盖状态的唯一出处，扫描与临界区内复核共用它）。安全性有据：挂起任务**保留租约**（`taskfabric.Yield` 只改状态），租约过期由既有 `CheckExpiredLeases`（显式含 SUSPENDED）requeue 回 READY，常规 drain 经 `ResumableTasks` 拾回 —— 与 operator retire 依赖的是同一条路径。`IdleAgent` 增 `State` 字段（报告"退休自哪个状态"，类型名保持历史名并在 doc 里写明不得读成 IDLE）。测试：`reclaim_suspended_test.go`（**穷尽状态表**：IDLE/SUSPENDED/RETIRED × busy/inUse × 窗口内外，§11）+ 端到端泄漏释放用例 |
+| E | **`f.children` 只增不减**（同一个 spawn 循环里的第二个无界结构） | 每次带 `ParentID` 的 spawn 追加一条子列表，`Kill`/`Retire`/reaper 都不删；而 `Children()` 是**公开访问器**（dashboard/测试会走），被回收的 id 就变成"查不到的悬空引用" | `ReapRetired` 在**同一个临界区**内把边随记录一起清掉：删该记录自己的出边，并从父列表里剥掉该 id，空列表**删除键**（空条目也是增长）。语义边界写进 doc：被回收节点的 provenance **故意不再保留**（它描述的记录已不存在，留着不是历史而是查不到的引用）；被 `Kill` 的 agent（不进 reaper）不受影响。测试：`reap_edges_test.go`（悬空消除 / 不动活树 / 图有界） |
+
+- 实机反证（三条各自做过）：停用 SUSPENDED 臂 → 状态表 `reclaimed=[]` 且泄漏用例失败；停用边清理 → 悬空与有界两条失败；恢复即绿。
+
 **第三轮（2026-10-13，三处残余全部处理）**
 
 | # | 残余 | 结论与修法 |

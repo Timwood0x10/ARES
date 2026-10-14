@@ -22,7 +22,7 @@ func TestDimensionEvidenceCarriesScalarValue(t *testing.T) {
 
 	require.NoError(t, bridge.Emit(context.Background(), "tc-1", "eval", &DimensionJudgeResponse{
 		Correctness: 3, Completeness: 3, Efficiency: 2, Safety: 2, Reason: "all four at the ceiling",
-	}))
+	}, 1.0))
 
 	recs, err := store.Query(context.Background(), evidence.Filter{Kind: evidence.KindDimensionEval})
 	require.NoError(t, err)

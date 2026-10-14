@@ -115,7 +115,10 @@ type llmService interface {
 //	agent := ares.NewAgent("assistant", sdk.WithInstruction("You are helpful."))
 //	result, _ = agent.Run(ctx, "hello")
 type Runtime struct {
-	llmSvc           llmService
+	llmSvc llmService
+	// maxPlanDepth is the L2 planner's growth bound (0 = planner default),
+	// handed to the execution core in ensureL2 (WithMaxPlanDepth).
+	maxPlanDepth     int
 	toolReg          *tools.Registry
 	memMgr           memory.MemoryManager
 	distillCleanup   func()

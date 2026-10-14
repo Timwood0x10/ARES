@@ -292,7 +292,7 @@ func runSweepChain(
 	reclaimed := recovery.ReclaimIdleAgents(ctx)
 	if len(reclaimed) > 0 {
 		log.Info(ctx, "runKernelRecoveryLoop",
-			"kernel recovery loop: reclaimed idle agent(s), releasing their resource claims",
+			"kernel recovery loop: reclaimed inactive agent(s) (idle or paused), releasing their resource claims",
 			"count", len(reclaimed), "agent_ids", reclaimIDs(reclaimed))
 	}
 	// Tombstone reaping runs after reclamation and unconditionally (defect
@@ -308,11 +308,15 @@ func runSweepChain(
 	}
 }
 
-// reclaimIDs flattens reclaimed agents to their ids for the sweep's log line.
+// reclaimIDs flattens reclaimed agents for the sweep's log line, keeping the STATE
+// each one was retired from. The sweep covers two states, and they mean different
+// things to whoever reads the log: an IDLE agent was unused, while a SUSPENDED one
+// had paused work whose task is resumed by the lease path. A line listing bare ids
+// invites the reader to assume "idle" for both.
 func reclaimIDs(reclaimed []agentfabric.IdleAgent) []string {
 	out := make([]string, 0, len(reclaimed))
 	for _, a := range reclaimed {
-		out = append(out, a.Identity)
+		out = append(out, fmt.Sprintf("%s(%s)", a.Identity, a.State))
 	}
 	return out
 }

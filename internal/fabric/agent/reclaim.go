@@ -19,9 +19,30 @@ import (
 // client, tool bundle), so the pool grows whether or not a budget is set.
 type AgentReclaimPolicy struct {
 	// IdleTTL is how long an agent may go without STARTING a quantum before it
-	// becomes reclaimable. Zero or negative DISABLES reclamation: that is the
-	// explicit off switch for an operator who wants every agent kept.
+	// becomes reclaimable. Zero or negative DISABLES reclamation of IDLE agents:
+	// that is the explicit off switch for an operator who wants every agent kept.
 	IdleTTL time.Duration
+	// SuspendedTTL is the same window for a SUSPENDED (paused) agent, and it is a
+	// separate knob because suspension is a DIFFERENT fact: an idle agent is one
+	// nothing asked to do anything, while a suspended one had work and was
+	// deliberately paused mid-flight (its task keeps its lease and its checkpoint).
+	// Reclaiming the second therefore waits longer by default — long enough that a
+	// pause an operator is still looking at is not swept out from under them.
+	//
+	// Zero or negative DISABLES reclaiming suspended agents, which is the
+	// pre-fix behaviour and the safe direction to fail: a kept agent costs its
+	// resources, a prematurely retired one costs the paused work.
+	//
+	// Without this arm a suspended agent is a PERMANENT leak: nothing schedules it
+	// (the candidate pool requires IDLE), nothing resumes it (Resume has no
+	// production caller), and the reaper only ever removes RETIRED records — so it
+	// held its resource claim and its Cognition for the life of the process.
+	// Retiring it is safe by the same mechanism Retire already relies on: a
+	// suspended task KEEPS its lease (taskfabric.Yield only transitions the state),
+	// so the lease-expiry path requeues it to READY for another agent to resume
+	// (fabric_lifecycle.go's CheckExpiredLeases states this explicitly), and the
+	// drain picks it up through ResumableTasks.
+	SuspendedTTL time.Duration
 	// KeepPerCapability is the floor reclamation must leave standing for each
 	// capability, evaluated after the retirements. It exists because retiring the
 	// last agent able to serve a capability trades a quota leak for a different
@@ -45,14 +66,28 @@ type AgentReclaimPolicy struct {
 // the FIRST sweep after enabling may reclaim everything already idle, which is
 // why it runs inside the kernel loop's own tick rather than on demand.
 func DefaultAgentReclaimPolicy() AgentReclaimPolicy {
-	return AgentReclaimPolicy{IdleTTL: 10 * time.Minute, KeepPerCapability: 1}
+	return AgentReclaimPolicy{
+		IdleTTL: 10 * time.Minute,
+		// Three times the idle window: a pause is deliberate, and the agent's
+		// suspended task outlives it only until its lease expires.
+		SuspendedTTL:      30 * time.Minute,
+		KeepPerCapability: 1,
+	}
 }
 
 // IdleAgent is the read-only record of one reclaimed agent: enough for a log
 // line or a test to see what happened, without handing out a live *Agent.
+//
+// The name is the sweep's historical one (ReclaimIdle) and is kept for the
+// callers that already consume it; it must NOT be read as "the agent was IDLE" —
+// State says which of the two covered states the sweep found.
 type IdleAgent struct {
 	// Identity is the reclaimed agent's id.
 	Identity string
+	// State is the state the agent was in when the sweep decided (IDLE or
+	// SUSPENDED). Reported because the two mean different things to an operator
+	// reading the log: one was unused, the other had paused work.
+	State AgentState
 	// IdleFor is how long it had been inactive when the sweep decided.
 	IdleFor time.Duration
 	// Capabilities are the capabilities whose floor was evaluated against this
@@ -62,9 +97,11 @@ type IdleAgent struct {
 	Resources map[string]float64
 }
 
-// ReclaimIdle retires every agent that is IDLE, not busy, named in no live
-// lease, and inactive longer than the policy window — as far as the
-// per-capability floor allows. It returns the retired agents in id order.
+// ReclaimIdle retires every agent that is IDLE or SUSPENDED, not busy, named in
+// no live lease, and inactive longer than the policy window that applies to its
+// state — as far as the per-capability floor allows. It returns the retired
+// agents in id order. (reclaimTTLFor holds the state table and the reason each
+// state is covered.)
 //
 // inUse names the agent ids the caller KNOWS to be busy with real work: in
 // production the owners of live task leases (taskfabric.LeaseSnapshot). They are
@@ -98,8 +135,8 @@ type IdleAgent struct {
 // harder or softer without reconfiguring the fabric. ReclaimIdle is safe to call
 // concurrently with itself and with every other fabric operation.
 func (f *Fabric) ReclaimIdle(ctx context.Context, policy AgentReclaimPolicy, inUse map[string]struct{}) []IdleAgent {
-	if policy.IdleTTL <= 0 {
-		return nil
+	if policy.IdleTTL <= 0 && policy.SuspendedTTL <= 0 {
+		return nil // both arms off: the pre-fix "keep everything" behaviour
 	}
 	keep := policy.KeepPerCapability
 	if keep < 1 {
@@ -110,7 +147,11 @@ func (f *Fabric) ReclaimIdle(ctx context.Context, policy AgentReclaimPolicy, inU
 	var retired []*Agent
 
 	f.mu.Lock()
-	candidates := f.idleCandidatesLocked(f.now(), policy.IdleTTL)
+	// One clock read for the whole sweep: the scan and the in-lock re-check must
+	// judge the same instant, or a candidate could pass the first test and fail
+	// the second purely because time moved.
+	now := f.now()
+	candidates := f.idleCandidatesLocked(now, policy)
 	// The floor counts the agents that are NOT candidates, then grows as the
 	// sweep decides to KEEP one. Evaluating it against the survivors instead of
 	// the current pool is what stops a batch of same-capability candidates from
@@ -162,9 +203,10 @@ func (f *Fabric) ReclaimIdle(ctx context.Context, policy AgentReclaimPolicy, inU
 			continue
 		}
 		a.mu.RLock()
-		stillIdle := a.State == StateIdle && !a.busy
+		state, busy, lastActive := a.State, a.busy, a.lastActiveAt
 		a.mu.RUnlock()
-		if !stillIdle {
+		ttl, covered := reclaimTTLFor(state, policy)
+		if !covered || busy || now.Sub(lastActive) <= ttl {
 			continue
 		}
 		ta, err := f.retireLocked(id)
@@ -185,16 +227,48 @@ func (f *Fabric) ReclaimIdle(ctx context.Context, policy AgentReclaimPolicy, inU
 	return reclaimed
 }
 
+// reclaimTTLFor reports the inactivity window that applies to an agent in state,
+// and whether the sweep covers that state at all. It is the ONE place the covered
+// states are named, so the candidate scan and the in-lock re-check cannot drift
+// apart on which states the sweep may retire.
+//
+// The state table it encodes (the sweep's whole trigger surface):
+//
+//	state            covered?  window            why
+//	IDLE             yes       policy.IdleTTL    not working, nothing asked for it
+//	SUSPENDED        yes       policy.Suspended  paused mid-flight: retire it, its
+//	                          TTL               task keeps its lease and is requeued
+//	                                            by the lease-expiry path
+//	RETIRED          no        —                 terminal; ReapRetired removes the
+//	                                            record, the sweep must not touch it
+//	(anything else)  no        —                 unknown states are never guessed
+//
+// An uncovered state and a non-positive window are the same answer: leave it
+// alone.
+func reclaimTTLFor(state AgentState, policy AgentReclaimPolicy) (time.Duration, bool) {
+	switch state {
+	case StateIdle:
+		return policy.IdleTTL, policy.IdleTTL > 0
+	case StatePaused:
+		return policy.SuspendedTTL, policy.SuspendedTTL > 0
+	default:
+		return 0, false
+	}
+}
+
 // idleCandidatesLocked collects the agents eligible on the activity test alone,
 // keyed by id. Caller must hold f.mu.
-func (f *Fabric) idleCandidatesLocked(now time.Time, ttl time.Duration) map[string]IdleAgent {
+func (f *Fabric) idleCandidatesLocked(now time.Time, policy AgentReclaimPolicy) map[string]IdleAgent {
 	out := make(map[string]IdleAgent)
 	for id, a := range f.agents {
 		a.mu.RLock()
-		idle := a.State == StateIdle && !a.busy && now.Sub(a.lastActiveAt) > ttl
-		idleFor := now.Sub(a.lastActiveAt)
+		state, busy, lastActive := a.State, a.busy, a.lastActiveAt
 		a.mu.RUnlock()
-		if !idle {
+		ttl, covered := reclaimTTLFor(state, policy)
+		// busy excludes an agent whose quantum is in flight whatever its state
+		// says: a suspension is taken at a quantum boundary, so a SUSPENDED agent
+		// should not be busy, and if one is, the sweep waits rather than racing it.
+		if !covered || busy || now.Sub(lastActive) <= ttl {
 			continue
 		}
 		claim := make(map[string]float64, len(a.resources))
@@ -202,7 +276,13 @@ func (f *Fabric) idleCandidatesLocked(now time.Time, ttl time.Duration) map[stri
 			claim[name] = amount
 		}
 		caps := append([]string(nil), a.Capabilities...)
-		out[id] = IdleAgent{Identity: id, IdleFor: idleFor, Capabilities: caps, Resources: claim}
+		out[id] = IdleAgent{
+			Identity:     id,
+			State:        state,
+			IdleFor:      now.Sub(lastActive),
+			Capabilities: caps,
+			Resources:    claim,
+		}
 	}
 	return out
 }

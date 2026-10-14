@@ -221,6 +221,7 @@ func (b *sdkBuilder) wireEventBackendPhase() {
 func (b *sdkBuilder) buildRuntime() *Runtime {
 	return &Runtime{
 		llmSvc:            b.llmSvc,
+		maxPlanDepth:      b.cfg.maxPlanDepth,
 		toolReg:           b.toolReg,
 		memMgr:            b.memMgr,
 		distillCleanup:    b.distillCleanup,

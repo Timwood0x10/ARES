@@ -70,10 +70,46 @@ maxPlanDepth=10 撞墙 / L1 全拦
 - **仍未做（P0-1(ii) 的第二步，需拍板）**：**golden 判据**本身 —— ① oracle 形态（`ExpectedOutput` 精确/包含匹配
   vs rubric+LLM judge vs 分层；注：四维提示词**已含** `{{.ExpectedOutput}}`，即参照物已喂给判官）；
   ② golden 语料来源与规模（现仅 `test/eval/basic.yaml`、`tools.yaml` 两份小样例）；③ 触发方式（离线/定时/evolution 前）。
-  故**"gap 交差在 golden 回放里必须低分"这条合同测试尚未落地** —— 现在通了的是**证据链路**，不是**判据**。
+  **（更新 2026-10-13）**：**"gap 交差必须低分"这条已落地并真跑通过** ——
+  `sdk/adversarial_e2e_test.go` 在 SDK 的 L2 core 上真跑会话（零 LLM），gap 用例被 floor 压到 0
+  且聚合器窗口均值 ≤0+0.05，**对照用例 >0.8**（防全低假绿）；
+  **truncated 用例已真跑通过（2026-10-13，`t.Skip` 已删除）**：`WithMaxPlanDepth(1)` 下会话真的迭代到
+  增长上限（planner 打印 `max plan depth reached, depth=1 max=1`）→ 答案节点带 `truncated` → floor 压到
+  **0.5**（中间档：高于 gap 的 0，低于真答案）→ 聚合器窗口均值落在该档。
+  **当初 skip 的真因不是"到不了上限"，而是一个缺陷**：节点 arg 在 engine 里是**字符串化**存储的
+  （`argsMetadata` 对每个值 `json.Marshal`），而读者用 `.(bool)` 断言 —— `truncated` 被每个撞墙会话写入、
+  被**所有读取方**读丢，于是 0.5 这一档在生产侧根本打不出来（fitness observer 与 eval floor 双双失效）。
+  已修（`answerArgTruncated` 按 wire 形状读取），并做了实机反证（停用该读取 → 单测与 e2e 同时失败）。
+- **已接：信号进入"选育"而不只是"部署门"（2026-10-13，P0-1(ii) 的第二个缺口）**。此前 `RuntimeFitnessAggregator`
+  只服务**晋升/回滚门**，而 GA 的选择打分器（`EvolveAfterScoring` 的 `buildRunScorer`）走的是判官/启发式/常量
+  兜底 —— 于是"策略该不该部署"由生产证据决定，"策略该不该被选中繁殖"由判官对文本的印象决定，同一个策略
+  两套结论。**修法（一个信号两个消费者）**：`genome_wiring_system` 把 lifecycle 用的**同一个**聚合器注入 adapter
+  （`popAdapter.evidence = agg`，绝不建第二个），打分器按**收缩估计**混入实测 fitness：
+  `score = (n·measuredLifted + k·judge) / (n + k)`，`n` = 窗口样本数、`k` = 先验（`defaultEvidencePriorSamples = 3`）。
+  **无证据的策略分数与判官完全一致**（`n=0` 原样返回），证据稀少时判官占多数，所以"一次侥幸"不能推翻模型判断。
+  测试：`genome_wiring_evidence_test.go`（公式表 + nil/无 id 回退 + **装配断言：选育读的必须就是回滚门读的那个聚合器**）。
+- **更正（2026-10-14，量纲混用 —— 初版实现是错的，且错在"注释声明"而非代码注释缺失）**：初版把实测与判官
+  直接相加，并在注释里**断言"两边都是 [0,1]"**。该断言是错的，钉死的量纲事实是：
+  - 实测侧 = 聚合器 `Mean`，**[0,1]**（`fitness_aggregator.go` 字段 doc + clamp）；
+  - 判官侧 = `genome.ScorerFunc`，**0–100**：生产装的是 `service.DeterministicScore`（base **50**、clamp **[5,100]**，
+    LLM 提示词写 "Score this strategy on a scale of 0 to 100"；`bootstrap_evolution.go` 装配），无 LLM 时兜底
+    `genome.ConstantScorer(50)`。
+  **后果（实测）**：0.95（优）与 0.2（差）在 0–100 judge 前只差 ~1 分（都落在 ~13），实测信号被淹没；且**证据越多、
+  分越低**（把 0-100 稀释向 0-1），选择方向反了——"让实测驱动选择"实际近似 no-op。
+  **修法**：实测侧乘 `judgeScaleCeiling = 100` 抬到 judge 的量纲再混，**结果仍留在 judge 量纲**（`Strategy.Score`
+  的所有下游消费者不变：阈值、patch fitness、coordinator）。同时更正 `scaleUpFitnessToCoordinator` 的 doc ——
+  它此前把 `Strategy.Score` 也算进 [0,1] 那一侧，正是本 bug 的温床。
+  **测试为什么全绿反而危险（已修）**：原公式用例用 `judgeOf(0.9)`（[0,1] 假 judge），只证明了"公式在假量纲下成立"，
+  而生产是 0–100 —— 假夹具把 bug 遮住了。现在用例一律用**真实 0–100 judge**，并新增
+  `TestRunScorer_MeasuredEvidenceIsNotDrowned` 锁两条性质："优/差必须可区分"、"证据越多必须越靠近实测"。
+  实机反证：去掉量纲提升 → 0.95 实测仅 **23.21**、0.2 实测 **22.65**（正是"不可区分"），恢复即 93.75 vs 37.5。
 - **量级提醒（别过度解读本批）**：语料仍是两份小样例、判据是 `ExpectedOutput` 比对，所以这批交付的准确表述是
   "**正确率信号从 0 变成非 0（且链路可复核）**"，**不是**"GA 已经会做对了"。真正防糊弄取决于语料扩到能代表
   任务面之后。另：门的评分量纲不变（0..1）但**被测量的量变了**，这一点应随 commit 信息一起告知运维。
+- **已缓解但未解决（2026-10-14 明确口径）**：确定性 floor（`gap` → 0、`truncated` → 0.5，见 P0-1(i)）加上
+  答案溯源（运行时给出"这个 body 从哪来"，不是判官从文本猜）**实质缓解**了 G1 最担心的 reward hacking ——
+  "少做还像成功"这类答案拿不到高分，且该信号现在同时进了晋升门与选育。但它**不替代正确率锚**：
+  "答得对不对"仍需 golden 回放进 `DimensionEval`（下面"仍未做"那一项）。
 
 - **注意**：这是**方向性缺陷**，不是"GA 会崩"。GA 能正常跑、能出策略、有安全门——只是**优化目标本身是错的**。
 - **建议（上 GA 的硬前置）**：给 fitness 加"正确率信号"。最低成本做法是 **golden 任务回放**（对一批已知答案的任务跑新旧策略，用正确率作为**独立维度**进权重，且**必须高于 cost/latency 权重**）；进一步把 gap body / truncated 答案在 outcome 层面**降级为非 success**（`answerTruncatedKey=true` 或 `unansweredBody` 时，observer 记为 degraded 而非 success），让"早交差"拿不到高分。
