@@ -22,9 +22,19 @@ const paramKeyTemperature = "temperature"
 // ---------------------------------------------------------------------------
 
 type Strategy struct {
-	ID             string
-	Version        int
-	Score          float64
+	ID      string
+	Version int
+	// Score is the GA selection score, on the [0, ScoreMax] scale — NOT a fitness
+	// window mean, which is a different quantity on [0,1] that appears elsewhere in
+	// this API. Consumers must read ScoreMax rather than assume either range: the two
+	// look identical in JSON and mean different things.
+	//
+	// A negative Score means "never evaluated" (genome.ScoreUnevaluated = -1), which is
+	// neither a low score nor an error: display it as such.
+	Score float64
+	// ScoreMax is the upper bound of Score, published so a UI can normalise without
+	// guessing. It is evolve.JudgeScaleCeiling (100 today).
+	ScoreMax       float64
 	ParentID       string
 	PromptTemplate string
 	Params         map[string]any
@@ -149,9 +159,12 @@ func (a testerAdapter) Run(ctx context.Context, cfg evolve.RegressionConfig) (*e
 
 func publicStrategy(s evolve.Strategy) Strategy {
 	return Strategy{
-		ID:             s.ID,
-		Version:        s.Version,
-		Score:          s.Score,
+		ID:      s.ID,
+		Version: s.Version,
+		Score:   s.Score,
+		// The scale travels WITH the number, so a consumer never has to know which
+		// path produced it.
+		ScoreMax:       evolve.JudgeScaleCeiling,
 		ParentID:       s.ParentID,
 		PromptTemplate: s.PromptTemplate,
 		Params:         s.Params,

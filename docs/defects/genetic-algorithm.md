@@ -103,6 +103,54 @@ maxPlanDepth=10 撞墙 / L1 全拦
   而生产是 0–100 —— 假夹具把 bug 遮住了。现在用例一律用**真实 0–100 judge**，并新增
   `TestRunScorer_MeasuredEvidenceIsNotDrowned` 锁两条性质："优/差必须可区分"、"证据越多必须越靠近实测"。
   实机反证：去掉量纲提升 → 0.95 实测仅 **23.21**、0.2 实测 **22.65**（正是"不可区分"），恢复即 93.75 vs 37.5。
+- **跨量纲接缝扫描与加固（2026-10-14，承接上面的量纲 bug）**：
+  1. **越界证据值不再哑静默**：聚合器一直**跳过** `value ∉ [0,1]` 的记录（无法使用），但跳过本身不可见 ——
+     症状只是"这个源没有证据"，读起来像"什么都没跑"，而实际是"跑了但写错单位"（与 `dimension_eval`
+     权重静默空转同一类失败模式）。现在 `WindowResult.OutOfRange` 报告被丢弃的条数（**无 value 的记录不计入**，
+     那是设计上的诊断记录、不是单位错误），并对每个 (source, kind) **限频告警一次**（上限 32 个源 + 抑制通告，
+     沿用 MCP 未匹配身份的同一手法）。这样"指标里少了样本"这件事由数字自己带出来，而不是靠人去猜。
+  2. **夹具审计**（P0 的真教训是"夹具自造量纲"，所以专查一遍）：抽查了 promoter 的 `ScoreHistory` /
+     `CalculateEvidenceScore`（由 [0,1] 的 `SuccessRate/ErrorRate` 导出）、`experience.Evidence`（[0,1]，含 `LatencyMs`）、
+     聚合器窗口、eval 分数（`EvalScore.Score` [0,1]，配 `EvalMinScore 0.7`）、coordinator 阈值（0–100，且只有
+     `scaleUpFitnessToCoordinator` 一个换算点）、记忆打分器（基础分 0–100 + bonus ≤20 + 惩罚 ×0.1）。
+     **结论：除已修的选育混合外，没有第二处错量纲夹具。** 并新增一条守卫测试：混合结果**恒在 judge 量纲内**，
+     且"无 scorer 时兜底 50（不是 0.5）"被写成契约 —— 这样未来改量纲会**测试失败**而不是静默错。
+     **剩余（UI 级，未动）**：`evoapi` 把 `Strategy.Score`（0–100）直接作为 `Score` 暴露，而同一演化面另有
+     [0,1] 的窗口均值；两者是不同量，建议展示层命名区分（如 `score` vs `fitness_mean`），否则运维跨面板比较会误判。
+  3. **两处常量与单位统一**：① `RegressionTester` 的平局抖动改为**从 `judgeScaleCeiling` 推导**
+     （`/5000` → 0.02，低于 judge 一个点），并补意图测试：**精确平局在多轮下必须给出"接近随机"的胜率**
+     （否则等价策略会被读成"全票退步"），而**1 分之差不能被抖动翻盘**；原实现是裸常量 0.02，量纲一变就
+     会静默变成 no-op 或决策者。② 记忆打分器的惩罚参数键改为**单位自明**：`cost_units` / `latency_seconds` /
+     `regression_units`，**不再读裸 `cost`/`latency`** —— 后者是本包多目标**维度名**（`DefaultDimensionBounds` = {0,100}），
+     同一个键一边是"归一化 0–100 维度值"、一边被当成"秒"，乘 0.1 权重后一个普通维度值会被罚掉约 9 分。
+     仓库内无生产者写这两个键，故无需迁移；碰撞已用测试钉死（0–100 维度值不再被当秒罚）。
+- **复核修复（2026-10-14 第二轮，针对上面的加固自审）**：
+  1. **`OutOfRange` 的两处漏计（真）**：① 维度通道的累加写在 `if dimCount > 0` **里面** → **整通道越界**
+     （正是本特性要抓的场景：`dimCount==0`）时计数为 0，而告警照样 fire → **数字与日志互相打脸**；
+     ② 越界自增发生在**作用域过滤之前** → `WindowToolStepAt` 会把他人的坏值算进本工具步（计数总体 ≠ 可用总体）。
+     两处都已修（累加移到分支外；过滤移到取值检查之前），并补两条分别针对"整通道越界"与"只算本窗口"的测试。
+     **教训**：计数器必须覆盖"它存在的那个场景"，而不是"samples 恰好可用"的场景。
+  2. **`tieBreakJitter` 的表述过强**：写成"随 judge range 自适应"会让人高估其强度 —— 实值是
+     `JudgeScaleCeiling / 5000`，而那个常量**仍需人工维护**。改为"单一来源，非自适应"，并写明改量纲要
+     同时改常量与混合处的提升。
+  3. **惩罚参数改键属破坏性变更（包外）**：仓库内无生产者写旧键，但**包外**若写过 `cost`/`latency`/
+     `regression`，惩罚会**静默归零**。已列入运维通告（见 00-INDEX）：包外生产者请改用
+     `cost_units`/`latency_seconds`/`regression_units`；未改的旧键不会被读，也不会报错。
+  4. **⭐ 顺带查出一处新的同类真接缝：`Strategy.Score` 被两套量纲写**。字段本身是 GA 的
+     **0–100**（每条 scorer 都如此，且有数值比较：`population.go` 的 elitism/best-ever、
+     `multi_objective.go` 的排序），但：
+     - `cmd/ares` 的 `WriteActiveScore` **强制输入 [0,1]**（`score < 0 || score > 1` 直接报错）并原样写入 → 一个
+       0.9 质量的策略在字段里看起来比刚被常量 scorer 打 50 分的变异体**差 100 倍**；
+     - `dream_cycle_winner.go` 把**胜率**（[0,1]）直接赋给 `Score`（同一问题）。
+     影响面：该字段会被 `evoapi` **公开给面板**（所以这是 UI 级接缝的根因），并参与按数值比较的决策。
+     **修法（边界换算，一处一改）**：`WriteActiveScore` 在写入前 `score *= evolution.JudgeScaleCeiling`
+     （输入契约仍是 [0,1]，字段得到 0–100）；`winnerToMutationStrategy` 同样把胜率提升到该量纲。
+     **公开面同时加机器可读标注**：`evoapi.Strategy.ScoreMax`、`GenerationStats.score_max`（= `evolve.JudgeScaleCeiling`），
+     并在 doc 里写明"这是 GA 分数，不是 [0,1] 的窗口均值；负值 = 未评估哨兵"。有测试锁：分数不被缩放、`score_max`
+     出现在线形状、每个历史点都带标度、`JudgeScaleCeiling == 100` 是**要刻意改的契约**。
+     **未做（如实）**：`evoapi.Strategy` 这个 DTO **没有 JSON tag**（线上字段名是 PascalCase，兄弟 DTO 是 snake_case）——
+     统一字段名是破坏性 API 变更，**交给运维拍板**，本轮只做加法标注。
+
 - **量级提醒（别过度解读本批）**：语料仍是两份小样例、判据是 `ExpectedOutput` 比对，所以这批交付的准确表述是
   "**正确率信号从 0 变成非 0（且链路可复核）**"，**不是**"GA 已经会做对了"。真正防糊弄取决于语料扩到能代表
   任务面之后。另：门的评分量纲不变（0..1）但**被测量的量变了**，这一点应随 commit 信息一起告知运维。

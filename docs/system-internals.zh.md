@@ -1492,7 +1492,7 @@ flowchart TB
 | ② 规则裁剪 | `ContextCleaner.Clean` 对截断后的消息做"角色差异化压缩" | `context/cleaner.go` |
 | ③ RAG 注入 | prepend 检索到的相关经验/知识 snippet（用当前 input 当查询） | `manager_rag.go:17` `retrieveContextString` |
 
-### 26.2 `ContextCleaner` 到底做了什么（不吹）
+### 26.2 `ContextCleaner` 到底做了什么
 
 代码注释写的是 "intelligently cleans / differential compression"——**实际实现
 是纯规则（regex + 截断 + 取首句），零 LLM 调用**。按消息角色区别对待：

@@ -137,6 +137,19 @@ type WindowResult struct {
 	Mean float64
 	// Count is the total number of evidence records used.
 	Count int
+	// OutOfRange counts the records that were DROPPED because their scalar fell
+	// outside [0,1], among the records THIS window covers — the scope filters
+	// (strategy_id / tool_step_id) are applied first, so a scoped window never blames
+	// itself for another producer's bad values. It is reported because the alternative
+	// is silence: a producer
+	// writing a value in the wrong unit (milliseconds, a token count, a 0-100
+	// score) is skipped by the range check, so the only symptom is "this source has
+	// no evidence" — the same silent-void failure mode the dimension_eval weight
+	// already suffered once. A non-zero value here means "the number below is
+	// computed without samples that exist", which is exactly the fact an operator
+	// needs and a bare mean cannot carry. Records with NO scalar are not counted:
+	// they are diagnosis-only records by design, not a unit error.
+	OutOfRange int
 	// PerSource holds the per-source mean and count.
 	PerSource map[string]sourceStat
 	// LastAt is the NEWEST evidence timestamp inside the window. Under
@@ -258,7 +271,7 @@ func (a *RuntimeFitnessAggregator) WindowAt(ctx context.Context, strategyID stri
 	// (0.25) silently contributed nothing to fitness and GA optimised without any
 	// correctness signal at all. The kind is the contract here: one producer, one
 	// meaning, and the payload carries the scalar (`value`, 0..1) read below.
-	dimMean, dimCount, dimLastAt := a.querySourceMeanAt(ctx, store, "", evidence.KindDimensionEval, cfg.WindowSize, "", since, until)
+	dimMean, dimCount, dimLastAt, dimOutOfRange := a.querySourceMeanAt(ctx, store, "", evidence.KindDimensionEval, cfg.WindowSize, "", since, until)
 
 	perSource := make(map[string]sourceStat)
 	totalCount := 0
@@ -269,6 +282,9 @@ func (a *RuntimeFitnessAggregator) WindowAt(ctx context.Context, strategyID stri
 	globalLastAt := time.Time{}
 	var weightedSum float64
 	var weightSum float64
+	// outOfRangeTotal: records dropped for an out-of-range scalar, across every
+	// source AND the dimension channel (see WindowResult.OutOfRange).
+	outOfRangeTotal := 0
 
 	for _, src := range sources {
 		if src.optIn && src.weight <= 0 {
@@ -276,7 +292,11 @@ func (a *RuntimeFitnessAggregator) WindowAt(ctx context.Context, strategyID stri
 			// weight nor sample count (see the optIn field comment).
 			continue
 		}
-		m, c, srcLastAt := a.querySourceMeanAt(ctx, store, src.name, evidence.KindFitness, cfg.WindowSize, src.strategyID, since, until)
+		m, c, srcLastAt, srcOutOfRange := a.querySourceMeanAt(ctx, store, src.name, evidence.KindFitness, cfg.WindowSize, src.strategyID, since, until)
+		// Counted even when the source has NO usable samples (c == 0): that is
+		// exactly the case where the window silently has nothing, and the counter is
+		// what tells an operator the samples existed but were unusable.
+		outOfRangeTotal += srcOutOfRange
 		if c == 0 {
 			continue
 		}
@@ -293,6 +313,11 @@ func (a *RuntimeFitnessAggregator) WindowAt(ctx context.Context, strategyID stri
 		}
 	}
 
+	// Counted OUTSIDE the usable-samples branch: when EVERY dimension record is out
+	// of range, dimCount is 0 — which is precisely the case the counter exists for
+	// (a channel that looks empty but is not), while the warning fires regardless.
+	// A counter that only reports when the signal was fine is worse than none.
+	outOfRangeTotal += dimOutOfRange
 	if dimCount > 0 {
 		perSource["dimension_eval"] = sourceStat{Mean: dimMean, Count: dimCount, LastAt: dimLastAt}
 		totalCount += dimCount
@@ -303,7 +328,7 @@ func (a *RuntimeFitnessAggregator) WindowAt(ctx context.Context, strategyID stri
 		}
 	}
 
-	result := WindowResult{PerSource: perSource}
+	result := WindowResult{PerSource: perSource, OutOfRange: outOfRangeTotal}
 
 	if weightSum == 0 {
 		result.Mean = cfg.ColdStartScore
@@ -353,7 +378,7 @@ func (a *RuntimeFitnessAggregator) WindowAt(ctx context.Context, strategyID stri
 // timestamp (zero when no records matched) — the saturation-safe "did the
 // window advance" signal. The store is passed in (not read from the receiver)
 // so WindowAt can snapshot it under its lock and keep this helper lock-free.
-func (a *RuntimeFitnessAggregator) querySourceMeanAt(ctx context.Context, store evidence.Store, source string, kind evidence.EvidenceKind, limit int, strategyID string, since, until time.Time) (float64, int, time.Time) {
+func (a *RuntimeFitnessAggregator) querySourceMeanAt(ctx context.Context, store evidence.Store, source string, kind evidence.EvidenceKind, limit int, strategyID string, since, until time.Time) (float64, int, time.Time, int) {
 	return a.querySourceMeanScopedAt(ctx, store, source, kind, limit, strategyID, "", since, until)
 }
 
@@ -371,9 +396,9 @@ func (a *RuntimeFitnessAggregator) querySourceMeanAt(ctx context.Context, store 
 // window fills with other strategies' records, the scoped strategy's count
 // stays 0, and the rollback judge gate (MinSamplesBeforeJudge on the
 // strategy's OWN samples) never opens, silently disarming the safety net.
-func (a *RuntimeFitnessAggregator) querySourceMeanScopedAt(ctx context.Context, store evidence.Store, source string, kind evidence.EvidenceKind, limit int, strategyID, toolStepID string, since, until time.Time) (float64, int, time.Time) {
+func (a *RuntimeFitnessAggregator) querySourceMeanScopedAt(ctx context.Context, store evidence.Store, source string, kind evidence.EvidenceKind, limit int, strategyID, toolStepID string, since, until time.Time) (float64, int, time.Time, int) {
 	if store == nil {
-		return 0, 0, time.Time{}
+		return 0, 0, time.Time{}, 0
 	}
 	filter := evidence.Filter{
 		Source: source,
@@ -396,10 +421,17 @@ func (a *RuntimeFitnessAggregator) querySourceMeanScopedAt(ctx context.Context, 
 	}
 	evs, err := store.Query(ctx, filter)
 	if err != nil {
-		return 0, 0, time.Time{}
+		return 0, 0, time.Time{}, 0
 	}
 	var sum float64
 	count := 0
+	outOfRange := 0
+	// firstOutOfRange keeps one example for the warning below. The warning is emitted
+	// AFTER the loop on purpose: this helper is documented as lock-free (the store is
+	// passed in so WindowAt can snapshot it under its own lock), and the limiter takes a
+	// process-wide mutex — acquiring it per RECORD would put that lock on the query's
+	// hot path for a producer that writes nothing but bad values.
+	firstOutOfRange := 0.0
 	var lastAt time.Time
 	for _, ev := range evs {
 		if len(ev.Payload) == 0 {
@@ -423,13 +455,31 @@ func (a *RuntimeFitnessAggregator) querySourceMeanScopedAt(ctx context.Context, 
 		if err := json.Unmarshal(ev.Payload, &fe); err != nil {
 			continue
 		}
-		if fe.Value == nil || *fe.Value < 0 || *fe.Value > 1 {
-			continue
-		}
+		// Scope filters FIRST, then the value check: a scoped window must report only
+		// the out-of-range records that belong to it. Counting before the filters made
+		// WindowToolStepAt blame this tool step for another step's bad records — the
+		// counter would describe a population the mean was never computed over.
 		if strategyID != "" && fe.StrategyID != strategyID {
 			continue
 		}
 		if toolStepID != "" && fe.ToolStepID != toolStepID {
+			continue
+		}
+		if fe.Value == nil {
+			// Absent is not wrong: a diagnosis-only record (or one written by an
+			// older build) carries no scalar, and folding it in as 0.0 would read as
+			// "everything failed". Skipped quietly, and NOT counted as out of range.
+			continue
+		}
+		if *fe.Value < 0 || *fe.Value > 1 {
+			// A value outside [0,1] is nearly always a UNIT error at the producer
+			// (milliseconds, a token count, a 0-100 score rather than a 0-1 one).
+			// The record cannot be used, but its absence must not be silent — see
+			// WindowResult.OutOfRange.
+			if outOfRange == 0 {
+				firstOutOfRange = *fe.Value
+			}
+			outOfRange++
 			continue
 		}
 		sum += *fe.Value
@@ -438,10 +488,67 @@ func (a *RuntimeFitnessAggregator) querySourceMeanScopedAt(ctx context.Context, 
 			lastAt = ev.Timestamp
 		}
 	}
-	if count == 0 {
-		return 0, 0, time.Time{}
+	if outOfRange > 0 {
+		// One warning per (source, kind) for the whole process, raised once per query
+		// rather than once per record — see firstOutOfRange.
+		warnOutOfRangeValue(ctx, source, kind, firstOutOfRange)
 	}
-	return sum / float64(count), count, lastAt
+	if count == 0 {
+		return 0, 0, time.Time{}, outOfRange
+	}
+	return sum / float64(count), count, lastAt, outOfRange
+}
+
+// maxOutOfRangeValueWarnings bounds the "evidence value outside [0,1]" warnings:
+// one per (source, kind) pair, then a single notice that further ones are
+// suppressed. Same shape as the MCP health join's cap and for the same reason — a
+// real finding must not become a per-tick log sink in a deployment whose producer
+// is writing the wrong unit for a whole source.
+const maxOutOfRangeValueWarnings = 32
+
+var (
+	outOfRangeWarnMu         sync.Mutex
+	outOfRangeWarnedSources  = map[string]struct{}{}
+	outOfRangeWarnSuppressed bool
+)
+
+// warnOutOfRangeValue reports, at most once per (source, kind), that a record was
+// dropped for carrying a scalar outside [0,1]. It returns whether it logged, which
+// is what a test can assert without reaching into the logger (the module logger is
+// bound to slog's default at package init, so swapping the default in a test does
+// not intercept it).
+//
+// The value travels with the warning on purpose: "3600" and "1.4" point at
+// different producers, and the number is the fastest way to identify the unit.
+func warnOutOfRangeValue(ctx context.Context, source string, kind evidence.EvidenceKind, value float64) bool {
+	key := source + "\x00" + string(kind)
+	if source == "" {
+		key = "(unscoped)\x00" + string(kind)
+	}
+
+	outOfRangeWarnMu.Lock()
+	if _, seen := outOfRangeWarnedSources[key]; seen {
+		outOfRangeWarnMu.Unlock()
+		return false
+	}
+	if len(outOfRangeWarnedSources) >= maxOutOfRangeValueWarnings {
+		alreadySuppressed := outOfRangeWarnSuppressed
+		outOfRangeWarnSuppressed = true
+		outOfRangeWarnMu.Unlock()
+		if alreadySuppressed {
+			return false
+		}
+		log.WarnContext(ctx, "fitness aggregator: further out-of-range evidence warnings are suppressed",
+			"limit", maxOutOfRangeValueWarnings)
+		return true
+	}
+	outOfRangeWarnedSources[key] = struct{}{}
+	outOfRangeWarnMu.Unlock()
+
+	log.WarnContext(ctx, "fitness aggregator: evidence value outside [0,1] was dropped",
+		"source", source, "kind", string(kind), "value", value,
+		"hint", "this is usually a producer unit error (ms, tokens, or a 0-100 score instead of 0-1)")
+	return true
 }
 
 // WindowToolStep computes the aggregate fitness scoped to a specific tool step
@@ -468,8 +575,8 @@ func (a *RuntimeFitnessAggregator) WindowToolStepAt(ctx context.Context, strateg
 		return WindowResult{Mean: cfg.ColdStartScore, PerSource: map[string]sourceStat{}}
 	}
 
-	m, c, lastAt := a.querySourceMeanScopedAt(ctx, store, toolCallEvidenceSource, evidence.KindFitness, cfg.WindowSize, strategyID, toolStepID, since, until)
-	result := WindowResult{PerSource: map[string]sourceStat{}}
+	m, c, lastAt, outOfRange := a.querySourceMeanScopedAt(ctx, store, toolCallEvidenceSource, evidence.KindFitness, cfg.WindowSize, strategyID, toolStepID, since, until)
+	result := WindowResult{PerSource: map[string]sourceStat{}, OutOfRange: outOfRange}
 	if c == 0 {
 		result.Mean = cfg.ColdStartScore
 		result.Ok = false

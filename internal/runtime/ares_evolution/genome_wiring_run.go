@@ -148,8 +148,12 @@ type StrategyFitnessReader interface {
 // decided by its record.
 const defaultEvidencePriorSamples = 3.0
 
-// judgeScaleCeiling is the upper bound of the scores genome.ScorerFunc produces in
-// this system, and the scale the blend must work in. The production judge is
+// JudgeScaleCeiling is the upper bound of the scores genome.ScorerFunc produces in
+// this system, the scale the blend must work in, and (because it is EXPORTED) the
+// number every consumer of Strategy.Score needs to interpret it: the evolution view
+// models publish it alongside their scores so a UI can normalise without guessing
+// whether it is looking at a GA score (0-100) or a fitness WINDOW MEAN ([0,1]) —
+// two different quantities that live on the same screens. The production judge is
 // service.DeterministicScore: base 50, clamped to [5,100]
 // (internal/runtime/ares_evolution/service/llm_scorer.go), with the LLM tier
 // prompted for "0 to 100"; the no-scorer fallback is genome.ConstantScorer(50). The
@@ -157,7 +161,7 @@ const defaultEvidencePriorSamples = 3.0
 // so withMeasuredEvidence lifts the measured side onto this one instead of adding
 // two different units together. One constant, stated once: a scale mismatch at this
 // join is invisible in unit tests that invent their own scorer scale.
-const judgeScaleCeiling = 100.0
+const JudgeScaleCeiling = 100.0
 
 // buildRunScorer constructs the scorer used for this evolution cycle, with the
 // runtime's measured evidence folded in when a reader is wired.
@@ -182,7 +186,7 @@ func (a *GenomePopulationAdapter) buildRunScorer(ctx context.Context) genome.Sco
 //	score = (n·measuredLifted + k·judge) / (n + k)
 //
 // with n the evidence sample count, k = the prior (defaultEvidencePriorSamples), and
-// measuredLifted = window.Mean · judgeScaleCeiling.
+// measuredLifted = window.Mean · JudgeScaleCeiling.
 //
 // The lift is not cosmetic. The two inputs do NOT share a scale, and an earlier
 // version of this function asserted in a comment that they did — the comment was
@@ -224,7 +228,7 @@ func (a *GenomePopulationAdapter) withMeasuredEvidence(ctx context.Context, judg
 			return base
 		}
 		n := float64(window.Count)
-		measured := window.Mean * judgeScaleCeiling
+		measured := window.Mean * JudgeScaleCeiling
 		return (n*measured + prior*base) / (n + prior)
 	}
 }
@@ -580,7 +584,7 @@ func countUnevaluated(agents []*mutation.Strategy) int {
 //
 // It is NOT the conversion for Strategy.Score, and this comment previously claimed
 // it was: the scorers that fill Strategy.Score produce 0–100 (see
-// judgeScaleCeiling), which is the opposite direction. Nothing here converts them,
+// JudgeScaleCeiling), which is the opposite direction. Nothing here converts them,
 // and nothing should — the blend that combines the two scales does its own lift.
 func scaleUpFitnessToCoordinator(fitness float64) float64 {
 	scaled := fitness * 100.0

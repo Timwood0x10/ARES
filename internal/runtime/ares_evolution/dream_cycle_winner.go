@@ -323,6 +323,12 @@ func winnerToMutationStrategy(result *candidateResult) *mutation.Strategy {
 		return nil
 	}
 	ms := evolutionToMutationStrategy(result.strategy)
-	ms.Score = result.winRate
+	// The win rate is a [0,1] RATIO; Strategy.Score is the GA's 0-JudgeScaleCeiling
+	// score, and this value is deployed to the active-strategy store where it is
+	// PUBLISHED (evoapi) and COMPARED by magnitude. Storing the ratio unchanged made a
+	// winner that beat its parent 3 times out of 4 look 100x worse than a fresh mutant
+	// the constant scorer had just given 50 — the same unit collision the recovery
+	// write-back had (cmd/ares's WriteActiveScore, fixed in the same pass).
+	ms.Score = result.winRate * JudgeScaleCeiling
 	return &ms
 }

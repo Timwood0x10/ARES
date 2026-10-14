@@ -22,13 +22,19 @@ import (
 // GenerationStats is the public read-only snapshot of one generation's
 // population statistics — the fitness curve data point.
 type GenerationStats struct {
-	Generation   int     `json:"generation"`
-	Size         int     `json:"size"`
+	Generation int `json:"generation"`
+	Size       int `json:"size"`
+	// BestScore/AvgScore/WorstScore are GA selection scores on [0, score_max] — the
+	// same quantity and scale as Strategy.Score, and NOT the [0,1] fitness window
+	// mean that the lifecycle endpoints report.
 	BestScore    float64 `json:"best_score"`
 	AvgScore     float64 `json:"avg_score"`
 	WorstScore   float64 `json:"worst_score"`
 	Diversity    float64 `json:"diversity"`
 	StagnantGens int     `json:"stagnant_generations"`
+	// ScoreMax is the upper bound of the three scores above (evolve.JudgeScaleCeiling),
+	// published so a fitness curve can be plotted without assuming a scale.
+	ScoreMax float64 `json:"score_max"`
 }
 
 // GenomeWiringView is the read-only observation surface for the production
@@ -89,6 +95,7 @@ func (v *GenomeWiringView) Stats() *GenerationStats {
 		WorstScore:   ps.WorstScore,
 		Diversity:    ps.Diversity.Overall,
 		StagnantGens: ps.StagnantGens,
+		ScoreMax:     evolve.JudgeScaleCeiling,
 	}
 }
 
@@ -108,6 +115,7 @@ func (v *GenomeWiringView) FitnessHistory() []GenerationStats {
 			Size:       h.PopulationSize,
 			BestScore:  h.BestScore,
 			AvgScore:   h.AvgScore,
+			ScoreMax:   evolve.JudgeScaleCeiling,
 			WorstScore: h.WorstScore,
 			Diversity:  h.Diversity,
 		})

@@ -111,6 +111,33 @@
 
 ## 修订记录
 
+**2026-10-14 · 复核（上一批加固的自审 + 运维通告）**：
+
+1. **`OutOfRange` 两处漏计已修**：① 维度通道的累加曾在 `if dimCount > 0` 内 → **整通道越界**时计数为 0、
+   而告警照发（数字与日志互相打脸）；② 越界自增曾在**作用域过滤之前** → `WindowToolStepAt` 把他人的坏值
+   算进本工具步。两条各有回归测试。
+2. **`tieBreakJitter` 表述更正**：`JudgeScaleCeiling / 5000` 是"单一来源"，**不是自适应**（那个常量仍需人工维护）。
+3. **⚠️ 运维通告（破坏性，包外）**：记忆打分器不再读裸 `cost`/`latency`/`regression`（那是多目标**维度名**，
+   界 {0,100}），改读 `cost_units`/`latency_seconds`/`regression_units`。仓库内无生产者写旧键；**包外若写过，
+   惩罚会静默归零**（不会报错）——请改名。
+4. **⚠️ 运维通告（可见变化）**：`Strategy.Score` 统一到 GA 的 0–100 量纲。此前 `cmd/ares` 的
+   `WriteActiveScore`（强制输入 [0,1]）与 dream-cycle 的胜率都**原样写入**该字段，而字段本身是 0–100（每条 scorer
+   如此，且被 `population.go`/`multi_objective.go` 按数值比较）→ 面板上的活跃策略分数会**比之前大 100 倍**
+   （这才是正确值）。公开面新增机器可读标注 `ScoreMax` / `score_max`（= `JudgeScaleCeiling`），负值 = 未评估哨兵。
+
+**2026-10-14 · 后续（跨量纲接缝扫描与加固）**：
+
+1. **可观测性**：`WindowResult.OutOfRange` 报告被**跳过**的越界证据条数（无 value 的记录不计），并对每个
+   (source, kind) **限频告警一次**（上限 32 + 抑制通告）。此前"指标里少了样本"完全哑静默 —— 与
+   `dimension_eval` 权重静默空转同一失败模式。
+2. **夹具审计**：抽查 promoter/experience/聚合器/eval/coordinator/记忆打分器 六处标量来源，**没有第二处
+   错量纲夹具**（唯一错的就是已修的选育混合）；新增守卫测试锁"混合结果恒在 judge 量纲 + 兜底 50 是契约"。
+   **剩余 UI 级接缝（未动）**：`evoapi` 暴露的 `Strategy.Score` 是 0–100，与 [0,1] 的窗口均值同面共存，
+   建议展示层命名区分。
+3. **常量/单位统一**：回归测试器的平局抖动改为从 `judgeScaleCeiling` 推导（+ 意图测试：平局须给出接近随机的
+   胜率、1 分之差不可被抖动翻盘）；记忆打分器的惩罚参数键改单位自明（`cost_units`/`latency_seconds`/
+   `regression_units`），不再与多目标维度名（`cost`/`latency`，0–100 界）共键，碰撞有测试钉死。
+
 **2026-10-14 · 复核修复（量纲 P0、溯源配对、可观测与跨模块断言）**：
 
 1. **P0（真 bug，已修）：选育混合的量纲混用**。`withMeasuredEvidence` 把聚合器的 **[0,1]** `Mean` 与

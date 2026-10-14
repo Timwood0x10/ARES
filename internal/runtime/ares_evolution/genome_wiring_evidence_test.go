@@ -15,6 +15,8 @@ import (
 	"math"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+
 	"github.com/Timwood0x10/ares/internal/runtime/ares_evolution/genome"
 	"github.com/Timwood0x10/ares/internal/runtime/ares_evolution/mutation"
 )
@@ -35,7 +37,7 @@ func judgeOf(score float64) genome.ScorerFunc {
 // TestRunScorer_BlendsMeasuredFitnessIntoSelection is the rule itself, in the
 // units the production judge actually uses:
 //
-//	score = (n·(measured·judgeScaleCeiling) + k·judge) / (n + k)
+//	score = (n·(measured·JudgeScaleCeiling) + k·judge) / (n + k)
 //
 // The judge in these cases is 0–100 (the scale of every scorer wired in production)
 // and the measured fitness is the aggregator's [0,1] Mean. An earlier version of
@@ -158,6 +160,42 @@ func TestRunScorer_UnlookupableStrategyKeepsTheJudge(t *testing.T) {
 	if got := scorer(nil); got != 70 {
 		t.Fatalf("a nil strategy scored %v, want the judge's 70", got)
 	}
+}
+
+// TestRunScorer_StaysOnTheJudgeScale is the guard for the whole blend: whatever the
+// evidence says, the number handed to selection lives inside the judge's range. It
+// exists because the scale is now load-bearing in two places (the lift and the
+// result), and a future change to either side would otherwise be caught only by
+// eyeballing the arithmetic.
+func TestRunScorer_StaysOnTheJudgeScale(t *testing.T) {
+	defer discardLogs()()
+	scorerFor := func(judge float64, measured float64, count int) genome.ScorerFunc {
+		a := &GenomePopulationAdapter{
+			scorer:   judgeOf(judge),
+			evidence: fakeFitnessWindows{"s1": {Mean: measured, Count: count}},
+		}
+		return a.buildRunScorer(context.Background())
+	}
+	s := &mutation.Strategy{ID: "s1"}
+
+	// Both ends of the evidence range, on a full-scale judge.
+	assert.InDelta(t, JudgeScaleCeiling, scorerFor(JudgeScaleCeiling, 1.0, 1000)(s), 1e-9,
+		"perfect evidence on a perfect judge must land at the ceiling, not past it")
+	assert.InDelta(t, 0, scorerFor(0, 0, 5)(s), 1e-9)
+	for _, got := range []float64{
+		scorerFor(JudgeScaleCeiling, 0, 1000)(s),
+		scorerFor(0, 1.0, 1)(s),
+		scorerFor(50, 0.5, 3)(s),
+	} {
+		assert.GreaterOrEqual(t, got, 0.0)
+		assert.LessOrEqual(t, got, JudgeScaleCeiling, "the blend must never leave the judge's scale")
+	}
+
+	// And the documented no-scorer fallback is on the same scale: 50, i.e. the middle
+	// of 0-100 — not 0.5. If this ever becomes 0.5, the lift in withMeasuredEvidence
+	// (and every threshold downstream) is wrong.
+	assert.InDelta(t, 50, buildScorer(nil)(s), 1e-9,
+		"the constant fallback scorer's scale is part of the contract")
 }
 
 // TestWiring_SelectionReadsTheDeploymentAggregator locks the wiring against the
