@@ -150,6 +150,26 @@ maxPlanDepth=10 撞墙 / L1 全拦
      出现在线形状、每个历史点都带标度、`JudgeScaleCeiling == 100` 是**要刻意改的契约**。
      **未做（如实）**：`evoapi.Strategy` 这个 DTO **没有 JSON tag**（线上字段名是 PascalCase，兄弟 DTO 是 snake_case）——
      统一字段名是破坏性 API 变更，**交给运维拍板**，本轮只做加法标注。
+  5. **`ChildScore` 收口（第 4 条的后续，结论含一处自我更正）**：追到底后 ——
+     `scoreImprovement := result.CandidateScore - result.BaselineScore`（`dream_cycle_winner.go`），而
+     `CandidateScore/BaselineScore` 是回归测试器对 **scorer** 的调用结果 → 增量是 **0–100 的"点"**。
+     因此 `ChildScore = scoreImprovement + parent.Score` **是同量纲相加，没问题**（我上一轮把它列为"未闭合"
+     是把增量误当成 [0,1] 比值 —— 这里更正）。
+     **但阈值那条是真错**：判定"improvement 是否显著"的阈值默认写成 **`0.01`**，却被拿去和"点"为单位的增量比较 ——
+     即"百分之一**点**"，而该字段自己的 doc 写着"低于此阈值视为噪声（scorer 方差）"，两者正好相反：任何
+     0.01 点以上的抖动都会被判为**显著**，于是 `ImprovementSignificant` 与 raw/significant 计数**基本恒真**、
+     失去信息量。**修法**：`defaultMinLineageImprovement = 0.01 × JudgeScaleCeiling`（= **1 点 = 1%**，
+     从量纲推导而不是写死），并把两处比较点（`service.go` 的 raw/sig 计数与 `collectLineages`）收敛为
+     **一个阈值解释**（`lineageImprovementThreshold`，含"未设则回落派生默认值"）+ **一条规则**
+     （`improvementIsSignificant`），删掉两处重复的 `0.01` 字面量兜底。
+     测试：默认值 = 1% of scale、`0.01` 与 `0.5` 点均**不**显著、`1` 点显著、负增量永不显著、未设回落默认值、
+     配置值按"点"原样使用。**实机反证**：退回 `0.01` → `improvementIsSignificant(0.01, 0.01) = true, want false`。
+     **可见变化**：晋线"显著改善"标记现在真的只在 ≥1 点时置位（此前几乎恒真）。
+     **⚠️ 存量配置迁移（必须照做）**：`min_lineage_improvement` 是用户可配置项，旧语义是 **[0,1] 比率**、
+     新语义是**点** ⇒ 旧配置里**显式写过** `0.01` 的部署升级后含义变成"0.01 个点"（≈噪声），行为**静默翻转**。
+     代码只兜了"未设（≤0）→ 派生默认 1 点"，无法区分"显式 0.01"。**请按 0–100 尺度复核并改写（旧 0.01 → 新 1）**；
+     同时代码在唯一解释点对"看起来像旧比率"的配置（`0 < v < 0.1`，不足 0.1 点、scorer 无法分辨）
+     **一次性告警**并给出 `v × 100` 的换算，避免升级后"flag 全亮却无从查起"。
 
 - **量级提醒（别过度解读本批）**：语料仍是两份小样例、判据是 `ExpectedOutput` 比对，所以这批交付的准确表述是
   "**正确率信号从 0 变成非 0（且链路可复核）**"，**不是**"GA 已经会做对了"。真正防糊弄取决于语料扩到能代表

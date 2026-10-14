@@ -120,7 +120,20 @@
 3. **⚠️ 运维通告（破坏性，包外）**：记忆打分器不再读裸 `cost`/`latency`/`regression`（那是多目标**维度名**，
    界 {0,100}），改读 `cost_units`/`latency_seconds`/`regression_units`。仓库内无生产者写旧键；**包外若写过，
    惩罚会静默归零**（不会报错）——请改名。
-4. **⚠️ 运维通告（可见变化）**：`Strategy.Score` 统一到 GA 的 0–100 量纲。此前 `cmd/ares` 的
+4. **`ChildScore` 收口（第 5 条的后续）**：追到底——`scoreImprovement = CandidateScore − BaselineScore` 是
+   **0–100 的"点"**，所以 `ChildScore = scoreImprovement + parent.Score` **同量纲，没问题**（上一轮把它列为
+   "未闭合"是把增量误当 [0,1] 比值，**此处更正**）。但**阈值是真错**：默认 `0.01` 被拿去比"点"为单位的增量
+   = 百分之一**点**，与该字段"低于此阈值视为噪声"的 doc 恰好相反 → `ImprovementSignificant` 与 raw/significant
+   计数**几乎恒真**。已修：`defaultMinLineageImprovement = 0.01 × JudgeScaleCeiling`（= 1 点 = 1%，从量纲推导），
+   两处比较点收敛为唯一阈值解释 + 唯一规则，删掉重复字面量兜底；测试 + 反证
+   （退回 0.01 → `improvementIsSignificant(0.01, 0.01) = true, want false`）。
+   **⚠️ 迁移指令（存量配置会静默翻转，必须照做）**：`min_lineage_improvement` 是**用户可配置**项，旧版本
+   默认 `0.01` 且语义是 **[0,1] 比率**；本批之后同一字面值 `0.01` 的含义变为 **0.01 个点**（≈噪声 →
+   显著性标记几乎恒真）。**升级前请复核任何显式写的 `min_lineage_improvement`，按 0–100 尺度改写
+   （旧 `0.01` → 新写 `1`）**。为免"升级后 flag 全亮却无从查起"，代码在**唯一解释点**对"看起来像旧比率"
+   的值（`0 < v < 0.1`，即不足 0.1 点、任何 scorer 都无法分辨）**一次性告警**，同时给出两种读法的换算
+   （`configured × 100`）；该启发式是纯函数、有测试，且只报一次。
+5. **⚠️ 运维通告（可见变化）**：`Strategy.Score` 统一到 GA 的 0–100 量纲。此前 `cmd/ares` 的
    `WriteActiveScore`（强制输入 [0,1]）与 dream-cycle 的胜率都**原样写入**该字段，而字段本身是 0–100（每条 scorer
    如此，且被 `population.go`/`multi_objective.go` 按数值比较）→ 面板上的活跃策略分数会**比之前大 100 倍**
    （这才是正确值）。公开面新增机器可读标注 `ScoreMax` / `score_max`（= `JudgeScaleCeiling`），负值 = 未评估哨兵。
