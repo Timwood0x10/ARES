@@ -21,6 +21,27 @@ import (
 type KnowledgeRepository struct {
 	db     postgres.DBTX
 	dbPool *sql.DB
+	// searchProbes is the ivfflat probe count applied to every vector search
+	// (0 = leave the server default). It is set at construction and never
+	// mutated, so no lock guards it — the same posture as the other knobs this
+	// repository takes from configuration.
+	searchProbes int
+}
+
+// KnowledgeRepositoryOption configures a KnowledgeRepository at construction.
+type KnowledgeRepositoryOption func(*KnowledgeRepository)
+
+// WithSearchProbes sets the ivfflat probe count for vector searches (defect R1).
+//
+// It is an option rather than a parameter because only the search path needs it, and
+// a non-positive value keeps the server default: a caller with nothing to say about
+// recall should not have to pass a zero.
+func WithSearchProbes(probes int) KnowledgeRepositoryOption {
+	return func(r *KnowledgeRepository) {
+		if probes > 0 {
+			r.searchProbes = probes
+		}
+	}
 }
 
 // Ensure KnowledgeRepository implements KnowledgeRepositoryInterface.
@@ -31,8 +52,12 @@ var _ KnowledgeRepositoryInterface = (*KnowledgeRepository)(nil)
 // db - database connection or transaction implementing DBTX interface.
 // dbPool - optional database pool for transaction operations (can be nil for transaction-bound repositories).
 // Returns new KnowledgeRepository instance.
-func NewKnowledgeRepository(db postgres.DBTX, dbPool *sql.DB) *KnowledgeRepository {
-	return &KnowledgeRepository{db: db, dbPool: dbPool}
+func NewKnowledgeRepository(db postgres.DBTX, dbPool *sql.DB, opts ...KnowledgeRepositoryOption) *KnowledgeRepository {
+	r := &KnowledgeRepository{db: db, dbPool: dbPool}
+	for _, opt := range opts {
+		opt(r)
+	}
+	return r
 }
 
 // Create inserts a new knowledge chunk into the database.
@@ -471,6 +496,28 @@ func (r *KnowledgeRepository) SearchByVector(ctx context.Context, embedding []fl
 	if len(embedding) == 0 {
 		return nil, errors.New("search by vector: embedding must not be empty")
 	}
+
+	// The probe count only applies INSIDE a transaction, so the search runs in the
+	// one the helper opens. This is the path RAG actually uses (defect R1): it had
+	// no probe setting at all, so a deployment that configured one was not tuned.
+	var chunks []*storage_models.KnowledgeChunk
+	err := postgres.WithVectorSearchProbes(ctx, r.db, r.searchProbes, func(ctx context.Context, db postgres.DBTX) error {
+		var queryErr error
+		chunks, queryErr = r.searchByVectorQuery(ctx, db, embedding, tenantID, limit)
+		return queryErr
+	})
+	if err != nil {
+		return nil, err
+	}
+	return chunks, nil
+}
+
+// searchByVectorQuery runs the vector query and drains its rows.
+//
+// It takes the connection handle as an argument rather than reading r.db so the
+// caller can run it inside the probe-scoped transaction, and it consumes the rows
+// here — while that transaction is still open.
+func (r *KnowledgeRepository) searchByVectorQuery(ctx context.Context, db postgres.DBTX, embedding []float64, tenantID string, limit int) ([]*storage_models.KnowledgeChunk, error) {
 	log.Info("SearchByVector called",
 		"embedding_length", len(embedding),
 		"tenant_id", tenantID,
@@ -497,7 +544,7 @@ func (r *KnowledgeRepository) SearchByVector(ctx context.Context, embedding []fl
 	}
 	log.Info("Vector search query", "vector_length", len(vectorStr), "vector_preview", vectorStr[:previewLen])
 
-	rows, err := r.db.QueryContext(ctx, query, vectorStr, tenantID, limit)
+	rows, err := db.QueryContext(ctx, query, vectorStr, tenantID, limit)
 	if err != nil {
 		log.Error("Vector search query failed", "error", err)
 		return nil, errors.Wrap(err, "vector search")

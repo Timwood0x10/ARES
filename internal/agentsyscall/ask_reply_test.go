@@ -2,8 +2,10 @@ package agentsyscall
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	agentfabric "github.com/Timwood0x10/ares/internal/fabric/agent"
 	taskfabric "github.com/Timwood0x10/ares/internal/fabric/task"
@@ -177,6 +179,60 @@ func TestAskReplyTaskID_IsStableForStructuredBodies(t *testing.T) {
 	}
 	if askReplyTaskID("a", "b", "t", map[string]any{"x": 1}) == first {
 		t.Error("different bodies must not share an id")
+	}
+}
+
+// TestDeliverAgentReply_RedeliversAfterAFailedReplyTask is the second half of the
+// silent-loss fix: the idempotency means the same id can never be created again, so
+// a reply task that FAILED terminally would block the answer FOREVER — the failure
+// would have turned "not written back" into "written back, then lost, with no way to
+// try again". A re-delivery must clear the failed row and deliver.
+func TestDeliverAgentReply_RedeliversAfterAFailedReplyTask(t *testing.T) {
+	agents := agentfabric.NewFabric()
+	tasks := taskfabric.NewFabric()
+	kernel := NewKernel(agents, tasks, nil, nil)
+	ctx := context.Background()
+
+	spawned, err := kernel.SpawnAgent(ctx, SpawnAgentArgs{Capability: "ares/plan"})
+	if err != nil {
+		t.Fatalf("SpawnAgent: %v", err)
+	}
+	asker := spawned.AgentID
+
+	if err := kernel.DeliverAgentReply(ctx, asker, "agent-B", "delegate-task", "the answer"); err != nil {
+		t.Fatalf("first delivery: %v", err)
+	}
+
+	// Drive the reply task to a terminal failure the way the runtime would.
+	taskID := askReplyTaskID(asker, "agent-B", "delegate-task", "the answer")
+	epoch, err := tasks.Acquire(taskID, "runner", time.Minute)
+	if err != nil {
+		t.Fatalf("Acquire reply task: %v", err)
+	}
+	if err := tasks.Start(taskID, "runner", epoch); err != nil {
+		t.Fatalf("Start reply task: %v", err)
+	}
+	if err := tasks.Fail(taskID, "runner", epoch, taskfabric.MarkPermanent(errors.New("asker vanished"))); err != nil {
+		t.Fatalf("Fail reply task: %v", err)
+	}
+	failed, err := tasks.Task(taskID)
+	if err != nil {
+		t.Fatalf("Task after failure: %v", err)
+	}
+	if failed.State != taskfabric.StateFailed {
+		t.Fatalf("reply task state = %v, want FAILED for this test to mean anything", failed.State)
+	}
+
+	// The re-delivery must not report success while the answer is lost.
+	if err := kernel.DeliverAgentReply(ctx, asker, "agent-B", "delegate-task", "the answer"); err != nil {
+		t.Fatalf("re-delivery after a failed reply task: %v", err)
+	}
+	redelivered, err := tasks.Task(taskID)
+	if err != nil {
+		t.Fatalf("reply task must exist again: %v", err)
+	}
+	if redelivered.State != taskfabric.StateReady {
+		t.Errorf("re-delivered reply task state = %v, want READY: the asker must be able to read the answer", redelivered.State)
 	}
 }
 

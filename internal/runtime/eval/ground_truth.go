@@ -56,6 +56,23 @@ func KnownCheckKind(kind string) bool {
 	return knownCheckKinds[kind]
 }
 
+// CountAnchoredCases reports how many cases in a suite declared at least one
+// deterministic check.
+//
+// It is the suite-level answer to "is this evaluation verifiable at all", which a
+// caller needs BEFORE running it: a suite that declares nothing is scored entirely by
+// the judge, so its accuracy means opinion and nothing else — and that is a property
+// of the corpus, knowable at wiring time rather than inferable from the scores.
+func CountAnchoredCases(suite TestSuite) int {
+	anchored := 0
+	for _, tc := range suite.TestCases {
+		if len(tc.Checks) > 0 {
+			anchored++
+		}
+	}
+	return anchored
+}
+
 // numeric tolerances for CheckNumeric. Relative first, because the answers this
 // check exists for (a product, a sum) are large enough that an absolute epsilon
 // would call a wrong digit sequence equal; the absolute arm only catches the

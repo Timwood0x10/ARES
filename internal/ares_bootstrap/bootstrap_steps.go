@@ -71,7 +71,15 @@ func wireDistillation(ctx context.Context, cfg *ares_config.Config, comp *Compon
 			// (30s) still runs in the subscriber loop; only the embed was
 			// deferred to the worker. The queue instance is shared with the
 			// producer rather than rebuilt here.
-			knowRepo := repositories.NewKnowledgeRepository(pool.GetDB(), pool.GetDB())
+			// The ivfflat probe count is a SEARCH-time knob, so the search path
+			// has to be told about it (defect R1): it used to exist in config and
+			// reach no query at all.
+			searchProbes := 0
+			if wiring.embeddingConfig != nil {
+				searchProbes = wiring.embeddingConfig.SearchProbes
+			}
+			knowRepo := repositories.NewKnowledgeRepository(pool.GetDB(), pool.GetDB(),
+				repositories.WithSearchProbes(searchProbes))
 			var expConcreteRepo *repositories.ExperienceRepository
 			if r, ok := expRepo.(*repositories.ExperienceRepository); ok {
 				expConcreteRepo = r
@@ -80,9 +88,11 @@ func wireDistillation(ctx context.Context, cfg *ares_config.Config, comp *Compon
 				wiring.embeddingQueue, wiring.embeddingConfig, knowRepo, expConcreteRepo)
 			// Back the knowledge runtime's VectorProvider with the same PG
 			// pool, so AKF vector search reads the same embedded corpus the
-			// distillation path writes. Best-effort: nil embedding config uses
-			// defaults.
-			comp.VectorStore = postgres.NewVectorSearcher(pool, nil)
+			// distillation path writes. The embedding config is passed through
+			// rather than dropped: it carries the index method and the search
+			// probe count, and a nil here silently meant "defaults" for both
+			// (NewVectorSearcher still fills in defaults, so this stays safe).
+			comp.VectorStore = postgres.NewVectorSearcher(pool, wiring.embeddingConfig)
 			// The postgres pool must be closed if bootstrap fails later.
 			*cleanups = append(*cleanups, func() {
 				if cerr := pool.Close(); cerr != nil {

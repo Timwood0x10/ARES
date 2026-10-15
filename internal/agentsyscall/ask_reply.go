@@ -15,7 +15,11 @@ import (
 
 // askReplyPayloadKey is the payload key the reply lives under, so a reader (or a
 // model told about it) can find the answer without knowing the task's shape.
-const askReplyPayloadKey = "ask_reply"
+//
+// It IS the fabric's constant rather than a second literal: the fabric has to
+// recognise a reply task when one fails terminally (a lost answer is the defect),
+// and two spellings of the same fact is how the two halves drift apart.
+const askReplyPayloadKey = taskfabric.PayloadKeyCollaborationReply
 
 // askReplyInputKey is the payload key the RUNTIME reads when it builds a quantum's
 // prompt. It is not a second copy of the answer for convenience: the L2 cognition
@@ -69,9 +73,42 @@ func (k *Kernel) DeliverAgentReply(ctx context.Context, askerID, peerID, topic s
 	}
 	if err := k.fabric.Create(task, taskfabric.WithResolvedDependencies()); err != nil {
 		if stderrors.Is(err, taskfabric.ErrTaskExists) {
-			return nil // already delivered: the asker has this answer
+			return k.redeliverReplyTask(ctx, task, askerID, peerID, topic)
 		}
 		return fmt.Errorf("agentsyscall: create ask reply task: %w", err)
+	}
+	return nil
+}
+
+// redeliverReplyTask decides what a repeated delivery means when a task with the
+// same id already exists.
+//
+// An existing task in any live or completed state means the answer is on its way or
+// already read: success, nothing to do. A task that FAILED terminally is the case
+// this function exists for — the idempotency would otherwise block the answer
+// FOREVER (the same id can never be created again), turning "the delivery failed" into
+// "the answer is lost with no way back", which is the silent hole the defect was.
+// The failed row is cleared and the delivery retried, with a Warning: a lost
+// collaboration answer is exactly what must not be quiet.
+//
+// Deletion is only attempted for FAILED tasks, which is the one terminal state the
+// fabric allows to be deleted (READY/COMPLETED/FAILED; a leased or running reply must
+// finish or expire through the normal paths).
+func (k *Kernel) redeliverReplyTask(ctx context.Context, task *taskfabric.Task, askerID, peerID, topic string) error {
+	existing, err := k.fabric.Task(task.ID)
+	if err != nil {
+		return fmt.Errorf("agentsyscall: inspect existing ask reply task %s: %w", task.ID, err)
+	}
+	if existing.State != taskfabric.StateFailed {
+		return nil // on its way, or already read by the asker
+	}
+	log.WarnContext(ctx, "agentsyscall: re-delivering a collaboration reply whose previous task failed",
+		"task_id", task.ID, "asker", askerID, "peer", peerID, "topic", topic)
+	if err := k.fabric.Delete(task.ID); err != nil {
+		return fmt.Errorf("agentsyscall: clear failed ask reply task %s: %w", task.ID, err)
+	}
+	if err := k.fabric.Create(task, taskfabric.WithResolvedDependencies()); err != nil {
+		return fmt.Errorf("agentsyscall: recreate ask reply task %s: %w", task.ID, err)
 	}
 	return nil
 }

@@ -111,6 +111,43 @@
 
 ## 修订记录
 
+**2026-10-15 · 二轮复核（H1/M1/M2）+ P0-1(ii) 最后一跳的接线闭合**：
+
+1. **H1（高）· 探针"接了不生效"——与 INDEX 的"已修"不符**。初版只在 `VectorSearcher.Search` 裸发
+   `SET LOCAL ivfflat.probes`，而 **SET LOCAL 只在事务块内生效**（注释自己都写了）⇒ Postgres **静默忽略**；
+   更关键：**真正跑 RAG 热检索的 `KnowledgeRepository.SearchByVector` 当时连这条逻辑都没有**。
+   ⇒ **配了探针的部署两条路径都没生效**，而台账写"已修"。**修法**：`postgres.WithVectorSearchProbes`
+   **按句柄形态建事务**（`*sql.Tx` 直接用 / `*Pool`、`*sql.DB` 各自开 / 都不匹配则**响亮 Warn**
+   "已配但无法生效"），接到**两条路径**（热路径抽出 `searchByVectorQuery`，顺带把该函数压回 §1 的 100 行内），
+   探针值经 `repositories.WithSearchProbes` 由装配点注入。
+   **测试**：sqlmock 断言 **BEGIN → SET LOCAL → 查询 → COMMIT**、失败必回滚、未配置不开事务、
+   已是事务的句柄**不嵌套开事务**、不可用句柄仍执行且告警。**反证**：去掉建事务分支 → 事务用例失败。
+2. **M1（中）· 静默面从"不回写"平移到"回写任务挂了没人知道"**。`DeliverAgentReply` 只要 `Create` 成功就
+   返回 nil，回信任务后续在 fabric 里跑挂无人知晓；且幂等 id 让同一任务**永远不能再建** ⇒ "投递失败"
+   变"答案永久丢失"。**修法**：① 回信标记常量**定义在 `taskfabric`**（agentsyscall 已依赖它，反向成环；
+   单一词表），经 `DecodeCheckpoint` 识别；② `failureVisibilityReason` 增加回信分支——**即使本会保持安静的
+   `retryable=false` 也 Warn**"答案永远到不了 asker"；③ `redeliverReplyTask`：已存在任务为 `FAILED` 时
+   **先删（带墓碑）再重建**并 Warn，活着的状态视为"在路上/已读"。
+   **测试**：规则表 +3 行、识别函数单测、ask_reply 侧"失败后可重投"契约（真跑到 FAILED 再投递，断言回 READY）。
+   **反证**：去掉发声分支 → 规则表失败；重投直接 return → `state = FAILED, want READY`。
+3. **M2（中）· 新鲜度项的回归面**：`created_at` 是本批才随 metadata 带出的，**存量候选没有它**。
+   已锁 `TestRerankCandidates_UnknownAgeDropsOnlyTheRecencyTerm`（无时间戳的候选**仍被返回**、
+   分数等于"关掉新鲜度项"的值、不高于同文本新候选）。**反证**：把未知时间当"很旧" → 用例失败。
+4. **P0-1(ii) 最后一跳（回放接选育）的诚实口径**：**"对所有候选同一组题"这个可比性条件本来就满足**——
+   G3 门就是"用配置的 suite 对每个候选跑一遍"。缺的是两件可见性，现已落：
+   - **语料的锚定率在装配期读得出来**：`eval.CountAnchoredCases` + `buildEvalGate` 日志——
+     一条语料声明了确定性检查就 Info（带 anchored/cases），**一条都没有就 Warn**
+     （"门的准确率只是判官意见"）；
+   - **判官的一致率运行期真的被读**：`eval.NewAgreementReportingEvaluator` 装饰器在
+     **计数变化时**记录（`anchored/lenient/harsh/broken/leniency_rate`），并**由装配守卫测试**锁住
+     "注册的必须是装饰器"（否则读数永不运行）。
+   **仍未做（明确）**：把 `evolution.gates.eval_suite` 默认指向 `test/eval/golden.yaml`——
+   那是运维配置决定，代码不该静默覆盖；以及**per-candidate 的独立运行时回放**（要为每个 genome 实例化
+   运行时，属架构方向，需拍板）。
+5. **自记（测试比代码更该记）**：装饰器那条"计数器不动就安静"的用例最初走的是**全零分支**，
+   被"还没有锚不是新闻"的守卫短路，**根本没覆盖去重**——反证时才发现（改回不去重它照样绿）。
+   已改为"先锚定、再不动"；现在反证能准确失败（4 条 vs 1 条）。
+
 **2026-10-15 · code review 自审：修掉我自己引入的 9 条（其中 2 条推翻上一批的结论）**：
 
 > 结论性的一条：**"功能已实现"与"功能会生效"是两件事**，本批有 2 条属于后者没做到。

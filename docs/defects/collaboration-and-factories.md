@@ -58,6 +58,21 @@ Delegate / Handoff / Subscribe 六原语。`ask_agent` 是 LLM 能调的"跨 age
   两种响亮失败各不排队）。**实机反证**：把幂等分支改成返回错误 → 幂等用例失败；恢复即绿。
 - **未做**：I2 的 30s 去重窗口**仍是硬窗口**（慢回答在 30s 边界仍会重复触发）；回信没有"目标已放弃"
   的终态标记（`ipc.Request` 失败目前只记 Warn）。
+- **同日复核修正（把静默面平移到"回信任务挂了"）**：初版把答案变成任务后，**任务本身的失败不回传**——
+  `DeliverAgentReply` 只要 `Create` 成功就返回 nil，之后任务在 fabric 里跑挂没人知道，
+  等于把"没回写"换成了"回写了但没人知道它挂了"。修法（已落）：
+  1. **fabric 层识别回信任务**：`PayloadKeyCollaborationReply` 常量**定义在 `taskfabric`**
+     （agentsyscall 已依赖它，反向定义会成环；单一词表），`carriesCollaborationReply` 经
+     `DecodeCheckpoint` 读 payload；
+  2. **终态失败必须发声**：`failureVisibilityReason` 增加回信分支——**即使 `retryable=false`（本会保持安静）
+     也 Warn**"回信任务终态失败：答案永远到不了 asker"，因为对方还在等一个**系统里没人知道已经没了**的东西；
+  3. **失败后仍可重投**：幂等 id 意味着同一任务**永远不能再建**，于是"投递失败"会变成"答案永久丢失"。
+     `redeliverReplyTask` 在已存在任务为 `FAILED` 时**先删（fabric 允许删终态任务，且带墓碑）再重建**，
+     并 Warn；活着的状态则视为"在路上/已读"。
+  **测试**：fabric 侧规则表新增三行（回信终态发声、回信中重试安静、普通终态安静）+ 识别函数单测；
+  ask_reply 侧新增"失败后可重投"契约（把回信任务真跑到 FAILED，再投递，断言回到 READY）。
+  **反证**：去掉回信发声分支 → 规则表失败；让重投直接 return → 用例报
+  `state = FAILED, want READY`。
 
 ### I2 · 去重窗口 30s，但窗口外重问会"再触发一次" 〔取舍 + 隐患〕
 

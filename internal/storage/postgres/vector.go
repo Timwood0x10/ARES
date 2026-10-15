@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 
@@ -93,31 +94,47 @@ func (v *VectorSearcher) Search(ctx context.Context, table, tenantID string, emb
 		LIMIT $2
 	`, safeTable)
 
-	// ivfflat probes are the recall lever that needs no index rebuild (defect
-	// R1): the default of 1 looks at a single cluster per search, so a table whose
-	// rows are spread over many clusters returns plausible-but-not-nearest
-	// neighbours. SET LOCAL keeps the setting inside this transaction, so it
-	// cannot leak to another tenant's query on the same pooled connection; it is
-	// a no-op outside a transaction block (Postgres ignores it there), which is
-	// why the repository layer runs searches in one.
-	if _, probes := vectorIndexConfigFromEmbedding(v.embeddingConfig); probes > 0 {
-		stmt := searchProbesStatement(probes)
-		if _, err := v.db.ExecContext(ctx, stmt); err != nil {
-			return nil, errors.Wrap(err, "set ivfflat probes")
-		}
-	}
-
 	embeddingJSON, err := json.Marshal(embedding)
 	if err != nil {
 		return nil, errors.Wrap(err, "marshal embedding")
 	}
 
-	rows, err := v.db.QueryContext(ctx, query, embeddingJSON, limit, tenantID)
-	if err != nil {
-		return nil, errors.Wrap(err, "vector search")
-	}
-	defer func() { _ = rows.Close() }()
+	// The probe count is the recall lever that needs no index rebuild (defect R1):
+	// the default of 1 looks at a single cluster per search, so a table whose rows
+	// are spread over many clusters returns plausible-but-not-nearest neighbours.
+	// It only takes effect INSIDE a transaction, so the query runs in the one the
+	// helper opens — setting it on the bare handle this path used to hold was
+	// silently ignored, and the deployment believed it was tuned.
+	_, probes := vectorIndexConfigFromEmbedding(v.embeddingConfig)
+	var results []*SearchResult
+	err = WithVectorSearchProbes(ctx, v.db, probes, func(ctx context.Context, db DBTX) error {
+		rows, queryErr := db.QueryContext(ctx, query, embeddingJSON, limit, tenantID)
+		if queryErr != nil {
+			return errors.Wrap(queryErr, "vector search")
+		}
+		defer func() { _ = rows.Close() }()
 
+		var scanErr error
+		results, scanErr = scanSearchResults(rows)
+		return scanErr
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	if len(results) == 0 {
+		return nil, errors.ErrRecordNotFound
+	}
+
+	return results, nil
+}
+
+// scanSearchResults drains a vector search result set.
+//
+// The scan lives outside Search's body because the rows must be consumed while the
+// probe-scoped transaction is still open: a defer inside the closure would leave the
+// loop reading from a committed transaction.
+func scanSearchResults(rows *sql.Rows) ([]*SearchResult, error) {
 	var results []*SearchResult
 	for rows.Next() {
 		var result SearchResult
@@ -126,22 +143,14 @@ func (v *VectorSearcher) Search(ctx context.Context, table, tenantID string, emb
 		if err := rows.Scan(&result.ID, &result.Score, &metadataJSON); err != nil {
 			return nil, errors.Wrap(err, "scan result")
 		}
-
 		if err := json.Unmarshal(metadataJSON, &result.Metadata); err != nil {
 			return nil, errors.Wrap(err, "unmarshal metadata")
 		}
-
 		results = append(results, &result)
 	}
-
 	if err := rows.Err(); err != nil {
 		return nil, errors.Wrap(err, "iterate search results")
 	}
-
-	if len(results) == 0 {
-		return nil, errors.ErrRecordNotFound
-	}
-
 	return results, nil
 }
 

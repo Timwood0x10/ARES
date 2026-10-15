@@ -134,6 +134,19 @@ func buildEvalGate(
 		return nil, fmt.Errorf("bootstrap: eval suite %q contains no test cases", suitePath)
 	}
 
+	// Say up front how much of this gate's verdict is VERIFIABLE (P0-1(ii)). A suite
+	// with declared checks floors the judge on the cases it fails; a suite without
+	// them is scored by the judge alone, and an operator reading gate verdicts should
+	// know which of the two they configured — the scores look the same either way.
+	anchored := eval.CountAnchoredCases(*suite)
+	if anchored == 0 {
+		log.Warn("bootstrap: G3 eval suite declares no deterministic checks — the gate's accuracy is judge opinion only",
+			"suite", suitePath, "cases", len(suite.TestCases))
+	} else {
+		log.Info("bootstrap: G3 eval suite is anchored by deterministic checks",
+			"suite", suitePath, "anchored_cases", anchored, "cases", len(suite.TestCases))
+	}
+
 	exec := newLLMEvalExecutor(client)
 	runner, err := eval.NewAgentTestRunner(exec)
 	if err != nil {

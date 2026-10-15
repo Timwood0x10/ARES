@@ -64,8 +64,18 @@
      `pg_class.reltuples`**（免费），仅在估计不可用（未 ANALYZE/新表）时兜底 count——2 倍门限本身就能
      容忍估计误差。另**保留索引自身的名字与 partial 谓词**（否则会把 `WHERE embedding IS NOT NULL`
      的部分索引换成全量索引：更大，且 planner 失去谓词证明）。
-- **检索期探针可配**（`EmbeddingConfig.SearchProbes` + `SET LOCAL ivfflat.probes`，**事务内**，
-  免得在池化连接上泄漏给别的租户）：这是**不用重建**就能提召回的那一半。
+- **检索期探针可配**（`EmbeddingConfig.SearchProbes`）：这是**不用重建**就能提召回的那一半。
+  **⚠️ 同日复核修正（重要，"接了不生效"）**：初版只是在 `VectorSearcher.Search` 里裸发了一条
+  `SET LOCAL ivfflat.probes = N` —— 而 **`SET LOCAL` 只在事务块内生效**（注释自己也这么写了），
+  那条路径没有事务 ⇒ **Postgres 静默忽略**；更关键的是**真正跑 RAG 热检索的是
+  `KnowledgeRepository.SearchByVector`，它当时连这条逻辑都没有**。净效果：**配了探针的部署两条路径都没生效**，
+  而 INDEX 却写成"已修"。修法（已落）：新增 `postgres.WithVectorSearchProbes` **按句柄形态建事务**
+  （`*sql.Tx` 直接用；`*Pool`/`*sql.DB` 各自开事务；都不匹配则**响亮 Warn**"探测已配但无法生效"而不是静默），
+  并把它接到**两条路径**上（`VectorSearcher.Search` 与 `KnowledgeRepository.SearchByVector` 抽取的
+  `searchByVectorQuery`）；探针值由装配点注入（`repositories.WithSearchProbes`）。
+  **测试**：`vector_probes_test.go` 用 sqlmock 断言 **BEGIN → SET LOCAL → 查询 → COMMIT** 的真实序列、
+  失败必回滚、未配置不开事务、已是事务的句柄**不嵌套开事务**、不可用句柄仍执行且告警。
+  **反证**：去掉建事务分支 → 事务相关用例失败（并打印上面那条 Warn）。
 - **HNSW 选项有了**（`EmbeddingConfig.IndexMethod`）：DDL 走 `USING hnsw (m=16, ef_construction=64)`，
   且**不带 `lists`**（HNSW 没这个参数，发出去就是执行期报错）。
 - **未做（需运维动作）**：**存量部署切换索引方法仍需重建**（换 method 是数据面决定，规范 §0.4）；
@@ -108,6 +118,11 @@ LIMIT $2
   贡献≈0**。**已加无空格脚本的 bigram 切分**（Han/假名/谚文按相邻字符成对，单字符查询保留；拉丁仍走原规则），
   使部分重合可度量（实测"人工智能的最新趋势" vs "人工智能领域的最新趋势" = 7/8）。
   **反证**：让 CJK 走普通切分 → 中文用例失败（0 ≠ 0.875）。
+- **同日复核修正（回归面：`created_at` 是本批才随 metadata 带出的）**：新鲜度项依赖
+  `metadata["created_at"]`，而该键是本批才加的 ⇒ **本批之前写入的存量候选没有它**。文档明确要求锁死
+  "缺时间戳只丢新鲜度项、**不得整条消失**"——已补
+  `TestRerankCandidates_UnknownAgeDropsOnlyTheRecencyTerm`（无时间戳的候选仍被返回、分数等于"关掉新鲜度项"
+  的分数、且不高于同文本的新候选）。**反证**：把"未知时间"当"很旧" → 该用例与新分数断言同时失败。
 - **测试**：`simple_rerank_test.go`（核心一条：**余弦更近但没提到所问内容的候选必须被压下去**，
   同时断言纯余弦序恰好相反）、词面/新鲜度/剔除未知/全零权重回退/不改调用方切片/部分配置兜底。
 - **未做**：`RetrievalService`（那套更宽的加权 + 时间衰减服务）**仍未在生产装配**，本轮是在

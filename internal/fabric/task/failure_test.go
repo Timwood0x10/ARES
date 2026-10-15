@@ -116,17 +116,32 @@ func TestFailureVisibilityReason(t *testing.T) {
 		attempts   int
 		maxRetries int
 		retryable  bool
+		terminal   bool
+		replyTask  bool
 		wantEmpty  bool
 	}{
 		{name: "first attempt of a retryable cause stays quiet", attempts: 1, maxRetries: 3, retryable: true, wantEmpty: true},
 		{name: "second attempt of an unclassified cause speaks up", attempts: 2, maxRetries: 3, retryable: true},
 		{name: "exhausted budget on an unclassified cause speaks up", attempts: 3, maxRetries: 3, retryable: true},
 		{name: "a classified terminal cause stays quiet — no budget was spent", attempts: 2, maxRetries: 3, retryable: false, wantEmpty: true},
+
+		// A lost collaboration answer must be said even on a path that would
+		// otherwise stay quiet: the asker is waiting for something nothing else in
+		// the system knows is gone (defect I1's second half).
+		{name: "a reply task failing terminally speaks even with no budget spent", attempts: 1, maxRetries: 1, retryable: false, terminal: true, replyTask: true},
+		{name: "a reply task about to be retried stays quiet — the answer is still coming", attempts: 1, maxRetries: 3, retryable: true, terminal: false, replyTask: true, wantEmpty: true},
+		{name: "an ordinary terminal failure stays quiet", attempts: 1, maxRetries: 1, retryable: false, terminal: true, wantEmpty: true},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			reason := failureVisibilityReason(tc.attempts, tc.maxRetries, tc.retryable)
+			reason := failureVisibilityReason(failureContext{
+				Attempts:   tc.attempts,
+				MaxRetries: tc.maxRetries,
+				Retryable:  tc.retryable,
+				Terminal:   tc.terminal,
+				ReplyTask:  tc.replyTask,
+			})
 			if tc.wantEmpty {
 				assert.Empty(t, reason)
 				return
@@ -134,6 +149,20 @@ func TestFailureVisibilityReason(t *testing.T) {
 			assert.NotEmpty(t, reason)
 		})
 	}
+}
+
+// TestCarriesCollaborationReply pins the recognition the fabric needs to say the line
+// above: the marker is read from the task's checkpoint payload, and a task with no
+// checkpoint (or no payload) is simply not a reply task.
+func TestCarriesCollaborationReply(t *testing.T) {
+	reply := &Task{ID: "ask-reply-1", Checkpoint: NewCheckpointEnvelope(map[string]any{
+		PayloadKeyCollaborationReply: map[string]any{"from": "agent-b"},
+	})}
+	assert.True(t, carriesCollaborationReply(reply))
+
+	assert.False(t, carriesCollaborationReply(&Task{ID: "t", Checkpoint: NewCheckpointEnvelope(map[string]any{"input": "x"})}))
+	assert.False(t, carriesCollaborationReply(&Task{ID: "t"}))
+	assert.False(t, carriesCollaborationReply(nil))
 }
 
 // TestFailKnownPermanentCauseSkipsTheRetryBudget is the T-F1 contract end to end:

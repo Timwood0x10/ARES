@@ -175,6 +175,37 @@ func TestRerankCandidatesOrdersAndTruncates(t *testing.T) {
 	}
 }
 
+// TestRerankCandidates_UnknownAgeDropsOnlyTheRecencyTerm is the regression guard for
+// the widest blast radius of this feature: created_at only started travelling in
+// metadata alongside it, so a candidate written BEFORE that change has no timestamp.
+// Such a candidate must lose the recency term and nothing else — it must still be
+// returned, still be ranked, and never be dropped from the result set.
+func TestRerankCandidates_UnknownAgeDropsOnlyTheRecencyTerm(t *testing.T) {
+	weights := DefaultSimpleRerankWeights()
+	query := "deployment pipeline"
+
+	legacy := rerankCandidate{Content: "the deployment pipeline retries steps", Similarity: 0.9} // Age == 0 → unknown
+	daterd := rerankCandidate{Content: "the deployment pipeline retries steps", Similarity: 0.9, Age: time.Hour}
+
+	got := rerankCandidates(query, []rerankCandidate{legacy}, 5, weights, defaultRerankHalfLife)
+	if len(got) != 1 {
+		t.Fatalf("a candidate without created_at must still be returned, got %d candidates", len(got))
+	}
+
+	// And it is scored exactly as the same candidate without the recency term would
+	// be, not as if it were ancient.
+	withoutRecency := SimpleRerankWeights{Similarity: weights.Similarity, Lexical: weights.Lexical}
+	want := rerankScore(query, legacy, withoutRecency, defaultRerankHalfLife)
+	if score := rerankScore(query, legacy, weights, defaultRerankHalfLife); math.Abs(score-want) > 1e-9 {
+		t.Errorf("unknown age changed the score: %v, want %v", score, want)
+	}
+	// A dated candidate of equal text scores HIGHER: that difference is the term
+	// working, and it is the reason dropping it (rather than guessing) matters.
+	if rerankScore(query, legacy, weights, defaultRerankHalfLife) >= rerankScore(query, daterd, weights, defaultRerankHalfLife) {
+		t.Error("an undated candidate must not outrank an otherwise identical fresh one")
+	}
+}
+
 // TestRerankCandidatesKeepsInputOrderIntact guards the caller's slice: the rerank
 // must not mutate the candidates it was handed.
 func TestRerankCandidatesKeepsInputOrderIntact(t *testing.T) {

@@ -179,7 +179,11 @@ func setupEvaluators(llmClient eval.LLMClient, evStore evidence.Store) (*eval.Ev
 		return nil, fmt.Errorf("create llm judge: %w", err)
 	}
 	registry := eval.NewEvaluatorRegistry()
-	if err := registry.Register("llm_judge", judge); err != nil {
+	// Registered through the reporting decorator: the judge's own counters are the
+	// only measurement of how much of the accuracy signal deterministic checks
+	// anchor, and until something reads them at runtime the number is invisible
+	// while the scalar it qualifies keeps being produced (P0-1(ii)).
+	if err := registry.Register("llm_judge", eval.NewAgreementReportingEvaluator(judge)); err != nil {
 		return nil, fmt.Errorf("register llm judge: %w", err)
 	}
 	return registry, nil

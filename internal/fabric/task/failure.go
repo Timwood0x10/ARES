@@ -154,26 +154,75 @@ func classifyFailure(cause error) bool {
 // to be useless.
 const retryEscalationAttempts = 2
 
+// PayloadKeyCollaborationReply marks a task that carries a collaborator's answer
+// back to the agent that asked for it (defect I1).
+//
+// The key lives in the fabric rather than in the syscall layer that writes it for
+// two reasons: the fabric has to RECOGNISE such a task when it fails — a lost answer
+// is the whole defect — and the syscall layer already imports this package, so a
+// constant here is the only direction that does not cycle. One vocabulary for one
+// fact; the alternative is two string literals that drift apart.
+const PayloadKeyCollaborationReply = "ask_reply"
+
+// failureContext is what the visibility rule needs to know about one ended attempt.
+type failureContext struct {
+	// Attempts is the attempt count after this failure.
+	Attempts int
+	// MaxRetries is the task's total attempt budget.
+	MaxRetries int
+	// Retryable is classifyFailure's verdict for this cause.
+	Retryable bool
+	// Terminal is true when this attempt ended the task.
+	Terminal bool
+	// ReplyTask is true when the task carries a collaboration reply.
+	ReplyTask bool
+}
+
 // failureVisibilityReason turns "how this attempt ended" into the sentence an
 // operator needs, or "" when nothing needs saying.
 //
-// It exists because T-F1 was SILENT: a permanent error nobody marked simply
-// burned the budget, and the only trace was that the task eventually failed in
-// the way it could have failed at once. Saying it while the budget is being
-// spent is the difference between a defect and a mystery. retryable=false is
-// intentionally quiet — the fabric already knows the cause is terminal, no
-// budget was spent, and there is nothing to escalate.
-func failureVisibilityReason(attempts, maxRetries int, retryable bool) string {
+// It exists because T-F1 was SILENT: a permanent error nobody marked simply burned
+// the budget, and the only trace was that the task eventually failed in the way it
+// could have failed at once. Saying it while the budget is being spent is the
+// difference between a defect and a mystery. retryable=false is intentionally quiet —
+// the fabric already knows the cause is terminal, no budget was spent, and there is
+// nothing to escalate.
+//
+// The collaboration-reply arm is the exception that must speak even then: a reply
+// task that dies takes its answer with it, and the asker waits forever for something
+// nothing else in the system knows is gone.
+func failureVisibilityReason(fc failureContext) string {
+	if fc.ReplyTask && fc.Terminal {
+		return "a collaboration reply task failed terminally: the answer will never reach the asker"
+	}
 	switch {
-	case !retryable:
+	case !fc.Retryable:
 		return ""
-	case attempts >= maxRetries:
+	case fc.Attempts >= fc.MaxRetries:
 		return "retry budget exhausted on an unclassified cause: if this cause can never succeed, the producing layer must wrap it in MarkPermanent"
-	case attempts >= retryEscalationAttempts:
+	case fc.Attempts >= retryEscalationAttempts:
 		return "unclassified cause still failing after repeated attempts: check whether retrying this cause can ever help"
 	default:
 		return ""
 	}
+}
+
+// carriesCollaborationReply reports whether the task is delivering a collaborator's
+// answer, which is what makes its failure worth a line of its own.
+//
+// It decodes through the shared helper rather than reaching into the checkpoint:
+// Task.Checkpoint is an opaque `any` (an envelope, a map, or a restored shape), and
+// one decode path for every reader is what keeps those shapes from diverging.
+func carriesCollaborationReply(t *Task) bool {
+	if t == nil {
+		return false
+	}
+	decoded, err := DecodeCheckpoint(t.Checkpoint)
+	if err != nil || decoded.Payload == nil {
+		return false
+	}
+	_, ok := decoded.Payload[PayloadKeyCollaborationReply]
+	return ok
 }
 
 // failureCauseText renders a failure cause for a log line, naming the absent
