@@ -39,6 +39,16 @@ type EmbeddingConfig struct {
 	MaxVectorSearchLimit int
 	ReconcileBatchSize   int
 	EmbeddingTimeout     time.Duration
+
+	// IndexMethod selects the pgvector index type: VectorIndexIVFFlat (default)
+	// or VectorIndexHNSW. Switching an EXISTING deployment's method needs the
+	// index rebuilt (see vector_index.go); this setting decides what the
+	// builders create.
+	IndexMethod string
+	// SearchProbes is the ivfflat probe count applied per search (0 = leave the
+	// server default of 1). It is the recall lever that needs no rebuild.
+	// Ignored by HNSW, whose equivalent is hnsw.ef_search.
+	SearchProbes int
 }
 
 // DefaultEmbeddingConfig returns the default embedding configuration.
@@ -85,6 +95,18 @@ func (e *EmbeddingConfig) Validate() error {
 	}
 	if e.ReconcileBatchSize > 10000 {
 		return fmt.Errorf("reconcile batch size too large: %d (max 10000)", e.ReconcileBatchSize)
+	}
+	if e.IndexMethod == "" {
+		e.IndexMethod = VectorIndexIVFFlat
+	}
+	if err := validateVectorIndexMethod(e.IndexMethod); err != nil {
+		return err
+	}
+	if e.SearchProbes < 0 {
+		// A negative probe count is meaningless rather than dangerous (the
+		// statement builder ignores non-positive values), but silently ignoring a
+		// configured value is how a recall knob ends up doing nothing.
+		return fmt.Errorf("search probes must not be negative: %d", e.SearchProbes)
 	}
 	if e.EmbeddingTimeout <= 0 {
 		e.EmbeddingTimeout = 30 * time.Second

@@ -39,6 +39,38 @@
 - **建议**：数据一大，要么**动态调 ivfflat 的 lists/probes**（召回↑、查询↓），要么**上 HNSW**；
   当前"固定 lists=100"在规模上来后是召回率的天花板。
 
+**修复（2026-10-15）**：**承认的真因不是"100 这个数不对"，而是"没有任何人再看它一次"**——
+`CREATE INDEX IF NOT EXISTS` 对已存在的索引是惰性的，所以一个在空表上建出来的索引会永远保持
+它当年的 lists，召回率随之静默下滑。
+
+- **单一 DDL 源**（`vector_index.go` 的 `vectorIndexDDL`）：原先同一句索引 DDL 写在**三处**
+  （迁移 + `CreateVectorTable` + `CreateCollection`），其中两处**根本没写 lists**。现在 method/lists
+  只有一处定义。
+- **`lists` 按数据量自适应**（`ivfflatListsForRows`）：取 **`rows/1000` 与 `sqrt(rows)` 的较大者**，
+  夹在 `[1, 32768]`；**未测量（0 行）时保持历史默认 100**——从不测量猜一个小值，会把同一缺陷镜像成
+  "大表上只有 1 个 cluster"。
+- **启动时复核一次**（`AdaptVectorIndexScale`，由 `MigrateStorage` 收尾调用，故**生产可达**）：
+  **按 (表, embedding 列) 从 `pg_index` 查索引**（不猜名字）+ 读它的 `reloptions` 与 partial 谓词，
+  **只在超过 2 倍**时重建（DROP + CREATE，故意的阻塞操作：2 倍门限让重建罕见）。非 ivfflat 索引或
+  读不到形状 → **跳过**，绝不盲重建。
+- **同日复核修正（三处，都很关键）**：
+  1. **索引名不匹配 = 整个能力是死代码**：初版按 `<table>_embedding_idx` 查，而迁移建的是
+     `idx_<table>_embedding` ⇒ 每次启动都走"没有索引"的跳过分支，缺陷一点没修。**已改为按目录查询**，
+     并补一条回归守卫（SQL 里不许出现名字约定）。**反证**：改回按名查 → 守卫用例失败。
+  2. **lists 规则会让小表变慢**：`rows/1000` 假定 probes 被调大；默认 `probes=1` 时扫描比例 =
+     `probes/lists`，500 行会得到 1 个列表、**扫全表**。改为取大者后，单次探针约扫 `sqrt(rows)` 行
+     （500 行≈22 行、50 万行≈707 行）。**反证**：只用 `rows/1000` → `ivfflatListsForRows(500)=1, want 22`。
+  3. **启动期不该做全表 count**：复核每次启动都跑，`count(*)` 在千万行表上是固定成本。**改为优先读
+     `pg_class.reltuples`**（免费），仅在估计不可用（未 ANALYZE/新表）时兜底 count——2 倍门限本身就能
+     容忍估计误差。另**保留索引自身的名字与 partial 谓词**（否则会把 `WHERE embedding IS NOT NULL`
+     的部分索引换成全量索引：更大，且 planner 失去谓词证明）。
+- **检索期探针可配**（`EmbeddingConfig.SearchProbes` + `SET LOCAL ivfflat.probes`，**事务内**，
+  免得在池化连接上泄漏给别的租户）：这是**不用重建**就能提召回的那一半。
+- **HNSW 选项有了**（`EmbeddingConfig.IndexMethod`）：DDL 走 `USING hnsw (m=16, ef_construction=64)`，
+  且**不带 `lists`**（HNSW 没这个参数，发出去就是执行期报错）。
+- **未做（需运维动作）**：**存量部署切换索引方法仍需重建**（换 method 是数据面决定，规范 §0.4）；
+  HNSW 的检索期旋钮 `hnsw.ef_search` 未接（现在只有 ivfflat 的 probes）。
+
 ### R2 · 纯余弦近邻，无精排（rerank） 〔缺陷〕
 
 热路径检索 SQL（`vector.go:89-92`）：
@@ -54,6 +86,32 @@ LIMIT $2
 - **补充（v0.3.3 实测）**：更宽的 `RetrievalService`（`internal/storage/postgres/services/retrieval_search.go:652-710 rerankResults`）**有** query/source 权重 + **时间衰减**（`EnableTimeDecay`，默认 true）；但 **`NewRetrievalService` 在生产 wiring 中未被构造**（只有 `NewSimpleRetrievalService` 被用），所以"**生产热路径无精排、无新鲜度加权**"这一结论仍成立。
 - **坑**：量大时"**假近**"（向量近但内容不相关）直接进 top-K → 注入 prompt 的是**噪声**。
 - **建议**：宽召回（top-50）→ 精排（cross-encoder）→ 取 top-5。这条是"检索噪声"最直接的解法。
+
+**修复（2026-10-15）**：先纠正一条**比初稿更准的事实**：生产路径**早就在做宽召回**
+（`SimpleRetrievalService.Search` 取 `TopK*5`），**缺的是精排**——所以那 5 倍候选取回来之后，
+直接按召回顺序截前 K，那还是余弦顺序，等于白花一次查询。修的就是这一跳。
+
+- **确定性精排**（`services/simple_rerank.go`）：`相似度 + 词面覆盖 + 新鲜度` 三项加权，
+  缺失项**剔除并重新归一**（未知时间戳**不猜**成"旧"，否则没有 metadata 的行会被无声埋掉）。
+  **如实标注：这不是 cross-encoder**——仓库没有 rerank 模型/服务，硬凑一个才是假实现；
+  它修的是"假近直接进 top-K"这一类噪声，跨 encoder 语义匹配仍待有模型时再接。
+- **`Score` 语义不变**（仍是余弦），排序依据另立 `RerankScore` 字段并在字段注释里写明：
+  按 `Score` 重排会把精排结论退回余弦序，这是调用方需要知道的边界。
+- **新鲜度项要真拿得到时间戳才算接通了**：`SearchByVector` 原本**没把 `created_at` 放进
+  metadata**（列选了、扫了，就是没带出去），于是补上；否则 recency 项会永远"未知→剔除"，
+  变成"接了但永不生效"（本缺陷已经这样过一次：`ExactMatch`/`ToolUsage`/`KeywordPresence`
+  三个 evaluator 就是**生产零调用**的死代码）。
+- **词面覆盖用覆盖率而非 Jaccard**：长文档把问的词都提到了就该拿满分，不能因为自身词汇量
+  大而被压；短/标点 token 丢弃，避免"人人看起来都有一点相关"。
+- **同日复核修正（中文场景失效）**：初版按"非字母数字切分 + 丢弃 <3 rune"切词，而**中文没有空格** ⇒ 整句
+  变成**一个超长 token** ⇒ 词面项退化成近似整串相等，**恰好在最需要它的场景（判官提示词与语料都是中文）
+  贡献≈0**。**已加无空格脚本的 bigram 切分**（Han/假名/谚文按相邻字符成对，单字符查询保留；拉丁仍走原规则），
+  使部分重合可度量（实测"人工智能的最新趋势" vs "人工智能领域的最新趋势" = 7/8）。
+  **反证**：让 CJK 走普通切分 → 中文用例失败（0 ≠ 0.875）。
+- **测试**：`simple_rerank_test.go`（核心一条：**余弦更近但没提到所问内容的候选必须被压下去**，
+  同时断言纯余弦序恰好相反）、词面/新鲜度/剔除未知/全零权重回退/不改调用方切片/部分配置兜底。
+- **未做**：`RetrievalService`（那套更宽的加权 + 时间衰减服务）**仍未在生产装配**，本轮是在
+  **生产真正在跑的那条路径**上补精排（两套并存是规范 §5.1 禁止的形态，修它需要先决定合并方向）。
 
 ### R3 · hybrid 融合**已实现**（0.7 向量 / 0.3 lexical）〔已做 · 与初稿结论相反〕
 
@@ -154,6 +212,30 @@ embedding_queue 都在同一个 PG 实例**（`migrate_storage.go` 一张 schema
   排障时要查 `embedding_dead_letter`。
 - **建议**：dead-letter 加**重放 + 告警**（"N 条经验的向量从未生成成功，已不可检索"），
   别让"embedding 失败"变成"数据永久蒸发"。
+
+**修复（2026-10-15）**：重放与告警都做了，且**每条内容只自动重放一次，永不循环**。
+
+- **可行动性的拆分**（`DeadLetterBacklog`）：`Pending`（还没拿到过自动重放机会）与
+  `GivenUp`（重放过一次又失败 = 文档过长/维度不匹配，**要人处理**）。只报一个总数会让告警失去意义。
+- **单发重放**（`EmbeddingQueue.ReplayDeadLetters`）：一条语句里"取候选 → 插回队列 → 盖章"，
+  **原子**（崩溃不会造成既重插又没盖章）。防循环靠 `auto_replayed` 标记，且
+  `MarkFailed` 的死信 INSERT **把这个标记一起搬过来**（`deadLetterInsertSQL`）——否则重放再失败会生成
+  一条新死信、标记归零，于是每 tick 重放一次，永久循环。另有 `NOT EXISTS` 守卫跳过已在队列里的内容
+  （否则 Reconcile + 重放会让同一行同时在飞）。
+- **告警 + 顺序**（`ares_bootstrap/embedding_worker.go`）：tick 里 **先重放、再清理、最后报**——
+  重放必须在清理之前，否则"超过保留期的 pending"会被保留期**静默决定**内容不可恢复；报告放最后，
+  报出来的数字就是**本 tick 之后仍然不可见**的那部分。`Warn`（不是 Info），因为这些行的 embedding 是
+  NULL、被所有检索查询无声跳过。
+- **补了一个"零生产调用"的既有事实**：`RequeueDeadLetter`（单条人工重排）此前**没有任何调用方**，
+  连运维都够不着；现在批量路径与它并存，且批量路径是**自动接线**的。
+- **同日复核修正（告警噪音）**：非空 backlog 初版**每 tick 一条 Warn**（默认 10 分钟 ⇒ 一条永远修不好的
+  内容约 144 条/天），这会把真告警淹掉。改为**按状态变化记录**（`deadLetterReporter` 记住上次报过的
+  `{pending, given_up, count_err}`）：首次照响、不变不刷、增长/缩小/计数开始失败都再响一次。
+  **反证**：去掉"每状态只报一次" → 该契约用例失败（同状态被重复报出）。
+- **测试**：`embedding_queue_deadletter_test.go`（单发标记/防重复入队/边界校验/可行动性拆分，
+  含"标记必须随死信搬过去，否则无限重放"的 SQL 契约）+ `embedding_worker_deadletter_test.go`
+  （批量上限、失败不吞掉后续报告、空 backlog 必须安静、非空必须 Warn 且带上拆分数字）。
+  **实机反证**：把盖章改成 `FALSE` → 单发契约测试失败；恢复即绿。
 
 ---
 

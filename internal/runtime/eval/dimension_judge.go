@@ -118,6 +118,13 @@ func (e *LLMJudgeEvaluator) evaluateWithDimensions(ctx context.Context, tc TestC
 		return nil, fmt.Errorf("parse dimension response: %w", err)
 	}
 
+	// What the judge actually said about correctness, captured BEFORE the two
+	// deterministic floors below rewrite that dimension. The agreement counts
+	// measure the judge's opinion; reading the score back after a floor would
+	// report perfect agreement by construction, which is exactly the number the
+	// counts exist to not be.
+	judgeCorrectness := dimResp.Scores[0]
+
 	// Layer 0 — the deterministic floor, applied BEFORE any use of the judge's
 	// numbers and needing no LLM: the runtime already knows whether the answer
 	// was a gap body or was forced by the growth-depth guard (defect P0-3), and
@@ -137,17 +144,47 @@ func (e *LLMJudgeEvaluator) evaluateWithDimensions(ctx context.Context, tc TestC
 		dimResp.Scores[0] = 0
 	}
 
+	// Layer 0 — the GROUND-TRUTH anchor, the other half of the same layer and the
+	// stronger half: the provenance above says what KIND of ending the answer was,
+	// this says whether the answer was RIGHT, using the checks the case declared
+	// (Check* in ground_truth.go) and no LLM. A declared check that FAILED is not
+	// partially correct, and no well-written answer may lift it — the judge is
+	// overruled, not averaged with.
+	//
+	// It is applied after the provenance floor and wins over it, because the two
+	// mistakes are not equal: "produced the wrong thing while cut short" must not
+	// score above "produced nothing". Without this arm the accuracy signal the GA
+	// selects on is pure judge opinion for every case — including a fluent,
+	// confident WRONG answer, which is what makes it reward hacking.
+	gt := evaluateGroundTruth(tc, result, e.role)
+	if gt.Verdict == VerdictFail {
+		dimResp.Scores[0] = 0
+	}
+
 	// Average the four normalized dimension scores.
 	avgScore := normalizedDimensionMean(dimResp.Scores)
 	if degraded && avgScore > factor {
 		avgScore = factor
 	}
+	if gt.Verdict == VerdictFail {
+		// Clamp the scalar as well as the dimension: zeroing correctness alone
+		// would leave a failed case at 0.75 (the other three rubrics), handing an
+		// answer deterministic evidence says is WRONG a better score than a gap
+		// body — and giving the gate and the evidence two numbers for one
+		// judgment, the defect the provenance clamp's comment describes.
+		avgScore = 0
+	}
+
+	// Record the agreement BEFORE the caller can read a floored number, and pass
+	// the outcome on so the persisted diagnosis carries the deterministic verdict
+	// that produced this scalar instead of reading as pure judge opinion.
+	e.recordGroundTruth(gt, judgeCorrectness)
 
 	// Production bridge: persist the structured dimension diagnosis into the
 	// universal evidence store when wired, so the evolution Diagnoser can
 	// consume real failure evidence (not just test-seeded records). Emit is
 	// best-effort: a persistence failure must not fail the evaluation.
-	e.emitDimensionEvidence(ctx, tc.ID, dimResp, avgScore)
+	e.emitDimensionEvidence(ctx, tc.ID, dimResp, avgScore, gt)
 
 	return []EvalScore{
 		{
@@ -162,7 +199,7 @@ func (e *LLMJudgeEvaluator) evaluateWithDimensions(ctx context.Context, tc TestC
 // KindDimensionEval evidence and persists it through the bridge when a store is
 // wired. Persistence failures are logged, never returned, to keep the scalar
 // scoring path robust.
-func (e *LLMJudgeEvaluator) emitDimensionEvidence(ctx context.Context, taskID string, dimResp *dimensionAwareJudgeResponse, value float64) {
+func (e *LLMJudgeEvaluator) emitDimensionEvidence(ctx context.Context, taskID string, dimResp *dimensionAwareJudgeResponse, value float64, gt groundTruthOutcome) {
 	if e.dimensionBridge == nil {
 		return
 	}
@@ -173,7 +210,7 @@ func (e *LLMJudgeEvaluator) emitDimensionEvidence(ctx context.Context, taskID st
 		Safety:       dimResp.Scores[3],
 		Reason:       dimResp.Reason,
 	}
-	if err := e.dimensionBridge.Emit(ctx, taskID, e.role, judgeResp, value); err != nil {
+	if err := e.dimensionBridge.emitWithGroundTruth(ctx, taskID, e.role, judgeResp, value, gt); err != nil {
 		log.Error("dimension judge bridge emit failed",
 			"task_id", taskID,
 			"role", e.role,

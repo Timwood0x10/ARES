@@ -34,6 +34,16 @@ type EmbeddingWorkerConfig struct {
 	// the reconciler purges them. Default 30d — the operator's window to
 	// inspect or RequeueDeadLetter before automatic cleanup.
 	DeadLetterRetention time.Duration
+	// DeadLetterReplayBatch is how many never-replayed dead letters one
+	// reconciler tick may put back in the queue. Default 50.
+	//
+	// Bounded on purpose: a provider outage dead-letters everything at once, and
+	// replaying the whole backlog in a single tick would spend the embedding
+	// quota in one burst while the provider may still be down. Each entry is
+	// replayed at most ONCE ever (the queue stamps it), so a small batch per tick
+	// still drains the backlog completely — just at a rate the provider can
+	// absorb.
+	DeadLetterReplayBatch int
 }
 
 // defaultEmbeddingWorkerConfig returns sensible defaults.
@@ -43,6 +53,8 @@ func defaultEmbeddingWorkerConfig() EmbeddingWorkerConfig {
 		ReconcileInterval:   10 * time.Minute,
 		ReconcileThreshold:  30 * time.Minute,
 		DeadLetterRetention: 30 * 24 * time.Hour,
+
+		DeadLetterReplayBatch: 50,
 	}
 }
 
@@ -61,6 +73,12 @@ type embeddingQueueClient interface {
 	MarkFailed(ctx context.Context, tableName, taskID, errMessage string) error
 	Reconcile(ctx context.Context, threshold time.Duration) error
 	PurgeDeadLetters(ctx context.Context, age time.Duration) (int64, error)
+	// ReplayDeadLetters and CountDeadLetters are the D1/P1-4 pair: the first gives
+	// never-replayed dead letters their one automatic second chance, the second
+	// makes the remaining backlog — content with no embedding, invisible to every
+	// retrieval query — impossible to miss.
+	ReplayDeadLetters(ctx context.Context, limit int) (int64, error)
+	CountDeadLetters(ctx context.Context) (postgres.DeadLetterBacklog, error)
 }
 
 // embeddingWriter resolves the correct repo.UpdateEmbedding call based on
@@ -146,6 +164,11 @@ func startEmbeddingReconciler(
 	if workerCfg.ReconcileInterval <= 0 {
 		workerCfg = defaultEmbeddingWorkerConfig()
 	}
+	if workerCfg.DeadLetterReplayBatch <= 0 {
+		// Per-field, not the whole struct: a caller that only set the interval
+		// must not silently get a zero batch, which would disable replay.
+		workerCfg.DeadLetterReplayBatch = defaultEmbeddingWorkerConfig().DeadLetterReplayBatch
+	}
 
 	logger := slog.With("component", "embedding_reconciler")
 
@@ -153,6 +176,10 @@ func startEmbeddingReconciler(
 	comp.GoBackground(ctx, "embedding_reconciler", func(ctx context.Context) error {
 		ticker := time.NewTicker(workerCfg.ReconcileInterval)
 		defer ticker.Stop()
+
+		// Per-loop state (not a package global): the reporter's memory of what it
+		// already said belongs to this loop and would otherwise leak between runs.
+		var deadLetters deadLetterReporter
 
 		logger.InfoContext(ctx, "embedding reconciler started",
 			"interval", workerCfg.ReconcileInterval.String(),
@@ -168,6 +195,12 @@ func startEmbeddingReconciler(
 				if err := queue.Reconcile(ctx, workerCfg.ReconcileThreshold); err != nil {
 					logger.WarnContext(ctx, "embedding reconcile failed", "error", err)
 				}
+				// Replay rides BEFORE the purge on purpose (defect D1): a pending
+				// entry older than the retention window must get its one automatic
+				// second chance before cleanup deletes the last queue copy of its
+				// content. Purge-then-replay would let retention silently decide
+				// that content is gone.
+				replayEmbeddingDeadLetters(ctx, queue, workerCfg.DeadLetterReplayBatch, logger)
 				// Dead-letter housekeeping rides the same tick: without a
 				// purge the embedding_dead_letter table grows unbounded and
 				// Reconcile's NOT EXISTS probes scan an ever-larger set on
@@ -180,9 +213,74 @@ func startEmbeddingReconciler(
 					logger.InfoContext(ctx, "embedding dead letters purged",
 						"count", purged, "retention", workerCfg.DeadLetterRetention.String())
 				}
+				// The report is LAST so its numbers are what SURVIVES this tick:
+				// content still without an embedding, and therefore still skipped
+				// by every retrieval query without producing an error.
+				deadLetters.report(ctx, queue, workerCfg.DeadLetterRetention, logger)
 			}
 		}
 	})
+}
+
+// replayEmbeddingDeadLetters gives up to batch never-replayed dead letters their
+// one automatic second chance (defect D1 / P1-4).
+//
+// It is a separate function from the tick so the policy is testable without a
+// running goroutine, and it deliberately swallows nothing: a replay failure is
+// logged, because a silent failure here is the same defect it exists to fix.
+func replayEmbeddingDeadLetters(ctx context.Context, queue embeddingQueueClient, batch int, logger *slog.Logger) {
+	replayed, err := queue.ReplayDeadLetters(ctx, batch)
+	if err != nil {
+		logger.WarnContext(ctx, "embedding dead-letter replay failed", "error", err)
+		return
+	}
+	if replayed > 0 {
+		logger.InfoContext(ctx, "embedding dead letters replayed",
+			"count", replayed, "batch", batch)
+	}
+}
+
+// deadLetterReporter reports the dead-letter backlog once per STATE.
+//
+// The backlog is a number that does not change between ticks: reported every tick
+// (default 10 minutes) a permanently unembeddable row would emit ~144 identical
+// Warnings a day, which is how a real alarm gets filtered out by whoever reads the
+// logs. Reporting on change keeps the "content is invisible" fact loud the first
+// time and quiet while nothing moves, and it still speaks up when the backlog grows,
+// shrinks, or the count starts failing.
+type deadLetterReporter struct {
+	last     deadLetterState
+	reported bool
+}
+
+// deadLetterState is the comparable fact a report is keyed on.
+type deadLetterState struct {
+	Pending  int64
+	GivenUp  int64
+	CountErr bool
+}
+
+// report emits the backlog when it differs from the last reported state.
+func (r *deadLetterReporter) report(ctx context.Context, queue embeddingQueueClient, retention time.Duration, logger *slog.Logger) {
+	backlog, err := queue.CountDeadLetters(ctx)
+	state := deadLetterState{Pending: backlog.Pending, GivenUp: backlog.GivenUp, CountErr: err != nil}
+	if r.reported && state == r.last {
+		return // unchanged since the last tick: already said
+	}
+	r.last, r.reported = state, true
+
+	if err != nil {
+		logger.WarnContext(ctx, "embedding dead-letter count failed", "error", err)
+		return
+	}
+	if backlog.Total() == 0 {
+		return
+	}
+	logger.WarnContext(ctx, "content has no embedding and is invisible to retrieval",
+		"total", backlog.Total(),
+		"pending_replay", backlog.Pending,
+		"given_up", backlog.GivenUp,
+		"retention", retention.String())
 }
 
 // processEmbeddingBatch fetches one batch of pending tasks and processes

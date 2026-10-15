@@ -31,6 +31,27 @@ type fakeQueue struct {
 	// purgeErr/purgedRows drive the PurgeDeadLetters test surface.
 	purgeErr   error
 	purgedRows int64
+
+	// replayErr/replayedRows/replayCalls drive the ReplayDeadLetters surface and
+	// backlog/backlogErr the CountDeadLetters one (D1/P1-4).
+	replayErr    error
+	replayedRows int64
+	replayCalls  []int
+	backlog      postgres.DeadLetterBacklog
+	backlogErr   error
+}
+
+func (q *fakeQueue) ReplayDeadLetters(_ context.Context, limit int) (int64, error) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.replayCalls = append(q.replayCalls, limit)
+	return q.replayedRows, q.replayErr
+}
+
+func (q *fakeQueue) CountDeadLetters(_ context.Context) (postgres.DeadLetterBacklog, error) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return q.backlog, q.backlogErr
 }
 
 func (q *fakeQueue) FetchPendingTasks(_ context.Context, limit int) ([]*postgres.EmbeddingTask, error) {

@@ -71,11 +71,26 @@ aggregator 改按 **kind** 过滤（原先按 kind 字符串当 source 查，永
 
 **实机反证**：查询退回修复前形态 → 端到端测试失败（真生产者→真消费者）。
 
-**仍未做（需你拍板后才动，别当成已完成）**：
-1. **oracle 形态**：参考答案精确/包含匹配 / rubric+LLM judge / 分层？（四维提示词**已含**
-   `{{.ExpectedOutput}}` —— 参照物本来就喂给判官了）；
-2. **golden 语料**：现仅 `test/eval/basic.yaml`、`test/eval/tools.yaml` 两份小样例，规模远不够；
-3. **触发方式**：离线 / 定时 / evolution 前；
+**三项已拍板、两项已落（2026-10-15；细节与实测见 `genetic-algorithm.md` 的 G1 段），其余仍未做**：
+
+1. **oracle 形态 = 分层（已落）**：底层**确定性检查**（`internal/runtime/eval/ground_truth.go`，零 LLM：
+   `exact` / `contains` / `numeric` / `tools` / `no_error`），上层仍是四维 rubric判官。**判 Fail → 准确率归 0，
+   判官无翻盘权**，且**排在 provenance floor 之后**（"答错且被截断" < "什么都没产出"）；判 Pass **只做下限不做上限**。
+   - 复用既有 `ResultVerifier`（Ch.8 底层校验器，此前**生产零调用**），不另造第二套判定规则。
+   - 语料**逐条声明**检查种类（`TestCase.Checks`）；**未声明即不改行为**（不做隐式回填，免得一条旧
+     `expected_output` 把存量套件改成 0）。顺带修掉 `types.go` 里那句与实现不符的注释
+     （原文称 `ExpectedOutput` "for exact match evaluation"，实现里没有 exact-match 路径）。
+   - **反证实测**：停用该 floor 后，"法国首都是哪"答 `"Lyon"` 仍得 **满分 1.0** —— 这正是纯 LLM judge 作为
+     选育目标函数的真实后果。
+2. **golden 语料：第一批已落（`test/eval/golden.yaml` 35 条，含存量加锚共 40 条带确定性检查）**，按
+   "任务类 × 答案形态 × 对抗格"分层（`axis:factual/prose/compute/tools/adversarial/format/safety`）。
+   **仍远不够**：40 条是起步下限（`corpus_test.go` 的 `minAnchoredCorpusCases` 守住），离"代表任务面"很远；
+   无锚的开放题仍完全由判官决定，其占比可由 `GroundTruthAgreement` 读出。
+3. **触发方式：三者角色不同，已落离线/CI 这一半（其余未做）**：
+   - **离线/CI（已落）**：`corpus_test.go` 体检语料（声明的检查必须可解析、种类必须已知、锚定数不低于下限）；
+   - **evolution 前回放（未做，下一步）**：可比信号要求"对所有候选同一组题"的确定性回放；活流量做不到
+     （给门的是 ACTIVE 策略的不重叠时间窗，低流量时通道直接退回 0）；
+   - **定时（未做）**：无 evolution 的部署里喂非零样本 + 盯语料陈旧与判官漂移。
 4. **判据已部分落地（2026-10-13，真跑，非注入）**：`sdk/adversarial_e2e_test.go` 在 **SDK 的 L2 core** 上
    真跑一次会话（零 LLM：`rt.llmSvc = mockLLMSvc`），链路为
    `真会话 → SessionEvalExecutor 读回真实 provenance → Layer 0 floor → bridge.Emit → RuntimeFitnessAggregator.Window`：

@@ -8,6 +8,7 @@ import (
 	"math"
 	"strings"
 	"sync"
+	"time"
 	"unicode/utf8"
 
 	"github.com/Timwood0x10/ares/internal/errors"
@@ -21,13 +22,55 @@ type SimpleRetrievalConfig struct {
 	TopK        int     `json:"top_k"`        // Number of results to return
 	MinScore    float64 `json:"min_score"`    // Minimum similarity score
 	QueryPrefix string  `json:"query_prefix"` // Prefix for query embedding (e.g., "query:")
+	// RerankCandidateFactor is how many candidates to recall per returned result
+	// before reranking (default 5 — the value this path always used to fetch, now
+	// actually reranked). 1 disables the wide recall.
+	RerankCandidateFactor int `json:"rerank_candidate_factor"`
+	// RerankWeights are the rerank term weights (default
+	// DefaultSimpleRerankWeights). All-zero falls back to pure similarity.
+	RerankWeights SimpleRerankWeights `json:"rerank_weights"`
+	// RerankHalfLife is the recency term's half-life (default 30 days).
+	RerankHalfLife time.Duration `json:"rerank_half_life"`
 }
+
+// normalized returns a copy with defaults filled in, so a partially-set config
+// cannot silently disable the rerank or divide by a zero factor.
+func (c *SimpleRetrievalConfig) normalized() SimpleRetrievalConfig {
+	if c == nil {
+		return SimpleRetrievalConfig{
+			TopK: 5, MinScore: 0.6, QueryPrefix: "query:",
+			RerankCandidateFactor: defaultRerankCandidateFactor,
+			RerankWeights:         DefaultSimpleRerankWeights(),
+			RerankHalfLife:        defaultRerankHalfLife,
+		}
+	}
+	out := *c
+	if out.RerankCandidateFactor <= 0 {
+		out.RerankCandidateFactor = defaultRerankCandidateFactor
+	}
+	if out.RerankWeights == (SimpleRerankWeights{}) {
+		out.RerankWeights = DefaultSimpleRerankWeights()
+	}
+	if out.RerankHalfLife <= 0 {
+		out.RerankHalfLife = defaultRerankHalfLife
+	}
+	return out
+}
+
+// defaultRerankCandidateFactor is the recall width per returned result.
+const defaultRerankCandidateFactor = 5
 
 // SimpleSearchResult simple search result with only essential fields
 type SimpleSearchResult struct {
 	Content string  `json:"content"` // Content text
 	Source  string  `json:"source"`  // Source document/file path
 	Score   float64 `json:"score"`   // Cosine similarity score (1 - distance)
+	// RerankScore is the score the results were ORDERED by (similarity + lexical
+	// coverage + recency, see simple_rerank.go). Score keeps its original meaning
+	// — callers compare it against MinScore — so the two are deliberately
+	// separate: re-sorting the returned slice by Score restores the plain cosine
+	// order, which is what the rerank exists to improve on.
+	RerankScore float64 `json:"rerank_score"`
 }
 
 // SimpleRetrievalService provides pure vector similarity search
@@ -85,18 +128,15 @@ func NewSimpleRetrievalService(
 	embeddingClient *embedding.EmbeddingClient,
 	config *SimpleRetrievalConfig,
 ) *SimpleRetrievalService {
-	if config == nil {
-		config = &SimpleRetrievalConfig{
-			TopK:        5,
-			MinScore:    0.6,
-			QueryPrefix: "query:",
-		}
-	}
+	// Normalized rather than copied: a partially-set config must not silently
+	// disable the rerank (a zero candidate factor would collapse the wide recall
+	// back to the plain cosine order this service exists to improve on).
+	normalized := config.normalized()
 
 	return &SimpleRetrievalService{
 		repo:      repo,
 		embedding: embeddingClient,
-		config:    config,
+		config:    &normalized,
 	}
 }
 
@@ -130,7 +170,11 @@ func (s *SimpleRetrievalService) Search(ctx context.Context, tenantID, query str
 	// Perform pure vector similarity search
 	// SearchByVector returns chunks with similarity in metadata
 	// Use larger limit to get more candidates before filtering
-	chunks, err := s.repo.SearchByVector(ctx, queryEmbedding, tenantID, s.GetConfig().TopK*5)
+	// Wide recall: fetch RerankCandidateFactor candidates per result so the
+	// rerank below has something to choose from. The factor used to be a literal
+	// 5 with nothing reranking the result, which bought nothing.
+	cfg := s.GetConfig()
+	chunks, err := s.repo.SearchByVector(ctx, queryEmbedding, tenantID, cfg.TopK*cfg.RerankCandidateFactor)
 	if err != nil {
 		log.Error("Vector search failed", "error", err)
 		return nil, errors.Wrap(err, "vector search")
@@ -138,8 +182,13 @@ func (s *SimpleRetrievalService) Search(ctx context.Context, tenantID, query str
 
 	log.Debug("Raw chunks retrieved", "count", len(chunks))
 
-	// Convert to simple results and filter by min_score
-	var results []*SimpleSearchResult
+	// Convert to candidates and filter by min_score, then RERANK (defect R2).
+	//
+	// The wide recall above is only worth its extra work if something reorders
+	// it: taking the first TopK in recall order IS the cosine order, i.e. exactly
+	// what a LIMIT TopK would have returned.
+	now := time.Now()
+	candidates := make([]rerankCandidate, 0, len(chunks))
 	for _, chunk := range chunks {
 		// Extract similarity from metadata (set by SearchByVector)
 		// SearchByVector computes: 1 - cosine_distance
@@ -150,20 +199,27 @@ func (s *SimpleRetrievalService) Search(ctx context.Context, tenantID, query str
 		}
 
 		// Filter by min_score threshold
-		if similarity < s.GetConfig().MinScore {
+		if similarity < cfg.MinScore {
 			continue
 		}
 
-		results = append(results, &SimpleSearchResult{
-			Content: chunk.Content,
-			Source:  chunk.Source,
-			Score:   similarity,
+		candidates = append(candidates, rerankCandidate{
+			Content:    chunk.Content,
+			Source:     chunk.Source,
+			Similarity: similarity,
+			Age:        chunkAge(chunk.Metadata, now),
 		})
 	}
 
-	// Limit to TopK results
-	if len(results) > s.GetConfig().TopK {
-		results = results[:s.GetConfig().TopK]
+	ranked := rerankCandidates(query, candidates, cfg.TopK, cfg.RerankWeights, cfg.RerankHalfLife)
+	results := make([]*SimpleSearchResult, 0, len(ranked))
+	for _, c := range ranked {
+		results = append(results, &SimpleSearchResult{
+			Content:     c.Content,
+			Source:      c.Source,
+			Score:       c.Similarity,
+			RerankScore: rerankScore(query, c, cfg.RerankWeights, cfg.RerankHalfLife),
+		})
 	}
 
 	log.Info("Search completed",
@@ -311,7 +367,8 @@ func (s *SimpleRetrievalService) searchVector(ctx context.Context, tenantID, que
 		return nil, errors.Wrap(err, "embed query")
 	}
 
-	chunks, err := s.repo.SearchByVector(ctx, queryEmbedding, tenantID, s.GetConfig().TopK)
+	cfg := s.GetConfig()
+	chunks, err := s.repo.SearchByVector(ctx, queryEmbedding, tenantID, cfg.TopK*cfg.RerankCandidateFactor)
 	if err != nil {
 		log.Error("Vector search failed", "error", err)
 		return nil, errors.Wrap(err, "vector search")
@@ -321,7 +378,10 @@ func (s *SimpleRetrievalService) searchVector(ctx context.Context, tenantID, que
 		return []*SimpleSearchResult{}, nil
 	}
 
-	results := make([]*SimpleSearchResult, 0, len(chunks))
+	// Same wide-recall-then-rerank shape as Search, so the vector fallback of the
+	// precision path does not quietly answer with the plain cosine order.
+	now := time.Now()
+	candidates := make([]rerankCandidate, 0, len(chunks))
 	for _, chunk := range chunks {
 		score := 0.0
 		if chunk.Metadata != nil {
@@ -331,25 +391,39 @@ func (s *SimpleRetrievalService) searchVector(ctx context.Context, tenantID, que
 		}
 
 		// Apply min_score filter, consistent with normal Search path behavior
-		if score < s.GetConfig().MinScore {
+		if score < cfg.MinScore {
 			continue
 		}
 
+		candidates = append(candidates, rerankCandidate{
+			Content:    chunk.Content,
+			Source:     chunk.Source,
+			Similarity: score,
+			Age:        chunkAge(chunk.Metadata, now),
+		})
+	}
+
+	ranked := rerankCandidates(query, candidates, cfg.TopK, cfg.RerankWeights, cfg.RerankHalfLife)
+	results := make([]*SimpleSearchResult, 0, len(ranked))
+	for _, c := range ranked {
 		results = append(results, &SimpleSearchResult{
-			Content: chunk.Content,
-			Source:  chunk.Source,
-			Score:   score,
+			Content:     c.Content,
+			Source:      c.Source,
+			Score:       c.Similarity,
+			RerankScore: rerankScore(query, c, cfg.RerankWeights, cfg.RerankHalfLife),
 		})
 	}
 
 	return results, nil
 }
 
-// SetConfig updates the retrieval configuration
+// SetConfig updates the retrieval configuration (normalized, so a partial config
+// keeps the rerank active).
 func (s *SimpleRetrievalService) SetConfig(config *SimpleRetrievalConfig) {
+	normalized := config.normalized()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.config = config
+	s.config = &normalized
 }
 
 // GetConfig returns the current configuration

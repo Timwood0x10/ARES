@@ -9,6 +9,10 @@ test_cases:
     name: Simple Query
     input: "What is the capital of France?"
     expected_output: "Paris"
+    # contains, not exact: the answer is a one-word fact, and a model that wraps
+    # it in a sentence ("The capital of France is Paris.") is still correct. See
+    # eval.CheckContains. This case is the corpus's oldest verifiable anchor.
+    checks: [contains]
     timeout: 30s
     tags:
       - simple

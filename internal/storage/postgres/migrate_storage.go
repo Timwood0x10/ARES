@@ -403,7 +403,8 @@ var storageMigrations = []string{
 			queued_at TIMESTAMP DEFAULT NOW(),
 			processing_at TIMESTAMP,
 			completed_at TIMESTAMP,
-			error_message TEXT
+			error_message TEXT,
+			auto_replayed BOOLEAN DEFAULT FALSE
 		)`,
 
 	// Create indexes for embedding_queue
@@ -423,7 +424,8 @@ var storageMigrations = []string{
 			embedding_version INT,
 			error_message TEXT,
 			retry_count INTEGER,
-			created_at TIMESTAMP DEFAULT NOW()
+			created_at TIMESTAMP DEFAULT NOW(),
+			auto_replayed BOOLEAN DEFAULT FALSE
 		)`,
 
 	// Create indexes for embedding_dead_letter
@@ -435,6 +437,24 @@ var storageMigrations = []string{
 	// sequential scan on every reconcile tick.
 	`CREATE INDEX IF NOT EXISTS idx_embedding_dead_letter_task 
 		ON embedding_dead_letter(task_id, table_name)`,
+
+	// Incremental columns for databases created before they existed: CREATE TABLE
+	// IF NOT EXISTS is inert on an existing table, so these ALTERs are what
+	// actually add the columns there (same pattern as the experiences_1024
+	// column fixes above).
+	//
+	// auto_replayed is the marker that bounds the dead-letter replay to ONE
+	// automatic second chance per piece of content (defect D1 / P1-4): a dead
+	// letter that has been replayed is stamped, and MarkFailed copies the stamp
+	// onto the next dead-letter row for the same content, so an embedding that
+	// can never succeed cannot cycle forever.
+	`ALTER TABLE embedding_queue ADD COLUMN IF NOT EXISTS auto_replayed BOOLEAN DEFAULT FALSE`,
+	`ALTER TABLE embedding_dead_letter ADD COLUMN IF NOT EXISTS auto_replayed BOOLEAN DEFAULT FALSE`,
+
+	// The replay probe filters on auto_replayed = FALSE; the partial index keeps
+	// it off a sequential scan as the table accumulates given-up entries.
+	`CREATE INDEX IF NOT EXISTS idx_embedding_dead_letter_replayable
+		ON embedding_dead_letter(created_at) WHERE auto_replayed = FALSE`,
 
 	// 9-12. distilled_memories table family (table, RLS, indexes,
 	// content_hash, dedup index, updated_at) — REMOVED:
@@ -452,5 +472,11 @@ func MigrateStorage(ctx context.Context, pool *Pool) error {
 			return errors.Wrap(err, "migration failed")
 		}
 	}
+	// Review the ivfflat shape now that the schema exists (defect R1): CREATE
+	// INDEX IF NOT EXISTS never revisits the lists it chose for an empty table,
+	// so this is the only point where a grown table's recall is re-checked.
+	// Best-effort — a table that is absent or whose shape cannot be read is
+	// skipped rather than failing startup.
+	AdaptVectorIndexScale(ctx, pool, []string{storage_models.KnowledgeChunksTable, "experiences_1024"}, log)
 	return nil
 }

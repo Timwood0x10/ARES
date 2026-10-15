@@ -57,6 +57,24 @@
 `context.Canceled` 的特定子类），或至少**在"重试次数 > N 仍未好"时自动升级告警**
 （"这个任务重试了 5 次还挂，八成是永久错，别再烧了"），别静默烧满预算。
 
+**修复（2026-10-15）**：两半都做了，**判据放在"等待能否改变结果"上**。
+
+- **已知永久错**（`failure.go` 的 `permanentCauses` + `isKnownPermanent`）：`ErrNotFound` 族（含
+  `ErrToolNotFound`/`ErrRecordNotFound`/`ErrWorkflowNotFound`——它们都 wrap `ErrNotFound`，一条覆盖整个
+  "引用不存在"家族）、`ErrInvalidArgument`/`ErrInvalidInput`/`ErrInvalidConfig`、`ErrAccessDenied`、
+  `ErrAlreadyExists`、`ErrDependencyCycle`/`ErrWorkflowCyclicDAG`、`ErrMaxRetriesExceeded`。
+  匹配走 `errors.Is`（**不字符串匹配**），位置在显式 marker 与 deadline 之后。
+- **表刻意窄**：超时/不可用/限流/配额/熔断/连接失败/队列压力一律**仍可重试**，另外
+  `ErrInvalidState`（下个 attempt 可能已变）与 `ErrSecretExpired`（可能已被轮换）也留在可重试侧。
+  `TestClassifyFailure` 把**两半都钉死**——只钉"变终态"那一半的表，会把"白烧重试"悄悄换成
+  "能成功的任务被杀"，那是更贵的错。
+- **静默烧预算可见化**（`failureVisibilityReason` + `Fabric.logFailureVisibilityLocked`）：
+  未分类的原因**重试到第 2 次**起、或**预算耗尽**时打 Warn（带 task/attempts/cause）；
+  已被判终态则**安静**（没花预算，没什么要升级的）。
+- **实机反证**：停用 `isKnownPermanent` → T-F1 的 not-found/工具/参数各行全部失败；恢复即绿。
+- **未做（明确的取舍）**：HTTP 状态码级别的分类（4xx/404）在 `apperrors` 里没有对应哨兵，
+  要引入就是跨模块的方向性改动（规范 §0.4），**需要拍板**；现在覆盖的是已用哨兵表达的那一类。
+
 ### T-F2 · bare `context.DeadlineExceeded` 保持可重试（有意，但要知道代价） 〔取舍〕
 
 `failure.go:13-15` 注释明说："a bare `context.DeadlineExceeded` from a single LLM or tool

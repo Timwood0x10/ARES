@@ -443,9 +443,30 @@ func (f *Fabric) Fail(id, agentID string, epoch uint64, cause error) error {
 			}
 		}
 		pending = append(pending, f.recordWithExtrasLocked(t, EventTaskReady, readyExtras))
+		f.logFailureVisibilityLocked(t, cause, retryable)
 		return nil
 	}
 	return f.failTerminalLocked(t, cause, retryable, &pending)
+}
+
+// logFailureVisibilityLocked writes the T-F1 escalation line when an attempt
+// ended in a way an operator should know about (see failureVisibilityReason).
+//
+// Caller must hold f.mu, matching the other *_locked log sites in this package:
+// the line names the attempt count and the classification that produced it, so
+// it has to be read from the same state the transition just used.
+func (f *Fabric) logFailureVisibilityLocked(t *Task, cause error, retryable bool) {
+	reason := failureVisibilityReason(t.RetryPolicy.Attempts, t.RetryPolicy.MaxRetries, retryable)
+	if reason == "" {
+		return
+	}
+	log.Warn(context.Background(), "logFailureVisibilityLocked",
+		"taskfabric: "+reason,
+		"task", t.ID,
+		"attempts", t.RetryPolicy.Attempts,
+		"max_retries", t.RetryPolicy.MaxRetries,
+		"retryable", retryable,
+		"cause", failureCauseText(cause))
 }
 
 // failedEventLocked records task.failed carrying the retry classification that
@@ -475,6 +496,10 @@ func (f *Fabric) failTerminalLocked(t *Task, cause error, retryable bool, pendin
 	// documented checkpoint ownership rule.
 	t.Checkpoint = checkpointWithCause(t.Checkpoint, cause)
 	*pending = append(*pending, f.failedEventLocked(t, retryable))
+	// Terminal failures are shared by Fail and ExpireDeadlines, so the escalation
+	// belongs here rather than at either call site: a budget that ran out on an
+	// unclassified cause must be visible whichever sweep ended the task.
+	f.logFailureVisibilityLocked(t, cause, retryable)
 	// Terminal failure propagates: every transitive READY dependent can never
 	// become schedulable again, so fail it here instead of stranding the
 	// subgraph (see cascadeFailureLocked).

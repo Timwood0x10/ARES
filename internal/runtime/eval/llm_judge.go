@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"text/template"
 
 	"github.com/Timwood0x10/ares/internal/evidence"
@@ -95,6 +96,61 @@ type LLMJudgeEvaluator struct {
 	dimensionBridge       *DimensionJudgeBridge // set by WithEvidenceStore; persists dimension judgments as evidence
 	role                  string                // agent role being evaluated, carried into evidence metadata
 	initErr               error                 // template parse failure captured by an option; fails construction
+
+	// gtMu guards gtStats. One evaluator instance scores every case of a suite
+	// (and under a concurrent runner, from several goroutines), so these counters
+	// are the only mutable state the scoring path keeps.
+	gtMu    sync.Mutex
+	gtStats GroundTruthAgreement
+}
+
+// recordGroundTruth folds one case's deterministic outcome into the running
+// agreement counts.
+//
+// judgeCorrectness is the correctness score the judge returned BEFORE any floor
+// rewrote it — the caller must capture it on the way in. Reading it back after
+// the ground-truth floor would report perfect agreement by construction, which
+// is the one number this metric exists to not be.
+func (e *LLMJudgeEvaluator) recordGroundTruth(gt groundTruthOutcome, judgeCorrectness float64) {
+	if !gt.Declared {
+		return // no deterministic opinion: nothing to agree or disagree with
+	}
+	e.gtMu.Lock()
+	defer e.gtMu.Unlock()
+	if gt.Verdict == VerdictUncertain {
+		// Declared but unresolvable (a corpus bug). Not anchored, so it cannot
+		// count as agreement; counted here so the problem surfaces.
+		e.gtStats.Broken++
+		return
+	}
+	e.gtStats.Anchored++
+	judgeGaveCredit := judgeCorrectness > 0
+	if gt.Verdict == VerdictFail && judgeGaveCredit {
+		e.gtStats.Lenient++
+		// Worth a line each time: the judge tried to reward an answer that
+		// deterministic evidence says is wrong, and something has to be able to
+		// notice the judge drifting even when nothing else fails.
+		log.Warn("llm judge credited an answer deterministic ground truth failed",
+			"task_id", gt.TaskID,
+			"correctness", judgeCorrectness,
+			"agreement", e.gtStats.String(),
+		)
+		return
+	}
+	if gt.Verdict == VerdictPass && !judgeGaveCredit {
+		e.gtStats.Harsh++
+	}
+}
+
+// GroundTruthAgreement returns a copy of the running judge-vs-ground-truth
+// counts (see the type doc for what the numbers mean and why they are counted).
+//
+// It is the read-out that says how much of the accuracy signal is judge opinion:
+// everything not anchored here is. Read it after a replay, not per case.
+func (e *LLMJudgeEvaluator) GroundTruthAgreement() GroundTruthAgreement {
+	e.gtMu.Lock()
+	defer e.gtMu.Unlock()
+	return e.gtStats
 }
 
 // LLMJudgeOption is a functional option for configuring LLMJudgeEvaluator.

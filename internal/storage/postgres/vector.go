@@ -93,6 +93,20 @@ func (v *VectorSearcher) Search(ctx context.Context, table, tenantID string, emb
 		LIMIT $2
 	`, safeTable)
 
+	// ivfflat probes are the recall lever that needs no index rebuild (defect
+	// R1): the default of 1 looks at a single cluster per search, so a table whose
+	// rows are spread over many clusters returns plausible-but-not-nearest
+	// neighbours. SET LOCAL keeps the setting inside this transaction, so it
+	// cannot leak to another tenant's query on the same pooled connection; it is
+	// a no-op outside a transaction block (Postgres ignores it there), which is
+	// why the repository layer runs searches in one.
+	if _, probes := vectorIndexConfigFromEmbedding(v.embeddingConfig); probes > 0 {
+		stmt := searchProbesStatement(probes)
+		if _, err := v.db.ExecContext(ctx, stmt); err != nil {
+			return nil, errors.Wrap(err, "set ivfflat probes")
+		}
+	}
+
 	embeddingJSON, err := json.Marshal(embedding)
 	if err != nil {
 		return nil, errors.Wrap(err, "marshal embedding")
@@ -250,6 +264,11 @@ func (v *VectorSearcher) CreateVectorTable(ctx context.Context, table string, me
 		return errors.Wrap(err, "invalid table name")
 	}
 
+	// The configured index method decides what gets built; the row count is 0
+	// here because the table was just created, which keeps the historical
+	// default lists (see vectorIndexDDL).
+	indexMethod, _ := vectorIndexConfigFromEmbedding(v.embeddingConfig)
+
 	// Use the migration-consistent dimension (1024). The previous hardcoded
 	// 1536 caused runtime failures because the migrations create VECTOR(1024).
 	dim := defaultVectorDimension
@@ -262,10 +281,10 @@ func (v *VectorSearcher) CreateVectorTable(ctx context.Context, table string, me
 		return errors.Wrap(err, "create vector table")
 	}
 
-	createIndex := fmt.Sprintf(
-		`CREATE INDEX IF NOT EXISTS %s_embedding_idx ON %s USING ivfflat (embedding vector_cosine_ops)`,
-		safeTable, safeTable,
-	)
+	createIndex, err := vectorIndexDDL(safeTable, indexMethod, 0)
+	if err != nil {
+		return errors.Wrap(err, "build vector index ddl")
+	}
 	if _, err = v.db.ExecContext(ctx, createIndex); err != nil {
 		return errors.Wrap(err, "create vector index")
 	}
@@ -279,6 +298,8 @@ func (v *VectorSearcher) CreateCollection(ctx context.Context, name string, dime
 	if err != nil {
 		return errors.Wrap(err, "invalid collection name")
 	}
+
+	indexMethod, _ := vectorIndexConfigFromEmbedding(v.embeddingConfig)
 	if dimension < 1 || dimension > 2000 {
 		return fmt.Errorf("invalid dimension: %d (must be 1-2000)", dimension)
 	}
@@ -300,11 +321,10 @@ func (v *VectorSearcher) CreateCollection(ctx context.Context, name string, dime
 		return errors.Wrap(err, "add tenant_id column")
 	}
 
-	indexQuery := fmt.Sprintf(`
-		CREATE INDEX IF NOT EXISTS %s_embedding_idx
-		ON %s USING ivfflat (embedding vector_cosine_ops)
-	`, safeName, safeName)
-
+	indexQuery, err := vectorIndexDDL(safeName, indexMethod, 0)
+	if err != nil {
+		return errors.Wrap(err, "build vector index ddl")
+	}
 	if _, err := v.db.ExecContext(ctx, indexQuery); err != nil {
 		return errors.Wrap(err, "create vector index")
 	}

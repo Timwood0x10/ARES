@@ -452,6 +452,17 @@ func setupPeerRegistry(
 						log.WarnContext(context.Background(), "ask_agent: background request returned no reply", "from", from, "to", to, "topic", topic)
 						return nil
 					}
+					// C-1-a writeback (defect I1): the asking quantum is gone by
+					// now, so the reply is delivered to the asker as a TASK — the
+					// channel this system already has — and the asker's next drain
+					// reads it from the payload. Without this the answer was
+					// logged and dropped, and "collaboration" could only ever
+					// trigger work, never receive its result.
+					if err := kernel.syscalls.DeliverAgentReply(ctx, from, to, topic, reply); err != nil {
+						// Loud: a reply that cannot be delivered must be visible,
+						// not indistinguishable from a target that never answered.
+						log.WarnContext(context.Background(), "ask_agent: reply could not be delivered to the asker", "from", from, "to", to, "topic", topic, "error", err)
+					}
 					log.InfoContext(context.Background(), "ask_agent: background reply received", "from", from, "to", to, "topic", topic)
 					return nil
 				})

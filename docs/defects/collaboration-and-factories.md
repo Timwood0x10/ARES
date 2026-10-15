@@ -31,6 +31,34 @@ Delegate / Handoff / Subscribe 六原语。`ask_agent` 是 LLM 能调的"跨 age
 - **建议**：落 C-1-a（把回答写进 asker 的 task payload / checkpoint，下一量子自然读到），
   或在工具描述里**明确告知 LLM"这是问出去、拿不到答"**,别让它误以为能等回话。
 
+**修复（2026-10-15）**：C-1-a 落了，两条建议都做了。
+
+- **回信作为任务投递**（`agentsyscall.Kernel.DeliverAgentReply`，在 `serve_peer.go` 的后台回信处接线）：
+  回信到达时**提问方的量子早就结束了**（`ask_agent` 立即 yield，正是为了不死锁 drain），
+  所以"写进提问任务"没有对象可写；而**任务本来就是这个系统唯一的投递通道**，于是回信变成一个任务：
+  asker 的下一次 drain 会取到它，答案就在 payload 里 —— 这就是缺陷要的"下一量子自然读到"。
+  payload 固定形状 `ask_reply{from, topic, reply}`（提成纯函数 `askReplyPayload` 以便直接断言，
+  checkpoint envelope 按契约是不透明的，"答案藏在里面"不构成检查）。
+  **同日复核修正（重要）**：初版**只写了 `ask_reply` 键**，而 L2 cognition 取 prompt 用的是
+  `task.Payload["input"]`（`planner_context.go` 的回退路径 / `rootCognition`）—— 于是答案进了 fabric
+  但**模型读不到**，正是本文件别处的"接了但不生效"。**已修为同时写 `input`（渲染成人可读一行，含来源与主题）
+  与结构化键**，并补 `TestAskReplyPayloadShape` 对 `input` 的断言（初版只断言信封非空，所以缺陷下测试仍绿）。
+  **反证**：不写 `input` → 该用例失败（`got <nil>`）。
+  另修一处**边界**：任务 id 初版只由 `(asker,peer,topic)` 派生，于是**同一主题的第二次合法提问**（30s 去重窗口
+  过后，I2 明说这是预期）会撞 id 被当"已投递"**静默丢弃**；**已把回信内容并入指纹**（同内容仍幂等）。
+  **反证**：指纹去掉内容 → "新答案"用例失败（`task count = 1, want 2`）。
+- **幂等**：任务 id 由 `(asker, peer, topic)` 哈希派生，重复投递撞 `ErrTaskExists` → **当成功**。
+  这条必要，因为回信跑在后台 goroutine 里：**没人重试、也没人能观测**。
+- **响亮失败**：asker 不存在、或**没有 L2 可路由能力**（那类 agent 永远跑不了这个任务）→ 报错并
+  带日志，**不排队一个 READY forever 的任务**。能力选择取排序后的第一个（确定性）。
+- **工具描述同步改口**（原文说"答案不在响应里、这是 fire-and-forget"）：现在明确告知
+  **回信以任务形式到达（payload 的 `ask_reply`），请在后续轮次读，并在此期间做别的事** ——
+  描述与行为不一致正是这个缺陷的形态之一。
+- **测试**：`ask_reply_test.go`（投递为 READY 任务 + 能力/来源/信封、同问幂等且换题即新任务、
+  两种响亮失败各不排队）。**实机反证**：把幂等分支改成返回错误 → 幂等用例失败；恢复即绿。
+- **未做**：I2 的 30s 去重窗口**仍是硬窗口**（慢回答在 30s 边界仍会重复触发）；回信没有"目标已放弃"
+  的终态标记（`ipc.Request` 失败目前只记 Warn）。
+
 ### I2 · 去重窗口 30s，但窗口外重问会"再触发一次" 〔取舍 + 隐患〕
 
 `askDedupeWindow = 30s`（`syscall.go:546`）：同一问法（同 caller/target/topic/payload）

@@ -33,11 +33,11 @@
 
 | # | 缺陷 | 一句话 |
 |---|---|---|
-| P1-1 | **T-F1** `classifyFailure` 默认可重试 | 忘 `MarkPermanent` 的**永久错白烧满重试预算**（+ backoff） |
-| P1-2 | **R2** 检索纯余弦无精排 | 假近进 top-K，量大噪声高（需宽召回 + cross-encoder） |
-| P1-3 | **R1** ivfflat `lists=100` 写死 | 数据量大召回率掉（无 HNSW 选项） |
-| P1-4 | **D(retrieval)** embedding 死信 | 向量生成失败的行落 `embedding_dead_letter` → **该经验对检索永久不可见且静默** |
-| P1-5 | **I1** `ask_agent` 不回写 | 协作是"触发"不是"对话"，答案 C-1 未闭环，拿不到 |
+| P1-1 | **T-F1** `classifyFailure` 默认可重试 **〔已修 2026-10-15〕** | 忘 `MarkPermanent` 的**永久错白烧满重试预算**（+ backoff）。修：已知永久错表（窄表，`errors.Is`）+ 未分类原因重试/耗尽时 Warn |
+| P1-2 | **R2** 检索纯余弦无精排 **〔已修 2026-10-15〕** | 假近进 top-K。修：生产路径**早就在宽召回（TopK*5）却没精排**，补确定性精排（相似度+词面覆盖+新鲜度）。**不是 cross-encoder**（无模型服务），如实标注 |
+| P1-3 | **R1** ivfflat `lists=100` 写死 **〔已修 2026-10-15〕** | 真因是"没人再看它一次"：单一 DDL 源 + lists 按行数自适应 + 启动时 2 倍门限复核重建 + 检索期 probes 可配 + HNSW 选项 |
+| P1-4 | **D(retrieval)** embedding 死信 **〔已修 2026-10-15〕** | 修：可行动性拆分告警（pending/given-up）+ **每条内容只自动重放一次**的原子重放（`auto_replayed` 标记随死信搬运，防无限循环）+ tick 顺序改为重放→清理→报告 |
+| P1-5 | **I1** `ask_agent` 不回写 **〔已修 2026-10-15〕** | 修：回信作为**任务**投递给 asker（`(asker,peer,topic)` 哈希 id 幂等；无能力/不存在则响亮失败）+ 工具描述同步改口 |
 | P1-6 | **A-factory3** agent quota 泄漏 **〔已修 2026-10-13〕** | claim/release 漏释放 = **agent 池假死**（`ErrResourceQuotaExceeded`） |
 | P1-7 | **S-mcp-S2** MCP 挂了工具静默消失 〔已修 2026-10-13〕 | server 连不上/断连 → 它的工具没进/留在 Registry，LLM **不知道自己少了什么**，会白调不存在的工具 |
 
@@ -110,6 +110,87 @@
 ---
 
 ## 修订记录
+
+**2026-10-15 · code review 自审：修掉我自己引入的 9 条（其中 2 条推翻上一批的结论）**：
+
+> 结论性的一条：**"功能已实现"与"功能会生效"是两件事**，本批有 2 条属于后者没做到。
+
+1. **回信模块（P1-5）写了错的 payload 键** ⇒ L2 cognition 只读 `task.Payload["input"]`
+   （`planner_context.go`），初版只写 `ask_reply` ⇒ **答案进得了 fabric、模型读不到**。
+   已同时写 `input`（人可读一行，含来源与主题）；测试补上对 `input` 的断言——**初版只断言信封非空，
+   所以缺陷下测试仍然是绿的**，这是比缺陷本身更该记的一条。**反证**：不写 `input` → 用例失败。
+2. **回信模块的幂等 id 只含问题不含答案** ⇒ 同一主题的**第二次合法提问**（30s 去重窗口过后）会被当
+   "已投递"**静默丢弃**。已把回信内容并入指纹（同内容仍幂等）。**反证**：去掉内容 → `task count = 1, want 2`。
+3. **索引复核（P1-3）按猜的名字查索引** ⇒ 迁移建的是 `idx_<table>_embedding`，而代码查
+   `<table>_embedding_idx` ⇒ 每次启动都跳过，**整个能力是死代码**。已改为按 (表, 列) 查目录，
+   并保留索引自身的名字与 partial 谓词。**反证**：改回按名查 → 守卫用例失败。
+4. **`lists` 自适应规则会让小表变慢**：`rows/1000` 假定 probes 被调大，默认 `probes=1` 时 500 行会得
+   1 个列表、扫全表。已改为取 `rows/1000` 与 `sqrt(rows)` 的较大者（单次探针约 `sqrt(rows)` 行）。
+   **反证**：只用 `rows/1000` → `ivfflatListsForRows(500)=1, want 22`。
+5. **`numeric` 检查要求整串是数** ⇒ "The answer is 56088." 会被判错、准确率归 0（把信号做**错**，比薄更糟）。
+   已改为在答案中扫描数字，并如实记录接受的宽松方向（提到正确数字但反驳它也会通过——下限不是测谎仪）。
+   **反证**：改回整串比较 → 三条正常答法用例失败。
+6. **词面项对中文失效**：中文无空格 ⇒ 整句一个 token ⇒ 词面项在**判官提示词与语料都是中文**的场景里≈0。
+   已加无空格脚本的 bigram 切分。**反证**：关掉 CJK 分支 → 中文用例失败（0 ≠ 0.875）。
+7. **死信告警每 tick 一条**（一条修不好的内容 ≈144 条/天，淹没真告警）。已改为**按状态变化记录**。
+   **反证**：去掉抑制 → 同状态被重复报出。
+8. **回放 `Mean` 单独看会美化坏掉的运行**。已加 `Scored/Total` 与 `Coverage()`；并记录判官一致率计数
+   **有状态**（比较不同候选应各建实例）。
+9. **启动期 `count(*)`**（千万行表上每次启动固定成本）。已改为优先读 `pg_class.reltuples`，不可用时兜底。
+
+**未修、已记录的小项（刻意留待下一批，避免churn）**：`RerankScore` 每候选算两次；
+`rerankCandidates` 用 `map[int]float64`（切片足矣）；`len([]rune(...))` 的命名。
+
+**2026-10-15 · P1 全部收口（P1-1…P1-5）+ golden 回放驱动落地**：
+
+1. **P1-1 T-F1**（`fabric/task/failure.go`）：已知永久错**窄表**（`ErrNotFound` 族 / 非法参数 / 配置 /
+   权限 / 已存在 / 环 / 超过重试上限；`errors.Is` 匹配）+ **未分类原因重试到第 2 次起或预算耗尽时
+   Warn**。超时/限流/配额/熔断/`ErrInvalidState`/密钥过期**仍可重试**（表刻意窄）。**反证**：停用识别 →
+   not-found 各行失败。
+2. **P1-2 R2**（`services/simple_rerank.go`）：真因是**生产路径早就在宽召回（TopK*5）却没有精排**，
+   那一跳补上：相似度 + 词面覆盖 + 新鲜度（缺失项剔除并归一）。**不是 cross-encoder**（仓库无模型），
+   如实标注。另发现并补上一个"接了不生效"的事实：`SearchByVector` 没把 `created_at` 放进 metadata。
+   同时记录：三个旧 evaluator（`ExactMatch`/`ToolUsage`/`KeywordPresence`）是**生产死代码**。
+3. **P1-3 R1**（`postgres/vector_index.go`）：真因是"没人再看 lists 一次"。单一 DDL 源（三处写死改为
+   一处）+ lists 按行数自适应 + `MigrateStorage` 收尾做 2 倍门限复核重建 + 检索期 `SET LOCAL
+   ivfflat.probes` 可配 + **HNSW 选项**。未做：存量换 method 需重建（数据面决定）、`hnsw.ef_search` 未接。
+4. **P1-4 D1**（`postgres/embedding_queue.go` + `ares_bootstrap/embedding_worker.go`）：可行动性拆分
+   告警（pending / given-up）+ **每条内容只自动重放一次**的原子重放（`auto_replayed` 标记**随死信搬运**，
+   否则重放再失败会每 tick 循环）+ tick 顺序改为**重放 → 清理 → 报告**（否则保留期会静默决定内容
+   不可恢复）。`RequeueDeadLetter` 此前零生产调用。
+5. **P1-5 I1**（`agentsyscall/ask_reply.go` + `serve_peer.go`）：回信**作为任务**投递给 asker
+   （`(asker,peer,topic)` 哈希 id → 幂等；无 L2 能力/不存在 → 响亮失败且不排队）+ 工具描述同步改口。
+6. **golden 回放驱动**（`eval/replay.go`）：语料**真跑起来**了 —— 顺序执行、逐案记录、
+   报告 `AnchoredShare` 与判官↔事实一致率；`replay_test.go` 有一条**对仓库里真实 `golden.yaml` 的
+   接线守卫**（语料与驱动不一致时直接失败）。至此 P0-1(ii) 的"判据 + 语料 + 体检 + 回放"四件齐了，
+   **仍未做**：把回放接到 evolution 前的那一步（定时触发、跨候选共享子集的编排）。
+
+**2026-10-15 · P0-1(ii) 第二步开工：给准确率信号加"确定性锚"（分层 oracle + 语料 + 一致率）**：
+
+1. **oracle 形态定案 = 分层**（新增 `internal/runtime/eval/ground_truth.go`）：底层是**确定性检查**（零 LLM：
+   `exact`/`contains`/`numeric`/`tools`/`no_error`），上层仍是四维 rubric 判官。**判 Fail → 准确率归 0、
+   判官无翻盘权**（`dimension_judge.go` 的 ground-truth arm），且**排在 provenance floor 之后** —— 反证显示
+   若不压，"答错 + 截断"会拿 0.5，**高于"什么都没产出"的 0**。判 Pass **只做下限、不做上限**（不送分）。
+   - **复用而非新造**：执行者是既有的 `ResultVerifier`（Ch.8 底层校验器，never calls an LLM、
+     cannot prove success → Uncertain）—— 它此前**生产零调用**（只有构造器自身），又是一处"写了没接线"。
+   - 语料**逐条声明**检查种类（`TestCase.Checks`）；**未声明即不改行为**（不做隐式回填，否则一条旧
+     `expected_output` 就会把存量套件改成 0）。顺带修掉 `types.go` 那句与实现不符的注释
+     （原文称 `ExpectedOutput` "for exact match evaluation"，实现里根本没有 exact-match 路径）。
+   - **实机反证**：停用该 floor → 核心用例报 `must floor the score to 0, got 1`（判官给错答案满分）与
+     `got 0.5`（错答案高于 gap），恢复即绿。
+2. **语料第一批已落**：`test/eval/golden.yaml` 35 条 + 存量加锚（`basic.yaml` tc-001 → `contains`；
+   `tools.yaml` 4 条 → `tools`，tool-001 另加 `numeric`）= **40 条带确定性检查**，按
+   `axis:factual/prose/compute/tools/adversarial/format/safety` 分层，**每条声明自己的检查种类**。
+   `axis:adversarial`（自信的错答案最便宜处）是必须保住的一格。
+3. **触发方式：已落离线/CI 一半**（`corpus_test.go` 语料体检：声明的检查必须可解析、种类必须已知、锚定数
+   不低于 `minAnchoredCorpusCases`）；**evolution 前确定性回放未做**（可比信号必须"对所有候选同一组题"，
+   活流量的不重叠时间窗 + 低流量退回 0 都做不到）；**定时触发未做**。
+4. **一致率可读数（新增）**：`LLMJudgeEvaluator.GroundTruthAgreement()` →
+   `anchored/lenient/harsh/broken` + `LeniencyRate`，lenient（判官给确定性判错的答案以分数）会打 Warn 日志。
+   **这是"有多少准确率信号是判官主观"的唯一量化**；没有它，语料在长、判官在变宽，信号全程"看着合理"。
+5. **诚实边界**：本批的准确表述是"**准确率信号里有一部分已可复核**"，**不是**"GA 已经会做对了"。
+   锚的覆盖面 = 声明了检查的语料面（40 条，且多为单事实/单算术）；无锚用例仍只是判官意见，占比可由
+   `GroundTruthAgreement` 读出。
 
 **2026-10-14 · 复核（上一批加固的自审 + 运维通告）**：
 
@@ -367,7 +448,7 @@ planner 写 Result.Metadata[rationale]
 | 半 | 现状 | 待做 |
 |---|---|---|
 | (i) 停止把 gap / 被迫交差 记为 success **〔已修 2026-10-13；同日补修 truncated 半场，见修订记录〕** | ✅ observer 侧已接线：`answer_body_source=gap` → score=0 且 Success=false；`truncated=true` → score=0.5 且 Success=false。**注**：`truncated` 这半场此前**在生产侧从未生效**（标记在节点 arg 的字符串化 wire 上被读丢），已于同日修复并真跑验证 | 信号从 checkpoint envelope 经 `answerQualityFromCheckpoint` 提取 → `task.completed` 事件 payload → `degradedAnswerPenalty` 读取 |
-| (ii) 真正的 accuracy 维度 | 无 oracle | **golden 任务回放**进 `DimensionEval`（`FitnessWeights.DimensionEval` 权重槽已存在、默认 0.25，但运行时无人产出），权重须高于 cost/latency —— G1 文档的"最低成本做法" |
+| (ii) 真正的 accuracy 维度 | **分层锚已落（2026-10-15）**：确定性检查（`ground_truth.go`）判 Fail → 准确率 0、**判官不可翻盘**；语料第一批 40 条带锚（`golden.yaml` 35 + 存量 5）；CI 语料体检已落 | **evolution 前确定性回放**（对所有候选同一组题）**未做**；**定时触发未做**；**语料扩容未做**（40 条只是下限）。全量细节见 `genetic-algorithm.md` G1 段 |
 
 **专项内顺序**：(i) 接线（信号现成，即得）→ (ii) golden（可复核的对错 oracle）→ A（Rationale）作为判官输入 + 续跑思路放最后。A 排后的理由：其价值一半在 G1，而 G1 的主信号来自**可复核的 golden**，不来自自述理由；先有 golden 这个"地"，rationale 才有"用"。
 

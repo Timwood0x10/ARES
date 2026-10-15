@@ -902,7 +902,7 @@ func ToolSchemas() []ToolSchema {
 		},
 		{
 			Name:        AskAgentTool,
-			Description: "Ask a specific target agent a question on a topic. The request is delivered asynchronously: the tool returns immediately with status 'pending' (answer not yet available) or 'no-reply' (target has no reply path). The target's answer is NOT available in the response — this is a fire-and-forget delivery, not a synchronous round-trip. Do NOT re-ask the same question while a previous ask is pending: identical asks (same target, topic and payload) are suppressed and report duplicate=true until the pending one expires. Use this when you know WHICH agent to ask, rather than spawning a new one (spawn_agent) or decomposing into tasks (create_task).",
+			Description: "Ask a specific target agent a question on a topic. The request is delivered asynchronously: the tool returns immediately with status 'pending' (answer not yet available) or 'no-reply' (target has no reply path). The answer does NOT come back in this response — when the target replies it is delivered to you as a TASK whose payload has an 'ask_reply' entry (from/topic/reply), so read it in a LATER turn and keep doing other work meanwhile; do not wait and do not re-ask, because identical asks (same target, topic and payload) are suppressed and report duplicate=true while one is pending. Use this when you know WHICH agent to ask, rather than spawning a new one (spawn_agent) or decomposing into tasks (create_task).",
 			Parameters: map[string]any{
 				paramType: paramTypeObject,
 				paramProperties: map[string]any{

@@ -554,6 +554,12 @@ func (r *KnowledgeRepository) SearchByVector(ctx context.Context, embedding []fl
 			chunk.Metadata = make(map[string]interface{})
 		}
 		chunk.Metadata["similarity"] = similarity
+		// The row's timestamp rides along so a downstream rerank can score
+		// freshness (defect R2's recency term). The column was already selected
+		// and scanned above, so this costs nothing — without it every candidate
+		// reports "unknown age" and the rerank drops the term entirely, which is
+		// the wired-but-never-firing shape this defect already had once.
+		chunk.Metadata["created_at"] = chunk.CreatedAt
 		chunks = append(chunks, chunk)
 	}
 

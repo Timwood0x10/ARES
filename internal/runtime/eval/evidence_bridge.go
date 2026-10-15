@@ -19,6 +19,12 @@ var ErrNilEvidenceStore = errors.New("evidence store is nil")
 // evidenceTypeLLMJudge is the EvidenceItem type for rubric-dimension items.
 const evidenceTypeLLMJudge = "llm_judge"
 
+// evidenceTypeResultCheck is the EvidenceItem type for deterministic bottom-layer
+// checks. It is the SAME string result_verifier.go stamps on its items on
+// purpose: a second vocabulary for "deterministic check" is how the two halves of
+// a system drift apart, and the Diagnoser would then have to know both.
+const evidenceTypeResultCheck = "result_check"
+
 // DimensionJudgeBridge converts a scalar DimensionJudgeResponse (four rubric
 // dimensions) into a structured Evidence diagnosis (Ch.8: verification
 // results must not be compressed into a single scalar score) and persists it
@@ -71,6 +77,18 @@ func NewDimensionJudgeBridge(store evidence.Store) *DimensionJudgeBridge {
 //	evidence - the structured diagnosis; nil when resp is nil.
 //	err - ErrNilJudgeResponse when resp is nil.
 func (b *DimensionJudgeBridge) ToEvidence(taskID, role string, resp *DimensionJudgeResponse, value float64) (*Evidence, error) {
+	return b.toEvidenceWithGroundTruth(taskID, role, resp, value, groundTruthOutcome{})
+}
+
+// toEvidenceWithGroundTruth is ToEvidence plus the deterministic verdict that
+// produced the scalar, attached as one more dimension and recorded in Meta.
+//
+// The scalar (value) is still passed in rather than recomputed: it is what the
+// caller scored with, floors included, and recomputing it here is the drift the
+// ToEvidence doc warns about. The ground truth is carried alongside so a reader
+// of the persisted diagnosis can tell a judge-only judgment from one that was
+// floored by provable evidence.
+func (b *DimensionJudgeBridge) toEvidenceWithGroundTruth(taskID, role string, resp *DimensionJudgeResponse, value float64, gt groundTruthOutcome) (*Evidence, error) {
 	if resp == nil {
 		return nil, ErrNilJudgeResponse
 	}
@@ -98,6 +116,11 @@ func (b *DimensionJudgeBridge) ToEvidence(taskID, role string, resp *DimensionJu
 	// the gate's 0: two numbers for one judgment, from the same run.
 	ev.Value = value
 
+	// The deterministic verdict is attached BEFORE the overall verdict is
+	// derived, so a failed ground-truth check makes the diagnosis fail for the
+	// same reason the scalar was floored: one judgment, one story.
+	attachGroundTruth(ev, gt)
+
 	switch {
 	case isUncertainReason(resp.Reason):
 		ev.Verdict = VerdictUncertain
@@ -107,6 +130,52 @@ func (b *DimensionJudgeBridge) ToEvidence(taskID, role string, resp *DimensionJu
 		ev.Verdict = VerdictPass
 	}
 	return ev, nil
+}
+
+// attachGroundTruth records the deterministic verdict behind this judgment.
+//
+// Three shapes, deliberately distinguishable:
+//   - not declared: nothing is written. "The corpus did not ask" must not be
+//     persisted as a verdict, or every legacy case would look anchored.
+//   - declared and indeterminate: only a Meta note, and NO dimension — appending
+//     a non-passing dimension would flip the diagnosis to Fail for a check that
+//     could not even be run, which is not what "cannot prove success" means. The
+//     judge keeps the case; the anomaly is recorded rather than dressed up.
+//   - declared with a verdict: the checks become a "ground_truth" dimension,
+//     appended directly instead of through AddDimension because Pass here is the
+//     verdict, not a 2/3 score threshold (same reason result_verifier.go appends
+//     directly).
+func attachGroundTruth(ev *Evidence, gt groundTruthOutcome) {
+	if !gt.Declared {
+		return
+	}
+	ev.Meta["ground_truth_verdict"] = gt.Verdict.String()
+	if gt.Verdict == VerdictUncertain {
+		ev.Meta["ground_truth_note"] = "checks declared but indeterminate; the scalar is the judge's alone"
+		return
+	}
+	items := make([]EvidenceItem, 0, len(gt.Checks))
+	for _, c := range gt.Checks {
+		items = append(items, EvidenceItem{
+			Type:      evidenceTypeResultCheck,
+			Name:      c.Name,
+			Status:    c.Status,
+			Detail:    c.Detail,
+			Confirmed: true, // deterministic: no confidence to express
+		})
+	}
+	flag := ""
+	if gt.Evidence != nil {
+		flag = gt.Evidence.Flag
+	}
+	ev.Dimensions = append(ev.Dimensions, DimensionScore{
+		Name:     "ground_truth",
+		Score:    passedCheckCount(gt.Checks),
+		Max:      len(gt.Checks),
+		Pass:     gt.Verdict == VerdictPass,
+		Evidence: items,
+		Flag:     flag,
+	})
 }
 
 // Emit converts the judge response into structured evidence and persists it
@@ -124,13 +193,19 @@ func (b *DimensionJudgeBridge) ToEvidence(taskID, role string, resp *DimensionJu
 //	err - ErrNilEvidenceStore when the store is nil, ErrNilJudgeResponse when
 //	  resp is nil, or the underlying persistence error.
 func (b *DimensionJudgeBridge) Emit(ctx context.Context, taskID, role string, resp *DimensionJudgeResponse, value float64) error {
+	return b.emitWithGroundTruth(ctx, taskID, role, resp, value, groundTruthOutcome{})
+}
+
+// emitWithGroundTruth is Emit plus the deterministic verdict the scalar was
+// floored by, so the persisted diagnosis says why the number is what it is.
+func (b *DimensionJudgeBridge) emitWithGroundTruth(ctx context.Context, taskID, role string, resp *DimensionJudgeResponse, value float64, gt groundTruthOutcome) error {
 	if b.store == nil {
 		return ErrNilEvidenceStore
 	}
 	if resp == nil {
 		return ErrNilJudgeResponse
 	}
-	ev, err := b.ToEvidence(taskID, role, resp, value)
+	ev, err := b.toEvidenceWithGroundTruth(taskID, role, resp, value, gt)
 	if err != nil {
 		return err
 	}
