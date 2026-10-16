@@ -137,10 +137,30 @@
 6. **本批自查（比功能更该记）**：① 我一度写出 **7 个参数**的函数（§1 上限 5）而**门禁不查这个**；
    ② `TestHTTPError_UnwrapExposesTheClass` 写在错包 ⇒ **从未编译**，而我说"绿"时只看了 `ok` 行
    ——**第三次"验证了过滤器而不是事实"**；③ 留下一个未使用的 `pendingAskExists`，被 `make check` 抓到后删除。
-7. **未做**：**⑥ `eval_suite` 默认指 golden** —— 前置是"默认路径不存在会让 boot 失败"（`bootstrap_evolution.go`
-   对非 `errEvalGateNotConfigured` 的错误直接 return）且默认 suite 会**静默武装 arena 门**（与其自称 opt-in 矛盾），
-   **等拍板**；两个零生产引用的 service **待清**（独立一步）；`genome` 包 `TestSUSSelection_UniformDistribution`
-   **既有 flaky**（连跑 3 次通过、本批未动该包）。
+7. **⑥ `eval_suite` 默认指 golden（已落，含一处必须先解决的风险）**：拍板口径是"默认武装 G3、`eval_strict`
+   保持 false"。但**实测发现该口径本身不成立**：`eval_strict` **只管"空值"那一路**，而 `eval_suite` 一旦非空、
+   基础设施（registry/LLM client）缺失就是**硬失败**（`eval_gate_wiring.go`）⇒ 直接默认会**让没有 eval LLM key
+   的部署起不来**。**落法**：`resolveEvalSuite` 解析出"是否来自默认值"，`buildEvalGate` **按来源分语义** ——
+   **默认值**：缺文件/缺基础设施 ⇒ **降级为无 G3 + Warn**（没人武装过它，一个仓库相对路径不得挡住启动）；
+   **显式配置**：仍**失败关闭**（typo 或不接 client 不得静默变弱）。默认路径**存在才启用**（否则退回"无门"）。
+   两处反证：让存在性检查失效 → `absent default = ("test/eval/golden.yaml", true), want no suite`；
+   让默认值走失败关闭 → `a defaulted suite must degrade, not fail bootstrap`。
+8. **arena 门：保留"默认自动武装"**（拍板确认）。配套做的不是关掉，而是**把成本写在启动日志里**：
+   `llm_scoring_rounds_per_check = 2 × runs`（取 `regGate.Config()` 的有效值，而非配置原值），
+   并让 G3 与 arena **共用同一份解析后的 suite**（否则"过了 G3 却在 arena 回退"是在比两份不同的语料）。
+9. **两个死类：已删除**（`internal/storage/postgres/services/`，约 8500 行含 ~6300 行测试）。
+   证据链：先把仓内唯一消费方（示例 `11-knowledge-import`）迁到**生产路径** `repo.SearchByVector`
+   （QueryPrefix/TopK/MinScore 语义在调用方保留，并处理 `ErrRecordNotFound` "无命中"契约）→ 全仓
+   `postgres/services` 引用**归零** → 删目录 → **`go build ./...` + `go test ./internal/... ./cmd/...` 全绿**。
+10. **CLI 路径接入配置权重**（`openAKGStore` 已加载配置，改用它而非库默认），避免同一语义两套排序。
+11. **`genome` 的 `TestSUSSelection_UniformDistribution` 已修（并自记一处没查明的事）**：该用例对**随机流**做
+    5000 次采样的分布断言 ⇒ CI 里等于掷骰子。已加可注入 seed（`WithSUSSeed`，照该包 `WithTournamentSeed`
+    的惯用法）并固定种子，**连跑 6 次稳定通过**。**但：我用 4 条不同确定性流都没能复现那次失败**
+    （⇒ 我原先给的"~3.5σ、每隔几百次踩一次"**只是假设、无证据支持**，那次 `make check` 失败的真实成因**仍未查清**；
+    整包 `-race -count=2` 也全过）。**不夸大**：seed 修的是"不可复现"，不是"已知那个 bug"。
+12. **两项判断定案**（不再挂着）：**recency 默认保持 0**（窗口已按 updated_at 偏置，分数里再来一次是重复计入；
+    开启属需要实测的生产排序变更，开关已给）；**生产词面项保持 Jaccard**（长度归一化且已 CJK 感知；换覆盖率会
+    偏好长文档；死类里那个 coverage 版本随包删除、不作证据）。
 
 **2026-10-15 · 二轮复核（H1/M1/M2）+ P0-1(ii) 最后一跳的接线闭合**：
 

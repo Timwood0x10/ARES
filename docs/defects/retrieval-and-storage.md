@@ -105,7 +105,8 @@ LIMIT $2
 ```
 
 - **只有向量近邻 + `ORDER BY ... LIMIT`**，**没有 cross-encoder / LLM 二次精排**。
-- **补充（v0.3.3 实测）**：更宽的 `RetrievalService`（`internal/storage/postgres/services/retrieval_search.go:652-710 rerankResults`）**有** query/source 权重 + **时间衰减**（`EnableTimeDecay`，默认 true）；但 **`NewRetrievalService` 在生产 wiring 中未被构造**（只有 `NewSimpleRetrievalService` 被用），所以"**生产热路径无精排、无新鲜度加权**"这一结论仍成立。
+- **补充（v0.3.3 实测）**：更宽的 `RetrievalService`（`retrieval_search.go` 里的 `rerankResults` / `mergeAndRerank`）**曾**有 query/source 权重 + **时间衰减**（`EnableTimeDecay`，默认 true）；但 **`NewRetrievalService` 在生产 wiring 中从未被构造**，所以"**生产热路径无精排、无新鲜度加权**"这一结论当时仍成立。
+  **该包已于 2026-10-16 整包删除**（零引用；见本文件 R2 段"两个死类：已删除"）——正因为没人构造它，**在那里面改检索行为等于改不到任何东西**（R2 第一次就是这么修空的）。代码留在 git 历史里。
 - **坑**：量大时"**假近**"（向量近但内容不相关）直接进 top-K → 注入 prompt 的是**噪声**。
 - **建议**：宽召回（top-50）→ 精排（cross-encoder）→ 取 top-5。这条是"检索噪声"最直接的解法。
 
@@ -163,11 +164,34 @@ LIMIT $2
      未知时间戳=中性 0.5（**不是最旧**）、未来时间戳=1.0。
   - **实机反证**：默认权重里塞 recency → 兼容性用例报 `FinalScore = 0.9, want legacy 0.85` 且平局被打破；
     忽略存储默认权重 → `store default was not applied`。
-- **仍未做**：① **默认是否开启 recency**（0 = 现状排序；0.1 = 开启）——**这是"改变生产排序"的决定，等拍板**；
-  ② `RetrievalService` / `SimpleRetrievalService` 两个**零生产引用**的类**待清**（§10.1：删前须留"零引用"证据；
-  它们被大量测试构造，清理应独立成一步）；③ 生产路径的**词面项仍是 Jaccard 而非覆盖率**（我上轮在死类里
-  写的 coverage 版本**不作数**，改写生产 Jaccard 属行为变更，需实测）；④ CLI 路径
-  `cmd/ares/knowledge_store.go:240` 不读配置权重（用库默认）。
+- **同日落"标注"这一步（按拍板口径"删**或**标注"，选了标注，并说明为何现在不删）**：
+  两个死类都加了 `Deprecated:` 独立段落 + `TODO(tech-debt)`。
+  - **证据**：`RetrievalService`（580 行 + `retrieval_rewrite.go`）**除自身测试外零引用**；
+    `SimpleRetrievalService`（434 行 + `simple_rerank.go` 284 行）**唯一消费方是仓内示例**
+    `examples/_internal/11-knowledge-import/store.go`。
+  - **为何不直接删**：合计 ~1500 行 + 一大批测试，且要同时迁移或砍掉那个示例、重写其测试面（§5.5 要求在
+    同一改动里迁移全部调用方）。这类删除**值得单独一次改动**，不该混在缺陷修复里——否则 revert 会缠在一起。
+  - **标注本身有实际作用**：注释里**点名"别在这里修检索缺陷"**并写清原因（R2 第一次就是这么修空的），
+    这是防止再犯的那道拦阻。
+  - **TODO(tech-debt) 的后续计划**：确认导出符号无外部消费者后，一次改动删掉这两个类型、它们的兄弟文件与测试。
+- **两项"判断项"定案（不再挂着）**：
+  ① **recency 默认保持 0**。不是"没做"，是**决定不做默认开启**：SQL 召回窗口已 `ORDER BY updated_at DESC`
+     偏置，分数里再来一次是**同一信号计入两次**；是否净收益要按语料实测，而**擅自改生产排序就是未测量的回归**。
+     开关已给（`knowledge.recency_weight`），要开是一行配置。
+  ③ **生产词面项保持 Jaccard（不换覆盖率）**。Jaccard 是**长度归一化**的相似度、且已 CJK 感知；覆盖率会系统性
+     偏好"长而只提到一次关键词"的文档。**我上轮在死类里写的 coverage 版本随该包一并删除，不构成证据**，
+     换算法属行为变更、需实测——**记录为"已知取舍"，不是待办**。
+- **两个死类：已删除（含示例迁移）**。证据链：① 先把示例 `examples/_internal/11-knowledge-import`
+  从 `SimpleRetrievalService` 迁到**生产路径**（`repo.SearchByVector` + 配置里的 `QueryPrefix`/`TopK`/`MinScore`，
+  其中 MinScore 由调用方按 `metadata["similarity"]` 过滤，并处理 `ErrRecordNotFound` 这一"无命中"契约）；
+  ② 迁移后 `grep -rn "postgres/services"` **全仓归零**；③ 删除整个 `internal/storage/postgres/services/`
+  （两个死类 + 辅助 + 其测试，约 8500 行，其中测试约 6300 行；§8.2 删干净，历史留在 git）；
+  ④ **删除后 `go build ./...` 与 `go test ./internal/... ./cmd/...` 全绿**——这就是"零悬挂引用"的验证。
+- **CLI 路径已接入配置权重**：`openAKGStore` 本就加载了配置，现在把同一份
+  `DefaultHybridWeights().WithRecency(cfg.Knowledge.RecencyWeight)` 交给存储，避免"serve 里生效、CLI 里不生效"
+  这种同一语义两套排序。
+- **仍未做（真正的剩余）**：无（本节范围内）。更外层仍是：per-candidate 运行时回放需要在 arena 里接真实执行器
+  （现只接确定性压分）；cross-encoder 明确不修（单二进制无 ML serving）。
 
 ### R3 · hybrid 融合**已实现**（0.7 向量 / 0.3 lexical）〔已做 · 与初稿结论相反〕
 
@@ -183,10 +207,21 @@ LIMIT $2
   接到 `sdk/memory_wiring.go:437-448`。
 - **结论**：**"有全文索引 ≠ 做了混合检索"的疑虑可以关闭**——混合检索**已实现**，本条应从
   "隐患·未坐实"改判为"**已做**"。
-- **唯一保留的限定**：`knowledge_chunks_1024` 的 tsvector 融合所在的 `RetrievalService`
-  （`internal/storage/postgres/services/retrieval_search.go`）**在生产 wiring 里未被构造**
-  （只有 `NewSimpleRetrievalService` 被用），所以"生产热路径无精排"（R2）仍大体成立；
+- **能力面留痕（2026-10-16，删除死代码时一并记）**：被删的 `retrieval_search.go` 里的 `bm25Search*`
+  （`tsvector` 全文检索 + 与向量融合）是 `knowledge_chunks_1024` 侧的**宽词面召回**。删掉之后，
+  **词面检索只剩 Go 侧的 Jaccard**（`knowledge/hybrid.go`：只算**召回窗口内**的 token 重叠，**不走 DB 全文索引**）。
+  **这不属于"丢了在跑的能力"**：那条路径的生产入口 `RetrievalService` 从未被构造（死代码 ⇒ 等价于从未生效）。
+  但"确实没了"的部分要留痕，免得将来有人要"更宽的 lexical 召回"时误判为新回归：
+  - **schema 层仍在**：tsvector trigger 与 `idx_knowledge_1024_tsv`（GIN）照旧由迁移创建；
+  - **仓库层仍在**：`KnowledgeRepository.SearchByKeyword`（`ts_rank(tsv, plainto_tsquery('simple',$1))`）
+    仍在，只是**目前没有调用方**（`provide_distillation.go` 用的是**经验仓**的同名方法，另一张表，仍在生产）；
+  - ⇒ **将来要 DB 全文召回，接线即可，不必重做**。
+- **限定（2026-10-16 更正）**：`knowledge_chunks_1024` 的 tsvector 融合所在的 `RetrievalService`
+  （`retrieval_search.go`）**从未被生产 wiring 构造**，所以"生产热路径无精排"（R2）当时即成立；
   真正在生产跑的是 AKG 那条 hybrid 路径。
+  **该包已于同日整包删除**（零引用，证据见 R2 段"两个死类：已删除"）——本段原先写的
+  "唯一保留的限定"因此**作废**：它把**已经删掉的类**当成"还在的限定"引用，读者会以为那条 tsvector 融合还在跑。
+  能力面的留痕见下面 R3 末尾的"DB 侧宽词面召回随死代码删除"。
 
 ### R4 · RAG 默认关（opt-in）→ "记忆复用"这条线默认不生效 〔取舍 · 边界〕
 

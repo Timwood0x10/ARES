@@ -357,11 +357,38 @@ type SUSSelection struct {
 	rng *rand.Rand
 }
 
+// SUSOption configures a SUSSelection at construction.
+//
+// Unlike the sibling option types (TournamentOption, LineageRankOption,
+// RouletteOption) it cannot fail: the only knob is a seed, and there is nothing to
+// validate about a number.
+type SUSOption func(*SUSSelection)
+
+// WithSUSSeed makes the selector's sampling reproducible.
+//
+// It exists because SUS is inherently random and a test that asserts a distribution
+// over a random stream is a coin flip in CI: a 5000-sample uniformity check with a 10%
+// bound sits around 3.5σ per strategy, so it fails roughly once in a few hundred runs
+// and looks like a regression every time it does. Production keeps the time-seeded
+// default (selection must not be predictable); callers that need a fixed sample — tests,
+// and any future reproducible replay — pass a seed.
+func WithSUSSeed(seed int64) SUSOption {
+	return func(sus *SUSSelection) {
+		sus.rng = rand.New(rand.NewSource(seed)) // #nosec G404 - deterministic selection for reproducibility
+	}
+}
+
 // NewSUSSelection creates a Stochastic Universal Sampling selector.
-func NewSUSSelection() *SUSSelection {
-	return &SUSSelection{
+//
+// The default stream is seeded from the clock, so two runs sample differently.
+func NewSUSSelection(opts ...SUSOption) *SUSSelection {
+	sus := &SUSSelection{
 		rng: rand.New(rand.NewSource(rand.Int63())), // #nosec G404
 	}
+	for _, opt := range opts {
+		opt(sus)
+	}
+	return sus
 }
 
 // Select picks n individuals using SUS: one random pointer + evenly spaced picks.

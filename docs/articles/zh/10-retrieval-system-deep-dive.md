@@ -23,6 +23,19 @@
 
 老一版这篇文章说"`RetrievalService` 那个混合搜索引擎写好了但一直没接线（`advancedRetrieval` 在 API 层恒为 nil），现在用的只是一个纯向量的 `SimpleRetrievalService`"。我这次实际翻代码，**这个说法是反的**，这里必须更正：
 
+> **2026-10-16 二次更正（本节结论再次作废，且相关代码已被删除）**：本节下面那句
+> "**真正被接进生产的是 `RetrievalService`**" **经复核不成立** ——
+> `internal/runtime/memory/production_manager.go` 与 `manager_impl.go` 的 `SearchSimilarTasks`
+> **都不引用** `internal/storage/postgres/services`；对该包的**全仓引用只剩示例**
+> `examples/_internal/11-knowledge-import`。而该包已于 **2026-10-16 整包删除**
+> （零引用死代码，约 8.4k 行，代码留在 git 历史）。
+>
+> **今天检索实际跑在哪里**：生产 RAG = AKG 的 `knowledge/store/postgres` 的 `HybridSearch` →
+> `internal/knowledge/hybrid.go` 的加权打分（0.7 向量 + 0.3 词面）；知识块的向量召回 =
+> `KnowledgeRepository.SearchByVector`。**本节以下的 `RetrievalService` 细节请当作历史实现（已删）读，
+> 不要当成现状**；DB 侧宽词面召回（`bm25Search*` / tsvector 融合）的得失记在
+> `docs/defects/retrieval-and-storage.md` 的 R3 段末尾。
+
 - **代码里根本没有 `api/retrieval/service.go` 这个文件**。`api/` 下的 `api/embedding`、`api/experience`、`api/knowledge`、`api/discovery` 等**已于 0.3.2 删除**——它们原是 internal/ 对应包（如 `internal/embedding`）的 deprecated 转发层（M5 内部化），已无消费者，请直接导入 internal/ 对应包；**没有 retrieval 包**。两条检索服务都住在 `internal/storage/postgres/services/` 下。
 - **真正被接进生产的是 `RetrievalService`，不是 `SimpleRetrievalService`**。`internal/runtime/memory/production_manager.go` 里 `services.NewRetrievalService(...)` 显式构造了它，并由 `internal/runtime/memory/manager_impl.go` 的 `ProductionMemoryManager.SearchSimilarTasks(ctx, query, limit)` 在实际运行时调用 `retrievalService.Search(...)`。
 - **`SimpleRetrievalService` 反而是"写了但没有任何非测试代码调用"的那一个**。全仓 grep `NewSimpleRetrievalService` 只有它自己那个文件在定义，没有调用方（待核实：没有搜索到生产接线）。
@@ -139,7 +152,7 @@ LIMIT $3
 
 ---
 
-## 六、混合检索 `RetrievalService`：真实被接进生产那条
+## 六、混合检索 `RetrievalService`：（历史）当时以为"真实被接进生产那条"——已证伪并整包删除
 
 入口 `RetrievalService.Search(ctx, *SearchRequest) -> []*SearchResult`，整体流程：
 

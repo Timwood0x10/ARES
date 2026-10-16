@@ -19,6 +19,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 
@@ -100,18 +101,65 @@ func (e *llmEvalExecutor) Execute(ctx context.Context, input string) (string, []
 //
 // eval_strict therefore governs ONLY the absence case (no suite configured
 // → fatal vs. degraded-with-Warn); it does NOT relax a built gate.
+// defaultEvalSuitePath is the suite the gates use when configuration names none.
+//
+// It is a REPOSITORY path: present in development and in a source checkout, usually
+// absent in a deployed binary. That is exactly why a DEFAULTED suite degrades to "no
+// gate" instead of failing startup (see buildEvalGate). Defaulting it at all is
+// deliberate — otherwise G3 is never armed unless an operator already knows the knob
+// exists, which is how a pipeline silently degrades to G1+G2.
+const defaultEvalSuitePath = "test/eval/golden.yaml"
+
+// resolveEvalSuite picks the suite path for both gates and reports whether it came from
+// the default rather than from configuration.
+//
+// The existence check belongs here rather than in the loader, because it decides whether
+// anything is armed at all: a default path that is not present means "no suite" — and
+// therefore no arena gate either — not an error.
+func resolveEvalSuite(configured string) (path string, defaulted bool) {
+	if strings.TrimSpace(configured) != "" {
+		// An explicit value is used even when it does not exist: a typo must fail
+		// bootstrap loudly rather than be silently replaced by the default.
+		return configured, false
+	}
+	if _, statErr := os.Stat(defaultEvalSuitePath); statErr != nil {
+		// Not a warning: a deployment without the repository's corpus is the normal
+		// case, and the caller already warns that G3 is absent.
+		return "", false
+	}
+	return defaultEvalSuitePath, true
+}
+
+// evalGateConfig is everything the G3 gate is built from.
+//
+// A struct rather than five positional parameters: two of them (a path and a mode flag)
+// read alike at a call site, and the list had grown past the parameter limit.
+type evalGateConfig struct {
+	// SuitePath is the suite to load; empty means "no suite".
+	SuitePath string
+	// MinScore overrides the gate's own floor when > 0.
+	MinScore float64
+	// Strict makes an ABSENT suite fatal (it governs only the absence case).
+	Strict bool
+	// SuiteDefaulted marks SuitePath as the built-in default rather than configuration.
+	//
+	// It changes how a MISSING piece degrades, because the two cases are not the same
+	// promise: an operator who configured a suite asked for a gate and must not get a
+	// silently weaker pipeline (typo, missing API key), while a default nobody asked for
+	// must never brick startup.
+	SuiteDefaulted bool
+}
+
 func buildEvalGate(
 	registry *eval.EvaluatorRegistry,
 	client eval.LLMClient,
-	suitePath string,
-	minScore float64,
-	strict bool,
+	cfg evalGateConfig,
 ) (*evolution.EvalGate, error) {
-	if strings.TrimSpace(suitePath) == "" {
+	if strings.TrimSpace(cfg.SuitePath) == "" {
 		// No suite: intentional absence. The gate chain degrades to G1+G2 —
 		// loudly. Only eval_strict turns the absence itself into a bootstrap
 		// failure.
-		if strict {
+		if cfg.Strict {
 			// Deliberately NOT wrapping the sentinel: the caller only
 			// tolerates errEvalGateNotConfigured, so strict absence must
 			// surface as a hard error and fail bootstrap.
@@ -119,19 +167,37 @@ func buildEvalGate(
 		}
 		return nil, errEvalGateNotConfigured
 	}
-	// Suite configured but infrastructure missing: an ARMED gate must never
-	// silently degrade — fail bootstrap (M-G1 fail-closed alignment; the
-	// pre-M-G behavior of passing through with strict=false is exactly the
-	// "default discounted" posture the hardening plan removes).
+	// Suite present but infrastructure missing. An EXPLICITLY configured gate must never
+	// silently degrade — fail bootstrap (M-G1 fail-closed alignment). The DEFAULT suite,
+	// by contrast, is a convenience: a deployment without an eval LLM client must still
+	// start, just without G3.
 	if registry == nil || client == nil {
-		return nil, fmt.Errorf("bootstrap: G3 eval gate armed (eval_suite %q) but eval infrastructure is missing (registry/client) — refusing to run with a silently degraded gate chain", suitePath)
+		if cfg.SuiteDefaulted {
+			log.Warn("bootstrap: default eval suite present but the eval infrastructure is missing — running WITHOUT the G3 gate (set evolution.gates.eval_suite to arm it explicitly, or wire the eval LLM client)",
+				"suite", cfg.SuitePath)
+			return nil, errEvalGateNotConfigured
+		}
+		return nil, fmt.Errorf("bootstrap: G3 eval gate armed (eval_suite %q) but eval infrastructure is missing (registry/client) — refusing to run with a silently degraded gate chain", cfg.SuitePath)
 	}
-	suite, err := eval.NewLoader().Load(suitePath)
+	suite, err := eval.NewLoader().Load(cfg.SuitePath)
 	if err != nil {
-		return nil, fmt.Errorf("bootstrap: load eval suite %q (evolution.gates.eval_suite): %w", suitePath, err)
+		if cfg.SuiteDefaulted {
+			// The default lives in the repository, so a deployed binary may simply not
+			// have it. Bricking startup over a file nobody asked for would make the
+			// default a liability.
+			log.Warn("bootstrap: the default eval suite could not be loaded — running WITHOUT the G3 gate",
+				"suite", cfg.SuitePath, "error", err)
+			return nil, errEvalGateNotConfigured
+		}
+		return nil, fmt.Errorf("bootstrap: load eval suite %q (evolution.gates.eval_suite): %w", cfg.SuitePath, err)
 	}
 	if len(suite.TestCases) == 0 {
-		return nil, fmt.Errorf("bootstrap: eval suite %q contains no test cases", suitePath)
+		if cfg.SuiteDefaulted {
+			log.Warn("bootstrap: the default eval suite declares no test cases — running WITHOUT the G3 gate",
+				"suite", cfg.SuitePath)
+			return nil, errEvalGateNotConfigured
+		}
+		return nil, fmt.Errorf("bootstrap: eval suite %q contains no test cases", cfg.SuitePath)
 	}
 
 	// Say up front how much of this gate's verdict is VERIFIABLE (P0-1(ii)). A suite
@@ -141,10 +207,11 @@ func buildEvalGate(
 	anchored := eval.CountAnchoredCases(*suite)
 	if anchored == 0 {
 		log.Warn("bootstrap: G3 eval suite declares no deterministic checks — the gate's accuracy is judge opinion only",
-			"suite", suitePath, "cases", len(suite.TestCases))
+			"suite", cfg.SuitePath, "cases", len(suite.TestCases))
 	} else {
 		log.Info("bootstrap: G3 eval suite is anchored by deterministic checks",
-			"suite", suitePath, "anchored_cases", anchored, "cases", len(suite.TestCases))
+			"suite", cfg.SuitePath, "anchored_cases", anchored, "cases", len(suite.TestCases),
+			"from_default", cfg.SuiteDefaulted)
 	}
 
 	exec := newLLMEvalExecutor(client)
@@ -154,17 +221,17 @@ func buildEvalGate(
 	}
 	runner.SetRegistry(registry)
 
-	gateCfg := evolution.DefaultEvalGateConfig()
-	if minScore > 0 {
-		gateCfg.MinScore = minScore
+	runtimeCfg := evolution.DefaultEvalGateConfig()
+	if cfg.MinScore > 0 {
+		runtimeCfg.MinScore = cfg.MinScore
 	}
 	// Runtime strictness is ALWAYS on for a built gate (M-G1): infrastructure
 	// gaps were already rejected at bootstrap (armed-fail-closed above), so
 	// the only remaining gap is a runtime loss (e.g. evaluators produce no
 	// results) — which must reject, never pass. eval_strict governs ONLY the
 	// absence case (no suite configured → fatal vs. degraded-with-Warn).
-	gateCfg.StrictMode = true
-	gate := evolution.NewEvalGate(registry, runner, *suite, gateCfg,
+	runtimeCfg.StrictMode = true
+	gate := evolution.NewEvalGate(registry, runner, *suite, runtimeCfg,
 		evolution.WithEvalGateBeforeRun(exec.setCandidate),
 	)
 	return gate, nil

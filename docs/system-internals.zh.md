@@ -1357,7 +1357,7 @@ flowchart LR
 | 经验去重/冲突合并（相似度阈值） | ③ | `internal/runtime/memory/experience/conflict_resolver.go:15` |
 
 **项目没做的（最值得补的）**：**模型级**的二段精排——全库没有 cross-encoder / 学习式 reranker。
-现有的是**启发式重加权**，不是语义精排：`internal/storage/postgres/services/retrieval_search.go:652 rerankResults`（以及 `:598 mergeAndRerank`）。
+现有的是**启发式重加权**，不是语义精排：曾有过一套 `rerankResults` / `mergeAndRerank`（在 `internal/storage/postgres/services/`，**该包已于 2026-10-16 整包删除**——从未被生产 wiring 构造，属零引用死代码，代码留在 git 历史）。今天生产真正在跑的是 `internal/knowledge/hybrid.go` 的混合打分（向量 + 词面，权重可配）。
 
 ### 24.2 量产降噪的正确姿势（宽召回 + 精排）
 

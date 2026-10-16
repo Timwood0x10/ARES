@@ -237,7 +237,13 @@ func openAKGStore(configPath string) (knowledge.KnowledgeStore, func(), error) {
 		return nil, nil, fmt.Errorf("ping knowledge store: %w", err)
 	}
 
-	store, err := postgresstore.New(db)
+	// The CLI scores with the SAME weights the server does. The config is already loaded
+	// here, so the alternative — falling back to the library defaults — would make a
+	// deployment's recency setting apply in serve and silently not in this command, and
+	// an operator comparing a CLI result against a served answer would be comparing two
+	// different rankings without knowing it.
+	weights := knowledge.DefaultHybridWeights().WithRecency(cfg.Knowledge.RecencyWeight)
+	store, err := postgresstore.New(db, postgresstore.WithDefaultWeights(weights))
 	if err != nil {
 		_ = db.Close()
 		return nil, nil, fmt.Errorf("init knowledge store: %w", err)

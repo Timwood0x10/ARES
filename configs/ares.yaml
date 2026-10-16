@@ -316,10 +316,16 @@ evolution:
   # gates: the remaining verify-gate thresholds.
   # gates:
   #   eval_min_score: 0.7             # minimum G3 eval-suite score
+  #   # eval_suite: the G3 suite. UNSET falls back to the repository's
+  #   # test/eval/golden.yaml WHEN THAT FILE IS PRESENT, so the gates are armed
+  #   # by default. A DEFAULTED suite degrades to "no G3" (Warn) when the file or
+  #   # the eval infrastructure is missing; an EXPLICITLY SET suite FAILS
+  #   # bootstrap instead — set it to opt into that fail-closed behaviour.
+  #   # eval_suite: test/eval/golden.yaml
   #   # eval_strict: M-G1 semantics — true = a MISSING eval_suite is fatal at
-  #   # bootstrap (default false = degrade to G1+G2 with a Warn). A CONFIGURED
-  #   # suite with missing infrastructure (registry/LLM client) is ALWAYS
-  #   # fatal; a built gate is always runtime-strict.
+  #   # bootstrap (default false = degrade to G1+G2 with a Warn). It governs only
+  #   # ABSENCE: a configured suite with missing infrastructure (registry/LLM
+  #   # client) is always fatal, and a built gate is always runtime-strict.
   #   eval_strict: false
   #   # regression_enabled: M-G2 tri-state — unset (default) = the arena
   #   # regression gate arms AUTOMATICALLY when eval_suite + LLM client

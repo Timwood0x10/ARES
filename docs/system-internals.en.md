@@ -1492,10 +1492,13 @@ flowchart LR
 | Experience dedup / conflict merge (similarity threshold) | ③ | `internal/runtime/memory/experience/conflict_resolver.go:15` |
 
 **What it does NOT do (the highest-value gap)**: a **model-based** second pass
-— there is no cross-encoder / learned reranker anywhere in the tree. What does
-exist is *heuristic* re-weighting, not semantic re-ranking:
-`internal/storage/postgres/services/retrieval_search.go:652 rerankResults`
-(plus `:598 mergeAndRerank`).
+— there is no cross-encoder / learned reranker anywhere in the tree. What exists
+is *heuristic* re-weighting, not semantic re-ranking: a `rerankResults` /
+`mergeAndRerank` pair used to live in `internal/storage/postgres/services/`, which
+was deleted wholesale on 2026-10-16 (never constructed by the production wiring —
+zero-reference dead code, kept in git history). What production actually runs today
+is the hybrid scoring in `internal/knowledge/hybrid.go` (vector + lexical, weights
+configurable).
 
 ### 24.2 The right denoising posture at scale (wide recall + precise rank)
 

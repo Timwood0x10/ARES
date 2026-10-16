@@ -320,12 +320,24 @@ type EvolutionGateConfig struct {
 	RequireManualApproval bool `yaml:"require_manual_approval"`
 	// EvalSuite loads the G3 regression test suite from a YAML file
 	// (eval.TestSuite schema: {name, description, test_cases: [...]}).
-	// Empty string disables the G3 gate (it degrades to pass-through).
+	//
+	// UNSET no longer means "no G3 gate": bootstrap falls back to the repository's
+	// test/eval/golden.yaml when that file is present, so the gates are armed by
+	// default instead of only for operators who already knew the knob existed.
+	//
+	// The DEFAULTED suite and a CONFIGURED one fail differently, deliberately:
+	//   - defaulted (unset here): a missing file or missing eval infrastructure
+	//     degrades to "no G3" with a Warn — nobody armed anything, so a repository
+	//     path must not be able to keep a deployment from starting;
+	//   - configured (set here): a load failure or missing infrastructure FAILS
+	//     bootstrap — an operator who armed a gate must not silently get a weaker
+	//     pipeline from a typo or an unwired client.
+	// Set it explicitly to opt into the fail-closed behaviour.
 	EvalSuite string `yaml:"eval_suite"`
-	// EvalStrict fails the G3 gate closed when eval infrastructure is
-	// missing. Default false preserves backward compatibility;
-	// production should set it true so an unwired gate cannot silently
-	// pass every candidate.
+	// EvalStrict makes an ABSENT suite fatal (fatal vs. degraded-with-Warn). It
+	// does not relax a built gate, and it does not apply to a defaulted suite
+	// either: "I never configured one" and "I configured one and it is missing"
+	// are different promises. Default false.
 	EvalStrict bool `yaml:"eval_strict"`
 	// RegressionEnabled arms the arena preserved-case regression gate
 	// (candidate vs active strategy A/B over the eval suite's cases, Welch

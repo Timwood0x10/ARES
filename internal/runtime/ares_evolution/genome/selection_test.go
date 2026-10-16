@@ -1149,9 +1149,16 @@ func TestSUSSelection_Select(t *testing.T) {
 	})
 }
 
+// TestSUSSelection_UniformDistribution checks the property SUS exists for — equal
+// fitness gives equal selection probability — over a FIXED stream.
+//
+// The seed is not decoration: with a time-seeded stream this test is a coin flip (the
+// 10% bound on 5000 samples is ~3.5σ per strategy, so it fails every few hundred runs
+// and reads as a regression). A distribution assertion needs a reproducible sample to be
+// a regression test at all.
 func TestSUSSelection_UniformDistribution(t *testing.T) {
 	ctx := context.Background()
-	sus := NewSUSSelection()
+	sus := NewSUSSelection(WithSUSSeed(20261016))
 
 	pop := makePopulation(5.0, 5.0, 5.0, 5.0, 5.0)
 

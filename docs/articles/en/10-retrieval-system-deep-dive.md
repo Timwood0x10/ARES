@@ -23,6 +23,20 @@ Retrieval has a plain goal: pull genuinely useful context into the LLM at the ri
 
 The previous version of this article claimed that "the hybrid `RetrievalService` was written but never wired (the `advancedRetrieval` field is forever nil in the API layer), and only a pure-vector `SimpleRetrievalService` is in use." After actually reading the code, **that claim is backwards.** Correction:
 
+> **Second correction, 2026-10-16: the conclusion below is void, and the code it describes is gone.**
+> The claim that "**the service actually wired into production is `RetrievalService`**" does not hold:
+> neither `internal/runtime/memory/production_manager.go` nor `manager_impl.go`'s `SearchSimilarTasks`
+> references `internal/storage/postgres/services` at all — the package's only consumer in the whole
+> tree was the example under `examples/_internal/11-knowledge-import`. The package was deleted
+> wholesale on 2026-10-16 (zero-reference dead code, ~8.4k lines; it lives on in git history).
+>
+> **Where retrieval actually runs today**: production RAG = the AKG `knowledge/store/postgres`
+> `HybridSearch` → the weighted scoring in `internal/knowledge/hybrid.go` (0.7 vector + 0.3 lexical);
+> knowledge-chunk vector recall = `KnowledgeRepository.SearchByVector`. Read the `RetrievalService`
+> details below as historical implementation, not as current state. What the deletion cost on the
+> lexical side (DB-side tsvector/BM25 recall) is recorded at the end of section R3 in
+> `docs/defects/retrieval-and-storage.md`.
+
 - **There is no `api/retrieval/service.go`**. The packages that used to live in the `api/` tree (`api/embedding`, `api/experience`, `api/knowledge`, `api/discovery` etc.) were **removed in 0.3.2** — they were deprecated forwarding layers over their `internal/` counterparts (M5 internalization: `api/embedding`→`internal/embedding`, etc.) with no consumers left, so import the `internal/` packages directly — **there is still no retrieval package**. Both retrieval services live under `internal/storage/postgres/services/`.
 - **The service actually wired into production is `RetrievalService`, not `SimpleRetrievalService`**. `internal/runtime/memory/production_manager.go` constructs it via `services.NewRetrievalService(...)`, and `internal/runtime/memory/manager_impl.go` calls `retrievalService.Search(...)` in `ProductionMemoryManager.SearchSimilarTasks(ctx, query, limit)` at real runtime.
 - **`SimpleRetrievalService` is the one that is defined but never called by any non-test code.** Grepping `NewSimpleRetrievalService` across the repo only finds its own definition file — no callers. （待核实: I found no production wiring for it.)
@@ -139,7 +153,7 @@ On the experience side it is even simpler — `experiences_1024`'s `SearchByKeyw
 
 ---
 
-## 6. The Hybrid Retrieval `RetrievalService`: the One Wired into Production
+## 6. The Hybrid Retrieval `RetrievalService`: (historical) once believed to be the one wired into production — disproved, and the package was deleted on 2026-10-16
 
 Entry `RetrievalService.Search(ctx, *SearchRequest) -> []*SearchResult`. Overall flow:
 
