@@ -164,7 +164,7 @@ Step 4b in `bootstrap.go` — `wireSkills(ctx, comp.Memory, mcp)` — is a piece
 - The skill outcome recorder that used to subscribe to `EventSubTaskResult` here was removed as dead code (starved from the start — no emitter ever carried its expected payload shape, W8 / RUNTIME.md breakage #8); a TODO(tech-debt) marks the spot.
 - Entirely best-effort: memory disabled / memory not exposing `SetSkillsRegistry` / index-build failure all log-and-skip rather than blocking startup.
 
-> Note: earlier drafts of this article referenced `CatalogTools(skill_search/skill_load/...)`, `SetToolChangeHandler`, and `wireSkillCatalog` in `serve.go`. I could not verify those in `internal/ares_bootstrap` this time, so they're marked (unverified). The real skill-wiring entry is `wireSkills` above.
+> `CatalogTools(skill_search/skill_load/...)`, `SetToolChangeHandler` and `wireSkillCatalog` could not be verified in `internal/ares_bootstrap`, so they are marked (unverified). The real skill-wiring entry is `wireSkills` above.
 
 ---
 

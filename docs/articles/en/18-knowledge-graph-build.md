@@ -51,7 +51,7 @@ flowchart LR
 
 The default planner in `planner/default.go` matches keywords to needs (`NeedDecision` always, `architecture/code/issue/performance` on keywords, `history` as fallback). `provider.Select(intent, 0.35)` picks the matching providers.
 
-Under `internal/knowledge/provider/` I counted **six** providers (there is **no `mysql` provider** — the old article was wrong):
+Under `internal/knowledge/provider/` I counted **six** providers (there is **no `mysql` provider**):
 
 | Provider | Object-type lean |
 |----------|------------------|
@@ -74,7 +74,7 @@ Under `linker/` I read all five:
 |--------|--------------|-------|
 | `DefaultLinker` | `belongs_to` | Group by shared tags; `≤64` members → all-pairs (O(n²)); `>64` → star topology (each member → representative, O(n)); global cap 5000 edges |
 | `DecisionLinker` | `decided_by` | Scores decision keywords in summaries/tags; connects to objects sharing tags at `hitCount*0.25` |
-| `ArchitectureLinker` | `depends_on` | code/document/decision ↔ architecture objects on shared tags (**no `implements` edge — old article wrong**) |
+| `ArchitectureLinker` | `depends_on` | code/document/decision ↔ architecture objects on shared tags (**no `implements` edge**) |
 | `SimilarityLinker` | `similar_to` | Jaccard token overlap on summaries, default threshold `≥0.3` |
 | `TimelineLinker` | `generated_by` / `supersedes` | Same-namespace, sorted by `CreatedAt`; gap ≤ 2 weeks → `generated_by`; gap > 2 weeks and same type → `supersedes` |
 
@@ -138,7 +138,7 @@ For completeness: `internal/runtime/protocol/skills/indexer.go`'s `parseFrontMat
 
 ## 8. The truth about lazy loading
 
-The old article described a `lazy_graph.go` with `KnowledgeRuntime.GetSubgraph(ctx, rootID, depth)`, plus invented numbers ("500 nodes → 2s, 1000 nodes → 8s, lazy graph → 50ms"). **`lazy_graph.go` does not exist.**
+**`lazy_graph.go` does not exist**, and neither does a `KnowledgeRuntime.GetSubgraph(ctx, rootID, depth)`; the "500 nodes → 2s, 1000 nodes → 8s, lazy graph → 50ms" timings are not in this code either.
 
 The real mechanism (spelled out in `runtime/runtime.go`) is: `Config.LazyLoading` **clamps `budget.ForGraph` to `maxLazyForGraph=2000`** before Reduce, so the returned `WorkingGraph` is smaller. The code comment is frank: this is **not** a full LazyGraph — `Execute` still loads every object from all providers, only the final graph gets pruned; true lazy loading would change the return type to `*LazyGraph` with an `Expand` method (left as a TODO).
 
@@ -146,6 +146,6 @@ The real mechanism (spelled out in `runtime/runtime.go`) is: `Config.LazyLoading
 
 ## 9. Lessons
 
-The heart of AKF/AKG isn't "how many edges" — it's the trade-offs: **external vectors so you can switch models without migration, three data layers so retrieval stays cheap, rule-based extraction so edges stay explainable, a quality gate + lifecycle so facts grow and get retired, and a budget- and diversity-aware reducer.** Hold on to this insight: **knowledge is a graph, not a table** — but it also has to know how much it actually stores, so it doesn't sell a test log's scale as a product feature the way my old article did.
+The heart of AKF/AKG isn't "how many edges" — it's the trade-offs: **external vectors so you can switch models without migration, three data layers so retrieval stays cheap, rule-based extraction so edges stay explainable, a quality gate + lifecycle so facts grow and get retired, and a budget- and diversity-aware reducer.** Hold on to this insight: **knowledge is a graph, not a table** — but it also has to know how much it actually stores, so it doesn't sell a test log's scale as a product feature.
 
 The best knowledge system is the one that honestly admits its own data boundaries.

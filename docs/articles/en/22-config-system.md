@@ -4,7 +4,7 @@ Every module needs configuration. LLM needs provider and model. Memory needs his
 
 `internal/ares_config/config.go` (1,084 lines) + `config_defaults.go` + `config_validate.go` are that system, bridged on the SDK side by `sdk/config.go` (430 lines).
 
-> Honesty correction: the old article claimed "config.go 844 lines, sdk/config.go 165 lines, Config with twelve sections." Actual `wc -l` is 1,084 for config.go and 430 for sdk/config.go, and the top-level `Config` currently has **17** sections (below).
+> The top-level `Config` currently has **17** sections (listed below).
 
 ---
 
@@ -80,8 +80,6 @@ func Load(path string) (*Config, error) {
 ```
 
 `SetAllowedConfigDir()` restricts where config files load from. The check is a **`filepath.Rel` + `".."`-prefix rejection** (guarded by `allowedConfigDirMu`, so `SetAllowedConfigDir` races safely with concurrent `Load`/hot-reload watchers).
-
-> Honesty correction: the old article claimed "we used `filepath.Rel`, it failed on Windows, so we switched to `strings.HasPrefix`." **That contradicts the code** — the current implementation is `filepath.Rel` plus a `".."` prefix check. We report the code as it is and avoid inventing a history the source doesn't support.
 
 ### Typed Validation
 

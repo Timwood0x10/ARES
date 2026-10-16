@@ -1,7 +1,5 @@
 # ares Architecture Deep Dive (VI): Security and Observability — Auth, RBAC, Sanitization, and Scheduling Observability (0.3.x)
 
-> 0.3.x note: This article is a complete rewrite grounded in the *current* `internal/ares_security/` and `internal/runtime/observability` implementations. Earlier versions of this article (a `SafeLogger`, a `LogTracer`, a rate-limiter factory, a four-phase graceful shut-down state machine) **no longer exist** in the codebase. This article only describes what is actually there now.
-
 > The more dangerous a thing an Agent can do, the more you need to decide *before* it does it: who is using it, what it may touch, whether anything it emits leaks secrets — and, at runtime, whether every step it takes is actually visible.
 
 ---
@@ -38,7 +36,7 @@ Core file list (real paths):
 
 ## 2. Security module: don't build a mechanism that "looks cool but nobody dares use"
 
-Cold shower first. In the old version I wrote about a `SafeLogger`, a two-layer field-name + regex detector, and a package-level `SanitizeLog`. **None of those exist anymore.** Today `ares_security` is split into auth (JWT/RBAC/middleware/audit) and sanitization (`Sanitizer`).
+Cold shower first: **there is no `SafeLogger`, no two-layer field-name + regex detector, and no package-level `SanitizeLog`.** Today `ares_security` is split into auth (JWT/RBAC/middleware/audit) and sanitization (`Sanitizer`).
 
 ### 2.1 JWT: hand-written HS256 that only trusts the signed form
 

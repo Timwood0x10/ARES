@@ -235,7 +235,7 @@ graph TB
 
 ### 9.1 Benchmarks & Verification (no fabricated numbers)
 
-`internal/runtime/protocol/skills/benchmark_test.go` defines 100-skill scenarios and assertions, **but the code contains no concrete ms/µs measurements** (those are environment-dependent; the raw figures in the earlier draft are not code constants and are deliberately dropped):
+`internal/runtime/protocol/skills/benchmark_test.go` defines 100-skill scenarios and assertions, **but the code contains no concrete ms/µs measurements** (those are environment-dependent; the raw figures sometimes quoted are not code constants and are deliberately dropped):
 
 | Benchmark / test | What it measures | Assertion in code |
 |------|------|------|

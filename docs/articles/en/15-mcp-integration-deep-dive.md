@@ -223,7 +223,7 @@ func (t *SSETransport) handleSSEEvent(ctx context.Context, eventType, data strin
 }
 ```
 
-> Honest correction: an earlier draft of this article listed "SSE POST URL has no relative-path handling" as technical debt — **that's been fixed**. Relative paths resolve against the base URL and are always allowed; absolute URLs must share the host.
+> SSE POST URLs **do** handle relative paths: they resolve against the base URL and are always allowed; absolute URLs must share the host.
 
 ---
 
@@ -267,7 +267,7 @@ ConfidenceMax    = 100  // ARES own registry, verified
 - **Cursor**: `~/.cursor/mcp.json`
 - **VS Code**: project-local `.vscode/mcp.json`
 
-> Correction: an earlier draft said ARES scans `.codegraph/mcp-servers.json`; the real code is `~/.ares/mcp-registry.json`. The schemas differ, but each provider normalizes its findings into a `DiscoveryRecord`.
+> ARES scans `~/.ares/mcp-registry.json` (not `.codegraph/mcp-servers.json`). The schemas differ, but each provider normalizes its findings into a `DiscoveryRecord`.
 
 **Binary probe Provider** (`providers/binary.go`) does not scan whole PATH. It uses a `knownMCPBinaries` allowlist (`mcp-server-filesystem`, `mcp-server-git`, `mcp-server-postgres`, etc.), probes matched names with `--help`, and checks for MCP keywords. Anything outside the allowlist is never touched; matching uses a `knownMCPBinariesSet` keyed on `filepath.Base`.
 

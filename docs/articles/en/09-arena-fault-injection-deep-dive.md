@@ -117,7 +117,7 @@ flowchart LR
 
 This is the old, production-isolated chaos-drill layer, launched by `ares arena serve`. It starts its own demo pool (`arena-worker-1..3`, type=coder) and a mutable DAG, specifically to demonstrate "inject a fault → watch the system react."
 
-Core files (real paths, which differ from the earlier article):
+Core files (real paths):
 
 | File | Purpose |
 |------|---------|
@@ -134,7 +134,7 @@ Core files (real paths, which differ from the earlier article):
 | `cmd/ares/arena.go` | `ares arena` CLI: run / validate / list / serve / survival / inspect |
 | `cmd/ares/serve_chaos.go` | production kernel chaos wiring (`wireChaos` above) |
 
-> The earlier article's paths `internal/arena/…`, `internal/dashboard/static/app.js`, and `cmd/arena/main.go` **do not exist in this repository**. The real paths are above; arena ships no bundled static frontend — the front-end-observable surface is the REST/SSE endpoints.
+> `internal/arena/…`, `internal/dashboard/static/app.js` and `cmd/arena/main.go` **do not exist in this repository**. The real paths are above; arena ships no bundled static frontend — the front-end-observable surface is the REST/SSE endpoints.
 
 ### 4.1 The injector: a thin layer that does not recover
 
@@ -212,7 +212,7 @@ actions:
 
 ### 4.4 Survival mode
 
-`survival.go` `Service.RunSurvival` picks a random action from the 13 and a random target (from listed agents or DAG nodes/edges) on each interval (default 30m / every 10s), recording a `Timeline`. `SurvivalReport` carries no hard-coded sample scores — the earlier article's running `Score: 100.0 (A+)` / `97.3` output lines are not something I found in this code, so they are not reproduced here.
+`survival.go` `Service.RunSurvival` picks a random action from the 13 and a random target (from listed agents or DAG nodes/edges) on each interval (default 30m / every 10s), recording a `Timeline`. `SurvivalReport` carries no hard-coded sample scores — no `Score: 100.0 (A+)` / `97.3` output lines exist in this code, so none are reproduced here.
 
 ---
 
@@ -251,7 +251,7 @@ In other words, the third dimension — unless someone wires real consistency me
 
 Arena exposes only destructive endpoints (kill leader, remove nodes, corrupt memory), so authentication defaults to **deny**:
 - If an API key is set (`--api-key` or `security.arena_api_key` in ares.yaml), every request must carry the `X-API-Key` header (constant-time compare).
-- With no key and no explicit `--allow-anonymous`, `APIKeyAuthMiddleware` returns 401 for every request — the earlier article's "open the dashboard and click" no-auth flow is, in the real code, rejected by default. `--allow-anonymous` is for local development only, and the comment warns it must never be enabled for a network-reachable deployment.
+- With no key and no explicit `--allow-anonymous`, `APIKeyAuthMiddleware` returns 401 for every request — a "just open the dashboard and click" no-auth flow is rejected by default. `--allow-anonymous` is for local development only, and the comment warns it must never be enabled for a network-reachable deployment.
 
 ---
 
@@ -309,6 +309,6 @@ After walking through all of this, I want you to remember not a score but the **
 1. In `internal/aresrecovery`: **"Chaos breaks, Recovery fixes."** Breaking and fixing are two independent responsibilities, welded together by an explicit `VerifyRecovery()` call. In production, live chaos is locked behind six guardrails, and the default posture never touches production agents (shadow sandbox).
 2. In `internal/runtime/arena`: **"It does NOT implement recovery."** It only injects faults; recovery belongs to ares_runtime's existing mechanisms, and this is an isolated drill field.
 
-I found no evidence in this repository for the earlier article's numbers such as "Score 100.0 (A+)", "revived in 1.4s", or "97.3% recovery rate", so none of them appear above. The Consistency dimension defaults to a heuristic, `parallel_actions` / `depends_on` are not yet implemented, and the EvolutionBridge back-fill effect is marked TBD.
+No evidence in this repository supports numbers such as "Score 100.0 (A+)", "revived in 1.4s", or "97.3% recovery rate", so none of them appear above. The Consistency dimension defaults to a heuristic, `parallel_actions` / `depends_on` are not yet implemented, and the EvolutionBridge back-fill effect is marked TBD.
 
 > Making "deliberately break it, then watch it rise again" repeatable, verifiable, and — by default — isolated from production is the genuinely hard part of this.
