@@ -5,7 +5,12 @@
 > 我当时就在想：Agent 的记忆不是"有没有"的问题，是"能不能找到对的"的问题。
 > 一个没有检索能力的 Agent，就是一个金鱼——7 秒记忆，永远在发明轮子。
 
-> 说明：本文基于实际代码（重点阅读 `internal/storage/postgres/services` 整条检索管线、`internal/storage/postgres/repositories` 的向量/关键词仓库层、`internal/runtime/memory/context/memory_retriever.go` 的 RAG 召回、`internal/runtime/memory/experience/ranking_service.go` 的经验排序，以及 `internal/runtime/protocol/skills` 的 FTS5/关键词检索）。每个符号、每条流程都是我在这份代码里实际读到的。凡是"配置了但实际没接线"或"我拿不准"的部分，我会标（待核实），不替它吹。
+> 说明：本文基于实际代码（重点阅读 `internal/knowledge/hybrid.go` 的混合打分与 `internal/knowledge/store/postgres` 的 `HybridSearch`、`internal/storage/postgres/repositories` 的向量/关键词仓库层、`internal/runtime/memory/context/memory_retriever.go` 的 RAG 召回、`internal/runtime/memory/experience/ranking_service.go` 的经验排序，以及 `internal/runtime/protocol/skills` 的 FTS5/关键词检索）。每个符号、每条流程都是我在这份代码里实际读到的。凡是"配置了但实际没接线"或"我拿不准"的部分，我会标（待核实），不替它吹。
+>
+> **2026-10-16 修订**：本文的结论被更正过两次，本版把最终核准的事实写进正文（§二），并**整体替换**了旧版对
+> `internal/storage/postgres/services` 那条"混合检索服务"的逐行拆解（§六）——那个包**生产从未构造过**，
+> 已作为零引用死代码删除（约 8.4k 行，代码在 git 历史）。**正文里凡是与该包相关的描述都按当前代码重写，
+> 而不是加个"已废弃"横幅糊过去。**
 
 ---
 
@@ -19,38 +24,37 @@
 
 ---
 
-## 二、先揭个榜：运行时到底跑哪条检索路径？（诚实更正）
+## 二、先揭个榜：运行时到底跑哪条检索路径？（两次更正后的定论）
 
-老一版这篇文章说"`RetrievalService` 那个混合搜索引擎写好了但一直没接线（`advancedRetrieval` 在 API 层恒为 nil），现在用的只是一个纯向量的 `SimpleRetrievalService`"。我这次实际翻代码，**这个说法是反的**，这里必须更正：
+这个结论被更正过两次，这里把最终核准的事实一次写清：
 
-> **2026-10-16 二次更正（本节结论再次作废，且相关代码已被删除）**：本节下面那句
-> "**真正被接进生产的是 `RetrievalService`**" **经复核不成立** ——
-> `internal/runtime/memory/production_manager.go` 与 `manager_impl.go` 的 `SearchSimilarTasks`
-> **都不引用** `internal/storage/postgres/services`；对该包的**全仓引用只剩示例**
-> `examples/_internal/11-knowledge-import`。而该包已于 **2026-10-16 整包删除**
-> （零引用死代码，约 8.4k 行，代码留在 git 历史）。
+- **第一版说**："`RetrievalService` 写好了但一直没接线（`advancedRetrieval` 在 API 层恒为 nil），在跑的是纯向量的 `SimpleRetrievalService`。"
+- **第二版说**："反了——真正被接进生产的是 `RetrievalService`，`SimpleRetrievalService` 没有调用方。"
+- **2026-10-16 复核：第二版同样是错的，而且两个类都已删除。** 三条实测（都可逐条复现）：
+
+  1. **`ProductionMemoryManager` 早就不再有那条持久化/检索路径了**。它现在是**纯配置存储**（只有 `GetConfig` / `Lock` / `Unlock`，给 evolution 的 `MemoryPatchExecutor` 用），文件自身的注释写明：原来的 PostgreSQL 持久化实现（sessions / tasks / **RAG retrieval** / write buffer）**"had zero production constructors"**，已随 `postgres.WriteBuffer` 一并移除。所以第二版那句"`production_manager.go` 里 `NewRetrievalService(...)` 构造了它"**没有任何对应代码**——那个文件里连一个 `New…(` 调用都没有。
+  2. **`SearchSimilarTasks` 不是 `ProductionMemoryManager` 的方法**，它是 `manager_impl.go` 里 `memoryManager` 的方法，而且**自己做向量检索**（`BuildMemoryQuerySpec` + 蒸馏 pipeline 的 `Embed` + 经验仓查询），**不经过任何 `RetrievalService`**。
+  3. **全仓对 `internal/storage/postgres/services` 的引用只剩示例**（`examples/_internal/11-knowledge-import`），该包已于 **2026-10-16 整包删除**（零引用死代码，约 8.4k 行，代码留在 git 历史；其中 `RetrievalService` 连示例都没用过）。示例本身也已改走生产路径 `KnowledgeRepository.SearchByVector`。
+  4. 顺带纠正第一版的另一半：**`api/retrieval/service.go` 确实不存在**，而且 `api/` 下那几个包（embedding / experience / knowledge / discovery）**已于 0.3.2 删除**（它们原是 internal/ 对应包的 deprecated 转发层，无消费者）。但"两条检索服务都住在 `internal/storage/postgres/services/`"这句现在也过期了——**那个包已经不存在**。
+
+### 2.1 今天真正在跑的检索路径（逐条核实过）
+
+| 路径 | 入口 | 数据 | 方式 | 状态 |
+|------|------|------|------|------|
+| 知识混合检索（AKG） | `knowledge/store/postgres` 的 `HybridSearch` → `internal/knowledge/hybrid.go` 的 `ScoreHybrid` | AKG 蒸馏事实（`akf_objects`） | 向量 0.7 + 词面 0.3（权重**相对**，缺项按可用项归一），按 `FinalScore` 排序；召回窗口 `ORDER BY updated_at DESC` | ✅ 已接（经 `KnowledgeRetriever`） |
+| 知识块向量召回 | `KnowledgeRepository.SearchByVector` | `knowledge_chunks_1024` | pgvector 余弦 + `embedding_status='completed'` 过滤；索引旋钮在事务内应用（见 §6.3） | ✅ 已接（RAG / 工具路径） |
+| RAG 经验召回 | `MemoryRetriever.Retrieve`（经 `manager_rag.go` 的 `runRetrieval`） | 蒸馏 experiences | 向量 + `minScore` 过滤 | ✅ 已接（`EnableRAG=true` 时） |
+| 关键词·知识侧 | `KnowledgeRepository.SearchByKeyword` | `knowledge_chunks_1024.tsv` | PostgreSQL FTS：`ts_rank(tsv, plainto_tsquery('simple',$1))` | ⚠️ 方法在，**当前无调用方** |
+| 关键词·经验侧 | `ExperienceRepository.SearchByKeyword` | `experiences_1024` | ILIKE 子串匹配（**不是 BM25**） | ✅ 已接（蒸馏路径） |
+
+> **两条"曾在、但从未生效、现已随死代码删除"的能力，明确记录以免将来被当成回归**：
+> ① `knowledge_chunks_1024` 侧的 **BM25/tsvector 宽词面召回 + 与向量融合**（被删包里的 `bm25Search*`）。
+> 它不等价于"丢了在跑的能力"——那条路径的生产入口从未被构造过；而且 **schema 层的 tsvector trigger / GIN 索引
+> 与 `SearchByKeyword` 都还在**，要恢复只需接线，不必重做。
+> ② `RankingService`（经验的多信号加性重排，§7.1）**仍然存在**，但**已无生产调用方**——它唯一的调用方是
+> 已删包里的 `applyExperienceRanking`（复核确认：删除之前它也没有别的调用方）。
 >
-> **今天检索实际跑在哪里**：生产 RAG = AKG 的 `knowledge/store/postgres` 的 `HybridSearch` →
-> `internal/knowledge/hybrid.go` 的加权打分（0.7 向量 + 0.3 词面）；知识块的向量召回 =
-> `KnowledgeRepository.SearchByVector`。**本节以下的 `RetrievalService` 细节请当作历史实现（已删）读，
-> 不要当成现状**；DB 侧宽词面召回（`bm25Search*` / tsvector 融合）的得失记在
-> `docs/defects/retrieval-and-storage.md` 的 R3 段末尾。
-
-- **代码里根本没有 `api/retrieval/service.go` 这个文件**。`api/` 下的 `api/embedding`、`api/experience`、`api/knowledge`、`api/discovery` 等**已于 0.3.2 删除**——它们原是 internal/ 对应包（如 `internal/embedding`）的 deprecated 转发层（M5 内部化），已无消费者，请直接导入 internal/ 对应包；**没有 retrieval 包**。两条检索服务都住在 `internal/storage/postgres/services/` 下。
-- **真正被接进生产的是 `RetrievalService`，不是 `SimpleRetrievalService`**。`internal/runtime/memory/production_manager.go` 里 `services.NewRetrievalService(...)` 显式构造了它，并由 `internal/runtime/memory/manager_impl.go` 的 `ProductionMemoryManager.SearchSimilarTasks(ctx, query, limit)` 在实际运行时调用 `retrievalService.Search(...)`。
-- **`SimpleRetrievalService` 反而是"写了但没有任何非测试代码调用"的那一个**。全仓 grep `NewSimpleRetrievalService` 只有它自己那个文件在定义，没有调用方（待核实：没有搜索到生产接线）。
-- 此外还有一条独立、也确实接线了的 **RAG 向量召回路径**：`internal/ares_bootstrap/retriever_wiring.go` 的 `wireRetrievers` 把 `MemoryRetriever`（对蒸馏经验做向量检索）和 `KnowledgeRetriever`（对 AKG 知识做混合检索）注入 MemoryManager，`EnableRAG=true` 时通过 `manager_rag.go` 的 `runRetrieval` 触发。
-
-所以，**运行时向量检索是真实存在的**。三条真实路径：
-
-| 路径 | 入口 | 数据 | 方式 | 运行时接线 |
-|------|------|------|------|----------|
-| 混合检索 | `RetrievalService.Search`（经 `SearchSimilarTasks`） | 主要 experiences | 向量 + 关键词 混合 + 评分 | ✅ 已接 |
-| RAG 经验召回 | `MemoryRetriever.Retrieve`（经 `runRetrieval`） | 蒸馏 experiences | 向量 + minScore 过滤 | ✅ 已接 |
-| RAG 知识召回 | `adapter.KnowledgeRetriever`（AKG） | AKG 蒸馏事实 | 混合检索 | ✅ 已接 |
-| 纯向量 | `SimpleRetrievalService.Search` | knowledge | 纯向量 + 精确模式 | ❌ 无调用方 |
-
-> 注意 `SearchSimilarTasks` 实际只打开了 experience：`SearchExperience=true, SearchKnowledge=false, SearchTools=false`，production 里 `toolRepo` 传的也是 nil。也就是说跑起来的那条混合检索，**scope 基本收敛在 experience 上**（向量 + ILIKE 关键词）。
+> **仍未被任何生产路径构造的组件**：`RetrievalGuard`（§九），三层保护写好了但没有构造点。
 
 ---
 
@@ -152,69 +156,52 @@ LIMIT $3
 
 ---
 
-## 六、混合检索 `RetrievalService`：（历史）当时以为"真实被接进生产那条"——已证伪并整包删除
+## 六、混合检索在生产到底怎么算：宽召回 → 加权 → 排序
 
-入口 `RetrievalService.Search(ctx, *SearchRequest) -> []*SearchResult`，整体流程：
+> **本节已整体替换。** 旧版本节逐行拆解 `RetrievalService` 的 `buildQueries` / `rerankResults` /
+> `TimeDecay` / 精确模式 / query 重写——那段实现**生产从未构造过**，且已于 2026-10-16 随零引用包删除
+> （代码在 git 历史）。下面是**当前实际执行**的两条检索的算法，每条都可在代码里对照。
 
-```mermaid
-graph TB
-    Q[Query] --> P{isPrecisionMode?}
-    P -- 是(<=10字符 或 含=/数学表达式) --> PREC[searchPrecision<br/>Exact -> Keyword -> Vector]
-    P -- 否 --> RW
-    RW[buildQueries<br/>原句1.0 + 规则重写0.7 + LLM重写0.5<br/>最多 MaxQueries=3] --> GATE{retrievalGuard.AllowRateLimit}
-    GATE -- 不通过 --> ERR[返回 ErrRateLimitExceeded]
-    GATE -- 通过 --> PAR[并行: eg.SetLimit2<br/>每个 query 2s + dbTimeout]
-    PAR --> SVEC[searchAllVectorSources]
-    PAR --> SKW[searchAllKeywordSources]
-    SVEC --> MRK[deduplicateResults<br/>同ID累加 +0.3*其score]
-    SKW --> MRK
-    MRK --> RERANK[rerankResults<br/>query权重*source权重*subSource权重*signals*timeDecay]
-    RERANK --> FILTER[filterByScore>=MinScore]
-    FILTER --> TOP[截到 TopK]
-```
+### 6.1 知识混合检索（AKG / `akf_objects`）
 
-### 6.1 Query 重写（buildQueries）
-`buildQueries` 生成加权查询组（`retrieval_rewrite.go`）：
-- 原句权重 `OriginalWeight=1.0`
-- 规则重写（同义词映射）权重 `RuleRewriteWeight=0.7`
-- LLM 重写权重 `LLMRewriteWeight=0.5`
-- 总数被 `MaxQueries=3` 截断
-
-触发重写有门槛（`shouldRewriteQuery`）：`len(query)<10` 直接跳过；要命中复杂语义模式（"如何/怎么/什么/why/what/how/explain/描述"等）才重写；`queryCache`（TTL 10min、上限 500）命中也跳过。
-
-LLM 重写（`llmBasedRewrite`，llmClient 可为 nil/不可用则跳过）：
-- 30s 超时；`parseLLMResponse` 按行解析，**最多取前 3 行**
-- `validateRewrites` 用 `calculateSimilarity`（实际上是一个 **Jaccard 词重叠**）过滤相似度 < **0.6** 的重写、剔除长度超过原句 **2x**、空串
-- `uniqueRewrites` 去重后 `maxLLMRewrites=2` 截断
-
-规则重写（`ruleBasedRewrite`）：走 `loadSynonymRules` 读 `configs/synonyms.yaml`（路径经 `loadSynonymRulesFrom` 参数化注入——0.3.1 起无 env 覆盖，内置默认规则兜底），`replaceCaseInsensitive` 把命中同义词 key 的片段替换成扩展。
-
-### 6.2 精确模式（isPrecisionMode）
-触发条件（`retrieval_service.go`）：
-- `utf8.RuneCountInString(query) <= 10`（Rune 数，Unicode 安全）
-- 含 `=` 或 `:`，或 `\d+\s*[+*/]\s*\d+` 这类**数字夹数学运算符**的表达式（`-` 故意排除，避免误伤 `go-agent` 这类连字符；`+*/` 要求两侧贴数字，避免 `C++`、`*args` 误伤）
-
-精确模式下走 `searchPrecision` 的严格顺序：**Exact（`SearchBySubstring`，命中给固定分 1.0）→ Keyword（FTS）→ Vector（兜底）**——不是老文说的"精确匹配 → 关键词 → 向量有兜底"之外再多花哨。
-
-### 6.3 并行与超时（searchSingleQuery）
-每个加权 query 用 `errgroup.SetLimit(2)`（向量 + 关键词并行），外层 `context.WithTimeout(ctx, 2s)`，再用 `retrievalGuard.WithDBTimeout` 套上层级。向量分支先查 `embeddingClient.IsEnabled()` 和 embedding 熔断器，熔断打开就降级为只跑关键词。
-
-### 6.4 合并与再排序（mergeAndRerank → rerankResults）
-`rerankResults` 是唯一评分入口，公式是**乘法**：
+`internal/knowledge/store/postgres` 的 `HybridSearch` → `internal/knowledge/hybrid.go` 的 `ScoreHybrid`：
 
 ```
-Score = baseScore · QueryWeight · [SourceWeight，多源才生效] · SubSourceWeight · Signals · TimeDecay
+FinalScore = blend(Vector×0.7, Lexical×0.3, Recency×w)   // 权重是相对值，按"可用项"归一
 ```
 
-- **QueryWeight**：原句 1.0 / 规则 0.7 / LLM 0.5
-- **SourceWeight**（`sourceWeight`）：knowledge 0.4 / experience 0.3 / tool 0.2 / task_result 0.1；**只有启用多源（`activeSources>1`）时才乘**，单源直接跳过
-- **SubSourceWeight**（`subSourceWeight`）：vector 1.0 / keyword 0.8
-- **Signals**（`applySourceSignals`，经验侧重）：success=1.2、失败=0.7、execTime<1s=1.2、execTime>5s=0.8、reuse_count>3=1.1、有 lessons=1.05；工具侧 requires_auth=0.9、successRate>0.8=1.1、successRate<0.5=0.8
-- **TimeDecay**（`calculateTimeDecay`）：`e^(−0.01 × ageHours)`，下限 **0.1**（还给"古董"内容一线生机）
+- **召回宽度**：SQL 先按 `ORDER BY updated_at DESC LIMIT k`（`k = max(TopK, FinalK, cap)`）取候选窗口 ——
+  **recency 是窗口偏置**，不是排序项。
+- **加权**：向量项 = 余弦相似度；词面项 = **token 集的 Jaccard**（**长度归一化**，且**已做 CJK bigram**，
+  中文不再是"整句一个 token"）；新鲜度项 = 分档规则（`FreshnessScore`：<1d=1.0 / <7d=0.8 / <30d=0.5 / 更旧=0.3，
+  **零时间戳=中性 0.5，不是最旧**）。
+- **可用项归一**：候选没有 embedding 时**不把它压向 0**，而是只用剩下的项打分（未嵌入的行仍可被检索）。
+- **recency 权重默认 0**（`knowledge.recency_weight`）：窗口已按 `updated_at` 偏置，分数里再来一次是
+  **同一信号计入两次**，是否净收益要按语料实测，所以默认不改排序、开关给运维。
+- **排序**：过滤 `MinScore` → 按 `FinalScore` 降序 → 截到 `FinalK`。
+- **诊断**：向量维度不匹配（换过 embedding 模型）会打一次 Warn；结果里带 `VectorScore / LexicalScore /
+  RecencyScore / FinalScore` 四个分量，便于判断"为什么它排第一"。
 
-去重 `deduplicateResults`：按 `ID` 合并，重复命中时 `existing.Score += result.Score * 0.3`——这是"多路由命中信号"，同一内容被多次 query/多路搜索命中就加分。
+### 6.2 知识块向量召回（`knowledge_chunks_1024` / `KnowledgeRepository.SearchByVector`）
 
-> 例外：`SearchSimilarTasks` 把 plan 设成 experience-only。此时 `ExperienceRankingEnabled` 走 `applyExperienceRanking`（经验重排，见下节），而**非经验重排的 rerank 路径用于通用全源搜索**。
+- **空向量 fail-closed**：直接返回"embedding must not be empty"，不让 pgvector 去报一个零维字面量的错。
+- **SQL**：`WHERE tenant_id=$2 AND embedding_status='completed' AND embedding IS NOT NULL`，
+  按 `embedding <=> $1::vector` 升序（即相似度降序）取 `limit`。
+- **带出的元数据**：`metadata["similarity"]`（1 − 距离）与 `metadata["created_at"]`（供下游做新鲜度/重排参考）。
+- 失败路径：查询错误包装返回；行解析失败**逐行 Warn 并跳过**，最后若"扫到的行数 ≠ 返回的条数"再打一条
+  Warn（结果集缩水是运维该看见的事，不该静默）。
+
+### 6.3 查询期索引旋钮：`probes` / `ef_search`（同一条事务路径）
+
+ivfflat 读 `ivfflat.probes`、HNSW 读 `hnsw.ef_search`，**各自忽略对方的那个**，所以两者成对配置
+（`EmbeddingConfig.SearchProbes` / `SearchEFSearch`）：
+
+- 走 `postgres.WithVectorSearchTuning`：**`SET LOCAL` 只在事务块内生效**（在池化连接上裸发会被 PostgreSQL
+  静默忽略），所以该助手按句柄形态**开事务**（已是 `*sql.Tx` 就直接用；不嵌套开事务），失败回滚；
+  句柄形态不支持时**响亮 Warn**而不是假装已生效——"配了但没生效"比"没配"更糟，因为部署以为调优过了。
+- **索引的"形状"**同样有人管：`AdaptVectorIndexScale` 复核 ivfflat 的 `lists` 是否与表规模匹配，
+  并在**配置的索引方法与目录里的方法不一致时一次性重建**（保留索引名与 partial 谓词，Warn + 记录；
+  空期望=不评判，迁移命令就属于不评判）。
 
 ---
 
@@ -237,7 +224,7 @@ FinalScore = SemanticScore + UsageBoost + RecencyBoost + exp.Score
 
 配置权重：`UsageWeight=0.05`、`RecencyWeight=0.05`、`RecencyDays=30`（`DefaultRankingWeights`，可 `Configure`。）
 
-在 `RetrievalService.Search` 里 `applyExperienceRanking`（`retrieval_search.go`）调 `rankingService.Rank`，再用 `conflictResolver.Resolve` 处理冲突组，最后会把 `FinalScore` 写回 `exp.Score` 透传到结果——代码注释专门点出：如果不写回，重排会按接近 0 的 raw score 乱序、`MinScore>0` 时经验结果会被过滤掉，排名的意义上不了线。
+> **归属更正（2026-10-16）**：本节的 `RankingService` **本身仍在**（`ranking_service.go`：`Rank` / `Configure` / 默认权重都在，也有测试），但**它当前没有生产调用方** —— 唯一的调用方是已删包里的 `applyExperienceRanking`（`retrieval_search.go`），随包一起消失；复核显示**删除之前它也没有别的调用方**。今天经验召回走的是 `MemoryRetriever` + 经验仓 `SearchByVector`（§7.2），**不使用**这套加性重排。若要重新接线，`Rank` 的信号与权重都还可用，但**接线本身是一件独立的事**。
 
 ### 7.2 MemoryRetriever（RAG，`internal/runtime/memory/context/memory_retriever.go`）
 这是给 LLM 增强上下文用的那条：`Retrieve(input, topK)`：
@@ -249,7 +236,7 @@ FinalScore = SemanticScore + UsageBoost + RecencyBoost + exp.Score
 6. `filterByMinScore`：**`Score >= minScore` 才留**，`minScore<=0` → `DefaultMinScore=0.4`
 7. `SortSnippetsByScore` 降序后截 topK
 
-嵌入失败**不静默降级**关键词（代码注释原话：`does not silently fall back to keyword search`），直接返回错误。这是与 `RetrievalService`（熔断降级关键词）截然不同的取舍。
+嵌入失败**不静默降级**关键词（代码注释原话：`does not silently fall back to keyword search`），直接返回错误。这与"embedding 挂了就降级成只跑关键词"是相反的取舍（后者曾写在被删的检索服务里，如今生产没有那条路径）。
 
 `manager_rag.go` 的 `retrieveContextString`/`retrieveForPrompt` → `runRetrieval`（读 `EnableRAG`、`RAGTopK`、`RAGMinScore`，唤醒 retrievers）→ `memctx.RunRetrieval`（统一应用 DefaultTopK/DefaultMinScore 归一）。检索结果是 best-effort：失败仅 `log.Warn`，不打断主循环。
 
@@ -301,7 +288,12 @@ sequenceDiagram
 
 ## 九、门控与降级
 
-`RetrievalGuard`（`internal/storage/postgres/retrieval_guard.go`）给检索套了三层保护，`production_manager.go` 用 `NewRetrievalGuard(100, 5, 30s, 30s)` 构造：
+`RetrievalGuard`（`internal/storage/postgres/retrieval_guard.go`）给检索设计了三层保护：
+
+> **更正（2026-10-16）**：旧版称 `production_manager.go` 用 `NewRetrievalGuard(100, 5, 30s, 30s)` 构造它 ——
+> **该文件现在连一个 `New…(` 调用都没有**（它是纯配置存储），全仓复核也**没有别的构造点**。
+> 所以下面这三层是**设计就绪、当前没有生产实例**：别把它读成"检索已被限流/熔断保护"。
+> 要让它生效，需要在检索入口显式构造并接入（这是一件独立的事，不是"已修"。）
 
 | 保护 | 实现 | 行为 |
 |------|------|------|
@@ -313,19 +305,26 @@ Embedding 侧还有一个 `FallbackClient`（`embedding/fallback.go`）提供三
 
 ---
 
-## 十、诚实盘点：删了什么、还剩什么
+## 十、诚实盘点：这篇的更正在哪三条线上
 
-对照老文，这批更正在三条线上：
+1. **"高级检索没接线 / 纯向量在跑"——两版都不对，2026-10-16 给出第三版**：第一版说"高级的没接、跑的是纯向量"，第二版说"反了，接的是高级那个"。**实测：两个都从未被生产构造**——`RetrievalService` 全仓零引用（连示例都没用），`SimpleRetrievalService` 只有仓内示例在用（该示例已改走生产路径）；整个 `internal/storage/postgres/services` 包已**删除**。今天在跑的是 §2.1 表里那几条。
+2. **没有 `api/retrieval/service.go`**：✓ 仍成立（`api/` 下那几个包已于 0.3.2 删除）。但"两条服务都住在 `internal/storage/postgres/services/`"这句**已过期**——那个包不存在了。
+3. **关键词那套不是 BM25**：✓ 仍成立（知识侧 = PostgreSQL `ts_rank` 全文检索，经验侧 = ILIKE 子串）。补充一个容易误解的点：被删的包里**确实有方法叫 `bm25Search*`**，但它的实现也是 tsvector——"名叫 BM25、实为 FTS"，随包删除。
 
-1. **"高级检索没接线、纯向量在跑"是错的**：真相是 `RetrievalService` 已通过 `SearchSimilarTasks` 接入（scope 收敛 experience），`SimpleRetrievalService` 无调用方。
-2. **没有 `api/retrieval/service.go`**：两条服务都在 `internal/storage/postgres/services/`。
-3. **关键词那套不是 BM25**：知识侧是 PostgreSQL `ts_rank` 全文检索，经验侧是 ILIKE 子串。
+数值上，本版只保留**当前代码里有出处**的：向量 0.7 / 词面 0.3（相对权重，按可用项归一）、`minScore 0.4`、
+`TopK 5/10`、`FreshnessScore` 的分档（1.0/0.8/0.5/0.3，未知=0.5）、`recency_weight` 默认 0。
+**旧版从被删实现里引来的数不再算"有出处的保留值"**（sourceWeight 0.4/0.3/0.2/0.1、Jaccard 0.6、
+`timeDecay = e^{-0.01·ageHours}` 下限 0.1 —— 它们出自已删除的 `rerankResults` / `validateRewrites`，属历史）。
+另外照旧：**代码里没有任何 `recall@k` / 归一化相似度阈值（0.7~0.8）这类实证指标**，所以本文不给纯向量
+召回率、也不编"每天衰减到 78%"这种由假设推出来的数。
 
-旧的"四数据域分流（Knowledge/Experience/Tools/TaskResults 各 0.4/0.3/0.2/0.1）+ 纯向量数据库对比 + 1024 维余弦 0.7-0.8 举例 + recall@k / similarity 阈值"这些——**除了数值真的有出处、被我保留的**（sourceWeight 0.4/0.3/0.2/0.1、minScore 0.4、TopK 5/10、Jaccard 0.6、timeDecay 0.01/0.1 等）——其余**没有对应代码出处，一律删掉**。特别是：**没有任何 `recall@k` / 归一化 embedding 相似度阈值（0.7~0.8）这种实证指标**在代码里，所以我不给纯向量召回率、不编"每天衰减到 78%/7 天 18%"这种由假设推出来的数（真实的是 `e^{-0.01·ageHours}`，下限 0.1）。
+**运行时向量检索存在吗？存在。** 不是"只用关键词"：**AKG 混合检索**（`HybridSearch` → `ScoreHybrid`）、
+**知识块向量召回**（`KnowledgeRepository.SearchByVector`）、**RAG 经验召回**（`MemoryRetriever`）三条都是
+pgvector 上真实、已接线的路径。
 
-**运行时向量检索存在吗？存在。** 不是"只用关键词"，而是 `RetrievalService`（混合）、`MemoryRetriever`（RAG）两条真实、已接线的 pgvector 向量路径 + 知识 AKG 混合检索，都在跑。
-
-唯一留的"未接线"是 `SimpleRetrievalService`（无调用方）和 `FallbackClient`（待核实是否挂载）。
+**当前"写了但没接线"的，如实列出**（都不是"在跑"）：`SimpleRetrievalService` / `RetrievalService`
+（**整包已删除**）、`RankingService`（§7.1，无生产调用方）、`RetrievalGuard`（§九，无构造点）、
+`FallbackClient`（待核实是否挂载）。
 
 ---
 

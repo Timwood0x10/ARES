@@ -5,7 +5,13 @@
 > I realized back then: an agent's memory isn't about whether it has memory — it's about whether it can retrieve the right one.
 > An agent without retrieval is a goldfish: 7-second memory, forever reinventing the wheel.
 
-> Note: this article is based on real code (the full retrieval pipeline under `internal/storage/postgres/services`, the vector/keyword repository layer under `internal/storage/postgres/repositories`, the RAG recall in `internal/runtime/memory/context/memory_retriever.go`, the experience ranking in `internal/runtime/memory/experience/ranking_service.go`, and FTS5/keyword search in `internal/runtime/protocol/skills`). Every symbol and every flow below is something I actually read in this codebase. Anything that is "configured but not actually wired" or that I'm not sure about is marked （待核实） — I won't oversell it.
+> Note: this article is based on real code (the hybrid scoring in `internal/knowledge/hybrid.go` and its `knowledge/store/postgres` `HybridSearch`, the vector/keyword repository layer under `internal/storage/postgres/repositories`, the RAG recall in `internal/runtime/memory/context/memory_retriever.go`, the experience ranking in `internal/runtime/memory/experience/ranking_service.go`, and FTS5/keyword search in `internal/runtime/protocol/skills`). Every symbol and every flow below is something I actually read in this codebase. Anything that is "configured but not actually wired" or that I'm not sure about is marked （待核实） — I won't oversell it.
+>
+> **Revised 2026-10-16**: this article's conclusion had to be corrected twice; §2 now states the settled facts, and the
+> old line-by-line walkthrough of the "hybrid retrieval service" under `internal/storage/postgres/services` (§6) was
+> **replaced wholesale** — that package was **never constructed in production** and has been deleted as
+> zero-reference dead code (~8.4k lines, preserved in git history). Everything in the body that concerned that
+> package was rewritten against the current code, rather than papered over with a "deprecated" banner.
 
 ---
 
@@ -19,39 +25,40 @@ Retrieval has a plain goal: pull genuinely useful context into the LLM at the ri
 
 ---
 
-## 2. Off the Bat: What Retrieval Path Actually Runs at Runtime? (An Honest Correction)
+## 2. Off the Bat: What Retrieval Path Actually Runs at Runtime? (Settled After Two Corrections)
 
-The previous version of this article claimed that "the hybrid `RetrievalService` was written but never wired (the `advancedRetrieval` field is forever nil in the API layer), and only a pure-vector `SimpleRetrievalService` is in use." After actually reading the code, **that claim is backwards.** Correction:
+This conclusion has been corrected twice. Here is the settled, verifiable version:
 
-> **Second correction, 2026-10-16: the conclusion below is void, and the code it describes is gone.**
-> The claim that "**the service actually wired into production is `RetrievalService`**" does not hold:
-> neither `internal/runtime/memory/production_manager.go` nor `manager_impl.go`'s `SearchSimilarTasks`
-> references `internal/storage/postgres/services` at all — the package's only consumer in the whole
-> tree was the example under `examples/_internal/11-knowledge-import`. The package was deleted
-> wholesale on 2026-10-16 (zero-reference dead code, ~8.4k lines; it lives on in git history).
+- **Version 1 claimed**: "`RetrievalService` is written but never wired (`advancedRetrieval` is forever nil in the API layer); what runs is the pure-vector `SimpleRetrievalService`."
+- **Version 2 claimed**: "Backwards — the one wired into production is `RetrievalService`, and `SimpleRetrievalService` has no callers."
+- **Re-verified 2026-10-16: version 2 is wrong too, and both types have now been deleted.** Three findings, each reproducible:
+
+  1. **`ProductionMemoryManager` lost that persistence/retrieval path long ago.** It is now a **config-only store** (`GetConfig` / `Lock` / `Unlock`, consumed by the evolution `MemoryPatchExecutor`), and its own file comment states that the former PostgreSQL-backed implementation (sessions / tasks / **RAG retrieval** / write buffer) **"had zero production constructors"** and was removed together with `postgres.WriteBuffer`. So version 2's "`production_manager.go` constructs it via `NewRetrievalService(...)`" **has no corresponding code** — that file contains no `New…(` call at all.
+  2. **`SearchSimilarTasks` is not a `ProductionMemoryManager` method.** It lives on `memoryManager` in `manager_impl.go` and does its **own** vector search (`BuildMemoryQuerySpec` + the distillation pipeline's `Embed` + an experience-repo query) — **no `RetrievalService` anywhere in it**.
+  3. **The only references to `internal/storage/postgres/services` left in the tree were the example** (`examples/_internal/11-knowledge-import`), and the package was **deleted wholesale on 2026-10-16** (zero-reference dead code, ~8.4k lines; it lives on in git history). `RetrievalService` was not even used by that example. The example itself now goes through the production path, `KnowledgeRepository.SearchByVector`.
+  4. One half of version 1 was right and stays: **`api/retrieval/service.go` does not exist** (the `api/` packages were removed in 0.3.2 as deprecated forwarding layers). But "both services live under `internal/storage/postgres/services/`" is now stale — **that package no longer exists**.
+
+### 2.1 The retrieval paths that actually run today (each one verified)
+
+| Path | Entry | Data | Method | Status |
+|------|-------|------|--------|--------|
+| Knowledge hybrid search (AKG) | `knowledge/store/postgres`'s `HybridSearch` → `ScoreHybrid` in `internal/knowledge/hybrid.go` | AKG-distilled facts (`akf_objects`) | 0.7 vector + 0.3 lexical (weights are **relative**, renormalised over the available terms), sorted by `FinalScore`; recall window `ORDER BY updated_at DESC` | ✅ wired (via `KnowledgeRetriever`) |
+| Knowledge-chunk vector recall | `KnowledgeRepository.SearchByVector` | `knowledge_chunks_1024` | pgvector cosine + `embedding_status='completed'` filter; index knobs applied inside a transaction (see §6.3) | ✅ wired (RAG / tool paths) |
+| RAG experience recall | `MemoryRetriever.Retrieve` (via `manager_rag.go`'s `runRetrieval`) | distilled experiences | vector + `minScore` filter | ✅ wired when `EnableRAG=true` |
+| Keyword, knowledge side | `KnowledgeRepository.SearchByKeyword` | `knowledge_chunks_1024.tsv` | PostgreSQL FTS: `ts_rank(tsv, plainto_tsquery('simple',$1))` | ⚠️ method present, **no callers right now** |
+| Keyword, experience side | `ExperienceRepository.SearchByKeyword` | `experiences_1024` | ILIKE substring (not BM25) | ✅ wired (distillation path) |
+
+> **Two capabilities that existed, never took effect, and went away with the dead code — recorded so they are not mistaken for regressions later**:
+> ① the knowledge-chunk side's **BM25/tsvector wide lexical recall + fusion with the vector score** (the deleted
+> package's `bm25Search*`). This is not "losing something that ran": the production entry point was never
+> constructed. What still exists is the schema-level tsvector trigger / GIN index and `SearchByKeyword` — so
+> restoring it is a wiring job, not a rebuild.
+> ② `RankingService` (the additive multi-signal experience rerank, §7.1) **still exists but has no production
+> caller** — its only caller was the deleted package's `applyExperienceRanking` (and re-verification shows it had
+> no other caller even before the deletion).
 >
-> **Where retrieval actually runs today**: production RAG = the AKG `knowledge/store/postgres`
-> `HybridSearch` → the weighted scoring in `internal/knowledge/hybrid.go` (0.7 vector + 0.3 lexical);
-> knowledge-chunk vector recall = `KnowledgeRepository.SearchByVector`. Read the `RetrievalService`
-> details below as historical implementation, not as current state. What the deletion cost on the
-> lexical side (DB-side tsvector/BM25 recall) is recorded at the end of section R3 in
-> `docs/defects/retrieval-and-storage.md`.
-
-- **There is no `api/retrieval/service.go`**. The packages that used to live in the `api/` tree (`api/embedding`, `api/experience`, `api/knowledge`, `api/discovery` etc.) were **removed in 0.3.2** — they were deprecated forwarding layers over their `internal/` counterparts (M5 internalization: `api/embedding`→`internal/embedding`, etc.) with no consumers left, so import the `internal/` packages directly — **there is still no retrieval package**. Both retrieval services live under `internal/storage/postgres/services/`.
-- **The service actually wired into production is `RetrievalService`, not `SimpleRetrievalService`**. `internal/runtime/memory/production_manager.go` constructs it via `services.NewRetrievalService(...)`, and `internal/runtime/memory/manager_impl.go` calls `retrievalService.Search(...)` in `ProductionMemoryManager.SearchSimilarTasks(ctx, query, limit)` at real runtime.
-- **`SimpleRetrievalService` is the one that is defined but never called by any non-test code.** Grepping `NewSimpleRetrievalService` across the repo only finds its own definition file — no callers. （待核实: I found no production wiring for it.)
-- There is also a separate, genuinely wired **RAG vector-recall path**: `internal/ares_bootstrap/retriever_wiring.go`'s `wireRetrievers` injects a `MemoryRetriever` (vector search over distilled experiences) and a `KnowledgeRetriever` (hybrid search over AKG facts) into the MemoryManager, triggered through `manager_rag.go`'s `runRetrieval` when `EnableRAG=true`.
-
-So: **runtime vector retrieval does exist.** Here are the three real paths:
-
-| Path | Entry | Data | Method | Wired at runtime |
-|------|-------|------|--------|-----------------|
-| Hybrid retrieval | `RetrievalService.Search` (via `SearchSimilarTasks`) | mainly experiences | vector + keyword hybrid + score | ✅ yes |
-| RAG experience recall | `MemoryRetriever.Retrieve` (via `runRetrieval`) | distilled experiences | vector + minScore filter | ✅ yes |
-| RAG knowledge recall | `adapter.KnowledgeRetriever` (AKG) | AKG-distilled facts | hybrid search | ✅ yes |
-| Pure vector | `SimpleRetrievalService.Search` | knowledge | pure vector + precision mode | ❌ no callers |
-
-> Note `SearchSimilarTasks` only enables experience search: `SearchExperience=true, SearchKnowledge=false, SearchTools=false`, and production passes `toolRepo=nil`. So the wired hybrid path's **scope is effectively converged on experience** (vector + ILIKE keyword).
+> **Components still not constructed by any production path**: `RetrievalGuard` (§9) — its three protections are
+> implemented, but nothing builds one.
 
 ---
 
@@ -153,69 +160,63 @@ On the experience side it is even simpler — `experiences_1024`'s `SearchByKeyw
 
 ---
 
-## 6. The Hybrid Retrieval `RetrievalService`: (historical) once believed to be the one wired into production — disproved, and the package was deleted on 2026-10-16
+## 6. How Hybrid Retrieval Actually Scores in Production: Wide Recall → Weighted → Sorted
 
-Entry `RetrievalService.Search(ctx, *SearchRequest) -> []*SearchResult`. Overall flow:
+> **This section was replaced wholesale.** The old version walked line by line through `RetrievalService`'s
+> `buildQueries` / `rerankResults` / `TimeDecay` / precision mode / query rewriting — an implementation that was
+> **never constructed in production** and was deleted on 2026-10-16 along with the zero-reference package (it
+> lives on in git history). What follows is the algorithm of the two searches that actually execute, each of
+> which you can follow in the code.
 
-```mermaid
-graph TB
-    Q[Query] --> P{isPrecisionMode?}
-    P -- yes (<=10 runes or contains =/math expr) --> PREC[searchPrecision<br/>Exact -> Keyword -> Vector]
-    P -- no --> RW
-    RW[buildQueries<br/>original 1.0 + rule 0.7 + LLM 0.5<br/>cap MaxQueries=3] --> GATE{retrievalGuard.AllowRateLimit}
-    GATE -- denied --> ERR[return ErrRateLimitExceeded]
-    GATE -- allowed --> PAR[parallel: eg.SetLimit2<br/>per query 2s + dbTimeout]
-    PAR --> SVEC[searchAllVectorSources]
-    PAR --> SKW[searchAllKeywordSources]
-    SVEC --> MRK[deduplicateResults<br/>same ID accum +0.3*its score]
-    SKW --> MRK
-    MRK --> RERANK[rerankResults<br/>queryWeight*sourceWeight*subSourceWeight*signals*timeDecay]
-    RERANK --> FILTER[filterByScore >= MinScore]
-    FILTER --> TOP[truncate to TopK]
-```
+### 6.1 Knowledge hybrid search (AKG / `akf_objects`)
 
-### 6.1 Query rewriting (buildQueries)
-`buildQueries` builds a weighted query group (`retrieval_rewrite.go`):
-- original weight `OriginalWeight=1.0`
-- rule-based (synonym) rewrite `RuleRewriteWeight=0.7`
-- LLM rewrite `LLMRewriteWeight=0.5`
-- total capped by `MaxQueries=3`
-
-Rewrite gating (`shouldRewriteQuery`): skip when `len(query)<10`; only rewrite on complex semantic patterns ("如何/怎么/什么/why/what/how/explain/描述" etc.); also skip when `queryCache` (TTL 10min, cap 500) hits.
-
-LLM rewrite (`llmBasedRewrite`, skipped if `llmClient` nil/disabled):
-- 30s timeout; `parseLLMResponse` splits lines and takes **at most the first 3 lines**
-- `validateRewrites` uses `calculateSimilarity` (actually a **Jaccard word-overlap**) to drop rewrites with similarity < **0.6**, longer than **2×** the original, or empty
-- `uniqueRewrites` dedupes, then caps at `maxLLMRewrites=2`
-
-Rule rewrite (`ruleBasedRewrite`): goes through `loadSynonymRules` reading `configs/synonyms.yaml` (the path is parameterized via `loadSynonymRulesFrom` — no env override since 0.3.1; built-in defaults cover), using `replaceCaseInsensitive` to swap matched synonym keys.
-
-### 6.2 Precision mode (isPrecisionMode)
-Trigger conditions (`retrieval_service.go`):
-- `utf8.RuneCountInString(query) <= 10` (rune count, Unicode-safe)
-- contains `=` or `:`, or a **digit-adjacent math expression** like `\d+\s*[+*/]\s*\d+` (`-` is deliberately excluded to avoid `go-agent`; `+*/` need digit adjacency to avoid `C++`, `*args`)
-
-In precision mode, `searchPrecision` runs the strict order: **Exact (`SearchBySubstring`, fixed score 1.0) → Keyword (FTS) → Vector (fallback)**.
-
-### 6.3 Parallelism & timeouts (searchSingleQuery)
-Each weighted query runs via `errgroup.SetLimit(2)` (vector + keyword in parallel), wrapped in `context.WithTimeout(ctx, 2s)`, then layered with `retrievalGuard.WithDBTimeout`. The vector branch first checks `embeddingClient.IsEnabled()` and the embedding circuit breaker; if the breaker is open it degrades to keyword-only.
-
-### 6.4 Merge & rerank (mergeAndRerank → rerankResults)
-`rerankResults` is the single scoring entry point; the formula is **multiplicative**:
+`internal/knowledge/store/postgres`'s `HybridSearch` → `ScoreHybrid` in `internal/knowledge/hybrid.go`:
 
 ```
-Score = baseScore · QueryWeight · [SourceWeight, only when multi-source] · SubSourceWeight · Signals · TimeDecay
+FinalScore = blend(Vector×0.7, Lexical×0.3, Recency×w)   // relative weights, renormalised over available terms
 ```
 
-- **QueryWeight**: original 1.0 / rule 0.7 / LLM 0.5
-- **SourceWeight** (`sourceWeight`): knowledge 0.4 / experience 0.3 / tool 0.2 / task_result 0.1; **applied only when `activeSources>1`** — skipped for single-source
-- **SubSourceWeight** (`subSourceWeight`): vector 1.0 / keyword 0.8
-- **Signals** (`applySourceSignals`, experience-focused): success=1.2, failure=0.7, execTime<1s=1.2, execTime>5s=0.8, reuse_count>3=1.1, has lessons=1.05; tool-side requires_auth=0.9, successRate>0.8=1.1, successRate<0.5=0.8
-- **TimeDecay** (`calculateTimeDecay`): `e^(−0.01 × ageHours)`, with a floor of **0.1**
+- **Recall width**: the SQL takes a candidate window with `ORDER BY updated_at DESC LIMIT k`
+  (`k = max(TopK, FinalK, cap)`) — **recency is a window bias**, not a sort term.
+- **Scoring**: vector term = cosine similarity; lexical term = **Jaccard over token sets**
+  (**length-normalised**, and **CJK-aware via bigrams**, so Chinese text is no longer one giant token);
+  freshness term = a tiered rule (`FreshnessScore`: <1d=1.0 / <7d=0.8 / <30d=0.5 / older=0.3, and a
+  **zero timestamp scores the neutral 0.5 — not the oldest tier**).
+- **Renormalised over available terms**: a candidate with no embedding is **not** damped toward zero; it is
+  scored on what could be measured, so unembedded rows stay retrievable.
+- **Recency weight defaults to 0** (`knowledge.recency_weight`): the window already orders by `updated_at`, so a
+  recency term double-counts the same signal; whether the second helping pays off is a per-corpus measurement,
+  so the default does not change ranking and the knob is the operator's.
+- **Ordering**: filter by `MinScore` → sort by `FinalScore` descending → truncate to `FinalK`.
+- **Diagnostics**: a vector-dimension mismatch (embedding model changed) logs one warning per call, and each
+  result carries `VectorScore / LexicalScore / RecencyScore / FinalScore` so "why is this first?" is answerable.
 
-Dedup `deduplicateResults`: merge by `ID`, and on repeat hit `existing.Score += result.Score * 0.3` — the "multi-route hit" signal, so content hit by multiple queries/paths scores higher.
+### 6.2 Knowledge-chunk vector recall (`knowledge_chunks_1024` / `KnowledgeRepository.SearchByVector`)
 
-> Note: `SearchSimilarTasks` sets the plan to experience-only. In that case `ExperienceRankingEnabled` routes through `applyExperienceRanking` (experience rerank, next section); the generic multi-source rerank above serves full-source searches.
+- **Fail-closed on an empty vector**: it returns "embedding must not be empty" rather than letting pgvector
+  reject a zero-dimension literal.
+- **SQL**: `WHERE tenant_id=$2 AND embedding_status='completed' AND embedding IS NOT NULL`, ordered by
+  `embedding <=> $1::vector` ascending (i.e. similarity descending), limited to `limit`.
+- **Metadata carried out**: `metadata["similarity"]` (1 − distance) and `metadata["created_at"]` (for any
+  downstream freshness/rerank use).
+- **Failure paths**: query errors are wrapped and returned; an unparseable row is skipped with a per-row warning,
+  and a final warning fires when "rows scanned ≠ rows returned" — a shrinking result set is something an
+  operator should see, not something to swallow.
+
+### 6.3 Per-query index knobs: `probes` / `ef_search` (one transaction path)
+
+ivfflat reads `ivfflat.probes`, HNSW reads `hnsw.ef_search`, and **each ignores the other's value**, so they are
+configured as a pair (`EmbeddingConfig.SearchProbes` / `SearchEFSearch`):
+
+- Both go through `postgres.WithVectorSearchTuning`: a bare `SET LOCAL` is **silently ignored outside a
+  transaction block** on a pooled handle, so the helper **opens the transaction the settings need** (it uses an
+  existing `*sql.Tx` directly instead of nesting, and rolls back on failure). A handle it cannot cover is
+  **reported with a warning** rather than pretended to be tuned — "configured but inert" is worse than absent,
+  because the deployment believes it is tuned.
+- **The index's shape** is reviewed too: `AdaptVectorIndexScale` checks whether an ivfflat index's `lists` still
+  matches the table's size, and **rebuilds once** when the catalog's access method differs from the configured
+  one (keeping the index name and partial predicate, with a warning; an empty expectation means "not judged",
+  which is what the migration command passes).
 
 ---
 
@@ -238,7 +239,13 @@ Note this is **additive**, unlike the retrieval service's multiplicative formula
 
 Configured weights: `UsageWeight=0.05`, `RecencyWeight=0.05`, `RecencyDays=30` (`DefaultRankingWeights`, tunable via `Configure`).
 
-Inside `RetrievalService.Search`, `applyExperienceRanking` (`retrieval_search.go`) calls `rankingService.Rank`, then uses `conflictResolver.Resolve` for conflict groups, then writes `FinalScore` back onto `exp.Score` so the ranked score propagates to results — the code comment explicitly warns: without writing it back, rerank would re-sort on near-zero raw scores and `filterByScore` would drop experience results whenever `MinScore>0`, so the ranking feature would never surface its scores.
+> **Attribution corrected (2026-10-16)**: `RankingService` itself **still exists** (`ranking_service.go`: `Rank` /
+> `Configure` / default weights, with tests), but **it has no production caller** — its only one was
+> `applyExperienceRanking` in the deleted package (`retrieval_search.go`), which went away with it; re-verification
+> shows it had no other caller even before the deletion either. Experience recall today runs through
+> `MemoryRetriever` + the experience repository's `SearchByVector` (§7.2) and does **not** use this additive
+> rerank. Wiring it back is possible — the signals and weights are intact — but that wiring is a piece of work in
+> its own right, not a state to assume.
 
 ### 7.2 MemoryRetriever (RAG, `internal/runtime/memory/context/memory_retriever.go`)
 This is the context-augmentation path: `Retrieve(input, topK)`:
@@ -250,7 +257,7 @@ This is the context-augmentation path: `Retrieve(input, topK)`:
 6. `filterByMinScore`: keep only **`Score >= minScore`**; `minScore<=0` → `DefaultMinScore=0.4`
 7. `SortSnippetsByScore` descending, then truncate to topK
 
-Embeds that fail do **not** silently fall back to keyword (code comment: `does not silently fall back to keyword search`) — it returns an error. This is a deliberately different trade-off from `RetrievalService` (which degrades to keyword on breaker-open).
+Embeds that fail do **not** silently fall back to keyword (code comment: `does not silently fall back to keyword search`) — it returns an error. That is the opposite trade-off to "if embedding dies, degrade to keyword-only" — a behaviour that used to live in the deleted retrieval service, and which no production path implements today.
 
 `manager_rag.go`: `retrieveContextString` / `retrieveForPrompt` → `runRetrieval` (reads `EnableRAG`, `RAGTopK`, `RAGMinScore`, wakes the retrievers) → `memctx.RunRetrieval` (applies the canonical `DefaultTopK`/`DefaultMinScore` normalization). Retrieval is best-effort: on failure it only `log.Warn`s and never interrupts the chat loop.
 
@@ -302,7 +309,14 @@ Retrieval isn't only vectors. Skill/capability discovery is a pure-text affair (
 
 ## 9. Gating & Degradation
 
-`RetrievalGuard` (`internal/storage/postgres/retrieval_guard.go`) wraps retrieval in three protections, constructed in `production_manager.go` as `NewRetrievalGuard(100, 5, 30s, 30s)`:
+`RetrievalGuard` (`internal/storage/postgres/retrieval_guard.go`) implements three protections:
+
+> **Correction (2026-10-16)**: the old version said this is constructed in `production_manager.go` as
+> `NewRetrievalGuard(100, 5, 30s, 30s)` — **that file contains no `New…(` call at all** (it is a config-only
+> store), and a repo-wide check finds **no other construction site**. So the three protections below are
+> **implemented but have no production instance**: do not read this as "retrieval is rate-limited and
+> breaker-protected". Making them effective means constructing the guard at a retrieval entry point — a piece of
+> work in its own right, not a state to assume.
 
 | Protection | Implementation | Behavior |
 |------------|----------------|----------|
@@ -318,31 +332,31 @@ On the embedding side there is also a `FallbackClient` (`embedding/fallback.go`)
 
 Comparing against the old article, the corrections land on three axes:
 
-1. **"Advanced retrieval unwired, pure-vector in production" is wrong**: in reality `RetrievalService` is wired through `SearchSimilarTasks` (scope converged on experience), and `SimpleRetrievalService` has no callers.
-2. **There is no `api/retrieval/service.go`**: both services live under `internal/storage/postgres/services/`.
+1. **"Advanced retrieval unwired / pure vector in production" — both versions were wrong; 2026-10-16 gives the third.** v1 claimed the advanced one was unwired and pure vector ran; v2 claimed the opposite (the advanced one was wired). **Verified: neither was ever constructed in production** — `RetrievalService` had zero references anywhere in the tree (not even the example used it), and `SimpleRetrievalService` was used only by the in-repo example (which now goes through the production path). The whole `internal/storage/postgres/services` package has been **deleted**. What runs is the table in §2.1.
+2. **There is no `api/retrieval/service.go`**: ✓ still true (those `api/` packages were removed in 0.3.2). But "both services live under `internal/storage/postgres/services/`" is now **stale** — that package no longer exists.
 3. **The keyword layer is not BM25**: knowledge is PostgreSQL `ts_rank` full-text; experience is ILIKE substring.
 
 The old "four-domain split (Knowledge/Experience/Tools/TaskResults at 0.4/0.3/0.2/0.1) + pure-vector-DB comparison + 1024-D cosine 0.7–0.8 examples + recall@k / similarity thresholds" — **except the numbers with real sources that I kept** (sourceWeight 0.4/0.3/0.2/0.1, minScore 0.4, TopK 5/10, Jaccard 0.6, timeDecay 0.01/0.1, etc.) — **has no corresponding code and is dropped.** In particular: **there is no `recall@k` / normalized-embedding similarity threshold (like 0.7–0.8) population metric anywhere in the code**, so I give no pure-vector recall numbers and no "decays to 78% at 1 day / 18% at 7 days / 0.1 floor" table derived from assumption. The real artifact is `e^{-0.01·ageHours}` with a 0.1 floor.
 
-**Does runtime vector retrieval exist? Yes.** It's not "keyword only" — both `RetrievalService` (hybrid) and `MemoryRetriever` (RAG) are real, wired pgvector vector paths, plus the AKG knowledge hybrid retrieval; all are running.
+**Does runtime vector retrieval exist? Yes.** It is not "keyword only": the **AKG hybrid search** (`HybridSearch` → `ScoreHybrid`), **knowledge-chunk vector recall** (`KnowledgeRepository.SearchByVector`) and **RAG experience recall** (`MemoryRetriever`) are all real, wired pgvector paths.
 
-The only genuinely unwired pieces left are `SimpleRetrievalService` (no callers) and `FallbackClient` (待核实 whether it's mounted).
+**Written but not wired — stated plainly** (none of these is "running"): `SimpleRetrievalService` / `RetrievalService` (**package deleted**), `RankingService` (§7.1, no production caller), `RetrievalGuard` (§9, no construction site), `FallbackClient` (待核实 whether it is mounted).
 
 ---
 
 ## 11. Summary
 
-ares' retrieval system in one line: **a real hybrid retrieval pipeline (vector + FTS + keyword) runs directly in production, plus a separate RAG vector recall feeds experience into the LLM, skill discovery runs on keyword + SQLite FTS5 — while the pure-vector service sits idle in its box.**
+ares' retrieval system in one line: **a real hybrid search (vector + lexical, weighted and sorted) runs in production on the AKG side, knowledge-chunk vector recall runs through the repository, a separate RAG vector recall feeds experience into the LLM, and skill discovery runs on keyword + SQLite FTS5 — while the old "hybrid service" and the pure-vector service are both gone (neither was ever wired).**
 
 Key design points (all with real code sources):
 
 1. **Embedding pipeline** — Go→Python→Ollama, `qwen3-embedding:0.6b`, 1024-d, L2-normalized; Go BLAKE2b-256 truncated to 128-bit cache key, Redis 24h TTL
 2. **Vector retrieval** — pgvector `<=>` cosine + IVFFlat, `1 − distance` → similarity ∈ [-1,1], tables `knowledge_chunks_1024` / `experiences_1024`
 3. **Keyword retrieval** — actually PostgreSQL `ts_rank` (knowledge) + ILIKE substring (experience), not BM25
-4. **Hybrid retrieval** — `RetrievalService.Search`; Query/source/subsource weights × signals × time decay (`e^{−0.01h}`, floor 0.1), multi-route dedup +0.3, precision mode (≤10 runes / contains `=` or digit-adjacent math op)
-5. **Experience ranking** — `RankingService` additive `Semantic + min(log1p·0.05,0.2) + e^{−days/30}·0.05 + rawScore`, `ConflictResolver` merges conflict groups
+4. **Hybrid retrieval** — `knowledge/store/postgres`'s `HybridSearch` → `ScoreHybrid`: 0.7 vector + 0.3 lexical (relative weights, renormalised over the available terms), sorted by `FinalScore`; the recall window is `ORDER BY updated_at DESC`; a recency term exists but carries **weight 0 by default** (`knowledge.recency_weight`). Per-query index knobs (`probes` / `ef_search`) are applied inside a transaction, because a bare `SET LOCAL` would be silently ignored
+5. **Experience ranking** — `RankingService` additive `Semantic + min(log1p·0.05,0.2) + e^{−days/30}·0.05 + rawScore`. **Currently unwired** (its only caller, `applyExperienceRanking`, lived in the deleted package); `ConflictResolver` is in the same position
 6. **RAG recall** — `MemoryRetriever`, `DefaultTopK=5`, `DefaultMinScore=0.4`, no silent keyword fallback on embed failure
-7. **Gating** — RateLimiter 100/s + circuit breaker + 30s DB timeout
+7. **Gating** — RateLimiter 100/s + circuit breaker + 30s DB timeout, implemented in `RetrievalGuard` but **not constructed by any production path** yet
 
 Agent IQ ≈ the quality of its context. And ares' premise is plain: get retrieval running and running correctly before tuning the fancy stuff.
 
