@@ -52,6 +52,8 @@ func TestClassifyFailure(t *testing.T) {
 		{name: "already exists is terminal", cause: apperrors.ErrAlreadyExists, want: false},
 		{name: "dependency cycle is terminal", cause: apperrors.ErrDependencyCycle, want: false},
 		{name: "max retries exceeded is terminal", cause: apperrors.ErrMaxRetriesExceeded, want: false},
+		{name: "an unresolved dependency is terminal", cause: ErrDependencyUnresolved, want: false},
+		{name: "a wrapped unresolved dependency is terminal", cause: fmt.Errorf("rewire: %w", ErrDependencyUnresolved), want: false},
 		{name: "a retryable marker still beats a permanent sentinel", cause: MarkRetryable(apperrors.ErrNotFound), want: true},
 
 		// --- and the half that must NOT move ---------------------------------

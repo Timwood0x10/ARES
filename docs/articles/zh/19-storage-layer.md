@@ -85,7 +85,7 @@ flowchart LR
 `write_buffer.go` 把写入先落进内存 channel，后台循环攒到 `batchSize` 或 `flushInterval` 到期就刷。三个诚实的细节：
 
 - **批量的是「数据库写入」**。`flushBatch` 在单个事务里批量 INSERT 到 `knowledge_chunks_1024`/`experiences_1024`（唯一支持的两张表，其他表名直接报错）。合并写入确实省了往返。
-- **`embedding` 不是批量发的**。笑笑说一句：旧文里写的“攒 50 条发一个批量 embedding 请求、削减 80% 调用”是我编的，代码里**没这回事**。真实逻辑是每个写入项在同一个事务里各 `EnqueueTx` 一条**异步 embedding 任务**，向量由后面的 worker 回填，全程 `embedding` 列塞的是 `NULL`（因为全零向量是合法向量，会被 partial ivfflat 捡起来返回无意义距离）。
+- **`embedding` 不是批量发的**。真实逻辑是每个写入项在同一个事务里各 `EnqueueTx` 一条**异步 embedding 任务**，向量由后面的 worker 回填，全程 `embedding` 列塞的是 `NULL`（因为全零向量是合法向量，会被 partial ivfflat 捡起来返回无意义距离）。
 - **失败不静默丢**：flush 失败会重试（指数退避，最多 3 次），重试耗尽后把整批重新入队而不是丢弃（注释点明曾有丢数据 bug）。
 
 `embedding_queue.go` 是这条链的关键：`embedding_queue` 表里的任务带 `dedupe_key`（`sha256(table|task_id|tenant_id)`），保证**每个源行最多一条队列记录**；worker 用 `FOR UPDATE SKIP LOCKED` 领任务，`MarkFailed` 超 `MaxRetries`（默认 3）就搬进死信表；`Reconcile` 会周期性捞“该有向量却一直 NULL”的孤儿行重新入队，保证最终一致。
@@ -139,22 +139,11 @@ flowchart LR
 
 `repositories/` 按域分：`conversation` / `distilled_memory` / `experience` / `knowledge` / `secret` / `strategy` / `task_result` / `tool`，模型集中在 `models/`（`conversation/experience/knowledge/secret/task_result/tool`）。**注意**：并没有一个独立的 `query/` 包——公共 SQL 帮手（`GetByID/DeleteByID/CountByTenant` 和动态表白名单 `allowedTables`）在 `postgres/base_repository.go` 和 `query_utils.go`。凡是要往动态 SQL 里塞表名的，必须先过 `allowedTables` 白名单，防止注入。
 
-迁移（`migrate.go` / `migrate_storage.go` / `migrate_eval.go` / `migrate_evolution.go`）是**一组幂等 DDL 语句**，`MigrateStorage`/`Migrate` 启动时顺序执行。诚实说：**它没有 schema 版本表**。`RollbackLast` 直接返回 `ErrRollbackUnsupported`——注释里写了 TODO：想要真正可回滚，需要引入 `schema_migrations` 版本表。
+迁移（`migrate.go` / `migrate_storage.go` / `migrate_eval.go` / `migrate_evolution.go`）是**一组幂等 DDL 语句**，`MigrateStorage`/`Migrate` 启动时顺序执行。注意：**它没有 schema 版本表**。`RollbackLast` 直接返回 `ErrRollbackUnsupported`——注释里写了 TODO：想要真正可回滚，需要引入 `schema_migrations` 版本表。
 
 ---
 
-## 七、诚实更正（旧文 vs 代码）
-
-旧版这篇有几处我这次必须划掉：
-
-1. **编号/行数**：旧文写“57 个文件、14,112 行”。实测 `internal/storage` 共 **95 个 `.go` 文件、约 33,201 行（含测试）**；`postgres` 包不含测试约 **14,447 行**。
-2. **batch embedding**：旧文“攒 50 条发一个批量 embedding、削减 80% API 调用”是无中生有——批量的是事务里 INSERT，embedding 是按行异步入队。
-3. **`embedding_queue.go` 位置**：它在 `postgres/` 根包，不在 `embedding/` 子包；`embedding/` 子包只放缓存/客户端/兜底/服务。
-4. **迁移“版本化”**：它是幂等 DDL，没有版本表，也没法回滚。
-
----
-
-## 八、教训
+## 七、教训
 
 存储是没人讨论直到它坏掉的那一层。但代码里真正的重点不是“四层保护”的口号，而是这些具体的取舍：**连接级 RLS + set_config 的租户隔离、连续失败才断路的断路器、按行异步 + 孤儿 reconcile 的最终一致、以及一条动态表名白名单。** 它们各自都对应过一次事故或一个安全修复（注释里全写着）。
 

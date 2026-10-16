@@ -82,10 +82,10 @@ flowchart LR
 
 ## 4. Writes & async embedding: WriteBuffer → EmbeddingQueue
 
-`write_buffer.go` queues writes into an in-memory channel and a background loop flushes when `batchSize` items accumulate or `flushInterval` elapses. Three honest details:
+`write_buffer.go` queues writes into an in-memory channel and a background loop flushes when `batchSize` items accumulate or `flushInterval` elapses. Three details that shape this path:
 
 - **What's batched is the *database write*.** `flushBatch` bulk-INSERTS into `knowledge_chunks_1024` / `experiences_1024` (the only two supported tables — anything else errors) inside a single transaction. Merged writes do save round-trips.
-- **Embeddings are *not* batched.** To be honest, the old article's claim "batch 50 items, send one embedding request, cut calls by 80%" was made up — the code does no such thing. Each item instead `EnqueueTx`s one **async embedding task** in the same transaction, and the vector is backfilled later by a worker; until then `embedding` is `NULL` (an all-zero vector would be valid and get picked up by the partial ivfflat, returning meaningless distances).
+- **Embeddings are *not* batched.** Each item `EnqueueTx`s one **async embedding task** in the same transaction, and the vector is backfilled later by a worker; until then `embedding` is `NULL` (an all-zero vector would be valid and get picked up by the partial ivfflat, returning meaningless distances).
 - **Failures are not silently dropped**: a failed flush retries with exponential backoff (max 3), then re-queues the whole batch rather than discarding it (a comment points at a historical data-loss bug).
 
 `embedding_queue.go` is the linchpin: queue rows carry a `dedupe_key` (`sha256(table|task_id|tenant_id)`) guaranteeing **at most one queue row per source row**; workers claim tasks with `FOR UPDATE SKIP LOCKED`; `MarkFailed` moves past `MaxRetries` (default 3) into the dead-letter table; and `Reconcile` periodically re-enqueues orphan rows that have no vector yet, for eventual consistency.
@@ -139,22 +139,11 @@ Each `With*Timeout` returns the context unchanged when it already has a deadline
 
 `repositories/` is split by domain: `conversation` / `distilled_memory` / `experience` / `knowledge` / `secret` / `strategy` / `task_result` / `tool`, with models centralized in `models/` (`conversation/experience/knowledge/secret/task_result/tool`). Note there is **no separate `query/` package** — the shared SQL helpers (`GetByID/DeleteByID/CountByTenant` and the dynamic-table whitelist `allowedTables`) live in `postgres/base_repository.go` and `query_utils.go`. Any table substituted into dynamic SQL must pass the `allowedTables` whitelist first, to block injection.
 
-The migrations (`migrate.go` / `migrate_storage.go` / `migrate_eval.go` / `migrate_evolution.go`) are an **ordered set of idempotent DDL statements** run at startup. Honest caveat: **there is no schema-version table.** `RollbackLast` returns `ErrRollbackUnsupported` — the code's own TODO says a `schema_migrations` table would be needed for real rollback.
+The migrations (`migrate.go` / `migrate_storage.go` / `migrate_eval.go` / `migrate_evolution.go`) are an **ordered set of idempotent DDL statements** run at startup. Note: **there is no schema-version table.** `RollbackLast` returns `ErrRollbackUnsupported` — the code's own TODO says a `schema_migrations` table would be needed for real rollback.
 
 ---
 
-## 7. Honest corrections (old article vs. code)
-
-Standing up and striking things from the old version:
-
-1. **File/line counts**: the old article said "57 files, 14,112 lines". Measured: `internal/storage` has **95 `.go` files, ~33,201 lines including tests**; the `postgres` package alone is ~**14,447 non-test lines**.
-2. **Batch embeddings**: "batch 50 items into one embedding request, cut calls by 80%" was invented — what's batched is the transactionally-merged INSERTs; embedding is queued per-row and async.
-3. **`embedding_queue.go` location**: it lives in the `postgres/` root package, not under `embedding/`; that subpackage only holds cache/client/fallback/service.
-4. **"Versioned" migrations**: they're idempotent DDL with no version table, and not rollbackable.
-
----
-
-## 8. Lessons
+## 7. Lessons
 
 Storage is the layer nobody talks about until it breaks. But the real point of this code isn't a "four-layer protection" slogan — it's the concrete trade-offs: **connection-level RLS via `set_config` tenant isolation, a breaker that trips only after *consecutive* failures, per-row async embedding with orphan reconciliation, and a dynamic table-name whitelist.** Each maps back to an incident or a security fix (the comments say so).
 

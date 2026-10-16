@@ -167,13 +167,11 @@ flowchart LR
 
 ## VI. Single-Track Dispatch: the dual-track machinery is retired (v0.3.3)
 
-> **Correction**: `ExecutionPolicy` / `PolicyFlag` (an `atomic.Int64`) / shadow mode / `Mismatches()` described here **have all been deleted** — they went with the legacy leader track. Production has exactly one dispatch path.
+`ExecutionPolicy` / `PolicyFlag` (an `atomic.Int64`) / shadow mode / `Mismatches()` went with the legacy leader track. The layer in `agentipc` about "how tasks are dispatched" (`policy.go`) was **removed entirely** in v0.3.3: `Dispatcher` / `KernelDispatcher` / `NewPath` / `SetNewPath`, plus the test-only kernel-bridge (`wireKernelDispatcher` / `enableKernelExecution` / `submitFabricTask`), are all gone. No policy enum, no runtime switch, no dual-track comparison, and no spare path holder either — HTTP submission (`submitPeerTask` / POST `/api/graphs`) is the single entry, and the kernelScheduler is the sole executor.
 
-The layer in `agentipc` about "how tasks are dispatched" (`policy.go`) was **removed entirely** in v0.3.3: `Dispatcher` / `KernelDispatcher` / `NewPath` / `SetNewPath`, plus the test-only kernel-bridge (`wireKernelDispatcher` / `enableKernelExecution` / `submitFabricTask`), are all gone. No policy enum, no runtime switch, no dual-track comparison, and no spare path holder either — HTTP submission (`submitPeerTask` / POST `/api/graphs`) is the single entry, and the kernelScheduler is the sole executor.
+> Note: the AHP protocol machinery (protocol / queue / dlq / heartbeat / codec) was also retired in v0.3.3 — `internal/runtime/protocol/ahp` now holds only the message vocabulary (`message.go`), and there is no DLQ auto-retry.
 
-> Note: the AHP protocol machinery (protocol / queue / dlq / heartbeat / codec) was also retired in v0.3.3 — `internal/runtime/protocol/ahp` now holds only the message vocabulary (`message.go`), and the "DLQ auto-retry" described in older docs does not exist.
-
-## VII. Design Trade-offs (Honest Section)
+## VII. Design Trade-offs
 
 1. **Purely in-process**: it doesn't span processes. To go distributed, the `Bus`'s `map[string]Handler` would need to become some service discovery + network transport, and the pending-reply-channel sync semantics would need redesign. This is a known boundary.
 2. **No backpressure on Broadcast**: the fan-out calls each subscriber's handler synchronously; a slow subscriber blocks it. There's no per-subscriber buffer queue.

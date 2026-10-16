@@ -164,10 +164,23 @@ stale-winner 恢复分两处：**hint 接线**在 `scheduler_recovery.go`（`Wit
   all inadmissible"的关联日志），别让"requeue 了"给人"恢复了"的错觉。
 
 > **更正（v0.3.3 实测）**："完全静默"要打折扣：`runSweepChain` 在 requeue 后**有**日志
-> `"requeued expired task(s)"`（`kernel_loop.go:277-279`），并**紧跟** `bindReplacements(requeued)`
-> （`:280`）——peer 模式下会探测 `hasCapableExecutor` 并给任务绑 replacement executor
-> （`:369-435`）。所以"requeue 后紧跟一次试探"这条建议**已部分实现**（只是不是 drain 试探）。
-> 缺陷内核仍成立：**"没活人接"这件事本身没有单独告警**，日志不知道下游会撞 `NoCapable` 还是 `NoAffordable`。
+> `"requeued expired task(s)"`，并**紧跟** `bindReplacements(requeued)`——peer 模式下会探测
+> `hasCapableExecutor` 并给任务绑 replacement executor（复活不可用打 Info，工厂返回 nil 打 Warn）。
+> 所以"requeue 后紧跟一次试探"这条建议**已部分实现**（只是不是 drain 试探）。
+>
+> **已关闭（2026-10-16 复核，本项不必再动）**：上面那句"没活人接这件事本身没有单独告警"**已过期**。
+> `Scheduler.logFailure` 专门处理两种"合法等待"状态，且**按成因各自节流**：
+> - `ErrNoAffordableCandidate`（有能力的 agent 全部超预算/超期限/触及 reserve）→ 自己的槽位 + `log.Error`
+>   （带 `task_id`）；
+> - `ErrNoCapableCandidate`（没人具备该能力）→ 另一个槽位；
+> - 节流间隔 `noCandidateLogInterval = 5s`（`scheduler.go`），逐出点在调度派发环 `scheduler_dispatch.go`；
+> - 因为调度器每 `PollInterval`（默认 500ms）重扫 `ReadyTasks`，一个"坐着"的 READY 任务会**每 5 秒**
+>   留下一条可区分成因的 Error — 即"静默坐着"已变成"持续可见的等待"。
+>
+> **代码注释本身就是这条修复的说明**：单一共享槽位会让"有能力但没预算"（**该加预算**，是运维事件）
+> 被另一条"没能力"（**该加 agent**）淹掉——两个成因必须各自可见。
+> **因此不再新增告警**：同一条件下的第二条日志是重复机制，不是修复。
+> 剩下可选的（不是本缺陷）：把等待计数做成**面板指标**（现在只有日志），或把 READY 等待做成 durable 事件。
 
 ### A-F4 · checkpoint 续跑是有损的（接 A1/Q3） 〔缺陷 · 跨文档〕
 

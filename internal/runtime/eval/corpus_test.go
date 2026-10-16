@@ -13,7 +13,13 @@ import (
 // case without a declared check is scored by the LLM judge alone, so a corpus
 // that shrinks below a usable floor silently turns the signal back into opinion
 // — the state P0-1(ii) was opened for. Raising it is the intended direction.
-const minAnchoredCorpusCases = 20
+//
+// Raised 20 -> 65 on 2026-10-16, when the corpus grew from 40 to 73 anchored
+// cases (per-axis depth is what lets one case's noise average out across the
+// fitness window). The floor sits just below the actual count on purpose: a
+// handful of deletions must fail this test, while adding cases must not require
+// touching it.
+const minAnchoredCorpusCases = 65
 
 // TestCorpus_DeclaredChecksAreResolvable lints every suite under test/eval.
 //

@@ -97,6 +97,11 @@ var permanentCauses = []error{
 	apperrors.ErrDependencyCycle,    // a cycle is a property of the graph, not a race to retry
 	apperrors.ErrWorkflowCyclicDAG,  // same, for the workflow compiler
 	apperrors.ErrMaxRetriesExceeded, // retrying is precisely what this sentinel forbids
+	// A dependency id that names no live task (both graph writers — Create's strict path
+	// and SetDependencies — answer with this sentinel). Retrying the step cannot invent
+	// the task, so the second attempt fails identically; without this entry the fabric
+	// would spend the whole budget to reach the same refusal (defect T-F1's pattern).
+	ErrDependencyUnresolved,
 }
 
 // isKnownPermanent reports whether cause is one of the provably permanent causes.

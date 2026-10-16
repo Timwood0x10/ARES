@@ -24,7 +24,7 @@
 
 | # | 缺陷 | 一句话 | 共因 |
 |---|---|---|---|
-| P0-1 | **G1** GA 无"做对没"信号 〔证据链路已通 2026-10-13；**选育侧已接入**（同上日）；**golden 判据待拍板**〕 | fitness 只奖励"成功+快省"，没 accuracy → **越跑越会糊弄** | 认知/正确性没持久化 |
+| P0-1 | **G1** GA 无"做对没"信号 〔证据链路已通 2026-10-13；选育侧已接入；**判据四项已落地**：oracle 分层 / **语料 73 条带锚（下限 65）** / 默认 suite / arena 确定性锚〕 | fitness 只奖励"成功+快省"，没 accuracy → **越跑越会糊弄**。**剩余**：定时触发、per-candidate 回放的**消费方**（构件已落：缝/隔离运行时/工具沙箱/执行体适配器/工厂，见 2026-10-16 两条修订记录） | 认知/正确性没持久化 |
 | P0-2 | **T1+T2** LLM `create_task` 不校验 **〔已修 2026-10-12〕** | `create_task` 依赖不存在/成环 → **任务静默永不 READY**（`create_plan` 走 `CompilePlan`、operator 走自带 `findCycle`，都安全；**只有 `create_task` 旁路漏**） | 引用/边界没校验 |
 | P0-3 | **D1+D2** 提前交差不够可见 **〔已修 2026-10-12〕** | maxPlanDepth 撞墙 / L1 全拦 → 强制出 answer；**不标记成因**（D1 已有 Warn+计数，但无面板/告警规则） | 静默早停 |
 | P0-4 | **Q3+A-dispo1+A-F4** 认知有损 **〔B 已动工 · A 与 P0-1 合并立项 2026-10-13〕** | checkpoint/复活只带"进度"不带"思路" → 换人/续跑**丢推理链**；A 的"存什么/如何存"见 `cognition-persistence.md` | 认知/正确性没持久化 |
@@ -35,7 +35,7 @@
 |---|---|---|
 | P1-1 | **T-F1** `classifyFailure` 默认可重试 **〔已修 2026-10-15〕** | 忘 `MarkPermanent` 的**永久错白烧满重试预算**（+ backoff）。修：已知永久错表（窄表，`errors.Is`）+ 未分类原因重试/耗尽时 Warn |
 | P1-2 | **R2** 检索纯余弦无精排 **〔已修 2026-10-15〕** | 假近进 top-K。修：生产路径**早就在宽召回（TopK*5）却没精排**，补确定性精排（相似度+词面覆盖+新鲜度）。**不是 cross-encoder**（无模型服务），如实标注 |
-| P1-3 | **R1** ivfflat `lists=100` 写死 **〔已修 2026-10-15〕** | 真因是"没人再看它一次"：单一 DDL 源 + lists 按行数自适应 + 启动时 2 倍门限复核重建 + 检索期 probes 可配 + HNSW 选项 |
+| P1-3 | **R1** ivfflat `lists=100` 写死 **〔已修 2026-10-15；`ef_search` / 跨 method 重建 2026-10-16 补齐〕** | 真因是"没人再看它一次"：单一 DDL 源 + lists 按行数自适应（`max(rows/1000, √rows)`）+ 启动复核重建 + 检索期旋钮。**补齐**：`hnsw.ef_search` 与 `probes` 合并为 `VectorSearchTuning`、走**同一条事务路径**（`SET LOCAL` 无事务会被静默忽略）；目录查询扩到 `pg_am.amname`，配置与索引 method 不一致时**一次性响亮重建**（保留名字与 partial 谓词；空期望=不评判）。**注：该包（`internal/storage/postgres/services`）已随死代码删除，本节其余内容见 R2 段** |
 | P1-4 | **D(retrieval)** embedding 死信 **〔已修 2026-10-15〕** | 修：可行动性拆分告警（pending/given-up）+ **每条内容只自动重放一次**的原子重放（`auto_replayed` 标记随死信搬运，防无限循环）+ tick 顺序改为重放→清理→报告 |
 | P1-5 | **I1** `ask_agent` 不回写 **〔已修 2026-10-15〕** | 修：回信作为**任务**投递给 asker（`(asker,peer,topic)` 哈希 id 幂等；无能力/不存在则响亮失败）+ 工具描述同步改口 |
 | P1-6 | **A-factory3** agent quota 泄漏 **〔已修 2026-10-13〕** | claim/release 漏释放 = **agent 池假死**（`ErrResourceQuotaExceeded`） |
@@ -48,7 +48,7 @@
 | P2-1 | **G2** 三道门盲区 | 门只防"回归"，不防"整体往糊弄漂"（**依赖 P0-1 修好才有意义**） |
 | P2-2 | **D3** Reconcile 全量拿锁 | 漏事件时 O(节点)+持锁+RUNNING 短暂 desync（规模化才痛） |
 | P2-3 | **D6** stableRound 并发前提 | 并发改同 session 图时"稳定重放"可能失效 |
-| P2-4 | **A-F3** requeue ≠ 恢复 | 全 agent 超预算时任务**静默坐着**（requeue 只管回队） |
+| P2-4 | **A-F3** requeue ≠ 恢复 〔**已关闭 2026-10-16**：静默半已消除〕 | requeue 只管回队（设计如此）；但"全 agent 超预算 ⇒ 没人能接"**不再静默**：`Scheduler.logFailure` 对 `ErrNoAffordableCandidate` / `ErrNoCapableCandidate` **各占一个节流槽、每 5s 一条 Error（带 task_id）**，READY 每 500ms 重轮询 ⇒ 持续可见且可区分成因。剩余（非本缺陷）：等待计数做面板指标 / durable 事件 |
 | P2-5 | **T-F3** 两个预算互不知晓 | agent 复活预算 / task 重试预算各报各的，无联合视图 |
 | P2-6 | **A-dispo2/3/4** 复活预算·快照·schema | lifetime 累积误拒长寿命 agent / 快照 1024 静默退化 / 滚动升级挡复活 |
 | P2-7 | **A-factory4** 孤儿 agent 累积 | Retire 不杀子 agent，反复 spawn/retire 堆孤儿占 quota |
@@ -110,6 +110,80 @@
 ---
 
 ## 修订记录
+
+**2026-10-16 · per-candidate 运行时的**构件**（步骤 1+2／共 4，**尚未接线**）**：
+
+- **接缝已落**：`agentruntime.FixedStrategySource`——运行时的策略是经**单方法接口** `agents.StrategySource`
+  读的（消费方只有 `planner_cognition`），所以"按候选跑"只需替换该来源：**不改运行时**。这也说明另一条路是
+  **错的**而不是"不完整"——把真实执行器直接指向未改动的运行时，**所有候选都会用当前已晋升的策略打分**，
+  比较会看起来稳定却在测同一个东西。
+- **隔离运行时已落**：`agentruntime.NewCandidateRuntime`——每候选一套**独立 task/agent fabric** +
+  `NewExecution{StrategySource: 候选}` + `kernel.New(...)` + 自己的 drain 环 + `Close()`。
+  **executor 由调用方提供**（工厂签名 `func(fabric, agents) (map[string]CapabilityExecutor, error)`），
+  因为 executor 绑定特定 fabric：接受为服务期 fabric 建好的 map，就会把一份运行时的任务派给另一份的执行体。
+- **测试（6 条）**：缝的语义（含 nil=不干预）、四类缺件 fail-loud、**隔离**（两个候选的 executor 必须绑在
+  各自 fabric 上、两 fabric 互不相同）、`Close` 停环（带 2s 上限断言，防挂死）、`Close` 幂等 + 未 Start 也安全、
+  `Start` 幂等 + **Close 后拒绝 Start**。**反证**：让来源恒返回 nil → `the source must serve the candidate itself`；
+  让 executor 绑到别的 fabric → `executors must be built over the runtime's own fabric`。
+- **自记（我自己的测试抓出的真 API bug）**：`Close` 初版用 `sync.Once` ⇒ **先 Close（未 Start）会把 once 烧掉**，
+  之后真正的 Close 变成空操作、循环永不停止。已改显式状态（`cancel/done/closed`）。**是测试逼出来的**。
+- **真实 provider 已验证可用**（`-tags integration`，配置读仓库根 `ares.yaml`，**密钥从不打印、不落地**）：
+  `*llm.Client` **结构上同时满足** `eval.LLMClient`(`Generate`) 与 `agentfabric.ChatClient`(`Chat`) ⇒ 评测链路
+  与运行时都**不需要适配器**。实测 `provider=openai model=agnes-2.5-flash` → `PONG`。
+  live 用例只断言**不变量**：case 没有答案必须**报错**（`ErrSessionStalled`）而不是空串——空串会被当成
+  "答得差"计分，整轮评测就会在一个它报成低分的失败上排序。
+- **工具边界（已评定并落为天花板）**：边界**从既有声明推出来**，不是我发明——每个 builtin 工具注册时都带
+  `side_effects` / `mutates_state` 标签（`builtin.go`）。`EvaluationToolCeiling` = 只读子集**减去结果不可比的那些**
+  （网络类 `WebSearch`/`HTTPRequest`/`EmbeddingTool` 因"两次运行结果会变、有成本与限流"被排除；`PDFTool` 读宿主文件）。
+  **天花板语义**：候选自己的 `Params["tools"]` 只能**收窄**它，**不能放宽**（更宽要显式改导出的默认值，
+  因为那是"用真实网络评分"这个测量决定，不是安全决定）。沙箱由**工厂自己装**，不靠调用方记得。
+  **核实到的编码陷阱（重要）**：`ParamKeyTools` 的契约是"**空/缺省 = 不过滤（全部工具）**"⇒ 天真地把
+  "交集为空"写成空串，会让候选**因为要了被禁的工具而拿到全部工具**。故对"空交集"**响亮拒绝**。
+  **反证**：把拒绝改成 `if false` → `An error is expected but got nil`（测试先确认变异落地才跑）。
+- **接线（步骤 3的一部分，已落）**：`ares_bootstrap.CandidateReplayFactory` + 配置开关
+  `evolution.gates.regression_runtime_replay`（**默认 false**，理由是**成本**：LLM scorer 把一轮候选压成 2 次调用，
+  而真实回放是**每候选每 case 都真跑**；而 arena 门本身是 auto-arm 的，把回放做成默认 = 让"默认"去乘订单）。
+  工厂自带 fail-loud（缺 chat client / **缺 tool binder** 都按名字拒绝——binder 在 `cmd/ares`，是调用方必须交的那一半）、
+  沙箱、默认 executor，并在装配时**打出边界（每个候选实际跑在哪些工具上）与成本**。
+  **执行体适配器也补了**：`agentruntime.RouterExecutor`（router→`CapabilityExecutor`，**照抄服务期的
+  `kctx.WithCallerID` 身份盖章**——不盖章，syscall provenance 会退回 LLM 给的可伪造身份）。服务期有等价物
+  （`peerExecutorAdapter`）但在 `package main`，对别的装配不可见。
+  **依赖顺序纠正**：executor 是 core 的 router 的适配器 ⇒ 工厂**先建 core 再建 executors**（`cfg.Executors`
+  现接收 core；`nil` = 用默认）。
+  **测试**：适配器 4 条（身份盖章、nil 结果、三类 fail-loud、默认集必须覆盖 plan 能力）+ 工厂 3 条。
+  **反证**：盖错身份 → `expected "candidate-plan", actual "someone-else"`。
+- **仍未接线（步骤 3 的最后一里 + 步骤 4）**：**消费方**——即"运行时回放的 arena scorer"+ 在读
+  `regression_runtime_replay` 后**在门里选中它**（现状仍走 `LLMArenaScorer`），以及 `cmd/ares` 把
+  `newToolBinder(internalReg)` 交给工厂的那一行。**在那之前，per-candidate 回放有全部构件但没有驱动它的开关**。
+  真实 executor 在 `cmd/ares`（服务期 kernel 所在），所以还缺
+  **① 那里的候选运行时工厂**（真工具/沙箱工具 + tool binder）、**② G3/arena 的 opt-in 开关 + 写明成本的启动日志**。
+  在那之前，`CandidateRuntime` 是**有测试的构件**，不是在生产跑的路径。
+
+**2026-10-16 · 语料扩容（P0-1 真缺口）+ `SetDependencies` DAG 校验**：
+
+1. **语料扩容：40 → 73 条带锚**（`test/eval/golden.yaml` 追加 **33 条**，覆盖全部 7 轴）。
+   逐条都带**可手算核对**的期望值（世界知识用 `contains`、算术用 `numeric`、短规范输出用 `exact`），
+   对抗格新增 7 条（Sydney/Canberra、Saturn/Jupiter、柏林墙年份、字节位数、母语人数、最深海、
+   9×9 这类"自信错答最便宜处"）。**守门阈值 20 → 65**（`minAnchoredCorpusCases`，略低于实际 73：
+   删几条必须失败、加几条不用改它），并写明抬高理由。
+   **反证**：阈值改 100 → `corpus has 73 …, want >= 100` 失败；追加一条"声明 `numeric` 却无
+   `expected_output`"的用例 → 体检报 `declared check "numeric" is unresolvable … (corpus bug)`。
+   **边界**：语料**仍然薄**（多为单事实/单算术），且新增用例的期望值由我人工核对——**锚的宽度仍等于语料宽度**。
+2. **`SetDependencies` 补 DAG 校验（运行时改边路径原本一个校验都没有）**：
+   `Create(..., WithResolvedDependencies())` 这条**严格路径**早已拒绝"未知依赖 / 空 id / 自环"，
+   而**运行时改边**（`SetDependencies`，planprojection 的增量编译原语）**只查存在性与状态** ⇒ 能写出
+   自环、悬挂依赖、闭环，三种都让任务**永不 READY 且无报错**（与 P0-2 同族）。
+   **修法**：改动**之前**校验三类 —— 自环与闭环 → `apperrors.ErrDependencyCycle`、未知依赖 →
+   既有 `ErrDependencyUnresolved`（与 create 路径同词表）；**被拒时依赖表不动**（§3.6）。
+   环检测用**带 visited 的迭代遍历**：图里若已有历史环（旧 store 恢复）也必须终止，否则会**持锁挂死**
+   整个 fabric——那比它要防的"停住"更糟。
+   顺带把 `ErrDependencyUnresolved` 纳入 **T-F1 永久错表**：重试无法让依赖凭空出现，不列入就等于
+   再犯一次"永久错白烧预算"。
+   **反证**：去掉校验 → 四类非法改边全被写入（4/4 失败）；**改动后 `internal/fabric/...` 全树通过**
+   （含 `planprojection` —— 它失败时会记 `SkippedOp`，所以拒绝是**被记录**的，不是新静默）。
+   **既有测试冲突的处置**：`TestSetDependencies` 原夹具用了**不存在的 `"c"`** 并断言成功（它的意图是锁
+   "fabric 自己持副本"）——已把夹具改成真实任务并注明原因，**没有**为了让老断言继续绿而放宽校验。
+3. **本批未做（如实）**：per-candidate 真实执行器回放（架构方向）、P2 十条、P0-4 A 档（方案 A/B 待拍板）。
 
 **2026-10-15 · 五问收口 ③④⑤ + ①②（生产 rerank / 4xx 映射）**：
 
@@ -192,9 +266,9 @@
    - **判官的一致率运行期真的被读**：`eval.NewAgreementReportingEvaluator` 装饰器在
      **计数变化时**记录（`anchored/lenient/harsh/broken/leniency_rate`），并**由装配守卫测试**锁住
      "注册的必须是装饰器"（否则读数永不运行）。
-   **仍未做（明确）**：把 `evolution.gates.eval_suite` 默认指向 `test/eval/golden.yaml`——
-   那是运维配置决定，代码不该静默覆盖；以及**per-candidate 的独立运行时回放**（要为每个 genome 实例化
-   运行时，属架构方向，需拍板）。
+   **已补落（2026-10-16）**：`evolution.gates.eval_suite` **默认指向 `test/eval/golden.yaml`**——
+   但按来源分语义：**默认值**缺文件/缺基础设施 ⇒ 降级为"无 G3"+Warn；**显式配置**仍失败关闭（typo 不得静默变弱）。
+   **仍未做（明确）**：**per-candidate 的独立运行时回放**（要为每个 genome 实例化运行时，属架构方向）。
 5. **自记（测试比代码更该记）**：装饰器那条"计数器不动就安静"的用例最初走的是**全零分支**，
    被"还没有锚不是新闻"的守卫短路，**根本没覆盖去重**——反证时才发现（改回不去重它照样绿）。
    已改为"先锚定、再不动"；现在反证能准确失败（4 条 vs 1 条）。
@@ -251,7 +325,10 @@
 6. **golden 回放驱动**（`eval/replay.go`）：语料**真跑起来**了 —— 顺序执行、逐案记录、
    报告 `AnchoredShare` 与判官↔事实一致率；`replay_test.go` 有一条**对仓库里真实 `golden.yaml` 的
    接线守卫**（语料与驱动不一致时直接失败）。至此 P0-1(ii) 的"判据 + 语料 + 体检 + 回放"四件齐了，
-   **仍未做**：把回放接到 evolution 前的那一步（定时触发、跨候选共享子集的编排）。
+   **已补落（2026-10-16）**：**确定性 Layer 0 进了 arena 的 paired 比较**——`ArenaCase` 把
+   `ExpectedOutput`/`Checks` 带进打分（`String()` 只渲染 Input，**提示词一字未改**），判 Fail 由
+   `groundTruthFloor` 在 **LLM 之外**压到 0（单条 + 批量两条路径都接；批量才是生产走的那条）。
+   **仍未做**：定时触发；per-candidate 的真实执行器回放（现只接确定性压分）。
 
 **2026-10-15 · P0-1(ii) 第二步开工：给准确率信号加"确定性锚"（分层 oracle + 语料 + 一致率）**：
 
@@ -270,9 +347,10 @@
    `tools.yaml` 4 条 → `tools`，tool-001 另加 `numeric`）= **40 条带确定性检查**，按
    `axis:factual/prose/compute/tools/adversarial/format/safety` 分层，**每条声明自己的检查种类**。
    `axis:adversarial`（自信的错答案最便宜处）是必须保住的一格。
-3. **触发方式：已落离线/CI 一半**（`corpus_test.go` 语料体检：声明的检查必须可解析、种类必须已知、锚定数
-   不低于 `minAnchoredCorpusCases`）；**evolution 前确定性回放未做**（可比信号必须"对所有候选同一组题"，
-   活流量的不重叠时间窗 + 低流量退回 0 都做不到）；**定时触发未做**。
+3. **触发方式：离线/CI 已落，evolution 前那一半也已接**（`corpus_test.go` 语料体检：声明的检查必须可解析、
+   种类必须已知、锚定数不低于 `minAnchoredCorpusCases`；**arena 的 paired 比较带确定性压分** ⇒
+   "两个候选都答错、判官都给好评"不再读成平局）；**仍未做：定时触发**（无 evolution 的部署里喂非零样本 +
+   盯语料陈旧与判官漂移）。
 4. **一致率可读数（新增）**：`LLMJudgeEvaluator.GroundTruthAgreement()` →
    `anchored/lenient/harsh/broken` + `LeniencyRate`，lenient（判官给确定性判错的答案以分数）会打 Warn 日志。
    **这是"有多少准确率信号是判官主观"的唯一量化**；没有它，语料在长、判官在变宽，信号全程"看着合理"。
@@ -544,7 +622,7 @@ planner 写 Result.Metadata[rationale]
 
 | 项 | 状态 | 出处 |
 |---|---|---|
-| `SetDependencies` 无环/存在性校验 | 残留（宽松性供 L2 增长且已被测试锁死；但它能给**已存在**任务改边、可闭合环） | T1/T2「修复」段 |
+| `SetDependencies` 无环/存在性校验 | **已修 2026-10-16**：三类拒绝（自环 / 未知依赖 / 闭环），改动**之前**校验、被拒时依赖表不动；环检测为**带 visited 的迭代遍历**（历史环也不得挂死，否则持锁卡住整个 fabric）；顺带把 `ErrDependencyUnresolved` 纳入 T-F1 永久错表。反证 4/4 精确复现 | T1/T2「修复」段 |
 | `SearchSimilarTasks` 无 user 维度 | 残留（作用域已改按请求 `tenantctx`；user 隔离靠查询词"软"约束，硬隔离需加 scope 参数） | M5 旁路清点 |
 | `StoreExporter` 无人实现 | 残留（`ExportStore`/`ImportStore` 永远走 `Query`/`Save` 回退；接口只是扩展点） | plan 文档 §8.5 |
 | M2.5 关系门 / M4 `BuildReport` / M6 `TieredRetriever` 接生产 | 未排期（`TieredRetriever` 须先解其定义处自陈的两点：整店入内存 per query、需 namespace 来源） | plan 文档 §8.2 |

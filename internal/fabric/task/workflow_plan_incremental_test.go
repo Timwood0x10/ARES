@@ -97,6 +97,12 @@ func TestSetDependencies(t *testing.T) {
 	f := NewFabric()
 	require.NoError(t, f.Create(&Task{ID: "a", Capability: "x"}))
 	require.NoError(t, f.Create(&Task{ID: "b", Capability: "y", Dependencies: []string{"a"}}))
+	// "c" must EXIST: the runtime rewire path now applies the same resolution rule as
+	// Create's strict variant, because a dependency that names no live task parks its
+	// task silently (see fabric_deps_validation_test.go). Earlier this fixture used an
+	// unknown id and only meant it as the second element of the slice — the copy
+	// semantics below are what this test is about.
+	require.NoError(t, f.Create(&Task{ID: "c", Capability: "z"}))
 
 	deps := []string{"a", "c"}
 	require.NoError(t, f.SetDependencies("b", deps))

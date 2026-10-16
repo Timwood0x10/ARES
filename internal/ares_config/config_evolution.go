@@ -350,6 +350,21 @@ type EvolutionGateConfig struct {
 	// rounds.
 	// Default: nil (auto-arm when infrastructure exists).
 	RegressionEnabled *bool `yaml:"regression_enabled"`
+
+	// RegressionRuntimeReplay scores each candidate by RUNNING it through the real
+	// runtime instead of asking a model to role-play it. Default false = the LLM
+	// scorer, exactly as before.
+	//
+	// The default is about COST, not caution: the LLM scorer batches a candidate's
+	// runs into two calls, while a replay runs every case per candidate for real —
+	// real model calls, real tool calls, one isolated runtime per candidate. The
+	// arena gate above is auto-armed, so making replay the default would multiply a
+	// default's spend; the deployment that has decided to pay it turns this on and
+	// gets the boundary and the cost logged at startup.
+	//
+	// It needs the serving tool binder, and a deployment that enables it without one
+	// fails loudly at bootstrap rather than measuring candidates that had no tools.
+	RegressionRuntimeReplay bool `yaml:"regression_runtime_replay"`
 	// RegressionRuns is the per-strategy run count for the regression gate
 	// (baseline and compare each run the preserved cases this many times).
 	// Default 5 when zero.

@@ -5,13 +5,8 @@
 > I realized back then: an agent's memory isn't about whether it has memory — it's about whether it can retrieve the right one.
 > An agent without retrieval is a goldfish: 7-second memory, forever reinventing the wheel.
 
-> Note: this article is based on real code (the hybrid scoring in `internal/knowledge/hybrid.go` and its `knowledge/store/postgres` `HybridSearch`, the vector/keyword repository layer under `internal/storage/postgres/repositories`, the RAG recall in `internal/runtime/memory/context/memory_retriever.go`, the experience ranking in `internal/runtime/memory/experience/ranking_service.go`, and FTS5/keyword search in `internal/runtime/protocol/skills`). Every symbol and every flow below is something I actually read in this codebase. Anything that is "configured but not actually wired" or that I'm not sure about is marked （待核实） — I won't oversell it.
->
-> **Revised 2026-10-16**: this article's conclusion had to be corrected twice; §2 now states the settled facts, and the
-> old line-by-line walkthrough of the "hybrid retrieval service" under `internal/storage/postgres/services` (§6) was
-> **replaced wholesale** — that package was **never constructed in production** and has been deleted as
-> zero-reference dead code (~8.4k lines, preserved in git history). Everything in the body that concerned that
-> package was rewritten against the current code, rather than papered over with a "deprecated" banner.
+> Note: this article is based on real code (the hybrid scoring in `internal/knowledge/hybrid.go` and its `knowledge/store/postgres` `HybridSearch`, the vector/keyword repository layer under `internal/storage/postgres/repositories`, the RAG recall in `internal/runtime/memory/context/memory_retriever.go`, and FTS5/keyword search in `internal/runtime/protocol/skills`). Every symbol and every flow below is something I actually read in this codebase. Anything that is "configured but not actually wired" or that I'm not sure about is marked （待核实） — I won't oversell it.
+
 
 ---
 
@@ -25,13 +20,9 @@ Retrieval has a plain goal: pull genuinely useful context into the LLM at the ri
 
 ---
 
-## 2. Off the Bat: What Retrieval Path Actually Runs at Runtime? (Settled After Two Corrections)
+## 2. Off the Bat: What Retrieval Path Actually Runs at Runtime?
 
-This conclusion has been corrected twice. Here is the settled, verifiable version:
-
-- **Version 1 claimed**: "`RetrievalService` is written but never wired (`advancedRetrieval` is forever nil in the API layer); what runs is the pure-vector `SimpleRetrievalService`."
-- **Version 2 claimed**: "Backwards — the one wired into production is `RetrievalService`, and `SimpleRetrievalService` has no callers."
-- **Re-verified 2026-10-16: version 2 is wrong too, and both types have now been deleted.** Three findings, each reproducible:
+The most-asked part first: **the two "hybrid retrieval services" (`RetrievalService` / `SimpleRetrievalService`) were never constructed in production, and both were deleted as zero-reference dead code along with their package.** Three findings, each reproducible:
 
   1. **`ProductionMemoryManager` lost that persistence/retrieval path long ago.** It is now a **config-only store** (`GetConfig` / `Lock` / `Unlock`, consumed by the evolution `MemoryPatchExecutor`), and its own file comment states that the former PostgreSQL-backed implementation (sessions / tasks / **RAG retrieval** / write buffer) **"had zero production constructors"** and was removed together with `postgres.WriteBuffer`. So version 2's "`production_manager.go` constructs it via `NewRetrievalService(...)`" **has no corresponding code** — that file contains no `New…(` call at all.
   2. **`SearchSimilarTasks` is not a `ProductionMemoryManager` method.** It lives on `memoryManager` in `manager_impl.go` and does its **own** vector search (`BuildMemoryQuerySpec` + the distillation pipeline's `Embed` + an experience-repo query) — **no `RetrievalService` anywhere in it**.
@@ -143,7 +134,7 @@ LIMIT $3
 
 ## 5. Keyword Retrieval: PostgreSQL FTS, Not BM25
 
-The old article hyped the keyword side as "BM25". **In the code there is no BM25.** On the knowledge side, keyword search is PostgreSQL full-text search using `ts_rank + plainto_tsquery('simple', ...)` (`knowledge_repository.go` `SearchByKeyword`), over the `tsv` column maintained by the `tsvector_update_knowledge_1024` trigger:
+**There is no BM25 in this layer.** On the knowledge side, keyword search is PostgreSQL full-text search using `ts_rank + plainto_tsquery('simple', ...)` (`knowledge_repository.go` `SearchByKeyword`), over the `tsv` column maintained by the `tsvector_update_knowledge_1024` trigger:
 
 ```sql
 SELECT ..., ts_rank(tsv, plainto_tsquery('simple', $1)) as score
@@ -156,17 +147,11 @@ LIMIT $3
 
 On the experience side it is even simpler — `experiences_1024`'s `SearchByKeyword` uses **ILIKE substring matching** (with escaping), ordered by `score DESC, created_at DESC`. So experience keyword search is really "substring hit + sort by existing score", not BM25.
 
-> Bottom line: **the keyword layer = PostgreSQL FTS (knowledge) + ILIKE substring (experience)**. Wherever the old text says BM25, that was stale comment language, not the current implementation. I'll phrase it as "keyword / full-text" from here on.
+> Bottom line: **the keyword layer = PostgreSQL FTS (knowledge) + ILIKE substring (experience)** — this article calls it "keyword / full-text" throughout.
 
 ---
 
 ## 6. How Hybrid Retrieval Actually Scores in Production: Wide Recall → Weighted → Sorted
-
-> **This section was replaced wholesale.** The old version walked line by line through `RetrievalService`'s
-> `buildQueries` / `rerankResults` / `TimeDecay` / precision mode / query rewriting — an implementation that was
-> **never constructed in production** and was deleted on 2026-10-16 along with the zero-reference package (it
-> lives on in git history). What follows is the algorithm of the two searches that actually execute, each of
-> which you can follow in the code.
 
 ### 6.1 Knowledge hybrid search (AKG / `akf_objects`)
 
@@ -239,13 +224,7 @@ Note this is **additive**, unlike the retrieval service's multiplicative formula
 
 Configured weights: `UsageWeight=0.05`, `RecencyWeight=0.05`, `RecencyDays=30` (`DefaultRankingWeights`, tunable via `Configure`).
 
-> **Attribution corrected (2026-10-16)**: `RankingService` itself **still exists** (`ranking_service.go`: `Rank` /
-> `Configure` / default weights, with tests), but **it has no production caller** — its only one was
-> `applyExperienceRanking` in the deleted package (`retrieval_search.go`), which went away with it; re-verification
-> shows it had no other caller even before the deletion either. Experience recall today runs through
-> `MemoryRetriever` + the experience repository's `SearchByVector` (§7.2) and does **not** use this additive
-> rerank. Wiring it back is possible — the signals and weights are intact — but that wiring is a piece of work in
-> its own right, not a state to assume.
+`RankingService` **has no production caller today**: its only one was `applyExperienceRanking` in the deleted package (`retrieval_search.go`), which went away with it (re-verification shows it had no other caller even before the deletion). Experience recall today runs through `MemoryRetriever` + the experience repository's `SearchByVector` (§7.2) and does **not** use this additive rerank. The `Rank` signals and weights are intact and tested, so wiring it back is possible — but that wiring is a piece of work in its own right.
 
 ### 7.2 MemoryRetriever (RAG, `internal/runtime/memory/context/memory_retriever.go`)
 This is the context-augmentation path: `Retrieve(input, topK)`:
@@ -311,12 +290,7 @@ Retrieval isn't only vectors. Skill/capability discovery is a pure-text affair (
 
 `RetrievalGuard` (`internal/storage/postgres/retrieval_guard.go`) implements three protections:
 
-> **Correction (2026-10-16)**: the old version said this is constructed in `production_manager.go` as
-> `NewRetrievalGuard(100, 5, 30s, 30s)` — **that file contains no `New…(` call at all** (it is a config-only
-> store), and a repo-wide check finds **no other construction site**. So the three protections below are
-> **implemented but have no production instance**: do not read this as "retrieval is rate-limited and
-> breaker-protected". Making them effective means constructing the guard at a retrieval entry point — a piece of
-> work in its own right, not a state to assume.
+**But these three protections have no production instance today**: `production_manager.go` contains no `New…(` call at all (it is a config-only store), and a repo-wide check finds no other construction site. So the table below is *designed and implemented*, not *in force* — do not read it as "retrieval is rate-limited and breaker-protected". Making it effective means constructing the guard at a retrieval entry point.
 
 | Protection | Implementation | Behavior |
 |------------|----------------|----------|
@@ -328,15 +302,13 @@ On the embedding side there is also a `FallbackClient` (`embedding/fallback.go`)
 
 ---
 
-## 10. Honest Reckoning: What Was Cut, What Remains
+## 10. Honest Reckoning: What Runs, What Was Cut, What Remains
 
-Comparing against the old article, the corrections land on three axes:
-
-1. **"Advanced retrieval unwired / pure vector in production" — both versions were wrong; 2026-10-16 gives the third.** v1 claimed the advanced one was unwired and pure vector ran; v2 claimed the opposite (the advanced one was wired). **Verified: neither was ever constructed in production** — `RetrievalService` had zero references anywhere in the tree (not even the example used it), and `SimpleRetrievalService` was used only by the in-repo example (which now goes through the production path). The whole `internal/storage/postgres/services` package has been **deleted**. What runs is the table in §2.1.
-2. **There is no `api/retrieval/service.go`**: ✓ still true (those `api/` packages were removed in 0.3.2). But "both services live under `internal/storage/postgres/services/`" is now **stale** — that package no longer exists.
+1. **The "advanced retrieval" line does not exist**: `RetrievalService` had zero references anywhere in the tree (not even the example used it) and `SimpleRetrievalService` was used only by the in-repo example (which now goes through the production path); the whole `internal/storage/postgres/services` package has been **deleted**. What runs is the table in §2.1.
+2. **There is no `api/retrieval/service.go`**: those `api/` packages were removed in 0.3.2 (they were deprecated forwarding layers for the internal packages); nor do the two services live under `internal/storage/postgres/services/` — **that package no longer exists**.
 3. **The keyword layer is not BM25**: knowledge is PostgreSQL `ts_rank` full-text; experience is ILIKE substring.
 
-The old "four-domain split (Knowledge/Experience/Tools/TaskResults at 0.4/0.3/0.2/0.1) + pure-vector-DB comparison + 1024-D cosine 0.7–0.8 examples + recall@k / similarity thresholds" — **except the numbers with real sources that I kept** (sourceWeight 0.4/0.3/0.2/0.1, minScore 0.4, TopK 5/10, Jaccard 0.6, timeDecay 0.01/0.1, etc.) — **has no corresponding code and is dropped.** In particular: **there is no `recall@k` / normalized-embedding similarity threshold (like 0.7–0.8) population metric anywhere in the code**, so I give no pure-vector recall numbers and no "decays to 78% at 1 day / 18% at 7 days / 0.1 floor" table derived from assumption. The real artifact is `e^{-0.01·ageHours}` with a 0.1 floor.
+**Two things this article does not claim, because the code does not support them**: there is no "four-domain split (Knowledge / Experience / Tools / TaskResults at 0.4/0.3/0.2/0.1)" and no population metric such as `recall@k` or a normalized-embedding similarity threshold (0.7–0.8) anywhere in the code — so no pure-vector recall numbers and no "decays to 78% at 1 day / 18% at 7 days" table appear here; those would be assumptions dressed as measurements. The numbers this article DOES cite all come from current code: vector 0.7 / lexical 0.3 (relative, renormalised over available terms), `minScore 0.4`, `TopK 5/10`, the `FreshnessScore` tiers (1.0/0.8/0.5/0.3, unknown = 0.5) and `recency_weight` defaulting to 0. The numbers that came from the deleted implementation — sourceWeight 0.4/0.3/0.2/0.1, Jaccard 0.6, `timeDecay = e^{-0.01·ageHours}` with a 0.1 floor — are **not** cited as sourced here.
 
 **Does runtime vector retrieval exist? Yes.** It is not "keyword only": the **AKG hybrid search** (`HybridSearch` → `ScoreHybrid`), **knowledge-chunk vector recall** (`KnowledgeRepository.SearchByVector`) and **RAG experience recall** (`MemoryRetriever`) are all real, wired pgvector paths.
 

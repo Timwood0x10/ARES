@@ -133,9 +133,7 @@ graph LR
 
 ## 八、单轨分发：双轨机制已退役
 
-> **v0.3.3 订正**：本节原描述的"双轨等价验证"已**不存在**——`ExecutionPolicy` / `PolicyFlag` / shadow 模式 / `Mismatches()` 已随 legacy leader 轨道一并删除。生产只有**一条**分发路径。
-
-**v0.3.3 二次收口**：`policy.go` 的整条门面（`Dispatcher` / `KernelDispatcher` / `NewPath` / `SetNewPath`）也已删除，`internal/agentipc` 不再承载任何"怎么派任务"的抽象。**HTTP 直接把任务提交给 Task Fabric（`submitPeerTask` / POST `/api/graphs`），`kernelScheduler` 是唯一执行者**（`Schedule→Acquire→RunQuantum`）。曾经存在、但只有测试调用的 kernel-bridge 分发层（`wireKernelDispatcher` / `enableKernelExecution` / `submitFabricTask`）已一并移除。
+`ExecutionPolicy` / `PolicyFlag` / shadow 模式 / `Mismatches()` 与 `policy.go` 的整条门面（`Dispatcher` / `KernelDispatcher` / `NewPath` / `SetNewPath`）都已删除，`internal/agentipc` 不再承载任何"怎么派任务"的抽象。**HTTP 直接把任务提交给 Task Fabric（`submitPeerTask` / POST `/api/graphs`），`kernelScheduler` 是唯一执行者**（`Schedule→Acquire→RunQuantum`）。曾经存在、但只有测试调用的 kernel-bridge 分发层（`wireKernelDispatcher` / `enableKernelExecution` / `submitFabricTask`）已一并移除。
 
 ## 九、总结
 

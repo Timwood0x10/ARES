@@ -86,11 +86,12 @@ aggregator 改按 **kind** 过滤（原先按 kind 字符串当 source 查，永
    "任务类 × 答案形态 × 对抗格"分层（`axis:factual/prose/compute/tools/adversarial/format/safety`）。
    **仍远不够**：40 条是起步下限（`corpus_test.go` 的 `minAnchoredCorpusCases` 守住），离"代表任务面"很远；
    无锚的开放题仍完全由判官决定，其占比可由 `GroundTruthAgreement` 读出。
-3. **触发方式：三者角色不同，已落离线/CI 这一半（其余未做）**：
+3. **触发方式：离线/CI 与 evolution 前均已落，只剩定时**：
    - **离线/CI（已落）**：`corpus_test.go` 体检语料（声明的检查必须可解析、种类必须已知、锚定数不低于下限）；
-   - **evolution 前回放（未做，下一步）**：可比信号要求"对所有候选同一组题"的确定性回放；活流量做不到
-     （给门的是 ACTIVE 策略的不重叠时间窗，低流量时通道直接退回 0）；
-   - **定时（未做）**：无 evolution 的部署里喂非零样本 + 盯语料陈旧与判官漂移。
+   - **evolution 前（已落 2026-10-16）**：确定性 Layer 0 进了 **arena 的 paired 比较**（`ArenaCase` 带
+     `ExpectedOutput`/`Checks`，`groundTruthFloor` 在 LLM 之外压分、只降不升；提示词未改）；
+     **仍未做**：per-candidate 的真实执行器回放；
+   - **定时（仍未做）**：无 evolution 的部署里喂非零样本 + 盯语料陈旧与判官漂移。
 4. **判据已部分落地（2026-10-13，真跑，非注入）**：`sdk/adversarial_e2e_test.go` 在 **SDK 的 L2 core** 上
    真跑一次会话（零 LLM：`rt.llmSvc = mockLLMSvc`），链路为
    `真会话 → SessionEvalExecutor 读回真实 provenance → Layer 0 floor → bridge.Emit → RuntimeFitnessAggregator.Window`：

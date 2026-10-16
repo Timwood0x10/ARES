@@ -134,9 +134,7 @@ graph LR
 
 ## 8. Single-Track Dispatch: the dual-track machinery is retired
 
-> **v0.3.3 correction**: the "dual-track equivalence verification" this section describes **no longer exists** — `ExecutionPolicy` / `PolicyFlag` / shadow mode / `Mismatches()` were deleted together with the legacy leader track. Production has exactly **one** dispatch path.
-
-**v0.3.3 second pass**: the whole facade in `policy.go` (`Dispatcher` / `KernelDispatcher` / `NewPath` / `SetNewPath`) is gone too — `internal/agentipc` no longer carries any "how a task is dispatched" abstraction. **HTTP submits tasks to the Task Fabric directly (`submitPeerTask` / POST `/api/graphs`) and the kernelScheduler is the sole executor** (`Schedule→Acquire→RunQuantum`). The kernel-bridge dispatch layer that only tests ever invoked (`wireKernelDispatcher` / `enableKernelExecution` / `submitFabricTask`) was removed along with it.
+`ExecutionPolicy` / `PolicyFlag` / shadow mode / `Mismatches()` and the whole facade in `policy.go` (`Dispatcher` / `KernelDispatcher` / `NewPath` / `SetNewPath`) are gone — `internal/agentipc` no longer carries any "how a task is dispatched" abstraction. **HTTP submits tasks to the Task Fabric directly (`submitPeerTask` / POST `/api/graphs`) and the kernelScheduler is the sole executor** (`Schedule→Acquire→RunQuantum`). The kernel-bridge dispatch layer that only tests ever invoked (`wireKernelDispatcher` / `enableKernelExecution` / `submitFabricTask`) was removed along with it.
 
 ## 9. Summary
 

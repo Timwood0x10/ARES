@@ -87,12 +87,16 @@ maxPlanDepth=10 撞墙 / L1 全拦
      "任务类 × 答案形态 × 对抗格"分层（`axis:factual/prose/compute/tools/adversarial/format/safety`）。
      **仍远不够**：40 条只是起步下限（`corpus_test.go` 的 `minAnchoredCorpusCases` 守住），离"代表任务面"很远；
      无锚的开放题仍完全由判官决定。**`axis:adversarial` 那格必须保住**（自信的错答案最便宜处）。
-  3. **触发方式：三者角色不同，已落离线/CI 这一半**：
+  3. **触发方式：离线/CI 与 evolution 前那一半都已落，只剩定时**：
      - **离线/CI（已落）**：`corpus_test.go` 体检语料 —— 声明的检查必须可解析、种类必须已知、
        锚定用例数不得低于下限。**这是语料自己的健康检查**，也是"通道静默退回 0"的第一道拦阻；
-     - **evolution 前回放（未做，下一步）**：给 GA 提供**可比**信号要靠"对所有候选同一组题"的确定性回放。
-       活流量做不到：`shadow_sampler` 给门的是 ACTIVE 策略的**不重叠时间窗**，且低流量时通道直接退回 0（原缺陷复发）；
-     - **定时（未做）**：无 evolution 的部署里给通道喂非零样本 + 盯语料陈旧与判官漂移。
+     - **evolution 前（已落 2026-10-16）**：**确定性 Layer 0 进了 arena 的 paired 比较** —— `ArenaCase`
+       把 `ExpectedOutput`/`Checks` 带进打分（`String()` 只渲染 Input ⇒ **提示词一字未改**；仓库实测过
+       "收紧 rubric 会让 grader 抖动变大、毁掉显著性"），判 Fail 由 `groundTruthFloor` 在 **LLM 之外**压到 0；
+       单条与**批量**两条路径都接（生产走批量）。这就是"两个候选都答错、判官都给好评"不再读成平局的那道闸
+       ——活流量的不可比（ACTIVE 策略的不重叠时间窗 + 低流量退回 0）正是它要替代的东西；
+       **仍未做**：per-candidate 的**真实执行器**回放（现在只接确定性压分，题集仍是把用例文本喂给 LLM 执行）。
+     - **定时（仍未做）**：无 evolution 的部署里给通道喂非零样本 + 盯语料陈旧与判官漂移。
   4. **判官与事实的一致率（已落，可读数）**：`LLMJudgeEvaluator.GroundTruthAgreement()` 给出
      `anchored / lenient / harsh / broken` 与 `LeniencyRate`，lenient 方向（判官给确定性判错的答案以分数）会打
      Warn 日志。**这是"有多少准确率信号是判官主观"的唯一量化** —— 没有它，语料在长、判官在变宽，
@@ -108,8 +112,12 @@ maxPlanDepth=10 撞墙 / L1 全拦
     （`fmt %v` 就是用例进提示词的路径 ⇒ 提示词一字未改）；打分后由 `groundTruthFloor` 做
     **LLM 之外的确定性压分（只降不升）**，单条与**批量**两条路径都接（生产走批量：2 次 LLM 调用）。
     **反证**：把压分条件改掉 → 错答案拿满分（`the anchored wrong answer scored 1, want 0`），两条路径同时失败。
-  - **仍未做**：`eval_suite` 默认指向 golden（**前置**：默认路径不存在会让 boot 失败，且会**静默武装 arena 门**，
-    与 `regression_gate.go` 自称的 opt-in 矛盾 —— 待拍板）。
+  - **已补落（2026-10-16）**：`eval_suite` **默认指向 `test/eval/golden.yaml`**（守卫：**文件存在才启用**），
+    并按来源分语义 —— **默认值**缺文件/缺基础设施 ⇒ 降级"无 G3"+Warn（一个仓库相对路径不得挡住启动），
+    **显式配置**仍失败关闭（typo / 没接 client 不得静默变弱）。**arena 门的 auto-arm 按拍板保留**，
+    代价写进启动日志（`llm_scoring_rounds_per_check = 2 × runs`，取 `regGate.Config()` 的有效值）。
+    **反证**：让存在性检查失效 → `absent default = (…, true), want no suite`；让默认值走失败关闭 →
+    `a defaulted suite must degrade, not fail bootstrap`。
   - **同日复核修正（把信号做"错"的风险）**：`numeric` 检查初版**要求整个答案就是一个数** ⇒
     "The answer is 56088." / "约 56,088 元" 都会被判 **Fail**、准确率归 0 —— 这是把信号从"薄"变成"错"，
     比没有更糟（语料 12+ 条计算题都声明了 `numeric`）。**已改为在答案中扫描数字**（有逗号/单位/前后文都能识别），
