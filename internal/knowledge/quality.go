@@ -38,6 +38,47 @@ func DefaultQualityGateConfig() QualityGateConfig {
 	}
 }
 
+// freshnessTiers maps an object's age to its freshness score, newest first.
+//
+// The tiers are a documented policy rather than a formula: freshness is a coarse
+// signal, and a smooth decay would imply a precision nobody measured. They are
+// shared by the write-time quality score and the query-time recency term, which
+// is why they live in one place — two decay rules for one notion would rank the
+// same object differently depending on which path asked.
+var freshnessTiers = []struct {
+	maxAge time.Duration
+	score  float64
+}{
+	{24 * time.Hour, 1.0},
+	{7 * 24 * time.Hour, 0.8},
+	{30 * 24 * time.Hour, 0.5},
+	{0, 0.3}, // 0 = the open-ended tier (anything older)
+}
+
+// FreshnessScore returns a [0,1] freshness score for a timestamp, newest highest.
+//
+// A zero timestamp means the column is NULL (unknown), NOT that the object is
+// ancient: `time.Since(zero)` is a huge age that would land in the oldest tier and
+// systematically bury every object stored before the timestamp was populated. An
+// unknown timestamp therefore scores the neutral 0.5 — present, but not evidence
+// either way.
+func FreshnessScore(at time.Time) float64 {
+	if at.IsZero() {
+		return 0.5
+	}
+	age := time.Since(at)
+	if age < 0 {
+		// A future timestamp is clock skew, not a fresher-than-fresh object.
+		return 1.0
+	}
+	for _, tier := range freshnessTiers {
+		if tier.maxAge == 0 || age < tier.maxAge {
+			return tier.score
+		}
+	}
+	return freshnessTiers[len(freshnessTiers)-1].score
+}
+
 // ComputeFinal folds a Quality into a single Confidence score using the
 // weights 0.4*Extraction + 0.3*Consistency + 0.2*Freshness + 0.1*Usage.
 // It returns 0 when q is nil.
@@ -101,27 +142,9 @@ func (c QualityGateConfig) Evaluate(obj *KnowledgeObject) *Quality {
 	// ConsistencyScore: defaults to 1.0; store-layer dedup lowers it later.
 	q.ConsistencyScore = 1.0
 
-	// FreshnessScore: newer objects score higher.
-	//
-	// A zero CreatedAt means the store left the column NULL (unknown), not
-	// that the object is ancient. `time.Since(zero)` yields a huge age that
-	// used to land in the default branch, systematically scoring every
-	// unknown-timestamped object as the oldest tier. Treat unknown as neutral.
-	if obj.CreatedAt.IsZero() {
-		q.FreshnessScore = 0.5
-	} else {
-		age := time.Since(obj.CreatedAt)
-		switch {
-		case age < 24*time.Hour:
-			q.FreshnessScore = 1.0
-		case age < 7*24*time.Hour:
-			q.FreshnessScore = 0.8
-		case age < 30*24*time.Hour:
-			q.FreshnessScore = 0.5
-		default:
-			q.FreshnessScore = 0.3
-		}
-	}
+	// FreshnessScore: newer objects score higher (shared tier rule — see
+	// FreshnessScore).
+	q.FreshnessScore = FreshnessScore(obj.CreatedAt)
 
 	// UsageScore: starts at 0, updated by feedback; normalized to [0, 1].
 	q.UsageScore = 0

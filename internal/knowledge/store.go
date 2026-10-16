@@ -89,13 +89,28 @@ type HybridSearchRequest struct {
 	MinScore     float64
 	Model        string         // embedding model name (selects which Representation to compare)
 	StatusFilter []ObjectStatus // default: only StatusActive (+ empty for back-compat)
+
+	// Weights overrides the hybrid scoring weights; nil means DefaultHybridWeights.
+	// It is a request field rather than package state so the choice is the caller's
+	// per-query decision (no global singleton), and because enabling the recency
+	// term is a retrieval-quality question that has to be measured per corpus.
+	Weights *HybridWeights
 }
 
 // ScoredObject is a HybridSearch result with its component scores.
+//
+// The components are reported so a caller can tell WHY a result ranked where it did
+// (and so a rerank upstream does not have to recompute them). FinalScore is the blend
+// of the terms that were available for this candidate, under the weights the request
+// asked for.
 type ScoredObject struct {
 	Object       *KnowledgeObject
 	VectorScore  float64
 	LexicalScore float64
+	// RecencyScore is the object's freshness (see FreshnessScore). It is reported
+	// even when its weight is zero: a reader comparing two results should be able to
+	// see the tie-breaker a different configuration would have applied.
+	RecencyScore float64
 	FinalScore   float64
 }
 

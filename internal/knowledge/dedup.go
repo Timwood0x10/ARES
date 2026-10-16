@@ -38,6 +38,12 @@ func FindDuplicate(ctx context.Context, store KnowledgeStore, q DuplicateQuery) 
 	if q.Namespace == "" {
 		return nil, fmt.Errorf("find duplicate: namespace is required")
 	}
+	// Relevance-only weights, explicitly: the duplicate THRESHOLD is already vector-only
+	// (VectorScore below, not FinalScore), but the candidate WINDOW is ordered by
+	// FinalScore, so a deployment that weighted recency could push an old near-duplicate
+	// out of the ten candidates examined and let it through. Dedup is not a relevance
+	// ranking, and it must not inherit a ranking decision.
+	relevanceOnly := DefaultHybridWeights()
 	req := HybridSearchRequest{
 		Namespace:    q.Namespace,
 		QueryVector:  q.Vector,
@@ -45,6 +51,7 @@ func FindDuplicate(ctx context.Context, store KnowledgeStore, q DuplicateQuery) 
 		MinScore:     0,
 		FinalK:       10,
 		StatusFilter: []ObjectStatus{StatusActive},
+		Weights:      &relevanceOnly,
 	}
 	results, err := store.HybridSearch(ctx, req)
 	if err != nil {

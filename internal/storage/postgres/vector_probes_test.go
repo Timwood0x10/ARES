@@ -9,12 +9,12 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 )
 
-// TestWithVectorSearchProbes_OpensTheTransactionTheSettingNeeds is the H1 contract:
+// TestWithVectorSearchTuning_OpensTheTransactionTheSettingNeeds is the H1 contract:
 // SET LOCAL only applies inside a transaction block, so the helper must open one and
 // run both the setting and the query inside it. Without the transaction the setting
 // is silently ignored — the deployment reads "probes configured" and gets untuned
 // recall.
-func TestWithVectorSearchProbes_OpensTheTransactionTheSettingNeeds(t *testing.T) {
+func TestWithVectorSearchTuning_OpensTheTransactionTheSettingNeeds(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
 		t.Fatalf("sqlmock.New: %v", err)
@@ -27,13 +27,13 @@ func TestWithVectorSearchProbes_OpensTheTransactionTheSettingNeeds(t *testing.T)
 	mock.ExpectCommit()
 
 	ran := false
-	err = WithVectorSearchProbes(context.Background(), db, 10, func(ctx context.Context, handle DBTX) error {
+	err = WithVectorSearchTuning(context.Background(), db, VectorSearchTuning{Probes: 10}, func(ctx context.Context, handle DBTX) error {
 		ran = true
 		var x int
 		return handle.QueryRowContext(ctx, "SELECT 1").Scan(&x)
 	})
 	if err != nil {
-		t.Fatalf("WithVectorSearchProbes: %v", err)
+		t.Fatalf("WithVectorSearchTuning: %v", err)
 	}
 	if !ran {
 		t.Fatal("the work must run inside the probe-scoped transaction")
@@ -43,9 +43,9 @@ func TestWithVectorSearchProbes_OpensTheTransactionTheSettingNeeds(t *testing.T)
 	}
 }
 
-// TestWithVectorSearchProbes_RollsBackOnFailure keeps a failed search from leaving the
+// TestWithVectorSearchTuning_RollsBackOnFailure keeps a failed search from leaving the
 // connection inside an open transaction.
-func TestWithVectorSearchProbes_RollsBackOnFailure(t *testing.T) {
+func TestWithVectorSearchTuning_RollsBackOnFailure(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
 		t.Fatalf("sqlmock.New: %v", err)
@@ -57,7 +57,7 @@ func TestWithVectorSearchProbes_RollsBackOnFailure(t *testing.T) {
 	mock.ExpectRollback()
 
 	wantErr := sql.ErrConnDone
-	err = WithVectorSearchProbes(context.Background(), db, 5, func(context.Context, DBTX) error {
+	err = WithVectorSearchTuning(context.Background(), db, VectorSearchTuning{Probes: 5}, func(context.Context, DBTX) error {
 		return wantErr
 	})
 	if err != wantErr {
@@ -68,9 +68,9 @@ func TestWithVectorSearchProbes_RollsBackOnFailure(t *testing.T) {
 	}
 }
 
-// TestWithVectorSearchProbes_UnconfiguredOpensNothing: an unset probe count must not
+// TestWithVectorSearchTuning_UnconfiguredOpensNothing: an unset probe count must not
 // pay for a transaction it does not need.
-func TestWithVectorSearchProbes_UnconfiguredOpensNothing(t *testing.T) {
+func TestWithVectorSearchTuning_UnconfiguredOpensNothing(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
 		t.Fatalf("sqlmock.New: %v", err)
@@ -79,23 +79,23 @@ func TestWithVectorSearchProbes_UnconfiguredOpensNothing(t *testing.T) {
 
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT 1")).WillReturnRows(sqlmock.NewRows([]string{"x"}).AddRow(1))
 
-	err = WithVectorSearchProbes(context.Background(), db, 0, func(ctx context.Context, handle DBTX) error {
+	err = WithVectorSearchTuning(context.Background(), db, VectorSearchTuning{Probes: 0}, func(ctx context.Context, handle DBTX) error {
 		var x int
 		return handle.QueryRowContext(ctx, "SELECT 1").Scan(&x)
 	})
 	if err != nil {
-		t.Fatalf("WithVectorSearchProbes: %v", err)
+		t.Fatalf("WithVectorSearchTuning: %v", err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("probes=0 must run the work directly, in no transaction: %v", err)
 	}
 }
 
-// TestWithVectorSearchProbes_TxHandleUsesTheExistingTransaction: a handle that is
+// TestWithVectorSearchTuning_TxHandleUsesTheExistingTransaction: a handle that is
 // already a transaction sets the probe count in it, without opening a nested one
 // (Postgres has no nested BEGIN, so this is a correctness requirement, not a
 // preference).
-func TestWithVectorSearchProbes_TxHandleUsesTheExistingTransaction(t *testing.T) {
+func TestWithVectorSearchTuning_TxHandleUsesTheExistingTransaction(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
 		t.Fatalf("sqlmock.New: %v", err)
@@ -110,14 +110,14 @@ func TestWithVectorSearchProbes_TxHandleUsesTheExistingTransaction(t *testing.T)
 	mock.ExpectExec(regexp.QuoteMeta("SET LOCAL ivfflat.probes = 7")).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectCommit()
 
-	err = WithVectorSearchProbes(context.Background(), tx, 7, func(ctx context.Context, handle DBTX) error {
+	err = WithVectorSearchTuning(context.Background(), tx, VectorSearchTuning{Probes: 7}, func(ctx context.Context, handle DBTX) error {
 		if handle != tx {
 			t.Error("the work must run on the CALLER's transaction, not a new one")
 		}
 		return nil
 	})
 	if err != nil {
-		t.Fatalf("WithVectorSearchProbes: %v", err)
+		t.Fatalf("WithVectorSearchTuning: %v", err)
 	}
 	if err := tx.Commit(); err != nil {
 		t.Fatalf("commit: %v", err)
@@ -147,14 +147,14 @@ func (h *probeOpaqueHandle) QueryRowContext(context.Context, string, ...interfac
 	return &sql.Row{}
 }
 
-// TestWithVectorSearchProbes_UnsupportedHandleStillRunsTheWork: a handle that cannot
+// TestWithVectorSearchTuning_UnsupportedHandleStillRunsTheWork: a handle that cannot
 // carry a transaction-local setting must not fail the search — but it must not pretend
 // the knob was applied either (the helper logs a Warning; this pins the "still do the
 // work" half).
-func TestWithVectorSearchProbes_UnsupportedHandleStillRunsTheWork(t *testing.T) {
+func TestWithVectorSearchTuning_UnsupportedHandleStillRunsTheWork(t *testing.T) {
 	handle := &probeOpaqueHandle{}
 
-	err := WithVectorSearchProbes(context.Background(), handle, 9, func(context.Context, DBTX) error {
+	err := WithVectorSearchTuning(context.Background(), handle, VectorSearchTuning{Probes: 9}, func(context.Context, DBTX) error {
 		handle.ran = true
 		return nil
 	})

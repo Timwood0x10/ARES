@@ -432,6 +432,12 @@ func setupPeerRegistry(
 		// written back to the asker. The LLM receives Status="pending".
 		if kernel != nil && kernel.syscalls != nil {
 			ipc := bridge.ipc.Bus()
+			// Single source for the two windows that must agree: the Kernel's duplicate
+			// suppression now uses the SAME value this wiring uses as the collaboration
+			// timeout, instead of a second hand-copied 30s in the syscall package. A
+			// window shorter than the timeout releases a re-ask while the first is still
+			// in flight; a longer one swallows a legitimate second ask — both silent.
+			kernel.syscalls.SetAskDedupeWindow(askAgentTimeout)
 			kernel.syscalls.SetAskAgent(func(ctx context.Context, from, to, topic string, payload any) (any, error) {
 				// Derive a context detached from the quantum's lifecycle so the
 				// background request survives the quantum completing. NOTE: on

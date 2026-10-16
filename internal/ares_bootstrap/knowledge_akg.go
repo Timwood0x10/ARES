@@ -86,11 +86,19 @@ func buildBootstrapKnowledgeStore(cfg *ares_config.Config) (knowledge.KnowledgeS
 			_ = db.Close()
 			return nil, nil, fmt.Errorf("bootstrap: ping postgres knowledge store: %w", err)
 		}
-		store, err := postgresstore.New(db)
+		// The store's scoring weights come from config, and this is the ONE place they
+		// are applied: every retrieval path that searches through this store (the
+		// knowledge tool's adapter, the AKG provider, the context retriever) inherits
+		// them, so a deployment does not have to set the same thing at four call sites
+		// and cannot end up with a recency term that is configured but never applied.
+		weights := knowledge.DefaultHybridWeights().WithRecency(cfg.Knowledge.RecencyWeight)
+		store, err := postgresstore.New(db, postgresstore.WithDefaultWeights(weights))
 		if err != nil {
 			_ = db.Close()
 			return nil, nil, fmt.Errorf("bootstrap: init postgres knowledge store: %w", err)
 		}
+		log.Info("bootstrap: knowledge store scoring weights",
+			"vector", weights.Vector, "lexical", weights.Lexical, "recency", weights.Recency)
 		return store, func() { _ = db.Close() }, nil
 	}
 	return memstore.New(), func() {}, nil

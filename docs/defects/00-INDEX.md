@@ -111,6 +111,37 @@
 
 ## 修订记录
 
+**2026-10-15 · 五问收口 ③④⑤ + ①②（生产 rerank / 4xx 映射）**：
+
+1. **① 生产路径的 recency 项（P1-2 的真正闭合，含一处更正）**：上批把精排修在了
+   `SimpleRetrievalService` —— **该类的非测试引用只有 examples** ⇒ **修在无人路径上**（已如实改台账）。
+   生产真路径 `store_adapter → HybridSearch → ScoreHybrid` **本来就有宽召回 + 加权重排**，**缺的只有 recency**。
+   已落：recency 第三项 + **相对权重按可用项归一** + 复用 `EffectiveObservedAt()` 的年龄口径 +
+   **默认权重 0**（SQL 窗口已按 updated_at 偏置 ⇒ 分数里再来一次是重复计入，开不开要实测）+
+   **`postgresstore.WithDefaultWeights` 一个装配点覆盖三条检索路径** + 配置 `knowledge.recency_weight`
+   + 两份示例配置同步；**dedup 显式用纯相关权重**（阈值本就向量化，但候选窗口会受影响）。
+   **反证**：默认权重塞 recency → `want legacy 0.85` 失败；忽略存储默认权重 → `store default was not applied`。
+2. **② T-F1 的生产端映射**：工具层把 HTTP 状态映射进既有 9 个哨兵（`core.HTTPStatusError`，一处定义），
+   `failure.go` **一行未改**；三处接线（`HTTPError.Unwrap` / `Result.Err`（`json:"-"`，协议不变）/
+   `bridge.resultFailureCause` 优先用 cause）；**未映射状态一律 `nil`（可重试）**，靠既有"未分类第 2 次起 Warn"兜底；
+   `http_request.go` **刻意不映射**（404 是观察结果）。**反证**：Unwrap 不给类 → 404/503 双双失败；
+   bridge 丢 cause → 只剩消息。顺手修掉 `%!w(<nil>)` 伪影。
+3. **③ arena 门吃到确定性锚**：用例带上 `ExpectedOutput`/`Checks`（原先装配即丢），`ArenaCase.String()`
+   **只渲染 Input ⇒ 提示词一字未改**（代码里有"收紧 rubric 会毁显著性"的实测），压分在 **LLM 之外**做，
+   **单条 + 批量两条路径都接**。**反证**：去掉压分 → 错答案拿满分。
+4. **④ 两个 30s 单源化** + `Duplicate` 带 `PendingSince`/`PendingUntil`（派生，且标明是估算）+ 修掉两处过时注释。
+   **反证**：忽略注入 → `the injected value was ignored`。
+5. **⑤ 跨 method 切换 + `hnsw.ef_search`**：目录查询扩到 `pg_am.amname`；不一致 → **一次性、响亮、BLOCKING**
+   重建（保留名字与 partial 谓词）；**空期望 = 不评判**（迁移命令没有配置可比）；probes/ef_search 合并为
+   一个 `VectorSearchTuning`，走**同一条事务路径**。**反证**：判定恒 false → 不一致用例失败。
+6. **本批自查（比功能更该记）**：① 我一度写出 **7 个参数**的函数（§1 上限 5）而**门禁不查这个**；
+   ② `TestHTTPError_UnwrapExposesTheClass` 写在错包 ⇒ **从未编译**，而我说"绿"时只看了 `ok` 行
+   ——**第三次"验证了过滤器而不是事实"**；③ 留下一个未使用的 `pendingAskExists`，被 `make check` 抓到后删除。
+7. **未做**：**⑥ `eval_suite` 默认指 golden** —— 前置是"默认路径不存在会让 boot 失败"（`bootstrap_evolution.go`
+   对非 `errEvalGateNotConfigured` 的错误直接 return）且默认 suite 会**静默武装 arena 门**（与其自称 opt-in 矛盾），
+   **等拍板**；两个零生产引用的 service **待清**（独立一步）；`genome` 包 `TestSUSSelection_UniformDistribution`
+   **既有 flaky**（连跑 3 次通过、本批未动该包）。
+
 **2026-10-15 · 二轮复核（H1/M1/M2）+ P0-1(ii) 最后一跳的接线闭合**：
 
 1. **H1（高）· 探针"接了不生效"——与 INDEX 的"已修"不符**。初版只在 `VectorSearcher.Search` 裸发

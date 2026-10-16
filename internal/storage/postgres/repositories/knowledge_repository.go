@@ -21,26 +21,24 @@ import (
 type KnowledgeRepository struct {
 	db     postgres.DBTX
 	dbPool *sql.DB
-	// searchProbes is the ivfflat probe count applied to every vector search
-	// (0 = leave the server default). It is set at construction and never
-	// mutated, so no lock guards it — the same posture as the other knobs this
-	// repository takes from configuration.
-	searchProbes int
+	// searchTuning is the per-query index tuning (ivfflat probes / hnsw ef_search)
+	// applied to every vector search; a zero value keeps the server defaults. It is set
+	// at construction and never mutated, so no lock guards it — the same posture as the
+	// other knobs this repository takes from configuration.
+	searchTuning postgres.VectorSearchTuning
 }
 
 // KnowledgeRepositoryOption configures a KnowledgeRepository at construction.
 type KnowledgeRepositoryOption func(*KnowledgeRepository)
 
-// WithSearchProbes sets the ivfflat probe count for vector searches (defect R1).
+// WithSearchTuning sets the per-query index tuning for vector searches (defect R1).
 //
-// It is an option rather than a parameter because only the search path needs it, and
-// a non-positive value keeps the server default: a caller with nothing to say about
-// recall should not have to pass a zero.
-func WithSearchProbes(probes int) KnowledgeRepositoryOption {
+// Both knobs travel together because each index method reads exactly one of them and
+// ignores the other: a deployment that switches method must set the matching value, and
+// separate options would let it set the wrong one while looking configured.
+func WithSearchTuning(tuning postgres.VectorSearchTuning) KnowledgeRepositoryOption {
 	return func(r *KnowledgeRepository) {
-		if probes > 0 {
-			r.searchProbes = probes
-		}
+		r.searchTuning = tuning
 	}
 }
 
@@ -501,7 +499,7 @@ func (r *KnowledgeRepository) SearchByVector(ctx context.Context, embedding []fl
 	// one the helper opens. This is the path RAG actually uses (defect R1): it had
 	// no probe setting at all, so a deployment that configured one was not tuned.
 	var chunks []*storage_models.KnowledgeChunk
-	err := postgres.WithVectorSearchProbes(ctx, r.db, r.searchProbes, func(ctx context.Context, db postgres.DBTX) error {
+	err := postgres.WithVectorSearchTuning(ctx, r.db, r.searchTuning, func(ctx context.Context, db postgres.DBTX) error {
 		var queryErr error
 		chunks, queryErr = r.searchByVectorQuery(ctx, db, embedding, tenantID, limit)
 		return queryErr

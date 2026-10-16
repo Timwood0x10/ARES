@@ -73,6 +73,14 @@ Delegate / Handoff / Subscribe 六原语。`ask_agent` 是 LLM 能调的"跨 age
   ask_reply 侧新增"失败后可重投"契约（把回信任务真跑到 FAILED，再投递，断言回到 READY）。
   **反证**：去掉回信发声分支 → 规则表失败；让重投直接 return → 用例报
   `state = FAILED, want READY`。
+- **同日复核修正（I2：两个 30s 手工镜像）**：`askDedupeWindow`（agentsyscall 的 const）与
+  `askAgentTimeout`（cmd/ares 的 const）**必须同时改**才算对——窗口 < 超时 ⇒ 第一个 ask 还在飞就放行重发；
+  窗口 > 超时 ⇒ 合法重发被吞，且**两种都静默**。**已改单源**：`SetAskDedupeWindow` 由 serve 注入它
+  真正使用的 `askAgentTimeout`，默认值仅作兜底；**非正数回落默认**（配置成 0 不得静默把"重复放大"重新打开）。
+- **`Duplicate` 现在带等待时间表**：`PendingSince` + `PendingUntil`（后者**派生**，免得调用方去猜部署的窗口），
+  并在文档里标明**这是估算**——窗口本身只是"上一条还在飞"的近似，不是知识。
+  **反证**：让注入被忽略 → 用例报 `the injected value was ignored` 与 `reported window = 30s, want the injected hour`。
+- **顺手修掉两处过时注释**（代码已是回写，注释还说 "fire-and-forget ... NOT written back"）。
 
 ### I2 · 去重窗口 30s，但窗口外重问会"再触发一次" 〔取舍 + 隐患〕
 

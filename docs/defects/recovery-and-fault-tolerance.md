@@ -72,8 +72,22 @@
   未分类的原因**重试到第 2 次**起、或**预算耗尽**时打 Warn（带 task/attempts/cause）；
   已被判终态则**安静**（没花预算，没什么要升级的）。
 - **实机反证**：停用 `isKnownPermanent` → T-F1 的 not-found/工具/参数各行全部失败；恢复即绿。
-- **未做（明确的取舍）**：HTTP 状态码级别的分类（4xx/404）在 `apperrors` 里没有对应哨兵，
-  要引入就是跨模块的方向性改动（规范 §0.4），**需要拍板**；现在覆盖的是已用哨兵表达的那一类。
+- **生产端映射（同日补落，闭合"表有了但没人喂"）**：窄表本身不改，改的是**工具层把 HTTP 状态码映射进既有哨兵**
+  （`core.HTTPStatusError`，一处定义）：404→`ErrNotFound`、400/415/422→`ErrInvalidArgument`、
+  401/403→`ErrAccessDenied`、409→`ErrAlreadyExists`（**永久**）；429→`ErrRateLimitExceeded`、
+  5xx→`ErrServiceUnavailable`（**可重试**）；**其余状态一律不映射**（`return nil`）——没把握的当可重试，
+  由上面那条"未分类第 2 次起 Warn"兜住。**关键：`failure.go` 一行未改**，靠 `errors.Is` 自动生效。
+  - 三处接线：`HTTPError.Unwrap()`（错误路径）、`core.NewErrorResultWithCause`（工具结果路径，
+    新增 `Result.Err error`，**`json:"-"` 不序列化 ⇒ 线上协议不变**）、`bridge.resultFailureCause`
+    **优先用结构化 cause**（原文 `errors.New(result.Error)` 自带注释"not an error chain"——类信息就是在
+    这里丢的，导致永久错看起来可重试）。
+  - **刻意排除**：`http_request.go`（"原始请求"工具）**不映射**——404 是用户要的观察结果，不是失败。
+  - **实机反证**：`Unwrap` 不给类 → 404/503 的 `errors.Is` 双双失败；bridge 丢掉 cause → 只剩
+    `SearXNG returned status 404: nope`；把未映射的 405 硬猜成永久 → 保守性用例失败。
+  - **明确的取舍**：**401/403 判永久**，对"token 在别处轮换"的部署会误杀（已在代码里标为取舍而非正确性断言）。
+  - **顺手修的既有小缺陷**：`bridge` 旧条件 `!result.Success && result.Error != ""` 在"失败但无消息"时让
+    `lastErr` 为 nil，最终渲染出 **`%!w(<nil>)`**；现在总会给出可打印 cause（有测试钉住）。
+- **仍未做**：其它出口的类信息（HTTP 客户端若不走 `bridge`/`Result` 通道，如 MCP/IPC 侧）不在此覆盖范围。
 
 ### T-F2 · bare `context.DeadlineExceeded` 保持可重试（有意，但要知道代价） 〔取舍〕
 

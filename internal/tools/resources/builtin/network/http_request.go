@@ -165,6 +165,11 @@ func (t *HTTPRequest) Execute(ctx context.Context, params map[string]interface{}
 		}
 	}
 
+	// Deliberately NOT classified by status: this tool's job is to make a request and
+	// report what came back, so a 404 is an OBSERVATION the model asked for, not a
+	// tool failure. Mapping it to ErrNotFound here would turn a legitimate probe into a
+	// permanent task failure. Client tools that call a specific service do classify
+	// (see core.HTTPStatusError).
 	return core.NewResult(true, map[string]interface{}{
 		"status_code": resp.StatusCode,
 		"status":      resp.Status,

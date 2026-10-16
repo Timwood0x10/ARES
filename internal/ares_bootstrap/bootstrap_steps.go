@@ -74,12 +74,15 @@ func wireDistillation(ctx context.Context, cfg *ares_config.Config, comp *Compon
 			// The ivfflat probe count is a SEARCH-time knob, so the search path
 			// has to be told about it (defect R1): it used to exist in config and
 			// reach no query at all.
-			searchProbes := 0
+			var searchTuning postgres.VectorSearchTuning
 			if wiring.embeddingConfig != nil {
-				searchProbes = wiring.embeddingConfig.SearchProbes
+				searchTuning = postgres.VectorSearchTuning{
+					Probes:   wiring.embeddingConfig.SearchProbes,
+					EFSearch: wiring.embeddingConfig.SearchEFSearch,
+				}
 			}
 			knowRepo := repositories.NewKnowledgeRepository(pool.GetDB(), pool.GetDB(),
-				repositories.WithSearchProbes(searchProbes))
+				repositories.WithSearchTuning(searchTuning))
 			var expConcreteRepo *repositories.ExperienceRepository
 			if r, ok := expRepo.(*repositories.ExperienceRepository); ok {
 				expConcreteRepo = r
@@ -93,6 +96,17 @@ func wireDistillation(ctx context.Context, cfg *ares_config.Config, comp *Compon
 			// probe count, and a nil here silently meant "defaults" for both
 			// (NewVectorSearcher still fills in defaults, so this stays safe).
 			comp.VectorStore = postgres.NewVectorSearcher(pool, wiring.embeddingConfig)
+			// Review the index METHOD here, because this is the one place that has both
+			// the pool and the configured method: a table still carrying an index built
+			// with the other access method is rebuilt ONCE, loudly (see
+			// AdaptVectorIndexScale) rather than quietly serving from the wrong index.
+			// The migration command deliberately passes no expectation — it has no
+			// config to compare against.
+			if wiring.embeddingConfig != nil {
+				postgres.AdaptVectorIndexScale(ctx, pool, []string{
+					storage_models.KnowledgeChunksTable, "experiences_1024",
+				}, postgres.VectorIndexReview{ExpectedMethod: wiring.embeddingConfig.IndexMethod}, log)
+			}
 			// The postgres pool must be closed if bootstrap fails later.
 			*cleanups = append(*cleanups, func() {
 				if cerr := pool.Close(); cerr != nil {

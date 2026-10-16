@@ -74,11 +74,33 @@ func buildRegressionGate(
 	if err != nil {
 		return nil, fmt.Errorf("bootstrap: load regression suite %q: %w", gates.EvalSuite, err)
 	}
+	// Cases carry their ground truth into the arena. Passing the bare input (as this
+	// wiring used to) discarded the declared checks at exactly the point where they
+	// matter: the paired A/B compares two candidates on LLM opinion, so "both answered
+	// this factual case wrong and the grader liked both" read as a tie and a candidate
+	// that lost the facts could pass. ArenaCase.String() renders only the task text, so
+	// the prompts are unchanged.
 	cases := make([]any, 0, len(suite.TestCases))
+	anchored := 0
 	for _, tc := range suite.TestCases {
-		if strings.TrimSpace(tc.Input) != "" {
-			cases = append(cases, tc.Input)
+		if strings.TrimSpace(tc.Input) == "" {
+			continue
 		}
+		if len(tc.Checks) > 0 {
+			anchored++
+		}
+		cases = append(cases, evoService.ArenaCase{
+			Input:          tc.Input,
+			ExpectedOutput: tc.ExpectedOutput,
+			Checks:         tc.Checks,
+		})
+	}
+	if anchored == 0 {
+		log.Warn("bootstrap: arena regression suite declares no deterministic checks — candidate vs active is compared on grader opinion alone",
+			"suite", gates.EvalSuite, "cases", len(cases))
+	} else {
+		log.Info("bootstrap: arena regression suite is anchored by deterministic checks",
+			"suite", gates.EvalSuite, "anchored_cases", anchored, "cases", len(cases))
 	}
 	if len(cases) == 0 {
 		return nil, fmt.Errorf("bootstrap: regression suite %q contains no usable cases (empty inputs)", gates.EvalSuite)

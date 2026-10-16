@@ -477,6 +477,11 @@ func MigrateStorage(ctx context.Context, pool *Pool) error {
 	// so this is the only point where a grown table's recall is re-checked.
 	// Best-effort — a table that is absent or whose shape cannot be read is
 	// skipped rather than failing startup.
-	AdaptVectorIndexScale(ctx, pool, []string{storage_models.KnowledgeChunksTable, "experiences_1024"}, log)
+	// An EMPTY VectorIndexReview on purpose: this command has no access to the
+	// deployment's configuration, so it reviews the index SCALE (the lists rule) and
+	// does not judge the METHOD — rebuilding to a default nobody configured would be
+	// the silent data-plane decision this code avoids. The method is reviewed where the
+	// config IS known (bootstrap, next to the vector store wiring).
+	AdaptVectorIndexScale(ctx, pool, []string{storage_models.KnowledgeChunksTable, "experiences_1024"}, VectorIndexReview{}, log)
 	return nil
 }

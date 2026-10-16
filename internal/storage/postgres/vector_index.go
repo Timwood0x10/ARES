@@ -213,6 +213,29 @@ func searchProbesStatement(probes int) string {
 	return fmt.Sprintf("SET LOCAL ivfflat.probes = %d", probes)
 }
 
+// searchEFSearchStatement renders the HNSW half of the same lever: ef_search is the
+// number of candidates the graph search keeps, and ivfflat ignores it exactly as HNSW
+// ignores probes.
+func searchEFSearchStatement(efSearch int) string {
+	if efSearch <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("SET LOCAL hnsw.ef_search = %d", efSearch)
+}
+
+// vectorSearchTuningFromEmbedding resolves the per-query tuning for a search.
+//
+// It is separate from vectorIndexConfigFromEmbedding (which answers "how is the index
+// BUILT") because the two questions have different lifetimes: the build-time method and
+// lists are fixed when the index is created, while these knobs are applied to each
+// query.
+func vectorSearchTuningFromEmbedding(cfg *EmbeddingConfig) VectorSearchTuning {
+	if cfg == nil {
+		return VectorSearchTuning{}
+	}
+	return VectorSearchTuning{Probes: cfg.SearchProbes, EFSearch: cfg.SearchEFSearch}
+}
+
 // embeddingIndexSQL finds a table's embedding index from the CATALOG, by
 // (table, column) rather than by a guessed name.
 //
@@ -223,11 +246,13 @@ func searchProbesStatement(probes int) string {
 // and its partial predicate — both of which a rebuild must preserve.
 const embeddingIndexSQL = `
 	SELECT ic.relname,
+	       COALESCE(am.amname, ''),
 	       COALESCE(array_to_string(ic.reloptions, ','), ''),
 	       COALESCE(pg_get_expr(i.indpred, i.indrelid), '')
 	FROM pg_index i
 	JOIN pg_class ic ON ic.oid = i.indexrelid
 	JOIN pg_class tc ON tc.oid = i.indrelid
+	JOIN pg_am am ON am.oid = ic.relam
 	JOIN pg_namespace n ON n.oid = tc.relnamespace
 	JOIN pg_attribute a ON a.attrelid = tc.oid AND a.attname = 'embedding' AND a.attnum = ANY (i.indkey)
 	WHERE tc.relname = $1 AND n.nspname = current_schema()
@@ -239,6 +264,9 @@ const embeddingIndexSQL = `
 type embeddingIndex struct {
 	// Name is the index's actual name, which a rebuild must reuse.
 	Name string
+	// Method is the access method the index was built with (pg_am: "ivfflat",
+	// "hnsw", or "btree" for a vector index that predates pgvector).
+	Method string
 	// Lists is its ivfflat lists value; HasLists is false for an index that does
 	// not carry one (HNSW, or one built before lists was set), which this code
 	// must not judge.
@@ -255,15 +283,15 @@ func readEmbeddingIndex(ctx context.Context, pool *Pool, table string) (embeddin
 	if err != nil {
 		return embeddingIndex{}, false, errors.Wrap(err, "read embedding index")
 	}
-	var name, reloptions, predicate string
-	if err := pool.QueryRow(ctx, embeddingIndexSQL, safe).Scan(&name, &reloptions, &predicate); err != nil {
+	var name, method, reloptions, predicate string
+	if err := pool.QueryRow(ctx, embeddingIndexSQL, safe).Scan(&name, &method, &reloptions, &predicate); err != nil {
 		if stderrors.Is(err, sql.ErrNoRows) {
 			return embeddingIndex{}, false, nil
 		}
 		return embeddingIndex{}, false, errors.Wrap(err, "read embedding index")
 	}
 	lists, hasLists := parseIVFFlatLists(reloptions)
-	return embeddingIndex{Name: name, Lists: lists, HasLists: hasLists, Predicate: predicate}, true, nil
+	return embeddingIndex{Name: name, Method: method, Lists: lists, HasLists: hasLists, Predicate: predicate}, true, nil
 }
 
 // parseIVFFlatLists extracts the lists value out of a reloptions string.
@@ -313,27 +341,58 @@ func shouldRebuildIVFFlat(currentLists int, rows int64) bool {
 //
 // Best-effort per table: a table that does not exist yet, or whose index shape
 // cannot be read, is skipped rather than failing startup.
-func AdaptVectorIndexScale(ctx context.Context, pool *Pool, tables []string, logger *slog.Logger) {
+func AdaptVectorIndexScale(ctx context.Context, pool *Pool, tables []string, review VectorIndexReview, logger *slog.Logger) {
 	if pool == nil {
 		return
 	}
 	for _, table := range tables {
-		if err := adaptVectorIndexScaleForTable(ctx, pool, table, logger); err != nil {
+		if err := adaptVectorIndexScaleForTable(ctx, pool, table, review, logger); err != nil {
 			logger.WarnContext(ctx, "vector index scale review failed",
 				"table", table, "error", err)
 		}
 	}
 }
 
+// shouldRebuildIndexMethod reports whether an index built with haveMethod differs from
+// the configured want.
+//
+// An EMPTY want means "not judged", not "no method": a caller that does not know the
+// deployment's configuration (the migration command) must not rebuild anything, and a
+// missing catalog entry must not read as a mismatch.
+func shouldRebuildIndexMethod(haveMethod, want string) bool {
+	return want != "" && haveMethod != want
+}
+
+// VectorIndexReview carries what a review needs beyond the catalogs.
+type VectorIndexReview struct {
+	// ExpectedMethod is the access method the deployment is CONFIGURED for
+	// (EmbeddingConfig.IndexMethod).
+	//
+	// Empty means "unknown, do not judge the method": a caller that does not know the
+	// configuration (the migration command) must neither rebuild an index to a default
+	// nobody asked for nor raise an alarm about a difference it cannot explain.
+	ExpectedMethod string
+}
+
 // adaptVectorIndexScaleForTable reviews one table, returning any database error.
-func adaptVectorIndexScaleForTable(ctx context.Context, pool *Pool, table string, logger *slog.Logger) error {
+func adaptVectorIndexScaleForTable(ctx context.Context, pool *Pool, table string, review VectorIndexReview, logger *slog.Logger) error {
 	idx, found, err := readEmbeddingIndex(ctx, pool, table)
 	if err != nil {
 		return err
 	}
-	if !found || !idx.HasLists {
-		// No index to review, or one whose shape is not lists-based (HNSW, or
-		// built before lists was set). Neither is this code's to judge.
+	if !found {
+		return nil // no embedding index yet: nothing to review
+	}
+
+	// The METHOD is reviewed first, because an index built with a different access
+	// method than the deployment is configured for is not a tuning question — it is the
+	// wrong index, and the lists question below would be meaningless.
+	if shouldRebuildIndexMethod(idx.Method, review.ExpectedMethod) {
+		return rebuildVectorIndexMethod(ctx, pool, table, idx, review.ExpectedMethod, logger)
+	}
+	if !idx.HasLists {
+		// Not a lists-based index (HNSW, or one built before lists was set): its shape
+		// is not this code's to judge.
 		return nil
 	}
 	rows, err := countTableRows(ctx, pool, table)
@@ -367,6 +426,46 @@ func adaptVectorIndexScaleForTable(ctx context.Context, pool *Pool, table string
 	}
 	logger.InfoContext(ctx, "vector index rebuilt for scale",
 		"table", table, "index", idx.Name, "lists", want, "partial", idx.Predicate != "")
+	return nil
+}
+
+// rebuildVectorIndexMethod replaces an index built with the wrong access method.
+//
+// It is ONE-TIME and LOUD rather than silent auto-tuning. One-time, because after the
+// rebuild the catalog matches the configuration and the next start is a no-op — so
+// "each boot rolls the dice" cannot happen. Loud, because this is a data-plane
+// decision: the DROP + CREATE is BLOCKING, and on a large table it is exactly the kind
+// of operation an operator wants to have happened in a maintenance window. The
+// alternative the defect describes — quietly serving from the wrong index — is worse.
+//
+// The index keeps its own name and partial predicate, so nothing downstream has to
+// learn a new name and the planner keeps its proof.
+func rebuildVectorIndexMethod(ctx context.Context, pool *Pool, table string, idx embeddingIndex, method string, logger *slog.Logger) error {
+	rows, err := countTableRows(ctx, pool, table)
+	if err != nil {
+		return err
+	}
+	logger.WarnContext(ctx, "vector index uses a different method than configured: rebuilding (blocking)",
+		"table", table, "index", idx.Name, "index_method", idx.Method,
+		"configured_method", method, "rows", rows, "partial", idx.Predicate != "")
+	if _, err := pool.Exec(ctx, "DROP INDEX IF EXISTS "+quoteIdentifier(idx.Name)); err != nil {
+		return errors.Wrap(err, "drop index for method change")
+	}
+	ddl, err := vectorIndexSpec{
+		Table:     table,
+		IndexName: idx.Name,
+		Method:    method,
+		Rows:      rows,
+		Predicate: idx.Predicate,
+	}.ddl()
+	if err != nil {
+		return err
+	}
+	if _, err := pool.Exec(ctx, ddl); err != nil {
+		return errors.Wrap(err, "rebuild index with the configured method")
+	}
+	logger.InfoContext(ctx, "vector index method applied",
+		"table", table, "index", idx.Name, "method", method)
 	return nil
 }
 

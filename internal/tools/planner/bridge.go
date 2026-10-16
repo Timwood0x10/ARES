@@ -427,15 +427,36 @@ func (b *ToolExecutionBridge) executeStepWithFallback(
 		}
 		if err != nil {
 			lastErr = err
-		} else if !result.Success && result.Error != "" {
-			// result.Error is a string carried by the tool result, not an error chain;
-			// errors.New carries it directly, avoiding a pointless fmt.Errorf("%s") wrapper.
-			lastErr = errors.New(result.Error)
+		} else if !result.Success {
+			lastErr = resultFailureCause(toolName, result)
 		}
 	}
 
 	return core.Result{}, fmt.Errorf("tool_bridge: all tools failed for step %q: %w",
 		step.StepID, lastErr)
+}
+
+// resultFailureCause turns a failed tool result into the error the scheduler sees.
+//
+// The structured cause (core.Result.Err) is preferred over the message string: it
+// carries the CLASS — an HTTP 404, a denied credential — that failure classification
+// needs, and errors.New(result.Error), the previous behaviour whose comment
+// acknowledged it was "not an error chain", discarded exactly that. The effect was
+// that every permanent tool error looked retryable to the task fabric and spent its
+// whole retry budget before failing the way it could have failed at once (defect
+// T-F1's producer side).
+//
+// A failure with no message at all still yields a printable error: the old condition
+// (`!result.Success && result.Error != ""`) left lastErr nil in that case, and the
+// caller's `%w` then rendered the literal string "%!w(<nil>)".
+func resultFailureCause(toolName string, result core.Result) error {
+	if result.Err != nil {
+		return fmt.Errorf("tool %s: %w", toolName, result.Err)
+	}
+	if result.Error != "" {
+		return errors.New(result.Error)
+	}
+	return fmt.Errorf("tool %s failed without a message", toolName)
 }
 
 // topoSort returns step IDs in topological order (dependencies first).

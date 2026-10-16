@@ -168,10 +168,14 @@ type Kernel struct {
 	askMu sync.Mutex
 	// recentAsks holds fingerprints of ask_agent requests whose reply is
 	// still pending, keyed to the time they were launched. Entries expire
-	// after askDedupeWindow — a best-effort approximation of "still in
+	// after the dedupe window — a best-effort approximation of "still in
 	// flight", because the Kernel only observes the LAUNCH, never the
 	// background request's completion.
 	recentAsks map[string]time.Time
+	// askDedupeWindow is the suppression window; zero means the default (see
+	// SetAskDedupeWindow). askMu guards it, because serve sets it at runtime next to
+	// the ask wiring that every LLM tool call reads.
+	askDedupeWindow time.Duration
 	// loopCtx is the lifetime context for plan loops started via the
 	// create_plan loop option. A syscall Kernel is a long-lived managed
 	// object (it backs every agent's tool binder for the whole serve
@@ -585,26 +589,39 @@ type AskAgentResult struct {
 	// pending (Status="pending") or the target has no reply path.
 	// Callers MUST check Status before relying on Answer.
 	//
-	// NOTE: the serve wiring never produces an answer today — its AskAgentFn
-	// either yields (Status="pending") or reports that the target has no
-	// reply path (Status="no-reply"), because the background reply is logged
-	// but not written back (see AskAgentFn; C-1-a is the follow-up).
-	// Status="delivered" with a non-nil Answer is reachable only for
-	// in-process/SDK callers that inject their own AskAgentFn.
+	// NOTE: the serve wiring still does not answer INLINE — its AskAgentFn either
+	// yields (Status="pending") or reports that the target has no reply path
+	// (Status="no-reply"). What changed with C-1-a is that a yielded ask's reply is no
+	// longer dropped: it is delivered to the asker as a task (DeliverAgentReply), which
+	// the next turn reads from that task's payload. Status="delivered" with a non-nil
+	// Answer remains reachable for in-process/SDK callers that inject their own
+	// AskAgentFn.
 	Answer any `json:"answer,omitempty"`
 	// Duplicate reports that this ask was suppressed because an identical
 	// request (same caller, target, topic and payload) was launched less
-	// than askDedupeWindow ago and is still pending. No new collaboration
+	// than the dedupe window ago and is still pending. No new collaboration
 	// session was created for it — the caller should wait for the
 	// outstanding answer instead of re-asking.
 	Duplicate bool `json:"duplicate,omitempty"`
+	// PendingSince is when the outstanding ask was launched. Set only when
+	// Duplicate is true, which is why it is a pointer: an unset time would otherwise
+	// serialize as the zero timestamp and read like a real launch in year 1.
+	PendingSince *time.Time `json:"pending_since,omitempty"`
+	// PendingUntil is when suppression stops, i.e. the earliest moment a re-ask is
+	// accepted again. It is DERIVED here (PendingSince + the configured window) so a
+	// caller can act without knowing the deployment's timeout, and it is an ESTIMATE:
+	// the window approximates "the previous request is still in flight" from the launch
+	// alone, so the real answer may arrive before or after it.
+	PendingUntil *time.Time `json:"pending_until,omitempty"`
 }
 
-// askDedupeWindow approximates "the previous identical ask is still in
-// flight". It mirrors the serve-side askAgentTimeout (30s): the Kernel learns
-// only that a request was LAUNCHED (ErrAskAgentYielding), never that the
-// background request finished, so a fixed window is the only signal available.
-const askDedupeWindow = 30 * time.Second
+// defaultAskDedupeWindow approximates "the previous identical ask is still in flight".
+// The Kernel learns only that a request was LAUNCHED (ErrAskAgentYielding), never that
+// the background request finished, so a window is the only signal available.
+//
+// It is a DEFAULT, not the value production runs with: serve injects its collaboration
+// timeout through SetAskDedupeWindow so the two cannot drift apart (see that method).
+const defaultAskDedupeWindow = 30 * time.Second
 
 // maxRecentAsks bounds the dedupe map. An agent could otherwise mint
 // unbounded distinct fingerprints within one window.
@@ -618,22 +635,57 @@ func askFingerprint(from, to, topic string, payload any) string {
 	return from + "\x00" + to + "\x00" + topic + "\x00" + fmt.Sprintf("%v", payload)
 }
 
-// pendingAskExists reports whether an identical ask was launched within
-// askDedupeWindow.
-func (k *Kernel) pendingAskExists(key string) bool {
+// pendingAskSince reports when an identical ask was launched and the window that
+// applies to it, if it is still pending.
+//
+// The window is returned WITH the timestamp because the caller needs both to compute
+// the deadline, and reading it separately would race a concurrent
+// SetAskDedupeWindow (the field is guarded by askMu, which this releases on return).
+func (k *Kernel) pendingAskSince(key string) (since time.Time, window time.Duration, pending bool) {
 	k.askMu.Lock()
 	defer k.askMu.Unlock()
 	at, ok := k.recentAsks[key]
 	if !ok {
-		return false
+		return time.Time{}, 0, false
 	}
-	return time.Since(at) < askDedupeWindow
+	window = k.dedupeWindow()
+	if time.Since(at) >= window {
+		return time.Time{}, 0, false
+	}
+	return at, window, true
 }
 
-// rememberPendingAsk records a launched (yielded) ask so an identical repeat
-// within askDedupeWindow is suppressed. Expired entries are pruned here, and
-// the map fails OPEN on overflow (dedupe stops suppressing) rather than
-// blocking the caller.
+// dedupeWindow is the effective suppression window.
+//
+// Callers must hold askMu: it reads a field serve may set concurrently.
+func (k *Kernel) dedupeWindow() time.Duration {
+	if k.askDedupeWindow <= 0 {
+		return defaultAskDedupeWindow
+	}
+	return k.askDedupeWindow
+}
+
+// SetAskDedupeWindow sets how long an identical ask is suppressed while the previous
+// one is still outstanding.
+//
+// Production passes the collaboration timeout it actually uses (serve's
+// askAgentTimeout) instead of letting this package keep a second, hand-copied 30s: two
+// constants that must move together are a silent mismatch waiting to happen (a window
+// SHORTER than the timeout releases a duplicate re-ask while the first is still in
+// flight; a LONGER one swallows a legitimate second ask).
+//
+// A non-positive value restores the default rather than disabling suppression: a
+// misconfigured zero must not silently turn the retry-amplifier this exists to stop
+// back on. Disabling it deliberately would be a separate, explicit decision.
+func (k *Kernel) SetAskDedupeWindow(d time.Duration) {
+	k.askMu.Lock()
+	defer k.askMu.Unlock()
+	k.askDedupeWindow = d
+}
+
+// rememberPendingAsk records a launched (yielded) ask so an identical repeat within the
+// window is suppressed. Expired entries are pruned here, and the map fails OPEN on
+// overflow (dedupe stops suppressing) rather than blocking the caller.
 func (k *Kernel) rememberPendingAsk(key string) {
 	k.askMu.Lock()
 	defer k.askMu.Unlock()
@@ -641,8 +693,9 @@ func (k *Kernel) rememberPendingAsk(key string) {
 		k.recentAsks = make(map[string]time.Time, 64)
 	}
 	now := time.Now()
+	window := k.dedupeWindow()
 	for prev, at := range k.recentAsks {
-		if now.Sub(at) >= askDedupeWindow {
+		if now.Sub(at) >= window {
 			delete(k.recentAsks, prev)
 		}
 	}
@@ -671,8 +724,9 @@ func (k *Kernel) rememberPendingAsk(key string) {
 // drain, breaking the deadlock cycle (asker blocks drain → drain can't
 // advance target's tasks → target can't reply → asker blocks forever).
 //
-// The reply is currently fire-and-forget (logged but not written back to the
-// asker). The LLM receives Status="pending" and should re-check later.
+// The reply reaches the asker as a TASK (C-1-a: DeliverAgentReply), so the LLM receives
+// Status="pending" here and reads the answer from the delivered task's payload in a
+// later turn — see the ask_agent tool description.
 func (k *Kernel) AskAgent(ctx context.Context, a AskAgentArgs) (*AskAgentResult, error) {
 	if a.To == "" {
 		return nil, errors.New("agentsyscall: ask_agent requires a target agent")
@@ -688,15 +742,24 @@ func (k *Kernel) AskAgent(ctx context.Context, a AskAgentArgs) (*AskAgentResult,
 	// identical ask repeated while the previous one is pending can only ever
 	// spawn another target-side session for an answer nobody will read.
 	// Suppress it and say so explicitly instead of amplifying the retry.
-	if k.pendingAskExists(key) {
-		return &AskAgentResult{Accepted: true, Status: "pending", Duplicate: true}, nil
+	if since, window, pending := k.pendingAskSince(key); pending {
+		// The deadline is derived here so the caller does not have to know the
+		// deployment's window to answer "how long should I wait?".
+		until := since.Add(window)
+		return &AskAgentResult{
+			Accepted:     true,
+			Status:       "pending",
+			Duplicate:    true,
+			PendingSince: &since,
+			PendingUntil: &until,
+		}, nil
 	}
 	answer, err := fn(ctx, from, a.To, a.Topic, payload)
 	if err != nil {
 		if errors.Is(err, ErrAskAgentYielding) {
-			// Background request launched; the quantum completes without
-			// blocking drain. The reply is logged but NOT written back —
-			// the LLM receives Status="pending" and should re-check.
+			// Background request launched; the quantum completes without blocking
+			// drain. The reply is delivered to this agent as a task when it arrives
+			// (C-1-a), which the next turn reads from the payload.
 			k.rememberPendingAsk(key)
 			return &AskAgentResult{Accepted: true, Status: "pending"}, nil
 		}

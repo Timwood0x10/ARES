@@ -100,6 +100,16 @@ maxPlanDepth=10 撞墙 / L1 全拦
   - **本批测试**：`ground_truth_test.go`（检查单元 + 判定合成 + "判官不可翻盘" + floor 次序 + 双向一致率）、
     `corpus_test.go`（语料体检 + 锚定下限）。**实机反证**：停用 ground-truth floor → 上述两条核心用例失败
     （`got 1` / `got 0.5`），恢复即绿。
+  - **（同日）arena 门也吃到了确定性锚**：真因比"没接"更具体 —— `regression_gate_wiring.go` 把用例
+    **拍平成 `tc.Input` 字符串**（`Checks`/`ExpectedOutput` **装配即丢**），而 `DefaultArenaEvalPrompt`
+    **连参考答案都没有**（只有 `{case}`+`{output}`）。而代码自己记着一条实测：**把 rubric 收紧会让 grader
+    抖动变大、显著性被毁**（开放题 p=0.0297 vs 锚定题 p=0.393）⇒ **锚绝不能塞进提示词**。
+    **落法**：`service.ArenaCase{Input, ExpectedOutput, Checks}`，其 **`String()` 只渲染 Input**
+    （`fmt %v` 就是用例进提示词的路径 ⇒ 提示词一字未改）；打分后由 `groundTruthFloor` 做
+    **LLM 之外的确定性压分（只降不升）**，单条与**批量**两条路径都接（生产走批量：2 次 LLM 调用）。
+    **反证**：把压分条件改掉 → 错答案拿满分（`the anchored wrong answer scored 1, want 0`），两条路径同时失败。
+  - **仍未做**：`eval_suite` 默认指向 golden（**前置**：默认路径不存在会让 boot 失败，且会**静默武装 arena 门**，
+    与 `regression_gate.go` 自称的 opt-in 矛盾 —— 待拍板）。
   - **同日复核修正（把信号做"错"的风险）**：`numeric` 检查初版**要求整个答案就是一个数** ⇒
     "The answer is 56088." / "约 56,088 元" 都会被判 **Fail**、准确率归 0 —— 这是把信号从"薄"变成"错"，
     比没有更糟（语料 12+ 条计算题都声明了 `numeric`）。**已改为在答案中扫描数字**（有逗号/单位/前后文都能识别），

@@ -24,14 +24,40 @@ var (
 // Store is a PostgreSQL-backed KnowledgeStore.
 type Store struct {
 	db *sql.DB
+	// defaultWeights, when set, is the scoring configuration for requests that do not
+	// carry their own. It is deployment configuration (see WithDefaultWeights) rather
+	// than a package default, because whether the recency term belongs in the score
+	// depends on the corpus — the SQL recall window is already recency-ordered, so the
+	// term double-counts and only measurement can say whether that helps.
+	defaultWeights *knowledge.HybridWeights
+}
+
+// StoreOption configures a Store at construction.
+type StoreOption func(*Store)
+
+// WithDefaultWeights sets the scoring weights used by requests that pass none.
+//
+// This is the single wiring point for the whole retrieval surface: every path that
+// searches through this store (the knowledge tool's adapter, the AKG provider, the
+// context retriever) inherits it, so enabling recency is one decision in one place
+// instead of a field every caller has to remember. A request that sets its own
+// Weights still wins.
+func WithDefaultWeights(weights knowledge.HybridWeights) StoreOption {
+	return func(s *Store) {
+		w := weights
+		s.defaultWeights = &w
+	}
 }
 
 // New creates a new PostgreSQL KnowledgeStore with the given connection.
-func New(db *sql.DB) (*Store, error) {
+func New(db *sql.DB, opts ...StoreOption) (*Store, error) {
 	if db == nil {
 		return nil, errors.New("db is nil")
 	}
 	s := &Store{db: db}
+	for _, opt := range opts {
+		opt(s)
+	}
 	if err := s.initTables(context.Background()); err != nil {
 		return nil, fmt.Errorf("init tables: %w", err)
 	}
@@ -515,6 +541,21 @@ const hybridRecallCap = 512
 // hybridRecallLimit returns the SQL-side candidate LIMIT for a hybrid search
 // request: at least the recall cap, but never smaller than the caller's own
 // recall caps (TopK/FinalK) so an explicit wide request is honored.
+// hybridWeights resolves the request's scoring weights, defaulting when unset.
+//
+// The resolution lives here rather than in the knowledge package so a nil request
+// field cannot be dereferenced anywhere else, and so the default is applied at the
+// one place that actually scores.
+func (s *Store) hybridWeights(req knowledge.HybridSearchRequest) knowledge.HybridWeights {
+	if req.Weights != nil {
+		return *req.Weights
+	}
+	if s.defaultWeights != nil {
+		return *s.defaultWeights
+	}
+	return knowledge.DefaultHybridWeights()
+}
+
 func hybridRecallLimit(req knowledge.HybridSearchRequest) int {
 	limit := hybridRecallCap
 	if req.TopK > limit {
@@ -591,7 +632,7 @@ func (s *Store) HybridSearch(ctx context.Context, req knowledge.HybridSearchRequ
 		}
 	}
 
-	scored := knowledge.ScoreHybrid(candidates, reps, req.QueryVector, req.Query)
+	scored := knowledge.ScoreHybridWithWeights(candidates, reps, req.QueryVector, req.Query, s.hybridWeights(req))
 
 	// Filter by MinScore.
 	if req.MinScore > 0 {

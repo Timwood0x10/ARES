@@ -56,6 +56,22 @@ func KnownCheckKind(kind string) bool {
 	return knownCheckKinds[kind]
 }
 
+// GroundTruthVerdict evaluates a case's declared deterministic checks against an
+// observed result and returns the verdict plus the individual checks.
+//
+// It is the exported entry point for callers that hold a case and an output but no
+// TestResult — the arena's paired A/B comparison is exactly that shape — so the SAME
+// checks can floor a score outside the LLM judge. A second implementation of "is this
+// answer right" would be the thing this package exists to prevent: two rules for one
+// question, drifting apart.
+//
+// A case that declares nothing returns VerdictUncertain, never a pass: an unasked
+// question must not read as satisfied.
+func GroundTruthVerdict(tc TestCase, result TestResult) (Verdict, []ResultCheck) {
+	outcome := evaluateGroundTruth(tc, result, "")
+	return outcome.Verdict, outcome.Checks
+}
+
 // CountAnchoredCases reports how many cases in a suite declared at least one
 // deterministic check.
 //

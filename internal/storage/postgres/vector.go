@@ -105,9 +105,9 @@ func (v *VectorSearcher) Search(ctx context.Context, table, tenantID string, emb
 	// It only takes effect INSIDE a transaction, so the query runs in the one the
 	// helper opens — setting it on the bare handle this path used to hold was
 	// silently ignored, and the deployment believed it was tuned.
-	_, probes := vectorIndexConfigFromEmbedding(v.embeddingConfig)
+	tuning := vectorSearchTuningFromEmbedding(v.embeddingConfig)
 	var results []*SearchResult
-	err = WithVectorSearchProbes(ctx, v.db, probes, func(ctx context.Context, db DBTX) error {
+	err = WithVectorSearchTuning(ctx, v.db, tuning, func(ctx context.Context, db DBTX) error {
 		rows, queryErr := db.QueryContext(ctx, query, embeddingJSON, limit, tenantID)
 		if queryErr != nil {
 			return errors.Wrap(queryErr, "vector search")

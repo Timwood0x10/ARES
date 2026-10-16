@@ -123,6 +123,18 @@ type KnowledgeConfig struct {
 	// Defaults to 0.4 when zero (only applied when RetrievalEnabled is true).
 	MinScore float64 `yaml:"min_score"`
 
+	// RecencyWeight is how much the knowledge store's hybrid ranking weighs an
+	// object's freshness, relative to the vector (0.7) and lexical (0.3) terms.
+	//
+	// ZERO — the default — keeps the pre-existing ranking exactly (relevance only).
+	// It is zero rather than "some sensible small number" because the store's recall
+	// query already reads `ORDER BY updated_at DESC LIMIT k`, so the candidate window
+	// is recency-biased before scoring and this term counts the same signal twice.
+	// Whether the second helping helps is a per-corpus measurement, so a deployment
+	// that has made it opts in here (e.g. 0.1) instead of every deployment getting an
+	// unmeasured re-rank. Values are relative: 0.7/0.3/0.1 and 7/3/1 score identically.
+	RecencyWeight float64 `yaml:"recency_weight"`
+
 	// DecayArchiveAfter archives AKG objects older than this duration by moving
 	// them to StatusSuperseded (M4). Objects are never deleted — the pass
 	// changes lifecycle status only, so history stays traceable.

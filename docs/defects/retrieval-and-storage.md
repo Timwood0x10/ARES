@@ -78,8 +78,20 @@
   **反证**：去掉建事务分支 → 事务相关用例失败（并打印上面那条 Warn）。
 - **HNSW 选项有了**（`EmbeddingConfig.IndexMethod`）：DDL 走 `USING hnsw (m=16, ef_construction=64)`，
   且**不带 `lists`**（HNSW 没这个参数，发出去就是执行期报错）。
-- **未做（需运维动作）**：**存量部署切换索引方法仍需重建**（换 method 是数据面决定，规范 §0.4）；
-  HNSW 的检索期旋钮 `hnsw.ef_search` 未接（现在只有 ivfflat 的 probes）。
+- **跨 method 切换（已落，一次性 + 响亮）**：目录查询扩到带 `pg_am.amname`（索引的访问方法），
+  `AdaptVectorIndexScale` 增加 `VectorIndexReview{ExpectedMethod}`：**配置与目录不一致 → 一次性重建**
+  （保留索引自身名字与 partial 谓词）+ **Warn（明说这是 BLOCKING 的数据面动作、带上 rows）** + 完成 Info。
+  **"一次性"是设计的一部分**：重建后目录与配置一致，下次启动即 no-op ⇒ 不会"每次 boot 赌一把"。
+  **空 `ExpectedMethod` = 不评判**（迁移命令没有配置可比，绝不为一个没人要的默认值重建别人的索引）；
+  真正的评判落在**唯一同时拥有 pool 与配置**的地方（bootstrap 的向量存储装配）。
+  **反证**：让判定恒为 false → 两条不一致用例失败。
+- **`hnsw.ef_search`（已落，与 probes 同根）**：probes 与 ef_search 合并为一个 `VectorSearchTuning`
+  （`EmbeddingConfig.SearchProbes` / `SearchEFSearch`），走**同一条 `WithVectorSearchTuning` 事务路径**
+  （H1 已把事务边界建好，故这是一条分支而非新机制）。**两个旋钮必须成对出现**：各 index method
+  **只读自己的那个、忽略另一个**，所以换 method 的部署要同步设对应值，否则"看起来配了"。
+  测试覆盖：单旋钮/双旋钮渲染顺序稳定、空 tuning 不开事务、ef_search 边界、配置解析 nil 安全。
+- **仍未做**：`AdaptVectorIndexScale` 的 method 重建目前只在 bootstrap 装配路径被调用（迁移命令刻意不评判）；
+  若将来有 admin 端点，应复用同一函数而不是另写一套。
 
 ### R2 · 纯余弦近邻，无精排（rerank） 〔缺陷〕
 
@@ -125,8 +137,37 @@ LIMIT $2
   的分数、且不高于同文本的新候选）。**反证**：把"未知时间"当"很旧" → 该用例与新分数断言同时失败。
 - **测试**：`simple_rerank_test.go`（核心一条：**余弦更近但没提到所问内容的候选必须被压下去**，
   同时断言纯余弦序恰好相反）、词面/新鲜度/剔除未知/全零权重回退/不改调用方切片/部分配置兜底。
-- **未做**：`RetrievalService`（那套更宽的加权 + 时间衰减服务）**仍未在生产装配**，本轮是在
-  **生产真正在跑的那条路径**上补精排（两套并存是规范 §5.1 禁止的形态，修它需要先决定合并方向）。
+- **⚠️ 复核更正（同日，重要）：上面这条"修在生产路径上"的说法是错的。** 实测：`SimpleRetrievalService`
+  的**非测试引用只有 `examples/_internal/11-knowledge-import`**，`RetrievalService` 只有测试文件 ⇒
+  **两个 service 都是零生产引用**，上面那套精排**修在了没人用的类上**。真正的生产 RAG 是
+  `store_adapter → knowledge.HybridSearch → ScoreHybrid`（`knowledge/hybrid.go`）。
+  **这是与 H1（probes 的 `SET LOCAL` 无事务）同类的"修在无人路径"**。
+- **生产路径的真实形状（核实后）**：**宽召回与加权重排本来就都有** —— `hybridRecallLimit`（宽召回）+
+  `ScoreHybrid`（0.7 向量 + 0.3 词面）+ 按 `FinalScore` 排序。**真缺的只有 recency 项**（SQL 是
+  `ORDER BY updated_at DESC` ⇒ 窗口已偏置，但分数里没有）。词面项生产侧**本来就有 CJK bigram**
+  （`hybrid.go` 的 `tokenize`/`cjkBigrams`），所以那半也不缺。
+- **已落（生产路径闭环）**：
+  1. **recency 项**（`ScoreHybrid` 第三项 + `ScoredObject.RecencyScore` 可诊断）；
+  2. **权重是相对的、按可用项归一**（缺向量时不把候选压向 0 —— 保持既有"未嵌入仍可检索"行为）；
+  3. **年龄口径复用既有 `EffectiveObservedAt()`**（不另造 fallback 链），并**记下**它与窗口用的
+     `updated_at` 并非同一字段（两处口径差异写明而非抹平）；
+  4. **默认权重 = 0.7/0.3/0**（recency 关）——**理由是 SQL 窗口已按 updated_at 偏置，分数里再来一次是
+     重复计入**，是否有效要按语料实测；擅自改生产排序＝未测量的回归。**"默认关"意味着 P1-2 的生产闭环
+     目前是"机制已接、默认未开"**，开启方式见下。
+  5. **接线（闭合"可配但无人配"）**：`postgresstore.WithDefaultWeights`（**一个装配点覆盖
+     adapter/provider/context_retriever 三条检索路径**）+ 配置旋钮 `knowledge.recency_weight`
+     + 装配处日志（生效值可观测）+ 两份示例配置同步。
+  6. **dedup 显式用"纯相关"权重**：它的阈值本来就是 `VectorScore`（安全），但候选窗口按 `FinalScore` 排，
+     显式覆盖避免继承部署的 recency 决定（一个类的两个用途不该共享一个排序偏好）。
+  7. **`FreshnessScore` 抽成共享规则**（`quality.go`）：写入期质量分与查询期 recency 用同一条分档，
+     未知时间戳=中性 0.5（**不是最旧**）、未来时间戳=1.0。
+  - **实机反证**：默认权重里塞 recency → 兼容性用例报 `FinalScore = 0.9, want legacy 0.85` 且平局被打破；
+    忽略存储默认权重 → `store default was not applied`。
+- **仍未做**：① **默认是否开启 recency**（0 = 现状排序；0.1 = 开启）——**这是"改变生产排序"的决定，等拍板**；
+  ② `RetrievalService` / `SimpleRetrievalService` 两个**零生产引用**的类**待清**（§10.1：删前须留"零引用"证据；
+  它们被大量测试构造，清理应独立成一步）；③ 生产路径的**词面项仍是 Jaccard 而非覆盖率**（我上轮在死类里
+  写的 coverage 版本**不作数**，改写生产 Jaccard 属行为变更，需实测）；④ CLI 路径
+  `cmd/ares/knowledge_store.go:240` 不读配置权重（用库默认）。
 
 ### R3 · hybrid 融合**已实现**（0.7 向量 / 0.3 lexical）〔已做 · 与初稿结论相反〕
 

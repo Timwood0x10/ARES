@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	ares_arena "github.com/Timwood0x10/ares/internal/runtime/arena"
+	"github.com/Timwood0x10/ares/internal/runtime/eval"
 )
 
 // DefaultArenaExecutePrompt instructs the LLM to act as an agent following a
@@ -196,7 +197,59 @@ func (s *LLMArenaScorer) Score(ctx context.Context, input any) (float64, error) 
 	if err != nil {
 		return 0, fmt.Errorf("LLMArenaScorer: parse score: %w", err)
 	}
-	return score, nil
+	return groundTruthFloor(ti.TestCase, output, score), nil
+}
+
+// ArenaCase is one preserved case as the arena scorer needs it: the task text the
+// strategy runs on, plus the ground truth (when the corpus declared any) that decides
+// whether the produced answer is right.
+//
+// The wiring layer converts eval.TestCase values into these; a case that arrives as a
+// bare string (or any other type) simply has no ground truth and is scored by the
+// grader alone, exactly as before.
+type ArenaCase struct {
+	// Input is the task text. It is the only field rendered into the prompts.
+	Input string
+	// ExpectedOutput is the reference answer the deterministic checks compare against.
+	ExpectedOutput string
+	// Checks are the check kinds the case declared (see eval's Check* constants).
+	Checks []string
+}
+
+// String renders ONLY the task text.
+//
+// fmt.Sprintf("%v", case) is how every case reaches both prompts, so this method is
+// what keeps the expected answer OUT of the grading prompt. That is deliberate: the
+// repository measured that anchoring the grader's rubric inflated its variance and
+// destroyed the significance test (open-ended p=0.0297, anchored p=0.393 — see
+// DefaultArenaEvalPrompt), so the ground truth enters the decision through
+// groundTruthFloor instead, where it is deterministic.
+func (c ArenaCase) String() string { return c.Input }
+
+// groundTruthFloor returns 0 when the case declared checks the produced output FAILS,
+// and the grader's score otherwise.
+//
+// This is the arena-side twin of the eval judge's floor, and it closes a specific hole:
+// a paired A/B compares two candidates on LLM opinion alone, so when both answer a
+// factual case wrong and the grader likes both, the comparison sees a tie and the
+// regression gate passes a candidate that lost the facts. A deterministic check cannot
+// be talked out of a wrong answer.
+//
+// It only ever LOWERS a score. A passing check does not raise it, because "the grader
+// gave 0.2 to a right answer" is a grader problem to see, not to paper over.
+func groundTruthFloor(caseValue any, output string, graderScore float64) float64 {
+	ac, ok := caseValue.(ArenaCase)
+	if !ok || len(ac.Checks) == 0 {
+		return graderScore
+	}
+	verdict, _ := eval.GroundTruthVerdict(
+		eval.TestCase{ID: ac.Input, Input: ac.Input, ExpectedOutput: ac.ExpectedOutput, Checks: ac.Checks},
+		eval.TestResult{ActualOutput: output},
+	)
+	if verdict == eval.VerdictFail {
+		return 0
+	}
+	return graderScore
 }
 
 // ScoreBatch implements ares_arena.BatchScorer, collapsing count executions and
@@ -258,7 +311,20 @@ func (s *LLMArenaScorer) ScoreBatch(ctx context.Context, strategy any, count int
 		return nil, fmt.Errorf("LLMArenaScorer: batch grade: %w", err)
 	}
 
-	return parseBatchScores(rawScores, count)
+	scores, err := parseBatchScores(rawScores, count)
+	if err != nil {
+		return nil, err
+	}
+	// Same deterministic floor as the single-case path, applied per case: the batch
+	// path is the one a real run uses (2 LLM calls instead of 2×count), so a floor that
+	// only existed in Score would never fire in production.
+	for i := range scores {
+		if i >= len(outputs) {
+			break
+		}
+		scores[i] = groundTruthFloor(cases[i], outputs[i], scores[i])
+	}
+	return scores, nil
 }
 
 // buildNumberedItems renders cases as numbered task lines for the batch execute

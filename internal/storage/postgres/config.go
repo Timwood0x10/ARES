@@ -47,8 +47,16 @@ type EmbeddingConfig struct {
 	IndexMethod string
 	// SearchProbes is the ivfflat probe count applied per search (0 = leave the
 	// server default of 1). It is the recall lever that needs no rebuild.
-	// Ignored by HNSW, whose equivalent is hnsw.ef_search.
 	SearchProbes int
+	// SearchEFSearch is the HNSW ef_search applied per search (0 = leave the server
+	// default of 40). It is the HNSW half of the same lever, applied through the same
+	// transaction as SearchProbes.
+	//
+	// Both knobs are carried together because each method IGNORES the other's: setting
+	// probes on an HNSW index (or ef_search on an ivfflat one) does nothing, so a
+	// deployment that switches method must set the matching one to keep the recall it
+	// measured.
+	SearchEFSearch int
 }
 
 // DefaultEmbeddingConfig returns the default embedding configuration.
@@ -107,6 +115,10 @@ func (e *EmbeddingConfig) Validate() error {
 		// statement builder ignores non-positive values), but silently ignoring a
 		// configured value is how a recall knob ends up doing nothing.
 		return fmt.Errorf("search probes must not be negative: %d", e.SearchProbes)
+	}
+	if e.SearchEFSearch < 0 {
+		// Same reasoning as the probe count: this is the HNSW half of one decision.
+		return fmt.Errorf("search ef_search must not be negative: %d", e.SearchEFSearch)
 	}
 	if e.EmbeddingTimeout <= 0 {
 		e.EmbeddingTimeout = 30 * time.Second

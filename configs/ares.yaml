@@ -136,6 +136,10 @@ knowledge:
   # top_k: number of top results returned on retrieval
   # top_k: 5
   # min_score: minimum similarity score for retrieval results
+  # recency_weight: freshness weight in the hybrid ranking, relative to the vector
+  #   (0.7) and lexical (0.3) terms. 0 (default) keeps relevance-only ranking; the
+  #   recall window is already updated_at-ordered, so measure before enabling.
+  # recency_weight: 0.1
   # min_score: 0.4
 
   # ── AKG 0.2.9 quality gate ──────────────────────────────────
