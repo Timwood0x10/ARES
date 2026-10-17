@@ -111,6 +111,17 @@
 
 ## 修订记录
 
+**2026-10-17 · 0.3.5 起步：M8b 接线 + M9 维度映射（含一处归因 bug 与 Q2 拍板）**：
+
+| 项 | 状态 |
+|---|---|
+| **M8a 归属** | **早已实现**（`generateDiffPatches` 要求 `strategyID` 非空并盖章 `patches[i].StrategyID`，且有生产调用方）⇒ 不用新做；`deployment_wiring.go` 里"无生产者设 StrategyID"的旧说法已更正 |
+| **M8b ApplyGate** | ✅ **已接线**（`ares_bootstrap`，在**同时持有 coordinator 与 lifecycle** 的装配点安装；只拒"策略正被人工审批挂起"的 patch；**无归因 patch 放行**、**无 hold 时全放行** ⇒ 默认行为不变）。测试 2 条 + 反证（gate 变空操作 → 该拒的不拒） |
+| **归因 bug（顺带查出）** | ✅ **已修**：`ProfileExecutor.Apply` 的 rollback patch **丢 `StrategyID`** ⇒ **回滚后策略永久不可比**（撤销动作抹掉了它自己的可判定性）。改为继承 + 测试 + 反证 |
+| **M9 维度映射（第一步）** | ✅ `MapCandidateDimensions` 只取**候选可比**来源（`strategy`→`success_rate`、`dimension_eval`→`quality`）；`workflow`/`scheduler`/`recovery` **不进维度**（按设计忽略 strategyID ⇒ 每候选同值=常量维度）、`collaboration`/`tool_call` 默认权重 0 也不进；**缺样本省略，不写 0**（0 是"测过全失败"，缺席是"没测"）。测试 4 条 + 反证 |
+| **反证第一次没失败（值得记）** | 加一个全局通道当维度，测试**没失败** ⇒ 发现我自己的**双源头**缺陷（`map` + `order` slice，往 map 加条目不生效）。合并成**单一有序列表**后反证成立。**"反证没失败"先怀疑实现/测试，不是宣布通过** |
+| **Q2 拍板** | **两件都做**：① 收敛为候选可比子集（**已落**）；② **补 latency/cost 证据采集**（**未开工**——聚合器没有这两者的原始来源，只有 [0,1] 越大越好的 fitness 均值，属真工程；在此之前 `cost`/`latency` **留空，不拿均值冒充毫秒**） |
+
 **2026-10-17 · 0.3.4 收口进度（按 `plan/0.3.x_plans/0.3.4-0.3.5_akg_ga.md` §8.2 的三条缺口）**：
 
 §8.2 列出 0.3.4 仅剩三处"有代码有测试、零生产调用方"。核对验收测试后发现**三条验收测试本身缺失**（不只是没接线）：
