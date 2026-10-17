@@ -111,6 +111,17 @@
 
 ## 修订记录
 
+**2026-10-17 · M9-② ：维度接进 GA 打分（service 路径），并如实标出内部路径未接**：
+
+| 项 | 状态 |
+|---|---|
+| `SystemConfig.DimensionWindow` | ✅ 新增（函数形式，**在打分时按候选读窗口**；快照式会在每代沿用同一份证据） |
+| `scoreAgents` 拆分 | ✅ `scoreAgents = scoreScalars + scoreDimensions`；**补充式**：无窗口 = 行为不变；**无证据的候选保留原标量分**（写 0 会被读成"测过全失败"并把它踢出选择） |
+| 聚合口径 | ✅ `Score = AggregateDimensions(dims, DefaultDimensionWeights)`，与维度**同源**（分数与向量描述同一份证据） |
+| `SourceStat` 导出 | ✅ 原为未导出 `sourceStat`，却被**公开字段** `WindowResult.PerSource` 使用 ⇒ 外部包既构造不了也读不了；已导出 |
+| 测试 | ✅ 3 条（证据→维度+聚合 / 无证据不动 / 无窗口不启用）+ **反证**（`scoreDimensions` 变空操作 → `actual: map[string]float64(nil)`） |
+| **仍未接** | ❌ **仓内 in-process 循环**（`genome_wiring_run.go` 的 `EvolveAfterScoring`，内部只调标量 `ScoreAgents`）⇒ **那条路径的 `nsga2` 仍然退化**。README 已按"哪条路径已接/哪条没"写精确，不笼统称"已接线" |
+
 **2026-10-17 · 0.3.5 起步：M8b 接线 + M9 维度映射（含一处归因 bug 与 Q2 拍板）**：
 
 | 项 | 状态 |
