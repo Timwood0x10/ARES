@@ -196,3 +196,57 @@ func TestRelationGate_FilterRelations(t *testing.T) {
 		}
 	}
 }
+
+// TestRelationGate_FlagsConflict is M2.5's fourth acceptance gate: a candidate that
+// disagrees with existing knowledge must be FLAGGED, with both sides named, rather than
+// silently dropped or silently admitted.
+//
+// The rule uses the vocabulary's own `contradicts` predicate instead of an invented list of
+// "single-valued" predicates — a new source disagreeing with an old one is exactly the case
+// a human has to arbitrate, and an unactionable `false` would erase the disagreement.
+func TestRelationGate_FlagsConflict(t *testing.T) {
+	t.Parallel()
+
+	positive := knowledge.Relation{From: "akg:redis", To: "akg:cache", Predicate: knowledge.RelDependsOn}
+	denial := knowledge.Relation{From: "akg:redis", To: "akg:cache", Predicate: "contradicts"}
+	unrelated := knowledge.Relation{From: "akg:redis", To: "akg:queue", Predicate: knowledge.RelDependsOn}
+
+	t.Run("existing contradiction denies a new assertion", func(t *testing.T) {
+		conflicts := knowledge.FindRelationConflicts([]knowledge.Relation{positive}, []knowledge.Relation{denial})
+		if len(conflicts) != 1 {
+			t.Fatalf("expected 1 conflict, got %d", len(conflicts))
+		}
+		if conflicts[0].Reason != "the graph already records this pair as contradictory" {
+			t.Fatalf("unexpected reason: %q", conflicts[0].Reason)
+		}
+		if conflicts[0].Existing.Predicate != "contradicts" || conflicts[0].Candidate.Predicate != knowledge.RelDependsOn {
+			t.Fatalf("both sides must be reported: %+v", conflicts[0])
+		}
+	})
+
+	t.Run("a new contradiction against an existing assertion is flagged too", func(t *testing.T) {
+		conflicts := knowledge.FindRelationConflicts([]knowledge.Relation{denial}, []knowledge.Relation{positive})
+		if len(conflicts) != 1 {
+			t.Fatalf("expected 1 conflict, got %d", len(conflicts))
+		}
+		if conflicts[0].Reason != "the candidate contradicts a relation the graph already asserts" {
+			t.Fatalf("unexpected reason: %q", conflicts[0].Reason)
+		}
+	})
+
+	t.Run("different pairs do not collide", func(t *testing.T) {
+		if got := knowledge.FindRelationConflicts([]knowledge.Relation{unrelated}, []knowledge.Relation{denial}); len(got) != 0 {
+			t.Fatalf("a different target must not be a conflict, got %+v", got)
+		}
+	})
+
+	t.Run("unresolved targets are identified by their text", func(t *testing.T) {
+		// Neither side was resolved to a graph object, so identity is the raw text; missing
+		// this would let two assertions about the same unresolved entity pass as unrelated.
+		candidate := knowledge.Relation{From: "akg:redis", ObjectText: "cache", Predicate: knowledge.RelDependsOn}
+		existing := knowledge.Relation{From: "akg:redis", ObjectText: "cache", Predicate: "contradicts"}
+		if got := knowledge.FindRelationConflicts([]knowledge.Relation{candidate}, []knowledge.Relation{existing}); len(got) != 1 {
+			t.Fatalf("expected the text-identified pair to collide, got %+v", got)
+		}
+	})
+}

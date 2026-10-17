@@ -118,6 +118,19 @@ type KnowledgeConfig struct {
 	// Defaults to 5 when zero (only applied when RetrievalEnabled is true).
 	TopK int `yaml:"top_k"`
 
+	// TieredRetrieval makes AKG recall go through the TIERED path (M6) instead of the
+	// single-shot knowledge retriever: L1 exact-keyword over the store first, L2
+	// semantic+graph only when L1 cannot satisfy TopK, L3 reserved.
+	//
+	// OFF by default, and that is the point: it REPLACES how recall happens, so it changes
+	// what every agent sees in its prompt. The tiered implementation is exercised by tests
+	// but has no production history here, and switching a recall path on faith is how a
+	// deployment ends up recalling less while looking unchanged. Enable it to compare, and
+	// watch the startup line for the tier mix (it reports both the path and its bounds).
+	//
+	// Requires RetrievalEnabled: with recall off there is nothing to tier.
+	TieredRetrieval bool `yaml:"tiered_retrieval"`
+
 	// MinScore is the minimum similarity score for a retrieved snippet to
 	// be included. Snippets below this threshold are filtered out.
 	// Defaults to 0.4 when zero (only applied when RetrievalEnabled is true).

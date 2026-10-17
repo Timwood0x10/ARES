@@ -91,9 +91,14 @@ func TestAKG_Decay_NoDecayByDefault(t *testing.T) {
 	}
 }
 
-// TestAKG_BuildReport_ExposesCounters pins that BuildReport carries all
-// the counters required by M4 observability: read count, new entities,
-// new relations, deduped, rejected, conflicts, and duration.
+// TestAKG_BuildReport_ExposesCounters pins the FIELD SET only.
+//
+// It constructs a literal and asserts the fields it set, so it proves the struct carries
+// the counters M4 asks for — and nothing about a producer. The producer is covered where it
+// lives: `TestDistillConversationWithReport_ProducesCounters` in
+// internal/knowledge/adapter drives a real ingest and checks the numbers against the run.
+// The old doc claimed this test pinned observability, which was exactly the kind of
+// self-certifying assertion that let a report with no producer pass for finished work.
 func TestAKG_BuildReport_ExposesCounters(t *testing.T) {
 	t.Parallel()
 

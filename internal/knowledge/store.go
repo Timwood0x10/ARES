@@ -310,6 +310,20 @@ func ImportStore(ctx context.Context, store KnowledgeStore, snapshot *StoreSnaps
 	if snapshot == nil {
 		return errors.New("import store: snapshot is nil")
 	}
+	// A snapshot from a NEWER build is refused. Its objects may carry fields or shapes this
+	// build would silently drop, and the fallback path would then re-stamp them with an
+	// OLDER schema version — a downgrade that looks like a successful import and is only
+	// noticed when the missing data matters.
+	//
+	// Older snapshots (including the legacy zero version) are ACCEPTED: per-object
+	// MigrateObject upgrades them on the way in, which is the supported direction.
+	//
+	// This check sits BEFORE the StoreExporter fast path on purpose: a store that implements
+	// its own Import must not become the one route that skips the guard.
+	if snapshot.SchemaVersion > CurrentSchemaVersion {
+		return fmt.Errorf("import store: snapshot schema version %d is newer than this build's %d: %w",
+			snapshot.SchemaVersion, CurrentSchemaVersion, ErrSchemaVersionTooNew)
+	}
 	// Fast path: store implements StoreExporter.
 	if se, ok := store.(StoreExporter); ok {
 		return se.Import(ctx, snapshot)

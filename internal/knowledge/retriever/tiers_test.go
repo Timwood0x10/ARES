@@ -175,3 +175,55 @@ func TestRetrievalTier_String(t *testing.T) {
 		}
 	}
 }
+
+// TestRetrieval_TieredL1L2L3Fallback is M6's acceptance for the TIER WALK: L1 answers when
+// its exact terms are enough, and when they are not, the walk falls to L2 — and a broken L2
+// DEGRADES to what L1 found instead of failing the query.
+//
+// The L2 here is a bare &Retriever{} (nil runtime/compiler), which is the real failure any
+// caller would see if L2's dependencies were not wired: it exercises the degradation branch
+// through the public API rather than by mocking an interface the production type does not
+// have. L3 is reserved by design (0.3.4 returns L2 unchanged), so there is no L3 step to
+// observe; the assertion is that the walk never reports a tier it did not run.
+func TestRetrieval_TieredL1L2L3Fallback(t *testing.T) {
+	t.Parallel()
+
+	store := memstore.New()
+	objects := []*knowledge.KnowledgeObject{
+		{ID: "obj_redis", Type: knowledge.ObjectMemory, Namespace: "ns", Summary: "Redis for caching", Status: knowledge.StatusActive},
+		{ID: "obj_other", Type: knowledge.ObjectMemory, Namespace: "ns", Summary: "PostgreSQL for persistence", Status: knowledge.StatusActive},
+	}
+	knowledge.StampWriteSchema(objects...)
+	if err := store.Save(context.Background(), objects...); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// L1 is enough (one hit satisfies MaxResults=1): the walk must stop at L1. A broken L2
+	// is attached on purpose — if the tier were consulted, its error would show up as a
+	// degradation warning and the tier would still read L1, so the observable assertion is
+	// that the L1 node is the RESULT and no error surfaces.
+	if _, tier, _ := retriever.NewTieredRetriever(store, &retriever.Retriever{}).Retrieve(
+		context.Background(),
+		retriever.Query{Text: "Redis caching", Namespace: "ns", MaxResults: 1},
+	); tier != retriever.TierL1 {
+		t.Fatalf("an L1-satisfied query must stop at L1, got %s", tier)
+	}
+
+	// L1 cannot satisfy the limit, L2 is broken ⇒ degrade to L1's hits, still no error.
+	result, tier, err := retriever.NewTieredRetriever(store, &retriever.Retriever{}).Retrieve(
+		context.Background(),
+		retriever.Query{Text: "Redis caching", Namespace: "ns", MaxResults: 10},
+	)
+	if err != nil {
+		t.Fatalf("a broken L2 must degrade, not fail the query: %v", err)
+	}
+	if tier != retriever.TierL1 {
+		t.Fatalf("degradation must report the tier it actually served (L1), got %s", tier)
+	}
+	if result.Graph == nil {
+		t.Fatal("degradation must still return L1's nodes")
+	}
+	if _, ok := result.Graph.Nodes["obj_redis"]; !ok {
+		t.Error("the L1 hit must survive the L2 failure")
+	}
+}

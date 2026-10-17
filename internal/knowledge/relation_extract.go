@@ -238,6 +238,77 @@ func isPredicateCompatible(predicate string, subjectType ObjectType) bool {
 // FilterRelations applies the relation validation gate to a slice of
 // candidate relations, returning only those that pass. The subject type is
 // taken from the owning object.
+// RelationConflict is a candidate relation that disagrees with what the graph already
+// asserts about the same pair of objects.
+type RelationConflict struct {
+	// Candidate is the relation the gate was asked to admit.
+	Candidate Relation
+	// Existing is the relation already in the graph that it disagrees with.
+	Existing Relation
+	// Reason names the disagreement in one line, for whoever must arbitrate it.
+	Reason string
+}
+
+// relationPairKey identifies the pair a relation is about. The target falls back to the raw
+// text when it has not been resolved to a graph object — that is the same identity the
+// extraction path uses for an unresolved target, so two assertions about "redis" collide
+// whether or not either was resolved.
+func relationPairKey(r Relation) string {
+	target := r.To
+	if target == "" {
+		target = r.ObjectText
+	}
+	return r.From + "\x00" + target
+}
+
+// FindRelationConflicts reports candidate relations that disagree with existing ones.
+//
+// The rule uses the vocabulary's OWN notion of disagreement — the `contradicts` predicate —
+// instead of a hand-written list of "single-valued" predicates, which would have to be kept
+// in sync with AllowedPredicates forever and would silently rot:
+//
+//   - the graph already records this pair as contradictory and the candidate asserts
+//     something else about it; or
+//   - the candidate asserts a contradiction about a pair the graph already asserts.
+//
+// Both are FLAGS, never rejections. A new source disagreeing with an old one is precisely
+// the case a human (or the pipeline's conflict strategy) has to arbitrate; dropping the
+// candidate here would erase the disagreement and leave the graph looking unanimous.
+//
+// It is a separate function rather than another bool on ValidateRelation because a verdict
+// cannot carry the pair that disagreed: the caller needs Candidate + Existing to decide,
+// and "false" would collapse "incompatible type" and "contradicts the graph" into one
+// unactionable no.
+func FindRelationConflicts(candidates, existing []Relation) []RelationConflict {
+	// The vocabulary stores this predicate as a literal (AllowedPredicates has no constant
+	// for it), so the comparison must use the same literal.
+	const contradicts = "contradicts"
+
+	byPair := make(map[string][]Relation, len(existing))
+	for _, e := range existing {
+		byPair[relationPairKey(e)] = append(byPair[relationPairKey(e)], e)
+	}
+
+	var out []RelationConflict
+	for _, c := range candidates {
+		for _, e := range byPair[relationPairKey(c)] {
+			switch {
+			case e.Predicate == contradicts && c.Predicate != contradicts:
+				out = append(out, RelationConflict{
+					Candidate: c, Existing: e,
+					Reason: "the graph already records this pair as contradictory",
+				})
+			case c.Predicate == contradicts && e.Predicate != contradicts:
+				out = append(out, RelationConflict{
+					Candidate: c, Existing: e,
+					Reason: "the candidate contradicts a relation the graph already asserts",
+				})
+			}
+		}
+	}
+	return out
+}
+
 func FilterRelations(rels []Relation, subjectType ObjectType, cfg RelationGateConfig) []Relation {
 	if len(rels) == 0 {
 		return rels

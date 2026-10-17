@@ -38,6 +38,16 @@ func (t RetrievalTier) String() string {
 	}
 }
 
+// lexiconScanLimit bounds L1's in-Go keyword scan.
+//
+// It exists because the store interface offers no lexical filter: `Query` can scope by
+// namespace and cap by Limit, nothing else. A scan therefore has to load candidates and
+// match them in Go — and without a bound, "load the namespace" is an allocation that grows
+// with the corpus on every query. 2000 is large enough that a keyword hit inside it is
+// found for realistic per-namespace corpora, and small enough to stay a bounded cost; when
+// it is hit, the truncation is logged rather than passed off as "no match".
+const lexiconScanLimit = 2000
+
 // TierResult is the result of one retrieval tier.
 type TierResult struct {
 	// Tier is the layer that produced this result.
@@ -155,12 +165,27 @@ func (tr *TieredRetriever) lexiconSearch(
 		return nil
 	}
 
-	// TODO(tech-debt): this pulls the whole namespace into memory and filters
-	// in Go. A production implementation should use the store's lexical search
-	// (HybridSearch) or a full-text index; the full scan is only a fallback.
-	objects, err := tr.store.Query(ctx, knowledge.Query{Namespace: namespace, Limit: 0})
+	// The scan is BOUNDED. `knowledge.Query` has no lexical field (Namespace/Types/Tags/
+	// Limit/Offset only), so filtering in Go is unavoidable with this interface — but
+	// `Limit: 0` meant "load the whole namespace", i.e. an unbounded allocation on every
+	// query. The cap turns that into a bounded scan whose truncation is REPORTED below, and
+	// a full-text index remains the real fix (the store would then filter before returning).
+	// Ask for ONE MORE than the cap: `len(objects) >= cap` cannot distinguish "the
+	// namespace happens to hold exactly cap objects" from "there are more and the query
+	// truncated" — so it would warn on a corpus that is simply that size. Receiving cap+1
+	// proves truncation, and the extra row is dropped before matching.
+	objects, err := tr.store.Query(ctx, knowledge.Query{Namespace: namespace, Limit: lexiconScanLimit + 1})
 	if err != nil {
 		return nil
+	}
+	if len(objects) > lexiconScanLimit {
+		// Not silent: a capped scan can miss an object past the cap, and a missed keyword
+		// hit degrades this query to L2 (or to nothing). An operator who sees this line
+		// knows the tier fell back for a capacity reason, not a relevance one.
+		slog.Warn("tiered retriever: L1 scan hit its cap; later objects in this namespace were not examined",
+			"namespace", namespace, "scan_limit", lexiconScanLimit,
+			"fix", "a store-side lexical/full-text index would make this bound unnecessary")
+		objects = objects[:lexiconScanLimit]
 	}
 
 	var matched []*knowledge.KnowledgeObject

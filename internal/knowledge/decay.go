@@ -124,7 +124,21 @@ type BuildReport struct {
 	NewRelations int `json:"new_relations"`
 	// Deduped is the number of objects marked superseded by dedup.
 	Deduped int `json:"deduped"`
-	// Rejected is the number of objects rejected by the quality gate.
+	// Unchanged is the number of objects whose content fingerprint matched what the store
+	// already holds, so they were not written again (M4 incremental build).
+	//
+	// Skipping the write is safe only because the identity is derived from the source
+	// record (`memoryObjectID`) and the fingerprint covers the fields that determine the
+	// object's knowledge content: same id + same fingerprint means the stored record already
+	// says exactly what this run would write.
+	Unchanged int `json:"unchanged"`
+	// Rejected is the number of objects that scored below the promotion bar and were
+	// therefore left as CANDIDATES instead of being promoted.
+	//
+	// "Rejected" here means "not promoted", never "discarded": the ingest pipeline saves
+	// every object and lets the gate decide activation, because AKG adjusts weight and
+	// validity rather than declaring a fact untrue. A caller reading this as a deletion
+	// count would be wrong, so the field is documented for what it measures.
 	Rejected int `json:"rejected"`
 	// Conflicts is the number of validation conflicts detected.
 	Conflicts int `json:"conflicts"`

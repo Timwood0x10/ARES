@@ -12,6 +12,8 @@ import (
 	"github.com/Timwood0x10/ares/internal/evidence"
 	"github.com/Timwood0x10/ares/internal/knowledge"
 	"github.com/Timwood0x10/ares/internal/knowledge/adapter"
+	"github.com/Timwood0x10/ares/internal/knowledge/compiler"
+	"github.com/Timwood0x10/ares/internal/knowledge/retriever"
 	knowledgeruntime "github.com/Timwood0x10/ares/internal/knowledge/runtime"
 	memctx "github.com/Timwood0x10/ares/internal/runtime/memory/context"
 	"github.com/Timwood0x10/ares/internal/runtime/memory/distillation"
@@ -145,7 +147,40 @@ func wireRetrievers(
 	// closing the AKG loop for the leader's prompt injection. Skipped when
 	// knowRt is nil (no AKG configured). The minScore is sourced from
 	// Knowledge config; adapter.DefaultMinScore (0.4) applies when zero.
-	if knowRt != nil {
+	if cfg.Knowledge.TieredRetrieval && knowRt == nil {
+		// Enabled but unsatisfiable. Saying nothing would leave an operator believing tiered
+		// recall is on while the knowledge retriever is simply absent — the same silent
+		// downgrade the runtime-replay flag refuses to make.
+		log.Warn("bootstrap: knowledge.tiered_retrieval is enabled but no KnowledgeRuntime is wired; AKG recall stays off",
+			"fix", "enable knowledge.retrieval_enabled and provide the AKG runtime, or unset tiered_retrieval")
+	}
+	if knowRt != nil && cfg.Knowledge.TieredRetrieval {
+		// M6: the TIERED path replaces the single-shot knowledge retriever when enabled.
+		//
+		// Replacing rather than adding is deliberate: both paths read the same AKG corpus,
+		// so appending would inject every fact twice and inflate the prompt while looking
+		// like better recall. The flag is opt-in (default off) because this changes what
+		// every agent recalls — see KnowledgeConfig.TieredRetrieval.
+		//
+		// L2 is the existing Retriever, which needs the KnowledgeRuntime this branch has
+		// and the default compiler (a zero-dependency extractive implementation). Both are
+		// constructed here because this is the first production caller either has.
+		l2 := retriever.New(knowRt, compiler.NewDefaultCompiler())
+		tiered := retriever.NewTieredRetriever(knowStore, l2)
+		retrievers = append(retrievers, newTieredContextRetriever(tiered, defaultDistillTenant, cfg.Knowledge.TopK))
+		l1 := "enabled (store-backed)"
+		if knowStore == nil {
+			// L1 needs the store: it keyword-matches stored objects. Without one the tiered
+			// path is L2-only, which is a legitimate configuration but NOT what "tiered"
+			// suggests — so it is stated rather than left to be discovered by reading scores.
+			l1 = "DISABLED (no KnowledgeStore: the tiered path degrades to L2 only)"
+		}
+		log.Info("bootstrap: TIERED knowledge recall armed (L1 lexicon → L2 semantic+graph; L3 reserved)",
+			"backend", akgStoreBackend(cfg),
+			"l1", l1,
+			"note", "L1 refuses an empty namespace (isolation), so a request without tenant/user context falls to L2 only",
+			"cost", "L1 is a bounded in-Go scan (the store has no lexical filter); L2 costs one hybrid search")
+	} else if knowRt != nil {
 		minScore := cfg.Knowledge.MinScore
 		var kr *adapter.KnowledgeRetriever
 		var err error
