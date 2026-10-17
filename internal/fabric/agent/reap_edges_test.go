@@ -23,7 +23,11 @@ func spawnAgedFabric(t *testing.T) (*Fabric, *time.Time, func(SpawnSpec)) {
 	t.Helper()
 	now := time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
 	at := now
-	f := NewFabric().WithClock(func() time.Time { return at })
+	// Single-node retirement: these tests isolate EDGE CLEANUP on reap. Under the 0.3.4
+	// contract (Parent is a lifecycle relation) retiring `child` would also retire
+	// `grandchild`, which would make "the grandchild's record survives" untestable here —
+	// the cascade has its own tests.
+	f := NewFabric().WithClock(func() time.Time { return at }).WithCascadeRetire(false)
 	spawn := func(spec SpawnSpec) {
 		t.Helper()
 		_, err := f.Spawn(context.Background(), spec)
@@ -59,7 +63,8 @@ func TestReapRetired_DropsTheReapedAgentsEdges(t *testing.T) {
 	// ...and so is the list it owned (the grandchild keeps its own record).
 	require.Empty(t, f.Children("child"), "a reaped agent's own edges are gone")
 	_, err := f.Get("grandchild")
-	require.NoError(t, err, "a reaped parent's child must still exist (parent death ≠ child death)")
+	require.NoError(t, err,
+		"with the cascade OFF, reaping a record must not touch the records it named")
 
 	// The emptied parent entry must be DELETED, not left behind as an empty slice:
 	// the map is the structure that grew, so an empty entry is still growth.

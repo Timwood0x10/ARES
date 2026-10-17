@@ -35,6 +35,11 @@ type Fabric struct {
 	// agent is unreadable). Guarded by its own lock inside snapshotStore.
 	// Agent-level cognitive resurrection.
 	snapshots *snapshotStore
+
+	// cascadeRetire makes Retire also retire the target's descendants (P2-7's opt-in
+	// policy half). False by default: Parent is provenance, so cascading is a change of
+	// contract that a deployment must ask for. Guarded by mu.
+	cascadeRetire bool
 }
 
 // EventSink receives lifecycle events. Implementations may persist them
@@ -76,6 +81,9 @@ func NewFabric() *Fabric {
 		resourceBudget: make(map[string]float64),
 		allocated:      make(map[string]float64),
 		snapshots:      newSnapshotStore(),
+		// Parent is a lifecycle relation as of 0.3.4, so a fabric cascades by default.
+		// Opting out is explicit (WithCascadeRetire(false)).
+		cascadeRetire: true,
 	}
 }
 
@@ -85,6 +93,25 @@ func (f *Fabric) WithEventSink(sink EventSink) *Fabric {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.sink = sink
+	return f
+}
+
+// WithCascadeRetire controls whether Retire also retires the agents the target spawned,
+// depth-first.
+//
+// ON by default as of 0.3.4: Agent.Parent is a LIFECYCLE relation (see the field's doc), so
+// retiring a parent retires its subtree. The events name each agent that went down and the
+// root that caused it, so a cascade is attributable instead of implied.
+//
+// Pass false for a caller that manages its own subtree and wants retirement to stay
+// single-node — the older behaviour, now an explicit choice rather than the only option.
+// The two are not redundant with the orphan audit: the audit answers "how much is left
+// live" for trees that can no longer be walked (a restored fabric missing the parent
+// record), which no relation can answer.
+func (f *Fabric) WithCascadeRetire(enabled bool) *Fabric {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.cascadeRetire = enabled
 	return f
 }
 

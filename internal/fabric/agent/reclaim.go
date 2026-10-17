@@ -213,6 +213,14 @@ func (f *Fabric) ReclaimIdle(ctx context.Context, policy AgentReclaimPolicy, inU
 		if !covered || busy || now.Sub(lastActive) <= ttl {
 			continue
 		}
+		// SINGLE-NODE, unlike Retire's cascade, and deliberately so.
+		//
+		// Retire is an explicit "this agent is done" and, since 0.3.4, takes its subtree
+		// with it. Reclamation is "this agent has been idle" — a statement about ONE agent.
+		// A parent can be idle while a child it spawned is working, so cascading here would
+		// kill live work because its ancestor was quiet. What reclamation leaves behind is
+		// reported by AuditOrphans, which is the right instrument for "still held, nothing
+		// walking it".
 		ta, orphans, err := f.retireLocked(id)
 		if err != nil {
 			// Lost a race with another trigger (already retired, or killed since
@@ -227,7 +235,7 @@ func (f *Fabric) ReclaimIdle(ctx context.Context, policy AgentReclaimPolicy, inU
 
 	// Events are emitted after the unlock: recording does I/O.
 	for i, a := range retired {
-		f.recordAgentRetired(ctx, a, orphansOf[i])
+		f.recordAgentRetired(ctx, a, orphansOf[i], "")
 	}
 	return reclaimed
 }

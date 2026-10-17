@@ -52,9 +52,20 @@ type Agent struct {
 	Load float64
 	// Confidence is the experience-derived prior (ares_skills source).
 	Confidence float64
-	// Parent is the spawning agent's identity ("" for a root agent). This
-	// is PROVENANCE ONLY — parent/child does NOT form a permission
-	// hierarchy (invariant #1: A ≡ B ≡ C).
+	// Parent is the spawning agent's identity ("" for a root agent).
+	//
+	// It is a LIFECYCLE relation as of 0.3.4 (contract change, approved): retiring an agent
+	// retires the agents it spawned, depth-first, so a spawn/retire loop cannot leave live
+	// agents nothing owns. Each cascaded agent gets its own `agent.retired` event carrying
+	// `cascade_root`, so the cause is attributable rather than implied.
+	//
+	// It is NOT a PERMISSION relation, and that distinction is load-bearing: parent/child
+	// still implies no authority (invariant #1: A ≡ B ≡ C). A child can do exactly what it
+	// could do before; what changed is who gets cleaned up with whom.
+	//
+	// A fabric can opt out (`WithCascadeRetire(false)`) for callers that manage their own
+	// subtree — and a restored fabric whose parent RECORD is missing is handled by the
+	// orphan audit, not by this relation (there is no edge to walk).
 	Parent string
 	// Priority is the scheduling priority (>= 0; 0 = normal). It mirrors
 	// OS-thread priority: the taskfabric scheduler boosts higher-priority

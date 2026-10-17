@@ -87,6 +87,14 @@ const PayloadKeyStopReason = "reason"
 // run under the fabric lock, and the retirement event is already emitted outside it).
 const PayloadKeyOrphanedSpawns = "orphaned_spawns"
 
+// PayloadKeyCascadeRoot names the agent whose retirement cascaded into this one
+// (`WithCascadeRetire`).
+//
+// Present only on descendants, never on the agent the caller retired: it answers "why am I
+// gone" — which is the question a cascade makes non-obvious, since the agent itself was not
+// what anyone asked to retire.
+const PayloadKeyCascadeRoot = "cascade_root"
+
 // String returns the wire form of the reason. The zero value renders as
 // "unknown" so an unattributed record is explicit rather than an empty string
 // that reads like a missing field.

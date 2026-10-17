@@ -36,7 +36,7 @@ func (s *capturingSink) retiredPayload(agentID string) (map[string]any, bool) {
 // it left behind, so the accumulation was silent.
 func TestRetire_ReportsTheSpawnsItLeavesLive(t *testing.T) {
 	sink := &capturingSink{}
-	f := NewFabric().WithEventSink(sink)
+	f := NewFabric().WithEventSink(sink).WithCascadeRetire(false) // this test builds orphans: keep retirement single-node
 
 	ctx := context.Background()
 	parent, err := f.Spawn(ctx, SpawnSpec{Identity: "parent", Capabilities: []string{"coder"}})
@@ -86,7 +86,7 @@ func TestRetire_OmitsTheKeyWhenNothingIsOrphaned(t *testing.T) {
 // is being held by agents nothing owns" — the accumulation a spawn/retire loop grows while
 // every individual retirement looks reasonable.
 func TestAuditOrphans_CountsWhatRetirementLeftBehind(t *testing.T) {
-	f := NewFabric().WithResourceBudget(map[string]float64{"slot": 10})
+	f := NewFabric().WithResourceBudget(map[string]float64{"slot": 10}).WithCascadeRetire(false) // the audit needs orphans to count
 	ctx := context.Background()
 
 	_, err := f.Spawn(ctx, SpawnSpec{Identity: "parent", Capabilities: []string{"coder"}})

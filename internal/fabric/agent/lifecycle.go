@@ -281,15 +281,66 @@ func (f *Fabric) Resume(ctx context.Context, agentID string) error {
 func (f *Fabric) Retire(ctx context.Context, agentID string) error {
 	f.mu.Lock()
 	a, orphans, err := f.retireLocked(agentID)
-	f.mu.Unlock()
 	if errors.Is(err, ErrAgentRetired) {
+		f.mu.Unlock()
 		return nil // already retired: Retire is idempotent by contract
 	}
 	if err != nil {
+		f.mu.Unlock()
 		return err
 	}
-	f.recordAgentRetired(ctx, a, orphans)
+	// Opt-in cascade (P2-7): retire the descendants too, collecting them under the same
+	// lock so no child can be spawned into a half-dismantled tree by a concurrent caller.
+	retired := []*Agent{a}
+	orphansOf := [][]string{orphans}
+	if f.cascadeRetire {
+		for _, id := range f.descendantsLocked(agentID) {
+			ta, o, derr := f.retireLocked(id)
+			if derr != nil {
+				continue // already gone: nothing to record for it
+			}
+			retired = append(retired, ta)
+			orphansOf = append(orphansOf, o)
+		}
+	}
+	f.mu.Unlock()
+
+	// Events after the unlock: recording does I/O. Descendants name the root that took
+	// them down, so a cascade is attributable rather than implied.
+	for i, ta := range retired {
+		root := ""
+		if i > 0 {
+			root = agentID
+		}
+		f.recordAgentRetired(ctx, ta, orphansOf[i], root)
+	}
 	return nil
+}
+
+// descendantsLocked returns every live descendant of rootID, depth-first.
+//
+// Caller must hold f.mu. The visited set is not paranoia about the current writer — children
+// is append-only and spawn is the only writer — but a corrupt or reconstructed index could
+// contain a cycle, and a cycle here would hang the whole fabric while HOLDING ITS LOCK.
+// Cheap insurance against a failure mode that would look like a deadlock in production.
+func (f *Fabric) descendantsLocked(rootID string) []string {
+	visited := map[string]struct{}{rootID: {}}
+	var out []string
+	var walk func(parent string)
+	walk = func(parent string) {
+		for _, child := range f.children[parent] {
+			if _, seen := visited[child]; seen {
+				continue
+			}
+			visited[child] = struct{}{}
+			if a, ok := f.agents[child]; ok && a.State != StateRetired {
+				out = append(out, child)
+			}
+			walk(child)
+		}
+	}
+	walk(rootID)
+	return out
 }
 
 // retireLocked is Retire's lock-held form, shared with idle reclamation so both
@@ -365,8 +416,9 @@ func (f *Fabric) orphanedSpawnsLocked(parentID string) []string {
 }
 
 // recordAgentRetired emits the retirement event, carrying the agents this one left
-// live (P2-7). Kept out of the locked section by both callers: recording does I/O.
-func (f *Fabric) recordAgentRetired(ctx context.Context, a *Agent, orphans []string) {
+// live (P2-7) and, for a cascaded retirement, the root that took it down. Kept out of the
+// locked section by both callers: recording does I/O.
+func (f *Fabric) recordAgentRetired(ctx context.Context, a *Agent, orphans []string, cascadeRoot string) {
 	payload := map[string]any{
 		PayloadKeyStopReason: StopRetired.String(),
 	}
@@ -375,6 +427,12 @@ func (f *Fabric) recordAgentRetired(ctx context.Context, a *Agent, orphans []str
 		// event would be noise, and "this agent left N live children" is the fact an
 		// operator acts on.
 		payload[PayloadKeyOrphanedSpawns] = orphans
+	}
+	if cascadeRoot != "" {
+		// Present only on the descendants a cascade retired: it names the root whose
+		// retirement caused this one, which is the difference between "an agent was
+		// retired" and "an agent was retired BY something".
+		payload[PayloadKeyCascadeRoot] = cascadeRoot
 	}
 	f.record(ctx, a, EventAgentRetired, payload)
 }
