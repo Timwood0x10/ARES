@@ -39,6 +39,15 @@ type ContextRetriever interface {
 // the store's hybrid ranking. For the runtime path, collectSnippets now
 // filters on Relevance (see DefaultMinRelevance) and Confidence reliability
 // floor (see minReliabilityFloor), NOT on Confidence as a relevance score.
+//
+// What 0.4 means here (defect P2-10, "语义偏弱"): on the hybrid FinalScore — a weighted
+// mix of a 1024-dim cosine and a lexical term — 0.4 is a WEAK floor, so it mostly drops
+// near-orthogonal hits rather than mediocre ones. Raising it sharpens the snippet block at
+// the cost of recall; that is a product decision, not a defect to fix by default.
+//
+// `runtime/memory/context` has its own DefaultMinScore (also 0.4) for experience recall.
+// Same number, DIFFERENT score behind it (experience confidence, not this FinalScore) —
+// unify them only together with the ranking, not by copying one constant over the other.
 const DefaultMinScore = 0.4
 
 // DefaultMinRelevance is the minimum Relevance score for a KnowledgeObject to

@@ -83,7 +83,10 @@ func TestDeployStoreIODoesNotBlockReaders(t *testing.T) {
 	// Release the parked deploy and let it finish.
 	close(store.gate)
 	select {
-	case <-deployDone:
+	case err := <-deployDone:
+		// The subject of this test is that Deploy does NOT hold the state mutex across store
+		// I/O (asserted above); the deploy's own error is not it, so discard it explicitly.
+		_ = err
 	case <-time.After(2 * time.Second):
 		t.Fatal("deploy did not finish after the store unblocked")
 	}

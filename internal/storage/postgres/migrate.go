@@ -92,7 +92,7 @@ var coreMigrationStatements = []string{
 	// The embeddings table carries no dedicated repository (VectorSearcher
 	// owns per-collection tables), but its vector column MUST declare the
 	// same dimension as everything else in this package
-	// (defaultVectorDimension): a hardcoded 1536 here made any writer using
+	// (DefaultVectorDimension): a hardcoded 1536 here made any writer using
 	// the codebase-standard 1024-dim embeddings fail the insert.
 	fmt.Sprintf(`CREATE TABLE IF NOT EXISTS embeddings (
 			id VARCHAR(255) PRIMARY KEY,
@@ -100,7 +100,7 @@ var coreMigrationStatements = []string{
 			embedding VECTOR(%d),
 			metadata JSONB,
 			created_at TIMESTAMP DEFAULT NOW()
-		)`, defaultVectorDimension),
+		)`, DefaultVectorDimension),
 
 	`CREATE INDEX IF NOT EXISTS idx_embeddings_table_name ON embeddings(table_name)`,
 

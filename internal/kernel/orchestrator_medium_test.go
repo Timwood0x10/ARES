@@ -149,7 +149,10 @@ func TestAdoptMidBindShutdownKeepsStoppedState(t *testing.T) {
 	}()
 	// Wait for Shutdown to finish tearing down "late".
 	select {
-	case <-shutdownDone:
+	case err := <-shutdownDone:
+		// Completion signal: the assertion in this test is that Shutdown RETURNS (and what
+		// it tore down), so the error is discarded explicitly rather than silently.
+		_ = err
 	case <-time.After(10 * time.Second):
 		t.Fatal("Shutdown never completed")
 	}

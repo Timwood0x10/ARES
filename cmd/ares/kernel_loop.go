@@ -306,6 +306,26 @@ func runSweepChain(
 			"kernel recovery loop: reaped retired agent record(s)",
 			"count", len(reaped), "agent_ids", reaped)
 	}
+
+	// P2-7 ②: the ACCUMULATION retirement leaves behind.
+	//
+	// Retiring an agent does not retire the agents it spawned (`Agent.Parent` is
+	// provenance, not a lifecycle relation), so those stay live and keep their resource
+	// claims. Each retirement now names its own orphans in the event stream; what nobody
+	// could see is the total, which is what a spawn/retire loop grows without anyone
+	// noticing — the claims are held by agents that look idle and correct one at a time.
+	//
+	// Reported only when non-empty: a quiet pool must not emit a line per sweep. Warn,
+	// because it is actionable (reclaim them, fix the spawner, or raise the budget) and
+	// because the alternative — silence — is how this stayed invisible.
+	if audit := recovery.AuditOrphans(3); audit.Agents > 0 {
+		log.Warn(ctx, "runKernelRecoveryLoop",
+			"kernel recovery loop: agents whose spawning parent is gone are still holding resources",
+			"orphans", audit.Agents,
+			"resources", audit.Resources,
+			"sample", audit.Sample,
+			"why", "retirement is single-node by contract (Parent is provenance); this is their cumulative footprint, not an error in this sweep")
+	}
 }
 
 // reclaimIDs flattens reclaimed agents for the sweep's log line, keeping the STATE

@@ -123,6 +123,23 @@ type Agent struct {
 // CognitiveStateSchemaVersion is the current CognitiveState schema version.
 // Bump when CognitiveState fields change; DecodeCognitiveState handles
 // migration from prior versions. (A versioned structure.)
+//
+// ROLLING-UPGRADE RULE (defect P2-6③ / A4) — bumping this is not a local change:
+// DecodeCognitiveState REFUSES a version newer than this build's, which is correct (a future
+// format cannot be interpreted) but has a deployment consequence. During a rolling upgrade
+// the NEW nodes write v(N+1) death snapshots, and the OLD nodes still running reject them —
+// so for that agent the in-place revival path degrades to "spawn a replacement", i.e. the
+// cognition is lost exactly where the in-place path exists to keep it.
+//
+// A bump therefore ships WITH one of these, chosen deliberately:
+//   - a BACKWARD-COMPATIBLE read (the old build reads the subset it understands), which
+//     means the new field must be additive and its absence must be a valid state; or
+//   - an upgrade-time drain/migration of the revival snapshots (clear them before rolling),
+//     trading "no in-place revival during the rollout" for "no silent degradation".
+//
+// Doing neither does not fail loudly — the refusal is logged at the revival site and the
+// replacement path proceeds — which is why the rule lives here, next to the number it
+// governs, rather than in a runbook somewhere.
 const CognitiveStateSchemaVersion = 1
 
 // CognitiveState is the agent's independent cognitive content (Context / Observation / Working Memory / Decision / Tool State / Checkpoint).

@@ -266,6 +266,27 @@ func wiringServeToolchain(ctx context.Context, cfg *ares_config.Config, comp *ar
 			"serve: tool-call feedback channel armed (evolution reads tool outcomes)")
 	}
 
+	// P2-14②: report how many tools the model will choose from.
+	//
+	// The registered set is fixed at startup (discovery is opt-in — see
+	// DiscoveryConfig "the single security boundary") and grows with every MCP server and
+	// every native registration, and NOTHING reported the total: an operator could read
+	// "tools enabled" in a config and still not know how wide the selection surface was.
+	// The count is a fact, so it is logged on every boot.
+	//
+	// There is deliberately NO cap and no invented threshold here. What a cap should be
+	// (per server? per capability domain? a token budget for the tool block?) is a product
+	// decision this wiring cannot make, and a silently-enforced limit would be worse than a
+	// loud number: it would drop tools without saying which. The number plus the options is
+	// what an operator can act on.
+	nativeTools := internalReg.Count()
+	log.Info(ctx, "wiringServeToolchain",
+		"serve: agent tool surface registered",
+		"tools", nativeTools,
+		"capped", false,
+		"note", "fixed at startup (discovery is opt-in); this is the surface the model chooses from",
+		"if_too_wide", "narrow the MCP servers, or enable discovery + let the agent use capability search instead of registering everything")
+
 	return toolBinder, registry, internalReg, nil
 }
 

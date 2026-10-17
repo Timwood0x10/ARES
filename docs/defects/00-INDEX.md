@@ -45,20 +45,20 @@
 
 | # | 缺陷 | 一句话 |
 |---|---|---|
-| P2-1 | **G2** 三道门盲区 | 门只防"回归"，不防"整体往糊弄漂"（**依赖 P0-1 修好才有意义**） |
-| P2-2 | **D3** Reconcile 全量扫（**措辞更正 2026-10-16**：只在快照 ID 集时持读锁，重活在锁外） | 漏事件时 O(节点) 重扫 + RUNNING 短暂 desync（规模化才痛） |
-| P2-3 | **D6** stableRound 并发前提 | 并发改同 session 图时"稳定重放"可能失效 |
+| P2-1 | **G2** 三道门盲区 | 门只防"回归"，不防"整体往糊弄漂"。**2026-10-17 收窄**：P0-1 的判据已落地（确定性 floor + 锚定语料 + arena 可选真实执行比对）⇒ "两个候选都答错、判官都给好评"这一种漂移已被堵住；**剩余**：三道门仍**只看相对回归**，缺一个**绝对水平闸门**（例如"绝对分低于 X 不许晋升"）——属判据设计，**待拍板** |
+| P2-2 | **D3** Reconcile 全量扫 〔**已关闭 2026-10-17**：措辞更正 + 可见性已在〕 | ① **措辞更正（2026-10-16）**：不是"全量拿锁"——只在快照 ID 集时持读锁，重活在锁外；② **"漏事件静默"不成立**：漏事件那条路径**已打** `log.Error("reconcile failed", reason="dropped events")`，重扫完成打 `log.Warn("reconcile complete", created/removed/…)` ⇒ 补一次重导是**可观测**的；③ 残留（非本缺陷）：O(节点) 重扫成本与"瞬态 desync 到下次 tick 收敛"是**规模化属性**，不是静默 |
+| P2-3 | **D6** stableRound 并发前提 **〔已关闭 2026-10-17：前提在当前设计下成立〕** | 该函数按"同一 stable round 重导出同一批 ID"工作，隐含**单写者**。实测：同一 session 的图由**单写者**推进（调度器按 session 串行 lease 任务，一个 session 同时只有一个 quantum 在改图）⇒ 前提成立。**留痕**：若将来引入"并发改同一 session 图"，必须重新评估此前提（届时失败形态是**分叉出重复分支**，而非报错） |
 | P2-4 | **A-F3** requeue ≠ 恢复 〔**已关闭 2026-10-16**：静默半已消除〕 | requeue 只管回队（设计如此）；但"全 agent 超预算 ⇒ 没人能接"**不再静默**：`Scheduler.logFailure` 对 `ErrNoAffordableCandidate` / `ErrNoCapableCandidate` **各占一个节流槽、每 5s 一条 Error（带 task_id）**，READY 每 500ms 重轮询 ⇒ 持续可见且可区分成因。剩余（非本缺陷）：等待计数做面板指标 / durable 事件 |
 | P2-5 | **T-F3** 两个预算互不知晓 **〔已落 2026-10-16 · 唯一可行落点〕** | 为什么"联合视图"只能落在**调用方**：task fabric **不知道 agent**，而恢复策略只拿到一个死 agent 的 id（`RestartAgent(ctx, deadAgentID, cognitive, capabilities)`）⇒ 两个预算**结构上互不可见**。**修法**：把任务自己的预算并进恢复快照（`RecoveryTask.Attempts/MaxRetries`，**原样拷贝、不推断**——0/0 读作"没有重试预算"而不是"无限"），在唯一同时持有两者的 `cmd/ares/kernel_loop.go` 那一行**同时给出两个预算**；**两者皆尽时升为 `log.Warn` 并明说"没有东西可试了"**（有余额时仍是 Info：替换执行体还会再跑一次，此刻不重要）。测试 2 条 + 反证（去掉填充 → `the snapshot must carry the task's spent attempts verbatim`） |
-| P2-6 | **A-dispo2/3/4** 复活预算·快照·schema | lifetime 累积误拒长寿命 agent（**✅审计确认仍开**：`MaxRestarts` = "the total restart attempts"，无时间窗）/ **快照"1024 静默退化"：审计未定位到该上限，需证据或删除** / 滚动升级挡复活 |
+| P2-6 | **A-dispo2/3/4** 复活预算·快照·schema | **②「快照 1024」已关闭 2026-10-17（且我更正自己上轮的"未能定位"）**：它就是 `internal/fabric/agent/snapshot.go` 的 `maxDeathSnapshots = 1024` —— 死亡快照**条数上限**，且有**第二重时间上限**（`defaultDeathSnapshotRetention = 1h`）；注释写明"按 `DiedAt` 淘汰最旧、恢复只取最新、丢的是恢复环用不到的尾部"。判定：**有意的、有理由的边界，不是缺陷**（唯一可挑的是淘汰无日志，但按该理由无处可诉）。**① 已修 2026-10-17**：`RestartPolicy.RestartWindow`（**默认 1h**，"1 小时内 5 次"= 崩溃环预算；**零值仍是 lifetime 语义** ⇒ 零值策略行为不变）。计数器由 `map[string]int` 改为**时间戳切片**，gate 读取时**就地剪掉窗口外的戳**（切片长度正比于预算而非 agent 寿命），`RestartCount` 报"**计入预算的次数**"（与 gate 看到的一致）。**测试 2 条**（窗口给回预算；零窗口保持旧语义）+ **反证**（忽略窗口 → `restarts older than the window must stop counting, got 5`）。**③ 滚动升级挡复活（A4）已核 2026-10-17**：**当前不会触发**（`CognitiveStateSchemaVersion = 1`，只有一个版本 ⇒ 不存在"旧节点读到新快照"）。它是**前瞻性隐患**：一旦升版，新节点写的 v(N+1) 死亡快照会被仍在运行的旧节点**拒读** ⇒ 该 agent 的**原地复活退化为换人**（恰好在原地复活存在的意义处丢认知）。**已落**：把**滚动升级规则**写进版本常量旁（升版必须**同时**交付"向后兼容读（新字段 additive 且缺失是合法态）"或"升级前清空/迁移待复活快照"，**二者择一**），并让 `ErrCognitiveStateSchemaVersion` 的文本**说出部署后果**（"written by a newer build… cannot revive it in place"，否则读日志的人会当成损坏而重试）。测试 2 条（拒读语义 + 文本合同；正常/遗留版本仍可读）。**说明**：这条是文档+文案改动，**测试就是验证**（不给它做变异反证——变异只会把字符串改回去，不增加信息） |
 | P2-7 | **A-factory4** 孤儿 agent 累积 | `Retire` 不杀子 agent（`Agent.Parent` 注释明说 **PROVENANCE ONLY，非生命周期关系** ⇒ 级联**需拍板**）。**已落（可见性半边 2026-10-16）**：`retireLocked` 在状态变更**前**读孤儿（新增 `orphanedSpawnsLocked`，持 `f.mu`），两个调用方（`Retire` / `ReclaimIdleAgents`）在**锁外**把孤儿挂进 `agent.retired` 事件（新 payload key `orphaned_spawns`，仅在有孤儿时带；该包**用事件不用日志**，记录做 I/O 不能进锁）。测试 3 条（契约 / 无孤儿不带键 / helper 边界：只报**直接**且**未退役**的子）+ **反证**（去掉读取 → `retiring a parent must name the agents it left live`）。**仍是"可见"不是"回收"**：级联方向 1（显式策略）/ 方向 2（对账指标）待拍板 |
 | P2-8 | **I4** dead-letter 非持久 | 进程内存死信，重启即失，协作失败不可审计 |
-| P2-9 | **S-st-S1/S-st-S2** 维度写死·共实例 | 1024 锁死（换模型=重嵌）；向量与事件账本共 PG 无隔离 |
+| P2-9 | **S-st-S1/S-st-S2** 维度写死·共实例 | **① 维度写死一半已修 2026-10-17**：`1024` 原本在**两处**各写一遍（`storage/postgres` 的列类型 DDL + `ares_bootstrap` 的向量 provider 配置）⇒ 已**单源化**（导出 `postgres.DefaultVectorDimension`，bootstrap 引用它；静态验证：生产侧不再有第二个维度字面量，注释里写明"一个数两个读者"，并点名历史上 1536/1024 那次插入失败）。**仍开**：表名本身把维度烘进去（`knowledge_chunks_1024`/`experiences_1024`）⇒ **换嵌入模型仍要重嵌+改表名**。**② 共实例**：属**部署属性**（同一 PG 实例存向量与事件账本，无资源隔离=吵闹邻居），要独立实例才能隔离，未改 |
 | P2-10 | **R4/R6** RAG 默认关·阈值 0.4 | 记忆复用不显式开就不走；高维余弦 0.4 偏弱（知边界） |
-| P2-11 | **S-mcp-S1** 工具名撞车 first-wins | 两个 server 同名工具只有先连的活，后到的 skip（**已有 warn，但 `winner` 标签误导**） |
+| P2-11 | **S-mcp-S1** 工具名撞车 first-wins 〔**已关闭 2026-10-17**〕 | 策略本身**有意**（既存注册优先；内置先注册，所以内置赢）。缺陷是**它的报告说谎**：`winner="builtin"` 在两个 MCP server 同名时会指名一个**根本没参与的**赢家——而那一行日志的唯一用途就是报告赢家。已改为 `kept="pre-existing registration"` + `skipped_server=…`，并**不再臆断归属**（注册表只告诉"已存在"，不说持有者是谁）⇒ 冲突可观测、可归因 |
 | P2-12 | **S-mcp-S4** health 标了没人消费 〔已修 2026-10-13；**复核后补端点 join**〕 | discovery 标 `Healthy=false` 但 MCP Manager 不摘工具 → 半死 server 工具仍可调 |
 | P2-13 | **S-mcp-S5** transport 自动断连不摘工具 〔已修 2026-10-13〕 | 断连后工具留 Registry 变"僵尸"（execute 才报 connection refused） |
-| P2-14 | **S-mcp-S3/S6** discovery 默认关·工具规模 | 工具集启动时定死（不随网络发现）；工具越多 LLM 选择越稀释 |
+| P2-14 | **S-mcp-S3/S6** discovery 默认关·工具规模 | **① discovery 默认关是有意的、非缺陷**（`config_defaults.go`：opt-in via `Enabled`，注释自称 "**the single security boundary**"——只允许列出的服务被发现）。**② 工具规模仍开**：演化的工具白名单有界（`evolution.MaxToolsEnabled`），但**启动时注册的工具总数无上限**（MCP server × 其工具）⇒ "工具越多、LLM 选择越被稀释"仍成立。属**规模化项**（需要什么形态的上限要产品判断），未做 |
 
 ---
 
@@ -111,6 +111,36 @@
 
 ## 修订记录
 
+**2026-10-17 · A 组 5 项：两项落地 + 一项用真 provider 实测定案（+ 一项顺带发现）**：
+
+1. **P2-14② 工具总数可见（已落）**：`wiringServeToolchain` 在装配末尾打
+   `"serve: agent tool surface registered" tools=<n> capped=false` + "若太宽怎么办"的下一步；
+   **刻意不发明阈值**（上限该按 server／能力域／token 预算，是产品决定），因为"静默限流会不声不响地丢工具，
+   比一个响亮的数字更糟"。缺陷的**内核是"无人知道有多大"** ⇒ 这一半已消除，上限形态仍开放。
+2. **P2-10 阈值边界写明（已落）**：两处 `DefaultMinScore = 0.4` 都补上——**0.4 对 1024 维余弦是弱下限**
+   （无关文本常在 0.5–0.6，所以它主要挡近似正交，**不是相关性保证**；0.4→0.5/0.6 是用召回换更锐的上下文块，
+   属产品决定）；并写明两处**同号不同义**（经验置信度 vs store 的 FinalScore），**不合并**、但互相指认。
+3. **P0-4A：决策输入用真 provider 实测完毕（这是该文档自己要求的先决步骤）**：
+   新增 `-tags integration` 的测量用例（**只断言"测到了东西"**：模型至少调过一次工具，否则"没有工具回合"
+   会被误读成"每个工具回合都空"）。实跑 **5 次**：**工具调用回合 5/5，其中 Content 非空 0/5，rune 数全为 `[0 0 0 0 0]`**。
+   ⇒ **档 0（存 `resp.Content`）在最需要理由的回合上一无所得**；**档 1（存 thinking）类型上还不存在**
+   （`GenerateResponse` **没有** `ReasoningContent` 字段，要先改类型）。**定案：走选项 ① `record_rationale` 元工具**
+   （该文档原本的倾向，现在有数据支撑）。**实现尚未做**——它是要动 planner 生长路径的真功能，不是文案。
+4. **顺带弄清的两件事实**：① `disposable-agent.md` 里 A1 的**方案 B 早已落地**（2026-10-13），
+   所以"A/B 待拍板"指的是 `cognition-persistence.md` 那条线；② 测量本身证明"先测再选"是对的——
+   若按档 0 直接实现，会在工具回合存下一串空字符串，而且**看不出是空的**。
+5. **P2-7② 对账指标（已落）**：不做级联（`Parent` 是 provenance-only，改它=改契约），改为让**累积可见**：
+   `agentfabric.AuditOrphans(sample)` = 孤儿数 + **它们仍持有的资源** + 有界样本；挂在 `aresrecovery.Recovery`
+   上（该层已跑回收 sweep、已付全量遍历成本 ⇒ **不改任何签名**），sweep 末尾**仅非空时**打 Warn。
+   测试 2 条（退役父留下的；**父记录整个丢失**也算孤儿）+ 反证（去掉"父已退役/缺失"判据 →
+   `with the parent alive there is nothing to reconcile`）。**说明**：级联方向 ① 仍未做，那是契约变更，需拍板。
+6. **P2-1：更正我自己的判断——这道绝对闸门早就存在**。`evolution.gates.eval_min_score` →
+   `bootstrap_evolution.go:251` 的 `minScore` → 门 `MinScore`（`>0` 覆盖，否则门自身 **0.7**，`gate_eval.go:45`）。
+   我上一轮把它列为"仍缺绝对水平闸门"是**错的**。**已补的**：启动日志打 `min_score=<有效值> source=<配置/门默认>`
+   ——此前数值**从不露面**，运维既不知道在生效的绝对线是多少，也分不清读到的是自己的策略还是门的内置下限。
+   ⇒ **A 组 5 项到此：4 项已落/已定案（P2-7②、P2-10、P2-14②、P0-4A 决策输入），P2-1 更正为"早已实现+补可见性"；
+   真正的实现欠账只剩 `record_rationale` 元工具**（P0-4A 定案的那一件）。
+
 **2026-10-16 · code review（本会话全部改动）+ 自记错误（含已修）**：
 
 **静态与覆盖**：`go vet` 本轮触及的包全绿；新文件**无静默吞错**、无 TODO/FIXME。覆盖率：`agentruntime` **84.5%**；`ares_bootstrap` 包级 65.2%，**新文件逐函数复核**——`candidate_replay.go` **100%**、`runtime_arena_executor.go` 多数 85–100%，**但 `Execute` 曾为 0.0%**（测试只打了内部 `runtimeFor`，没打 scorer 真正调用的那个入口）⇒ 已补入口测试（**无答案必须是错误、不得是空串**——空答案会被 scorer 当"答得差"计分）。
@@ -123,7 +153,7 @@
 4. **反证变异未落地却当成"反证通过"**：一次 `import` 变未使用导致**编译失败**、一次多行 `perl` **根本没匹配**，而我先看到了"测试通过"。纪律已固化为：**先数变异标记行数确认落地，再跑测试**。
 5. **`RuntimeArenaExecutor` 初版对每个候选的运行时无界缓存**：滚动部署会一直比较新候选 ⇒ 不是缓存是**泄漏**（复查时发现；改为**有界保留 2**，更早的立即 `Close`）。
 
-**审计发现并更正的两处台账失准**（见下一节详表）：P2-2 的"全量拿锁"、P2-6b 的"快照 1024 静默退化（**未能定位**）"。
+**审计发现的两处台账失准，均已更正**：P2-2 的"全量拿锁"（实测只在快照 ID 集时持读锁）；P2-6b 的"快照 1024 静默退化"（**是我上轮找错包说"未能定位"**；实际是 `fabric/agent` 的 `maxDeathSnapshots`，且有 1h 时间上限 ⇒ 属有意边界）。**教训**：审计结论里的"找不到"同样要标明**找过哪儿**，否则它和"不存在"看起来一样。
 
 **2026-10-16 · P2 层"是否彻底完成"的逐条取证审计（结论：没有；并发现两处台账失准）**：
 
@@ -135,16 +165,41 @@
 | P2-6a 复活预算 lifetime 累积 | `MaxRestarts` 注释自陈 "the **total** restart attempts allowed"（无时间窗） | ✅ 仍开 |
 | P2-7 孤儿 agent 累积 | `retireLocked` 只 `releaseLocked(a.resources)`，**不处理它 spawn 的子 agent** | ✅ 仍开 |
 | P2-8 dead-letter 非持久 | `DeadLetterStore` = 进程内存（`entries []DeadLetter`，容量 1024，`internal/agentipc/deadletter.go:32`） | ✅ 仍开 |
-| P2-9 维度写死 | `VectorDimension: 1024`（`provide_new_evolution.go:591`）+ 表名 `knowledge_chunks_1024`/`experiences_1024` | ✅ 仍开（"共实例"半边未核） |
+| P2-9 维度写死 | `defaultVectorDimension=1024`（列类型 DDL）+ `VectorDimension: 1024`（provider 配置）**两处字面量**；表名 `knowledge_chunks_1024`/`experiences_1024` | **①已修 2026-10-17**（单源化：导出 `DefaultVectorDimension`，bootstrap 引用；静态验证生产侧无第二处维度字面量）；②表名仍烘焙维度、③共实例（部署属性）**仍开** |
 | P2-10 RAG 默认关·阈值 0.4 | `EnableRAG bool`（Go 零值 = false）+ `MinScore` "Defaults to 0.4" | ✅ 仍开 |
-| P2-11 工具名撞车 first-wins | `ErrToolAlreadyRegistered` + builtin 注释 "The pre-existing tool wins." | ✅ 仍开（"winner 标签"半边未核） |
-| P2-14 discovery 默认关 | `config_defaults.go:290` "opt-in via Enabled (**default false**)… the single security boundary" | ✅ 仍开 |
-| P2-3 stableRound 并发前提 | 实现自陈依赖"同一 stable round 重导出同一批 ID"（隐式单写者假设） | ✅ 仍开（**边界窄**：仅同 session 并发改图时） |
+| P2-11 工具名撞车 first-wins | `ErrToolAlreadyRegistered` + builtin 注释 "The pre-existing tool wins."；日志原为 `winner="builtin"` | **已关闭 2026-10-17**：策略有意（既存优先），缺陷是报告**臆断赢家**（两 MCP server 同名时会指名没参与的 builtin）⇒ 改为 `kept="pre-existing registration"` + `skipped_server` |
+| P2-14 discovery 默认关 | `config_defaults.go:290` "opt-in via Enabled (**default false**)… the single security boundary" | **默认关判定为有意、非缺陷**；"工具规模无上限"**仍开**（演化白名单有 `MaxToolsEnabled`，启动注册总数无上限） |
+| P2-3 stableRound 并发前提 | 实现自陈依赖"同一 stable round 重导出同一批 ID"（隐式单写者假设） | **已关闭 2026-10-17**：同一 session 的图由单写者推进（调度器按 session 串行 lease）⇒ 前提成立；留痕"若引入并发改同 session 图需重评" |
 | **P2-2 Reconcile 全量拿锁** | `Reconcile` **只在拷贝 ID 集时持读锁**（`RLock` → `for id := range planIDs` → `RUnlock`），**重活在锁外** | ⚠️ **台账表述失准**：不是"全量拿锁"；O(nodes) 与 RUNNING desync 的可能仍在，但措辞要改 |
-| **P2-6b 快照 1024 静默退化** | 在 `fabric/task` 与 `aresrecovery` **找不到**任何快照大小/条数上限（只见到 tracer 的 "0 = unlimited"） | ⚠️ **无法定位**：需补证据或删除该条 |
-| P2-1 G2 三道门盲区 | 本质是"门防回归、不防整体漂移"的设计缺口，依赖 P0-1 才有意义 | 保持开放 |
+| **P2-6b 快照 1024 静默退化** | 我上轮在 `fabric/task` 与 `aresrecovery` 找不到上限；**2026-10-17 定位到**：`internal/fabric/agent/snapshot.go` 的 `maxDeathSnapshots = 1024`（死亡快照条数上限）+ `defaultDeathSnapshotRetention = 1h`（时间上限） | **已关闭**：双重上限 + 注释写明"按 `DiedAt` 淘汰最旧、恢复只取最新"⇒ 属**有意的边界**，非缺陷。**我上轮的"未能定位"也不准**（找错了包：应在 `fabric/agent`） |
+| P2-1 G2 三道门盲区 | 本质是"门防回归、不防整体漂移"的设计缺口 | **被 P0-1 收窄**（判据四项已落：确定性 floor 堵住"两候选都答错、判官都给好评"）；**仍缺绝对水平闸门**（阈值待拍板） |
 
-**处置**：P2-2 措辞待改；P2-6b 需证据或删；其余按原样保留，能小修的（P2-11 标签、P2-10 阈值默认）下一步动。
+**处置（2026-10-17 更新）**：P2-2 措辞已改并**关闭**（漏事件路径本就有日志）；P2-6b **已定位并关闭**；P2-11 **已关闭**（报告不再臆断赢家）；P2-3 **已关闭**（单写者前提成立）；**P2-9 维度单源化已修**（另两半仍开）；P2-14 的 discovery 默认关判定为**有意**；P2-1 被 P0-1 收窄。
+
+**仍未做（2026-10-17 全量登记，按"是否需要拍板"分组；本块属上面这份审计的结论，不另起章节号）**
+
+**A. 需要拍板（我不动）**
+
+| 项 | 待定内容 |
+|---|---|
+| P2-14② | 启动注册工具总数的上限**形态**（按 server／按能力域／按 token 预算）——**已落 2026-10-17（可见性）**：`wiringServeToolchain` 启动时打 `tools=<n> capped=false` + 下一步选项；**不发明阈值**（上限形态仍是产品决定，但"无上限且无人知"已消除） |
+| P2-7 级联 | **已按 ② 落地（2026-10-17）**：不做级联（`Parent` 仍是 provenance-only，改它就要动契约），而是让**累积可见** —— `agentfabric.AuditOrphans(sample)`：孤儿数 + **它们仍持有的资源** + 有界样本；挂在 `aresrecovery.Recovery` 上（该层已跑回收 sweep、已付全量遍历的成本，无需改签名），sweep 末尾**仅在非空时**打 Warn（`orphans=N resources={…} sample=[…]` + 为什么）。测试 2 条（退役父留下的孤儿；**父记录整个丢失**也算孤儿）+ 反证（去掉"父已退役/缺失"判据 → `with the parent alive there is nothing to reconcile`）。**级联方向 ① 仍未做**（那是契约变更，需你点头） |
+| P2-1 | 绝对水平闸门的**阈值与口径**——**更正我上一轮的判断：这道门早就存在且已接线**（`evolution.gates.eval_min_score` → `bootstrap_evolution.go` 的 `minScore` → 门的 `MinScore`，`>0` 时覆盖、否则用门自身 **0.7**，见 `gate_eval.go`）。**已落 2026-10-17（可见性）**：启动日志打 `min_score=<有效值> source=<你的配置/门默认>`，因为此前**数值从不露面**，运维无法判断"在生效的那条绝对线"是多少、也无法区分读到的是自己的策略还是门的内置下限。**阈值本身（0.7）仍是你的政策决定** |
+| P2-10 阈值 | `DefaultMinScore = 0.4`（**两处**）——**已落 2026-10-17（边界写明）**：两处各自补上"0.4 对 1024 维余弦是**弱下限**、只挡近似正交、不是相关性保证"与"两处同号**不同义**（一处过滤经验置信度、一处过滤 store 的 FinalScore），并互相指认。**默认值本身仍是你的决定**（0.4→0.5/0.6 = 用召回换更锐的上下文块） |
+| P0-4A | rationale 持久化：**决策输入实测（5/5 工具回合 Content 全空）⇒ 走选项 ①**；**已全部落地 2026-10-17**：① `rationaleFrom` 无 Content 时从 `record_rationale` 调用的**参数**取（首个、畸形即缺席、**同受 512 上限**）；② **该调用不长节点**（它是笔记不是活，否则每个陈述都在图里留一个空节点）+ 计数回传；③ **只给 planner 认知广告**这条 schema（**不进注册表** ⇒ 其他 agent 工具面与启动工具数都不变；且它**从不被执行**，参数已被消费、节点已跳过）；④ rationale-only 回合用**自己的原因**结答（`answerCauseRationaleOnly`，**不冒充** `l1_blocked`——那是模型行为，不是约束失败）。测试 **7 条**（含"schema 与消费方名字/键一致且能往返"这条**防静默**契约）+ 反证（去掉提取路 → `expected "comparing both reports…" actual ""`） |
+
+**B. 无需拍板、可继续做（未做）**
+
+| 项 | 内容 |
+|---|---|
+| P2-6① | `MaxRestarts` 加**时间窗**（现为 lifetime 累积 ⇒ 长寿命 agent 会被误拒） |
+| P2-6③ | **滚动升级挡复活**（**未核**——先取证再定） |
+| P2-9②③ | 表名把维度烘进去（换模型=重嵌+改表名）；向量与事件账本**共 PG 无隔离**（部署属性） |
+| P2-14② | "没有上限"这件事本身可以先加一条**启动告警**（形态待定，但缺上限的事实可先可见） |
+| P0-1 | **定时触发**（无 evolution 的部署里喂非零样本 + 盯语料陈旧/判官漂移） |
+| §四 残留 | `SearchSimilarTasks` 无 user 维度（**要动接口签名、跨模块**）；`StoreExporter` 无人实现；M2.5 关系门 / M4 `BuildReport` / M6 `TieredRetriever` 接生产**未排期**；`create_plan`/operator **无需动**（列出防误判） |
+
+**C. 已落（本会话，供对照）**：P0-2、P0-3、P1-1…P1-7、P2-4、P2-12、P2-13、**P2-2、P2-3、P2-6b、P2-11**、语料 **40→73**、`SetDependencies` DAG 校验、P2-7 **可见性半边**、**P2-9 维度单源化**、P0-1 判据四项 + **per-candidate 回放**（构件 → 消费方两步 → 执行器 → provider 懒解析 → 开关，**默认关**）。
 
 **2026-10-16 · per-candidate 运行时的**构件**（步骤 1+2／共 4，**尚未接线**）**：
 
@@ -654,6 +709,8 @@ planner 写 Result.Metadata[rationale]
 **专项内顺序**：(i) 接线（信号现成，即得）→ (ii) golden（可复核的对错 oracle）→ A（Rationale）作为判官输入 + 续跑思路放最后。A 排后的理由：其价值一半在 G1，而 G1 的主信号来自**可复核的 golden**，不来自自述理由；先有 golden 这个"地"，rationale 才有"用"。
 
 ### 四、其余未做（前几轮已记录的残留，集中在此防丢）
+
+> **全量未做登记（2026-10-17）见「修订记录」内那一块**（按"是否需要拍板"分组：A 待拍板 5 项 / B 可继续做 6 项 + 本会话已落清单）。本表只留"前几轮残留"的历史条目。
 
 | 项 | 状态 | 出处 |
 |---|---|---|

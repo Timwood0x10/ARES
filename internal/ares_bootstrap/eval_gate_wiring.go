@@ -225,6 +225,22 @@ func buildEvalGate(
 	if cfg.MinScore > 0 {
 		runtimeCfg.MinScore = cfg.MinScore
 	}
+	// State the ABSOLUTE bar out loud (P2-1).
+	//
+	// The gate rejects a candidate that REGRESSES against the active one (relative) and one
+	// that scores below this floor (absolute) — and only the second catches a whole field
+	// drifting down together, which is the concern behind "门只防回归，不防整体漂移". The
+	// mechanism was wired but the number never appeared in a log, so an operator could not
+	// tell which bar was in force, nor whether the 0.7 they were reading was their own
+	// setting or the gate's built-in floor. Those are different promises.
+	floorSource := "gate default (evolution.DefaultEvalGateConfig)"
+	if cfg.MinScore > 0 {
+		floorSource = "evolution.gates.eval_min_score"
+	}
+	log.Info("bootstrap: G3 eval gate absolute floor",
+		"min_score", runtimeCfg.MinScore,
+		"source", floorSource,
+		"role", "a candidate below this is rejected however the others score — this is the bar that catches a whole field drifting down")
 	// Runtime strictness is ALWAYS on for a built gate (M-G1): infrastructure
 	// gaps were already rejected at bootstrap (armed-fail-closed above), so
 	// the only remaining gap is a runtime loss (e.g. evaluators produce no

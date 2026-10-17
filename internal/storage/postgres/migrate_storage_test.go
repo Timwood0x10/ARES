@@ -47,11 +47,11 @@ func TestStorageMigrations_PerTenantContentHash(t *testing.T) {
 
 // TestCoreMigrationsEmbeddingsDimensionMatchesCanonical locks REVIEW 3.5b:
 // the legacy embeddings table used to declare VECTOR(1536) while every other
-// vector column in the package is defaultVectorDimension (1024). A writer
+// vector column in the package is DefaultVectorDimension (1024). A writer
 // using the canonical dimension could never insert into the mismatched
 // table. The DDL must derive from the single source of truth.
 func TestCoreMigrationsEmbeddingsDimensionMatchesCanonical(t *testing.T) {
-	want := fmt.Sprintf("embedding VECTOR(%d)", defaultVectorDimension)
+	want := fmt.Sprintf("embedding VECTOR(%d)", DefaultVectorDimension)
 	found := false
 	for _, m := range coreMigrationStatements {
 		if strings.Contains(m, "CREATE TABLE IF NOT EXISTS embeddings (") {

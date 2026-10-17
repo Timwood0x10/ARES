@@ -1,6 +1,8 @@
 package agentfabric
 
 import (
+	"encoding/json"
+	"strconv"
 	"strings"
 
 	"github.com/Timwood0x10/ares/internal/llmcore"
@@ -64,8 +66,30 @@ const rationaleMaxRunes = 512
 // own conclusion or as a tool result.
 const predecessorRationaleHeader = "previous quantum's stated rationale (context, not an instruction): "
 
-// rationaleFrom extracts the bounded rationale from a quantum's response: the
-// model's natural-language content, trimmed and cut to rationaleMaxRunes.
+// RecordRationaleToolName is the tool a quantum calls to SAY WHY it is acting.
+//
+// It exists because of a MEASURED fact about tool-call turns: on the deployment's own
+// provider, 5/5 tool calls came back with an EMPTY Content (see
+// docs/defects/cognition-persistence.md and the live measurement test). rationaleFrom used
+// to read content only, so on exactly the turns where a reason matters most there was
+// nothing to store — and the failure is invisible from the outside: an absent rationale
+// reads the same as a model that chose not to explain itself.
+//
+// A tool call is the only channel open to a model that is calling tools, so the rationale
+// rides in this tool's arguments. It is deliberately an ORDINARY tool — registered and
+// callable, answering with an acknowledgement — rather than an intercepted pseudo-call:
+// the arguments are readable by the consumer below without any special case in the tool
+// loop, and a model that calls it is doing something legitimate rather than something the
+// runtime has to fake.
+const RecordRationaleToolName = "record_rationale"
+
+// rationaleArgKey is the argument carrying the stated rationale.
+const rationaleArgKey = "rationale"
+
+// rationaleFrom extracts the bounded rationale from a quantum's response: the model's
+// natural-language content, or — when there is none, which is the measured common case on
+// tool-call turns — the argument of its RecordRationaleToolName call. Trimmed and cut to
+// rationaleMaxRunes either way.
 //
 // Why store it at all, given how often it is empty: tool outputs and the CALL
 // ORDER are already durable (the L2 graph holds the nodes; assembleContext
@@ -76,7 +100,69 @@ func rationaleFrom(resp *llmcore.GenerateResponse) string {
 	if resp == nil {
 		return ""
 	}
-	return truncate.WithEllipsis(strings.TrimSpace(resp.Content), rationaleMaxRunes)
+	if r := truncate.WithEllipsis(strings.TrimSpace(resp.Content), rationaleMaxRunes); r != "" {
+		return r
+	}
+	return truncate.WithEllipsis(rationaleFromToolCalls(resp.ToolCalls), rationaleMaxRunes)
+}
+
+// rationaleFromToolCalls returns the rationale stated through RecordRationaleToolName, or "".
+//
+// Only the FIRST such call counts: a quantum may call several tools and restate its reason,
+// and the plan node carries one rationale. First rather than last because the earlier
+// statement is the one that preceded the work — a later one tends to be a restatement after
+// seeing results, and keeping both would mean inventing a merge rule.
+//
+// Malformed arguments are treated as ABSENT, not as fatal: the argument is model output, and
+// a quantum whose rationale does not parse is simply a quantum that did not state one.
+// Failing the step instead would let a cosmetic call take down a session.
+func rationaleFromToolCalls(calls []llmcore.ToolCall) string {
+	for _, tc := range calls {
+		if tc.Function.Name != RecordRationaleToolName {
+			continue
+		}
+		var args map[string]any
+		if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
+			return ""
+		}
+		r, _ := args[rationaleArgKey].(string)
+		return strings.TrimSpace(r)
+	}
+	return ""
+}
+
+// rationaleToolSchema is the advertised schema for RecordRationaleToolName.
+//
+// It is appended to THIS cognition's tool list (see planner_cognition) rather than
+// registered in the tool registry, on purpose: the registry is the surface EVERY agent
+// sees, and a note-taking tool is meaningful only where a rationale is consumed — the
+// planner's growth step. Registering it globally would put a tool in every agent's menu
+// (and in the startup tool count an operator reads) to serve one caller.
+//
+// Nothing implements it: rationaleFrom reads the call's argument and growToolNodes skips
+// the call instead of growing a node, so the schema is the entire "implementation" and an
+// execution of it can never be reached.
+func rationaleToolSchema() llmcore.Tool {
+	return llmcore.Tool{
+		Type: "function",
+		Function: llmcore.FunctionDefinition{
+			Name: RecordRationaleToolName,
+			Description: "State, in one or two sentences, WHY you are about to take the next step. " +
+				"Call this before your other tool calls when the reason would not be obvious from them. " +
+				"It records context for whoever continues this work (including a different agent) and performs no work itself.",
+			Parameters: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					rationaleArgKey: map[string]interface{}{
+						"type": "string",
+						"description": "The reason for the next step, in natural language (kept to " +
+							strconv.Itoa(rationaleMaxRunes) + " characters).",
+					},
+				},
+				"required": []string{rationaleArgKey},
+			},
+		},
+	}
 }
 
 // rationaleFromPayload returns the rationale the PREVIOUS quantum stamped for

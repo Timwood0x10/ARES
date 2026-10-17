@@ -28,6 +28,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/runtime/evolution/patch"
 	aresmemory "github.com/Timwood0x10/ares/internal/runtime/memory"
 	"github.com/Timwood0x10/ares/internal/storage"
+	"github.com/Timwood0x10/ares/internal/storage/postgres"
 )
 
 // NewEvolutionComponents holds the new evolution system components.
@@ -583,12 +584,16 @@ func BuildKnowledgeRuntime(
 	// either there is no corpus to search and no query embedding to produce.
 	if vecStore != nil && emb != nil {
 		vp, err := vector.NewVectorProvider(vecStore, vector.Config{
-			Name:            "knowledge-vectors",
-			Namespace:       fitnessSourceKnowledge,
-			Collection:      tableKnowledgeChunks,
-			TenantID:        defaultDistillTenant,
-			IntentTags:      []string{fitnessSourceKnowledge, "doc", "guide"},
-			VectorDimension: 1024,
+			Name:       "knowledge-vectors",
+			Namespace:  fitnessSourceKnowledge,
+			Collection: tableKnowledgeChunks,
+			TenantID:   defaultDistillTenant,
+			IntentTags: []string{fitnessSourceKnowledge, "doc", "guide"},
+			// The same number the vector column bakes in (VECTOR(1024) in the
+			// migrations): importing it instead of repeating the literal is what keeps a
+			// future dimension change from landing on one side only — the exact shape of
+			// the historical 1536-vs-1024 insert failures.
+			VectorDimension: postgres.DefaultVectorDimension,
 			Embedder:        emb,
 		})
 		if err != nil {

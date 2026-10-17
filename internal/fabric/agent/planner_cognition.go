@@ -310,10 +310,15 @@ func (c *plannerCognition) ExecuteStep(ctx context.Context, task *models.Task) (
 	var llmTools []llmcore.Tool
 	if c.binder != nil {
 		schemas := c.binder.GetToolSchemas()
-		llmTools = make([]llmcore.Tool, 0, len(schemas))
+		llmTools = make([]llmcore.Tool, 0, len(schemas)+1)
 		for _, s := range schemas {
 			llmTools = append(llmTools, toCoreTool(s))
 		}
+		// Advertise the rationale tool to THIS cognition only — see
+		// rationaleToolSchema for why it is not in the registry. Without it the model has
+		// no way to state a reason on a tool-call turn, which is the measured common case
+		// (empty Content), so the rationale feature would exist and never fire.
+		llmTools = append(llmTools, rationaleToolSchema())
 	}
 
 	// Call the LLM once with the context and tool schemas.
@@ -340,9 +345,21 @@ func (c *plannerCognition) ExecuteStep(ctx context.Context, task *models.Task) (
 	}
 
 	// Tool calls: grow tool nodes + a new plan node depending on them.
-	grown, err := c.growToolNodes(ctx, g, task, resp, sessionID)
+	grown, rationales, err := c.growToolNodes(ctx, g, task, resp, sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("agentfabric: planner cognition: grow nodes: %w", err)
+	}
+	if grown == 0 && rationales > 0 {
+		// The model stated WHY it was about to act and then asked for no work at all.
+		// Nothing was blocked, so this MUST NOT be labelled as an L1 rejection: a
+		// constraint failure in the record where a model behaviour belongs is exactly the
+		// kind of mislabel this package keeps having to undo. The session ends (there is
+		// nothing to execute) with the cause naming what actually happened.
+		c.logger.Warn("planner: the model requested no work after stating its rationale, forcing answer",
+			"session", sessionID, "rationale_calls", rationales)
+		return c.growAnswerNode(ctx, g, task, resp.Content, resp, map[string]any{
+			answerCauseKey: answerCauseRationaleOnly,
+		})
 	}
 	if grown == 0 {
 		// All tool calls were skipped by L1 constraints (enabled=false,
@@ -431,7 +448,7 @@ func (c *plannerCognition) growToolNodes(
 	task *models.Task,
 	resp *llmcore.GenerateResponse,
 	sessionID string,
-) (int, error) {
+) (int, int, error) {
 	// The whole response is passed, not just its tool calls, because the round's
 	// plan node must also carry this quantum's rationale (see rationaleKey).
 	// resp is non-nil by the caller's contract: ExecuteStep only reaches this
@@ -439,6 +456,7 @@ func (c *plannerCognition) growToolNodes(
 	toolCalls := resp.ToolCalls
 	round := stableRound(g, task.TaskID)
 	grown := 0
+	rationales := 0
 
 	// Determine the predecessor for the first tool node: the current plan
 	// node when it exists, otherwise the root (first plan quantum).
@@ -449,6 +467,16 @@ func (c *plannerCognition) growToolNodes(
 
 	for seq, tc := range toolCalls {
 		toolName := tc.Function.Name
+
+		// A rationale statement is NOT work: it was already captured by rationaleFrom,
+		// which reads this call's argument. Growing a tool node for it would put a node in
+		// the graph that performs nothing — one per statement, each with its own result —
+		// which is noise for the projection and for anyone reading the session. Counted so
+		// the caller can tell this ending apart from "L1 blocked every call".
+		if toolName == RecordRationaleToolName {
+			rationales++
+			continue
+		}
 
 		// Check L1 constraints before growing the node.
 		if !c.isToolEnabled(toolName) {
@@ -486,7 +514,7 @@ func (c *plannerCognition) growToolNodes(
 		args := map[string]any{}
 		if tc.Function.Arguments != "" {
 			if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
-				return grown, fmt.Errorf("parse tool %s args: %w", toolName, err)
+				return grown, rationales, fmt.Errorf("parse tool %s args: %w", toolName, err)
 			}
 		}
 
@@ -505,7 +533,7 @@ func (c *plannerCognition) growToolNodes(
 		metadata[tenantMetadataKey] = task.TenantID
 
 		if err := g.AddToolNode(ctx, nodeID, toolName, metadata, prev); err != nil {
-			return grown, fmt.Errorf("add tool node %s: %w", nodeID, err)
+			return grown, rationales, fmt.Errorf("add tool node %s: %w", nodeID, err)
 		}
 		// Chain sequential tools within the same round: the next tool depends on
 		// this one (data flow).
@@ -551,7 +579,7 @@ func (c *plannerCognition) growToolNodes(
 			planArgs[rationaleKey] = r
 		}
 		if err := g.AddToolNode(ctx, newPlanID, "plan", planArgs, prev); err != nil {
-			return grown, fmt.Errorf("add plan node %s: %w", newPlanID, err)
+			return grown, rationales, fmt.Errorf("add plan node %s: %w", newPlanID, err)
 		}
 	} else if planExists && grown == 0 {
 		// Full-growth retry whose LLM response matched nothing: the round
@@ -559,7 +587,7 @@ func (c *plannerCognition) growToolNodes(
 		// the caller does not force a spurious answer.
 		grown = 1
 	}
-	return grown, nil
+	return grown, rationales, nil
 }
 
 // isToolEnabled reads the L1 ToolClass graph's "enabled" metadata for the

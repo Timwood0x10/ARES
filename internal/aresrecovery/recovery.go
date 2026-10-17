@@ -37,13 +37,17 @@ type Recovery struct {
 	cogFactory agentfabric.CognitionFactory
 	// policy is the restart policy (max attempts, backoff).
 	policy RestartPolicy
-	// restarts tracks how many times each agent id has been restarted. The
-	// count is LIFETIME-CUMULATIVE per identity and is intentionally NEVER
-	// reset by a successful revival: the budget exists to stop a broken agent
-	// from cycling forever, so total deaths — not consecutive ones — consume
-	// it (clarified 2026-08-22).
+	// restarts records WHEN each identity was restarted, so the budget can be counted
+	// inside the policy's RestartWindow. It is never reset by a successful revival: the
+	// budget exists to stop a broken agent from cycling, and successful revivals are
+	// exactly the cycles it must count.
+	//
+	// Stamps older than the window are pruned as the gate reads them (see
+	// pruneRestarts), so the slice stays proportional to the budget, not to the agent's
+	// lifetime. With a zero window nothing is pruned — the lifetime-cumulative semantics
+	// the field had before P2-6①.
 	mu       sync.Mutex
-	restarts map[string]int
+	restarts map[string][]time.Time
 	now      func() time.Time
 	// sleep suspends the calling goroutine for d, returning ctx.Err() when
 	// ctx is cancelled first. It exists as a field so tests can replace the
@@ -66,8 +70,21 @@ func realSleeper(ctx context.Context, d time.Duration) error {
 
 // RestartPolicy bounds agent restart attempts after a crash.
 type RestartPolicy struct {
-	// MaxRestarts is the total restart attempts allowed (0 = no restart).
+	// MaxRestarts is the restart budget allowed per identity (0 = no restart).
 	MaxRestarts int
+	// RestartWindow bounds how far back the budget counts (defect P2-6①).
+	//
+	// Zero keeps the LIFETIME-CUMULATIVE behaviour: every death the identity ever had
+	// counts, so an agent that crashes once a month is refused for good after MaxRestarts
+	// months. That conflates two different things — "this agent is cycling right now" and
+	// "this agent has died before" — and the budget exists for the first. With a window,
+	// only deaths inside it count, so a long-lived healthy agent earns its budget back.
+	//
+	// The default (DefaultRestartPolicy) sets one hour: MaxRestarts=5 within an hour is a
+	// crash-loop budget, and an agent that has been up for longer than that is not looping.
+	// The zero value deliberately stays the old semantics, so a zero-value policy is
+	// unchanged.
+	RestartWindow time.Duration
 	// Backoff is the initial delay before a restart attempt (doubles each
 	// attempt, capped at MaxBackoff).
 	Backoff time.Duration
@@ -105,6 +122,13 @@ type RestartPolicy struct {
 func DefaultRestartPolicy() RestartPolicy {
 	return RestartPolicy{
 		MaxRestarts: 5,
+		// Five restarts inside an hour is the crash-loop budget (P2-6①): an agent that
+		// dies five times within an hour is cycling, while one that has been up for longer
+		// than the window has earned its budget back. Zero would keep the old
+		// lifetime-cumulative semantics, which refused a healthy long-lived agent for good
+		// after its fifth death ever — a refusal that looks like governance and is really a
+		// bookkeeping artefact.
+		RestartWindow: time.Hour,
 		// Reclamation is ON by default (ten minutes of inactivity, one holder per
 		// capability kept): the pool leak it fixes is silent and unbounded, so a
 		// default that kept every agent forever would keep leaking in every
@@ -126,6 +150,27 @@ func DefaultRestartPolicy() RestartPolicy {
 // ErrRecoveryExhausted is returned when the restart budget is exhausted.
 var ErrRecoveryExhausted = errors.New("aresrecovery: restart budget exhausted")
 
+// pruneRestarts drops the stamps that fall outside the window and returns the rest.
+//
+// A zero (or negative) window returns the slice untouched: that is the LIFETIME-CUMULATIVE
+// semantics the budget had before P2-6①, and a zero-value policy must keep it.
+//
+// It compacts in place (stamps[:0]) — the caller replaces its stored slice with the result,
+// so the stale tail is never read again.
+func pruneRestarts(stamps []time.Time, now time.Time, window time.Duration) []time.Time {
+	if window <= 0 {
+		return stamps
+	}
+	cutoff := now.Add(-window)
+	kept := stamps[:0]
+	for _, at := range stamps {
+		if at.After(cutoff) {
+			kept = append(kept, at)
+		}
+	}
+	return kept
+}
+
 // New wires the Recovery subsystem to the Task and Agent Fabrics.
 func New(tasks *taskfabric.Fabric, agents *agentfabric.Fabric, policy RestartPolicy) *Recovery {
 	if policy.MaxRestarts == 0 {
@@ -141,7 +186,7 @@ func New(tasks *taskfabric.Fabric, agents *agentfabric.Fabric, policy RestartPol
 		tasks:    tasks,
 		agents:   agents,
 		policy:   policy,
-		restarts: make(map[string]int),
+		restarts: make(map[string][]time.Time),
 		now:      time.Now,
 		sleep:    realSleeper,
 	}
@@ -323,11 +368,18 @@ func (r *Recovery) RecoverTaskCheckpoint(ctx context.Context, taskID, replacemen
 //   - error: ErrRecoveryExhausted, or the ctx error when the ctx is
 //     cancelled during the backoff sleep (no spawn happens).
 func (r *Recovery) RestartAgent(ctx context.Context, deadAgentID string, cognitive agentfabric.CognitiveState, capabilities []string) (*agentfabric.Agent, error) {
+	now := r.now()
 	r.mu.Lock()
-	// Lifetime-cumulative budget (see the restarts field note): successful
-	// revivals do NOT reset the counter — only total deaths consume it.
-	attempts := r.restarts[deadAgentID]
+	// Count only the restarts inside the policy window (P2-6①). Successful revivals do
+	// NOT reset the stamps — a revival IS the cycle the budget must count — but stamps
+	// older than the window stop counting, so an agent that died MaxRestarts times over
+	// months is not mistaken for a crash loop and refused forever. Pruning happens here,
+	// at the gate, so the stored slice stays proportional to the budget rather than to the
+	// agent's lifetime.
+	kept := pruneRestarts(r.restarts[deadAgentID], now, r.policy.RestartWindow)
+	attempts := len(kept)
 	if attempts >= r.policy.MaxRestarts {
+		r.restarts[deadAgentID] = kept // keep the pruned view so the map shrinks with it
 		r.mu.Unlock()
 		return nil, ErrRecoveryExhausted
 	}
@@ -339,22 +391,24 @@ func (r *Recovery) RestartAgent(ctx context.Context, deadAgentID string, cogniti
 	// failed attempt still does not consume the budget — the same
 	// "only successful restarts count" semantics as before, just with an
 	// atomic gate.
-	r.restarts[deadAgentID] = attempts + 1
+	r.restarts[deadAgentID] = append(kept, now)
 	r.mu.Unlock()
-	// rollbackBudget releases THIS caller's reservation. Each caller owns
-	// exactly one increment, so the decrement is unconditional: a
-	// value-match guard (only undo when the counter still equals attempts+1)
-	// leaked under concurrent failures — with two failing callers the first
-	// rollback saw the second's increment and skipped, leaving a phantom
-	// count and burning budget with zero successful restarts.
+	// rollbackBudget releases THIS caller's reservation. Each caller owns exactly one
+	// stamp, so exactly one is removed: a value-match guard (only undo when the count is
+	// still attempts+1) leaked under concurrent failures — with two failing callers the
+	// first rollback saw the second's stamp and skipped, leaving a phantom count and
+	// burning budget with zero successful restarts.
 	rollbackBudget := func() {
 		r.mu.Lock()
-		if prev := r.restarts[deadAgentID]; prev <= 1 {
+		defer r.mu.Unlock()
+		list := r.restarts[deadAgentID]
+		if len(list) <= 1 {
 			delete(r.restarts, deadAgentID)
-		} else {
-			r.restarts[deadAgentID] = prev - 1
+			return
 		}
-		r.mu.Unlock()
+		// Which stamp is dropped does not matter: only the count feeds the gate, and every
+		// stamp present was added inside the window (an expired one was pruned above).
+		r.restarts[deadAgentID] = list[:len(list)-1]
 	}
 	// Crash-restart storm prevention: consecutive crash-restart cycles used
 	// to hammer the fabric instantly (sleep-less restarts, the exact storm
@@ -400,11 +454,15 @@ func (r *Recovery) RestartAgent(ctx context.Context, deadAgentID string, cogniti
 	return a, nil
 }
 
-// RestartCount returns how many times an agent has been restarted.
+// RestartCount returns how many restarts of this identity count against the budget.
+//
+// That is the IN-WINDOW count, not the lifetime total: it is the number the gate compares
+// with MaxRestarts, and a caller reading "3 of 5 used" must see the same 3 the gate sees.
+// With a zero RestartWindow the two are the same thing (lifetime-cumulative semantics).
 func (r *Recovery) RestartCount(agentID string) int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.restarts[agentID]
+	return len(pruneRestarts(r.restarts[agentID], r.now(), r.policy.RestartWindow))
 }
 
 // ReclaimIdleAgents retires the agents that have been idle longer than the
@@ -439,6 +497,19 @@ func (r *Recovery) ReclaimIdleAgents(ctx context.Context) []agentfabric.IdleAgen
 		// tasks that can never be scheduled at all.
 		KeepPerCapability: 1,
 	}, inUse)
+}
+
+// AuditOrphans reports the live agents whose spawning parent is gone (P2-7's
+// reconciliation half — see agentfabric.OrphanAudit for why this is an audit and not a
+// cascade).
+//
+// It lives here, not only on the fabric, because this layer already runs the reclaim sweep
+// and therefore already pays for a walk of the live agents: the audit is what turns "the
+// sweep reclaimed 3 agents" into "and 11 agents nothing owns are still holding 4 units".
+//
+// sample bounds the returned id list (<= 0 means none).
+func (r *Recovery) AuditOrphans(sample int) agentfabric.OrphanAudit {
+	return r.agents.AuditOrphans(sample)
 }
 
 // ReapRetiredAgents removes the registry records of agents retired longer ago

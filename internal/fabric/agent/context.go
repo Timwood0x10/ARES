@@ -7,7 +7,13 @@ import (
 // ErrCognitiveStateSchemaVersion is returned by DecodeCognitiveState when the
 // state's schema version is from a future version the current code cannot
 // interpret. The caller must migrate the state or reject the agent recovery.
-var ErrCognitiveStateSchemaVersion = errors.New("agentfabric: cognitive state schema version mismatch")
+// The message carries the DEPLOYMENT consequence, not just the mismatch (P2-6③): this
+// error surfaces in the revival log, and "schema version mismatch" alone reads like
+// corruption. It is not — the state was written by a newer build during a rolling upgrade,
+// and this node cannot restore it, so the revival falls back to a replacement.
+var ErrCognitiveStateSchemaVersion = errors.New(
+	"agentfabric: cognitive state schema version mismatch — the state was written by a newer build; " +
+		"this node cannot revive it in place (rolling-upgrade rule: see CognitiveStateSchemaVersion)")
 
 // DecodeCognitiveState decodes an agent's cognitive state through the single
 // versioned path. It accepts:

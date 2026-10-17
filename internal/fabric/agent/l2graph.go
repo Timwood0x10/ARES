@@ -543,6 +543,16 @@ const (
 	// rather than guessed as "planned", which would dress an unknown ending up as
 	// a normal one.
 	answerCauseUnlabeled = "unlabeled"
+	// answerCauseRationaleOnly: the model's turn carried ONLY a record_rationale
+	// call — it stated why it was about to act and then asked for no work at all,
+	// so there was nothing to execute and the session was ended.
+	//
+	// A distinct cause rather than answerCauseL1Blocked: nothing was blocked, and
+	// reporting "L1 blocked" here would put a constraint failure in the record
+	// where a model behaviour belongs. It is also the honest label for an ending
+	// that produces no answer — an empty completion labelled "planned" would read
+	// as a real one.
+	answerCauseRationaleOnly = "rationale_only"
 )
 
 // answerBodySourceKey is the arg a producer may set — and always the metadata

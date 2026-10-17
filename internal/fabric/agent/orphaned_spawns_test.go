@@ -81,6 +81,72 @@ func TestRetire_OmitsTheKeyWhenNothingIsOrphaned(t *testing.T) {
 	assert.False(t, present, "no orphans means no key, not an empty list")
 }
 
+// TestAuditOrphans_CountsWhatRetirementLeftBehind is the P2-7 ② contract: retirement is
+// single-node by design, so the reconcile number is not "who is misbehaving" but "how much
+// is being held by agents nothing owns" — the accumulation a spawn/retire loop grows while
+// every individual retirement looks reasonable.
+func TestAuditOrphans_CountsWhatRetirementLeftBehind(t *testing.T) {
+	f := NewFabric().WithResourceBudget(map[string]float64{"slot": 10})
+	ctx := context.Background()
+
+	_, err := f.Spawn(ctx, SpawnSpec{Identity: "parent", Capabilities: []string{"coder"}})
+	require.NoError(t, err)
+	for _, spec := range []struct {
+		id    string
+		claim float64
+	}{{"child-1", 2}, {"child-2", 3}} {
+		_, err := f.Spawn(ctx, SpawnSpec{
+			Identity: spec.id, Capabilities: []string{"coder"}, ParentID: "parent",
+			Resources: map[string]any{"slot": spec.claim},
+		})
+		require.NoError(t, err)
+	}
+	// A root agent: nobody's orphan, whatever else it holds.
+	_, err = f.Spawn(ctx, SpawnSpec{Identity: "root", Capabilities: []string{"coder"}})
+	require.NoError(t, err)
+
+	assert.Zero(t, f.AuditOrphans(5).Agents, "with the parent alive there is nothing to reconcile")
+
+	require.NoError(t, f.Retire(ctx, "parent"))
+
+	audit := f.AuditOrphans(5)
+	assert.Equal(t, 2, audit.Agents, "the two agents the retired parent left behind")
+	assert.Equal(t, map[string]float64{"slot": 5}, audit.Resources,
+		"their claims are the half that costs money: the agents are idle, the claims are not")
+	assert.ElementsMatch(t, []string{"child-1", "child-2"}, audit.Sample)
+
+	// Retiring the orphans clears the account — the audit reports state, it does not
+	// accumulate history.
+	require.NoError(t, f.Retire(ctx, "child-1"))
+	require.NoError(t, f.Retire(ctx, "child-2"))
+	assert.Zero(t, f.AuditOrphans(5).Agents)
+
+	// The sample is bounded, and 0 means "count only".
+	assert.Empty(t, f.AuditOrphans(0).Sample)
+}
+
+// TestAuditOrphans_CountsAChildWhoseParentRecordIsGone: a restored fabric can lack the
+// parent's record entirely (the store kept the child, not the ancestor). That child is just
+// as stranded as one whose parent was retired, and an audit that only checked State would
+// miss it.
+func TestAuditOrphans_CountsAChildWhoseParentRecordIsGone(t *testing.T) {
+	f := NewFabric()
+	ctx := context.Background()
+
+	_, err := f.Spawn(ctx, SpawnSpec{Identity: "parent", Capabilities: []string{"coder"}})
+	require.NoError(t, err)
+	_, err = f.Spawn(ctx, SpawnSpec{Identity: "child", Capabilities: []string{"coder"}, ParentID: "parent"})
+	require.NoError(t, err)
+
+	f.mu.Lock()
+	delete(f.agents, "parent") // the ancestor is simply not there any more
+	f.mu.Unlock()
+
+	audit := f.AuditOrphans(5)
+	assert.Equal(t, 1, audit.Agents)
+	assert.Equal(t, []string{"child"}, audit.Sample)
+}
+
 // TestOrphanedSpawnsLocked_ExcludesRetiredAndDeeperDescendants pins the helper's edges:
 // it reports DIRECT live children only — a grandchild belongs to its own parent, and an
 // already-retired child is not something this retirement left behind.

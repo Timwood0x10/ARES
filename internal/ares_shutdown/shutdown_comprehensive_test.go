@@ -113,7 +113,13 @@ func TestManager_StartShutdown_AlreadyInProgress(t *testing.T) {
 
 	// Cancel context to unblock first shutdown
 	cancel()
-	<-errChan
+	// Bound and inspected rather than swallowed. A bare receive is what errcheck flags and
+	// `_ = <-errChan` is what staticcheck flags (S1005), so the only form both accept is to
+	// actually look at the value. The assertion in this test is the start-twice refusal
+	// above; the outcome is logged so a surprising one is still visible in the test output.
+	if err := <-errChan; err != nil {
+		t.Logf("first shutdown returned %v (not the subject of this test)", err)
+	}
 }
 
 func TestManager_CallbackTimeout(t *testing.T) {
@@ -495,7 +501,11 @@ func TestPhaseExecutor_Execute_AlreadyRunning(t *testing.T) {
 	}
 
 	<-firstExecComplete
-	<-errChan
+	// Same reasoning as the other errChan wait in this file: use the value, do not discard
+	// it (errcheck vs staticcheck S1005 leaves no other compliant form).
+	if err := <-errChan; err != nil {
+		t.Logf("shutdown returned %v (not the subject of this test)", err)
+	}
 }
 
 func TestPhaseExecutor_Rollback(t *testing.T) {

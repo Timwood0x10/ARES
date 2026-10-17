@@ -10,12 +10,17 @@ import (
 	"github.com/Timwood0x10/ares/internal/storage"
 )
 
-// defaultVectorDimension matches the VECTOR(1024) dimension used by the
+// DefaultVectorDimension matches the VECTOR(1024) dimension used by the
 // knowledge_chunks_1024 / experiences_1024 migrations. The previous
 // hardcoded 1536 caused runtime failures because inserts did not match the
 // migration schema. Override via CreateCollection when a different dimension
 // is required.
-const defaultVectorDimension = 1024
+//
+// Exported because the PRODUCER side has to agree with it: the embedding
+// provider wired in ares_bootstrap declares the dimension it will emit, and a
+// second literal there is exactly how the 1536/1024 mismatch above happened
+// once. One number, two readers.
+const DefaultVectorDimension = 1024
 
 // VectorSearcher handles vector similarity search.
 type VectorSearcher struct {
@@ -265,7 +270,7 @@ func vectorCollectionDDL(table string, dimension int) string {
 
 // CreateVectorTable creates a table with vector support.
 // This is a simplified implementation - in production use proper pgvector setup.
-// The vector dimension defaults to defaultVectorDimension (1024) to match the
+// The vector dimension defaults to DefaultVectorDimension (1024) to match the
 // migrations; callers needing a different dimension should use CreateCollection.
 func (v *VectorSearcher) CreateVectorTable(ctx context.Context, table string, metadataSchema string) error {
 	safeTable, err := validateTable(table)
@@ -280,7 +285,7 @@ func (v *VectorSearcher) CreateVectorTable(ctx context.Context, table string, me
 
 	// Use the migration-consistent dimension (1024). The previous hardcoded
 	// 1536 caused runtime failures because the migrations create VECTOR(1024).
-	dim := defaultVectorDimension
+	dim := DefaultVectorDimension
 	if dim < 1 || dim > 2000 {
 		return fmt.Errorf("invalid dimension: %d (must be 1-2000)", dim)
 	}
