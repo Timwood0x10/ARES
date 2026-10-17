@@ -89,6 +89,11 @@ func (e *ProfileExecutor) Apply(ctx context.Context, p patch.RuntimePatch) (*pat
 		Value:  oldInstructions,
 		Reason: "rollback: restore previous instructions",
 		Source: "rollback",
+		// The rollback belongs to the SAME strategy as the change it undoes. Without this,
+		// undoing a patch produced attribution and the undo silently discarded it: the
+		// deployment pipeline then refuses the rollback as unmeasurable (correctly, by its
+		// own rule) and a strategy that was rolled back can never be compared again.
+		StrategyID: p.StrategyID,
 	}, nil
 }
 
