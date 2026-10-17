@@ -75,6 +75,18 @@ const (
 // streams.
 const PayloadKeyStopReason = "reason"
 
+// PayloadKeyOrphanedSpawns carries the still-live agents an agent had spawned at the
+// moment it was retired (defect A-factory4 / P2-7).
+//
+// Retirement is deliberately single-node: Agent.Parent is PROVENANCE, not a lifecycle
+// relation, so the children are not retired with their parent and they keep their
+// resource claims. A spawn/retire loop therefore accumulates agents nothing reclaims,
+// and before this key the accumulation was silent — the retirement event said an agent
+// was gone and nothing said what it left behind. It is a payload key rather than a log
+// line because this package reports through EVENTS (recording does I/O, so it must not
+// run under the fabric lock, and the retirement event is already emitted outside it).
+const PayloadKeyOrphanedSpawns = "orphaned_spawns"
+
 // String returns the wire form of the reason. The zero value renders as
 // "unknown" so an unattributed record is explicit rather than an empty string
 // that reads like a missing field.

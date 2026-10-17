@@ -290,11 +290,15 @@ func wireLifecycleGates(ctx context.Context, cfg *ares_config.Config, comp *Comp
 		// only a statistically significant drop. Defaults to armed whenever
 		// the infrastructure (eval_suite + LLM client) exists;
 		// regression_enabled=false is the documented opt-out (Warn below).
-		regGate, rgerr := buildRegressionGate(
-			gates.RegressionEnabled,
-			comp.Evolution.EvalLLMClient,
-			gates,
-		)
+		regGate, rgerr := buildRegressionGate(regressionGateConfig{
+			Enabled: gates.RegressionEnabled,
+			Client:  comp.Evolution.EvalLLMClient,
+			Gates:   gates,
+			// Optional: only a process that wired a candidate-runtime factory provider
+			// (cmd/ares has the tool binder, and wires it after this point) can honour
+			// regression_runtime_replay; the wiring refuses an enabled flag without it.
+			ReplayProvider: comp.Evolution.CandidateReplayProvider,
+		})
 		if rgerr != nil && !errors.Is(rgerr, errRegressionGateNotConfigured) {
 			// An ARMED but broken gate fails bootstrap (fail closed); an
 			// intentionally absent gate just skips the wiring.

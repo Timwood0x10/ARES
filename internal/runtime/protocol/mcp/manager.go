@@ -610,14 +610,19 @@ func (m *MCPManager) registerTools(mc *managedClient) ([]string, error) {
 
 		fullName := mcpTool.Name()
 		if err := m.registry.Register(mcpTool); err != nil {
-			// Conflict detected — builtin tool wins, skip the MCP tool. Log
-			// the tool name and the winning source so the conflict is
-			// observable. The conflict resolution policy (builtin wins) is
-			// unchanged.
-			log.Warn("mcp: tool name conflict, keeping builtin tool and skipping MCP tool",
+			// Conflict detected — the existing registration wins and this MCP tool
+			// is skipped. The resolution policy is unchanged; what changed is the
+			// WITNESS: the field used to say `winner="builtin"`, which is only true
+			// when the holder happens to be a builtin. Two MCP servers that expose
+			// the same tool name hit this path too, and then the log named a winner
+			// that was not even involved — the one thing the line exists to report.
+			// It now names the tool, the server that lost, and that the KEPT
+			// registration is the pre-existing one; which source it belongs to is
+			// not knowable from here, so it is not claimed.
+			log.Warn("mcp: tool name conflict — keeping the pre-existing registration and skipping this MCP tool",
 				"tool", fullName,
-				"server", mc.config.Name,
-				"winner", "builtin",
+				"skipped_server", mc.config.Name,
+				"kept", "pre-existing registration",
 				"error", err,
 			)
 			continue

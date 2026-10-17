@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	ares_arena "github.com/Timwood0x10/ares/internal/runtime/arena"
+	"github.com/Timwood0x10/ares/internal/runtime/ares_evolution/mutation"
 	"github.com/Timwood0x10/ares/internal/runtime/eval"
 )
 
@@ -81,6 +82,10 @@ type LLMArenaScorer struct {
 	evalPrompt      string    // single-case grading prompt template
 	batchExecPrompt string    // multi-case execution prompt template
 	batchEvalPrompt string    // multi-case grading prompt template
+	// executor replaces the EXECUTION step when non-nil (see ArenaExecutor). Nil keeps
+	// the built-in LLM role-play, byte for byte — the production scoring path, which the
+	// runtime-backed constructor opts out of explicitly rather than by default.
+	executor ArenaExecutor
 }
 
 // LLMArenaScorerConfig configures an LLMArenaScorer.
@@ -156,14 +161,78 @@ func NewLLMArenaScorer(cfg LLMArenaScorerConfig) (*LLMArenaScorer, error) {
 //
 //	float64 - the graded quality in [0,1].
 //	error - on a malformed input, an LLM failure, or an unparseable score.
+//
+// ArenaExecutor produces a strategy's output for ONE preserved case.
+//
+// It exists so that "execute the strategy" can happen in two very different places while
+// everything else stays shared: the built-in implementation asks a model to role-play the
+// agent, while a runtime-backed implementation runs the candidate through a real
+// per-candidate runtime (P0-1's replay). Grading and the deterministic floor are NOT part
+// of this interface — they are the shared judge, which is what makes a score difference
+// between the two executions a difference in execution rather than in judging.
+//
+// Execute receives the strategy value as it arrived (a string or a *mutation.Strategy) so
+// an implementation that needs more than the instructions — a runtime needs the tool
+// whitelist in Params — can read it, instead of the seam silently narrowing the candidate
+// to a prompt template.
+type ArenaExecutor interface {
+	Execute(ctx context.Context, strategy any, instructions, caseText string) (string, error)
+}
+
+// NewRuntimeBackedArenaScorer builds the arena scorer with a different EXECUTION step:
+// candidates are run through a real runtime instead of role-played by a model.
+//
+// Everything downstream of execution is unchanged — the same grading prompt, the same
+// parse, the same `groundTruthFloor` — because those are what make two candidates
+// comparable; only where the answer comes from changes.
+func NewRuntimeBackedArenaScorer(cfg LLMArenaScorerConfig, executor ArenaExecutor) (*LLMArenaScorer, error) {
+	if executor == nil {
+		return nil, errors.New("LLMArenaScorer: runtime-backed scoring requires an executor")
+	}
+	s, err := NewLLMArenaScorer(cfg)
+	if err != nil {
+		return nil, err
+	}
+	s.executor = executor
+	return s, nil
+}
+
+// instructionsOf extracts the behaviour instructions from whatever the arena was handed
+// as a "strategy".
+//
+// Two shapes are legitimate and both occur in production: a bare string (the CLI path and
+// the dream-cycle paths pass a PromptTemplate directly) and a whole *mutation.Strategy
+// (the regression gate now passes the candidate so that its Params survive — a template
+// alone loses the tool whitelist, see regression_gate.go).
+//
+// This helper exists because "the artifact being compared" acquired a second shape. The
+// alternative was a type assertion at each call site, which is exactly how one of the two
+// paths keeps quietly rejecting the other's input — and a scorer that rejects its input
+// fails the check closed, so the symptom would be "candidates cannot be compared".
+func instructionsOf(strategy any) (string, error) {
+	switch v := strategy.(type) {
+	case string:
+		return v, nil
+	case *mutation.Strategy:
+		if v == nil {
+			return "", errors.New("LLMArenaScorer: nil strategy")
+		}
+		return v.PromptTemplate, nil
+	case mutation.Strategy:
+		return v.PromptTemplate, nil
+	default:
+		return "", fmt.Errorf("LLMArenaScorer: cannot read instructions from strategy of type %T", strategy)
+	}
+}
+
 func (s *LLMArenaScorer) Score(ctx context.Context, input any) (float64, error) {
 	ti, ok := input.(ares_arena.TestCaseInput)
 	if !ok {
 		return 0, fmt.Errorf("LLMArenaScorer: unexpected input type %T", input)
 	}
-	instructions, ok := ti.Strategy.(string)
-	if !ok {
-		return 0, fmt.Errorf("LLMArenaScorer: strategy must be a string instruction, got %T", ti.Strategy)
+	instructions, err := instructionsOf(ti.Strategy)
+	if err != nil {
+		return 0, err
 	}
 	if instructions == "" {
 		return 0, errors.New("LLMArenaScorer: instructions are empty")
@@ -171,13 +240,24 @@ func (s *LLMArenaScorer) Score(ctx context.Context, input any) (float64, error) 
 	caseStr := caseToString(ti.TestCase)
 
 	// Step 1: execute the strategy on the preserved case.
-	execPrompt := strings.NewReplacer(
-		"{instructions}", instructions,
-		"{case}", caseStr,
-	).Replace(s.execPrompt)
-	output, err := s.client.Generate(ctx, execPrompt)
-	if err != nil {
-		return 0, fmt.Errorf("LLMArenaScorer: execute: %w", err)
+	var output string
+	if s.executor != nil {
+		// The candidate runs for real. The strategy value travels whole so a runtime can
+		// honour the candidate's own tool whitelist instead of grading a strategy that
+		// dropped half its declaration on the way here.
+		output, err = s.executor.Execute(ctx, ti.Strategy, instructions, caseStr)
+		if err != nil {
+			return 0, fmt.Errorf("LLMArenaScorer: execute: %w", err)
+		}
+	} else {
+		execPrompt := strings.NewReplacer(
+			"{instructions}", instructions,
+			"{case}", caseStr,
+		).Replace(s.execPrompt)
+		output, err = s.client.Generate(ctx, execPrompt)
+		if err != nil {
+			return 0, fmt.Errorf("LLMArenaScorer: execute: %w", err)
+		}
 	}
 	if strings.TrimSpace(output) == "" {
 		return 0, errors.New("LLMArenaScorer: agent produced empty output")
@@ -271,12 +351,35 @@ func (s *LLMArenaScorer) ScoreBatch(ctx context.Context, strategy any, count int
 	if count <= 0 {
 		return []float64{}, nil
 	}
-	instructions, ok := strategy.(string)
-	if !ok {
-		return nil, fmt.Errorf("LLMArenaScorer: strategy must be a string instruction, got %T", strategy)
+	instructions, err := instructionsOf(strategy)
+	if err != nil {
+		return nil, err
 	}
 	if instructions == "" {
 		return nil, errors.New("LLMArenaScorer: instructions are empty")
+	}
+
+	if s.executor != nil {
+		// A runtime-backed executor runs ONE case per call — each case is a session — so
+		// the "two calls instead of 2×count" economy does not exist on this path: it costs
+		// count executions plus count gradings, and the wiring states that cost at startup.
+		//
+		// It delegates to Score rather than re-implementing execute → grade → floor, so the
+		// per-case and batch routes cannot drift apart on the judge. The batch economy is an
+		// LLM-only optimisation, not a second scoring semantics.
+		scores := make([]float64, 0, count)
+		for i := range count {
+			var one any
+			if len(testCases) > 0 {
+				one = testCases[i%len(testCases)]
+			}
+			score, err := s.Score(ctx, ares_arena.TestCaseInput{Strategy: strategy, TestCase: one, Index: i})
+			if err != nil {
+				return nil, err
+			}
+			scores = append(scores, score)
+		}
+		return scores, nil
 	}
 
 	cases := make([]any, count)

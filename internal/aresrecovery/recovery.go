@@ -519,6 +519,18 @@ type RecoveryTask struct {
 	// Checkpoint is the preserved checkpoint from the dead agent (nil when
 	// the task had no checkpoint — a fresh start).
 	Checkpoint any
+	// Attempts and MaxRetries are the task's OWN retry budget, carried so that a
+	// caller which also holds a revival budget can state both in one place
+	// (defect P2-5: the two budgets did not know about each other).
+	//
+	// Neither policy can see the other by construction — the task fabric knows
+	// nothing about agents, and the recovery policy is handed only a dead agent id
+	// and its capability — so the ONLY place a joint statement can be made is a
+	// caller holding both. This snapshot is that caller's input; the numbers are
+	// copied verbatim (no clamping, no inference) because a wrong number here would
+	// be worse than a missing one.
+	Attempts   int
+	MaxRetries int
 }
 
 // RecoveryTasksFor returns a RecoveryTask snapshot for each requeued task id
@@ -543,6 +555,8 @@ func (r *Recovery) RecoveryTasksFor(taskIDs []string) []RecoveryTask {
 			ID:         t.ID,
 			Capability: t.Capability,
 			Checkpoint: t.Checkpoint,
+			Attempts:   t.RetryPolicy.Attempts,
+			MaxRetries: t.RetryPolicy.MaxRetries,
 		})
 	}
 	return out

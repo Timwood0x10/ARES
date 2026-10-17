@@ -24,7 +24,7 @@
 
 | # | 缺陷 | 一句话 | 共因 |
 |---|---|---|---|
-| P0-1 | **G1** GA 无"做对没"信号 〔证据链路已通 2026-10-13；选育侧已接入；**判据四项已落地**：oracle 分层 / **语料 73 条带锚（下限 65）** / 默认 suite / arena 确定性锚〕 | fitness 只奖励"成功+快省"，没 accuracy → **越跑越会糊弄**。**剩余**：定时触发、per-candidate 回放的**消费方**（构件已落：缝/隔离运行时/工具沙箱/执行体适配器/工厂，见 2026-10-16 两条修订记录） | 认知/正确性没持久化 |
+| P0-1 | **G1** GA 无"做对没"信号 〔证据链路已通 2026-10-13；选育侧已接入；**判据四项已落地**：oracle 分层 / **语料 73 条带锚（下限 65）** / 默认 suite / arena 确定性锚〕 | fitness 只奖励"成功+快省"，没 accuracy → **越跑越会糊弄**。**剩余**：定时触发、per-candidate 回放的**执行器实现 + 接线**——**消费方已落两步（2026-10-16）**：① 候选**本体（含 `Params`）抵达 scorer**（门不再只传 `PromptTemplate`；LLM scorer 用 `instructionsOf` 同时接受 string 与 `*mutation.Strategy`）；② **执行步可换**（`ArenaExecutor` 缝 + `NewRuntimeBackedArenaScorer`；判分与 `groundTruthFloor` **共用**，批量在运行时路径下**逐题**）。剩：**懒解析的 factory provider**——**已落**：执行器本体（`RuntimeArenaExecutor`：每候选一运行时、**有界保留 2 个**（A/B 只需两个；"每候选一个且永不释放"在滚动部署里是无界增长）、Close 收口、候选 `Params` 直通沙箱）+ 开关分支与成本日志（`buildRegressionGate(regressionGateConfig{...})`，默认关，**开启而无 factory 时失败关闭**）。**已落 ①（provider 懒解析）**：依据是实测的启动顺序——`comp.Evolution`（含门）在 `serve.go:108` 建成，而 `toolBinder` 在 **`:141`** 才有 ⇒ **值传递在 boot 时必然是 nil**。现在门只存 `func() (*CandidateReplayFactory, error)`，**首次 `Execute` 时**才解析（执行器本来就把"建运行时"推迟到首次调用），`cmd/ares` 在工具链之后安装 provider。测试钉住三点：**构造时不解析**（provider 调用计数为 0）、**只解析一次**（换候选复用）、**provider 报错响亮**。②（调整启动顺序）未采用——动关键路径、风险更大。开关**默认关**，开启而缺 provider **失败关闭并指名缺件**。**构件**（构件已落：缝/隔离运行时/工具沙箱/执行体适配器/工厂，见 2026-10-16 两条修订记录） | 认知/正确性没持久化 |
 | P0-2 | **T1+T2** LLM `create_task` 不校验 **〔已修 2026-10-12〕** | `create_task` 依赖不存在/成环 → **任务静默永不 READY**（`create_plan` 走 `CompilePlan`、operator 走自带 `findCycle`，都安全；**只有 `create_task` 旁路漏**） | 引用/边界没校验 |
 | P0-3 | **D1+D2** 提前交差不够可见 **〔已修 2026-10-12〕** | maxPlanDepth 撞墙 / L1 全拦 → 强制出 answer；**不标记成因**（D1 已有 Warn+计数，但无面板/告警规则） | 静默早停 |
 | P0-4 | **Q3+A-dispo1+A-F4** 认知有损 **〔B 已动工 · A 与 P0-1 合并立项 2026-10-13〕** | checkpoint/复活只带"进度"不带"思路" → 换人/续跑**丢推理链**；A 的"存什么/如何存"见 `cognition-persistence.md` | 认知/正确性没持久化 |
@@ -46,12 +46,12 @@
 | # | 缺陷 | 一句话 |
 |---|---|---|
 | P2-1 | **G2** 三道门盲区 | 门只防"回归"，不防"整体往糊弄漂"（**依赖 P0-1 修好才有意义**） |
-| P2-2 | **D3** Reconcile 全量拿锁 | 漏事件时 O(节点)+持锁+RUNNING 短暂 desync（规模化才痛） |
+| P2-2 | **D3** Reconcile 全量扫（**措辞更正 2026-10-16**：只在快照 ID 集时持读锁，重活在锁外） | 漏事件时 O(节点) 重扫 + RUNNING 短暂 desync（规模化才痛） |
 | P2-3 | **D6** stableRound 并发前提 | 并发改同 session 图时"稳定重放"可能失效 |
 | P2-4 | **A-F3** requeue ≠ 恢复 〔**已关闭 2026-10-16**：静默半已消除〕 | requeue 只管回队（设计如此）；但"全 agent 超预算 ⇒ 没人能接"**不再静默**：`Scheduler.logFailure` 对 `ErrNoAffordableCandidate` / `ErrNoCapableCandidate` **各占一个节流槽、每 5s 一条 Error（带 task_id）**，READY 每 500ms 重轮询 ⇒ 持续可见且可区分成因。剩余（非本缺陷）：等待计数做面板指标 / durable 事件 |
-| P2-5 | **T-F3** 两个预算互不知晓 | agent 复活预算 / task 重试预算各报各的，无联合视图 |
-| P2-6 | **A-dispo2/3/4** 复活预算·快照·schema | lifetime 累积误拒长寿命 agent / 快照 1024 静默退化 / 滚动升级挡复活 |
-| P2-7 | **A-factory4** 孤儿 agent 累积 | Retire 不杀子 agent，反复 spawn/retire 堆孤儿占 quota |
+| P2-5 | **T-F3** 两个预算互不知晓 **〔已落 2026-10-16 · 唯一可行落点〕** | 为什么"联合视图"只能落在**调用方**：task fabric **不知道 agent**，而恢复策略只拿到一个死 agent 的 id（`RestartAgent(ctx, deadAgentID, cognitive, capabilities)`）⇒ 两个预算**结构上互不可见**。**修法**：把任务自己的预算并进恢复快照（`RecoveryTask.Attempts/MaxRetries`，**原样拷贝、不推断**——0/0 读作"没有重试预算"而不是"无限"），在唯一同时持有两者的 `cmd/ares/kernel_loop.go` 那一行**同时给出两个预算**；**两者皆尽时升为 `log.Warn` 并明说"没有东西可试了"**（有余额时仍是 Info：替换执行体还会再跑一次，此刻不重要）。测试 2 条 + 反证（去掉填充 → `the snapshot must carry the task's spent attempts verbatim`） |
+| P2-6 | **A-dispo2/3/4** 复活预算·快照·schema | lifetime 累积误拒长寿命 agent（**✅审计确认仍开**：`MaxRestarts` = "the total restart attempts"，无时间窗）/ **快照"1024 静默退化"：审计未定位到该上限，需证据或删除** / 滚动升级挡复活 |
+| P2-7 | **A-factory4** 孤儿 agent 累积 | `Retire` 不杀子 agent（`Agent.Parent` 注释明说 **PROVENANCE ONLY，非生命周期关系** ⇒ 级联**需拍板**）。**已落（可见性半边 2026-10-16）**：`retireLocked` 在状态变更**前**读孤儿（新增 `orphanedSpawnsLocked`，持 `f.mu`），两个调用方（`Retire` / `ReclaimIdleAgents`）在**锁外**把孤儿挂进 `agent.retired` 事件（新 payload key `orphaned_spawns`，仅在有孤儿时带；该包**用事件不用日志**，记录做 I/O 不能进锁）。测试 3 条（契约 / 无孤儿不带键 / helper 边界：只报**直接**且**未退役**的子）+ **反证**（去掉读取 → `retiring a parent must name the agents it left live`）。**仍是"可见"不是"回收"**：级联方向 1（显式策略）/ 方向 2（对账指标）待拍板 |
 | P2-8 | **I4** dead-letter 非持久 | 进程内存死信，重启即失，协作失败不可审计 |
 | P2-9 | **S-st-S1/S-st-S2** 维度写死·共实例 | 1024 锁死（换模型=重嵌）；向量与事件账本共 PG 无隔离 |
 | P2-10 | **R4/R6** RAG 默认关·阈值 0.4 | 记忆复用不显式开就不走；高维余弦 0.4 偏弱（知边界） |
@@ -110,6 +110,41 @@
 ---
 
 ## 修订记录
+
+**2026-10-16 · code review（本会话全部改动）+ 自记错误（含已修）**：
+
+**静态与覆盖**：`go vet` 本轮触及的包全绿；新文件**无静默吞错**、无 TODO/FIXME。覆盖率：`agentruntime` **84.5%**；`ares_bootstrap` 包级 65.2%，**新文件逐函数复核**——`candidate_replay.go` **100%**、`runtime_arena_executor.go` 多数 85–100%，**但 `Execute` 曾为 0.0%**（测试只打了内部 `runtimeFor`，没打 scorer 真正调用的那个入口）⇒ 已补入口测试（**无答案必须是错误、不得是空串**——空答案会被 scorer 当"答得差"计分）。
+
+**自记（我自己造出来的错，均已当场修，且留测试或反证）**：
+
+1. **`CandidateRuntime.Close` 初版用 `sync.Once`** ⇒ "先 Close（未 Start）再 Start"会把 once 烧掉，之后真正的 Close 变成**空操作、drain 环永不停止**（每个候选泄漏一个 goroutine）。**是测试逼出来的**，改成显式状态 + 拒绝 Close 后 Start。
+2. **删整行时用了 `cut -c1-200` 的截断文本作匹配** ⇒ `zh/02` 留下残句"有一条分发路径。"。纪律：**删除整行必须用 `sed -n 'Np'` 的完整行**。
+3. **多次"只看 `ok` 行"的假绿**：`go test … | grep -E '^ok'` 会漏掉同一次运行里的 `--- FAIL`（`make check` 全绿也因此可能掩盖单元失败）。纪律：门禁与单元**分开看退出码**。
+4. **反证变异未落地却当成"反证通过"**：一次 `import` 变未使用导致**编译失败**、一次多行 `perl` **根本没匹配**，而我先看到了"测试通过"。纪律已固化为：**先数变异标记行数确认落地，再跑测试**。
+5. **`RuntimeArenaExecutor` 初版对每个候选的运行时无界缓存**：滚动部署会一直比较新候选 ⇒ 不是缓存是**泄漏**（复查时发现；改为**有界保留 2**，更早的立即 `Close`）。
+
+**审计发现并更正的两处台账失准**（见下一节详表）：P2-2 的"全量拿锁"、P2-6b 的"快照 1024 静默退化（**未能定位**）"。
+
+**2026-10-16 · P2 层"是否彻底完成"的逐条取证审计（结论：没有；并发现两处台账失准）**：
+
+审计方法：不看标记，**回代码取证**（每条 1–2 处 grep / 读实现）。
+
+| 项 | 取证 | 结论 |
+|---|---|---|
+| P2-5 两个预算无联合视图 | 审计时全仓无联合视图；**同日已落**（快照带任务预算 + 调用方一行同报两者，皆尽时 Warn） | ✅ 已落 |
+| P2-6a 复活预算 lifetime 累积 | `MaxRestarts` 注释自陈 "the **total** restart attempts allowed"（无时间窗） | ✅ 仍开 |
+| P2-7 孤儿 agent 累积 | `retireLocked` 只 `releaseLocked(a.resources)`，**不处理它 spawn 的子 agent** | ✅ 仍开 |
+| P2-8 dead-letter 非持久 | `DeadLetterStore` = 进程内存（`entries []DeadLetter`，容量 1024，`internal/agentipc/deadletter.go:32`） | ✅ 仍开 |
+| P2-9 维度写死 | `VectorDimension: 1024`（`provide_new_evolution.go:591`）+ 表名 `knowledge_chunks_1024`/`experiences_1024` | ✅ 仍开（"共实例"半边未核） |
+| P2-10 RAG 默认关·阈值 0.4 | `EnableRAG bool`（Go 零值 = false）+ `MinScore` "Defaults to 0.4" | ✅ 仍开 |
+| P2-11 工具名撞车 first-wins | `ErrToolAlreadyRegistered` + builtin 注释 "The pre-existing tool wins." | ✅ 仍开（"winner 标签"半边未核） |
+| P2-14 discovery 默认关 | `config_defaults.go:290` "opt-in via Enabled (**default false**)… the single security boundary" | ✅ 仍开 |
+| P2-3 stableRound 并发前提 | 实现自陈依赖"同一 stable round 重导出同一批 ID"（隐式单写者假设） | ✅ 仍开（**边界窄**：仅同 session 并发改图时） |
+| **P2-2 Reconcile 全量拿锁** | `Reconcile` **只在拷贝 ID 集时持读锁**（`RLock` → `for id := range planIDs` → `RUnlock`），**重活在锁外** | ⚠️ **台账表述失准**：不是"全量拿锁"；O(nodes) 与 RUNNING desync 的可能仍在，但措辞要改 |
+| **P2-6b 快照 1024 静默退化** | 在 `fabric/task` 与 `aresrecovery` **找不到**任何快照大小/条数上限（只见到 tracer 的 "0 = unlimited"） | ⚠️ **无法定位**：需补证据或删除该条 |
+| P2-1 G2 三道门盲区 | 本质是"门防回归、不防整体漂移"的设计缺口，依赖 P0-1 才有意义 | 保持开放 |
+
+**处置**：P2-2 措辞待改；P2-6b 需证据或删；其余按原样保留，能小修的（P2-11 标签、P2-10 阈值默认）下一步动。
 
 **2026-10-16 · per-candidate 运行时的**构件**（步骤 1+2／共 4，**尚未接线**）**：
 

@@ -145,6 +145,10 @@ func (f *Fabric) ReclaimIdle(ctx context.Context, policy AgentReclaimPolicy, inU
 
 	var reclaimed []IdleAgent
 	var retired []*Agent
+	// orphansOf[i] belongs to retired[i]: the live agents that one left behind
+	// (P2-7). Parallel rather than a struct because the only consumer is the
+	// post-unlock recording loop below, which walks both together.
+	var orphansOf [][]string
 
 	f.mu.Lock()
 	// One clock read for the whole sweep: the scan and the in-lock re-check must
@@ -209,7 +213,7 @@ func (f *Fabric) ReclaimIdle(ctx context.Context, policy AgentReclaimPolicy, inU
 		if !covered || busy || now.Sub(lastActive) <= ttl {
 			continue
 		}
-		ta, err := f.retireLocked(id)
+		ta, orphans, err := f.retireLocked(id)
 		if err != nil {
 			// Lost a race with another trigger (already retired, or killed since
 			// the scan). Not an error for the sweep: the claim is back either way.
@@ -217,12 +221,13 @@ func (f *Fabric) ReclaimIdle(ctx context.Context, policy AgentReclaimPolicy, inU
 		}
 		reclaimed = append(reclaimed, c)
 		retired = append(retired, ta)
+		orphansOf = append(orphansOf, orphans)
 	}
 	f.mu.Unlock()
 
 	// Events are emitted after the unlock: recording does I/O.
-	for _, a := range retired {
-		f.recordAgentRetired(ctx, a)
+	for i, a := range retired {
+		f.recordAgentRetired(ctx, a, orphansOf[i])
 	}
 	return reclaimed
 }

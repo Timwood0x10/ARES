@@ -451,12 +451,32 @@ func runKernelRecoveryLoop(
 					if errors.Is(err, aresrecovery.ErrRecoveryExhausted) {
 						reason = agentfabric.StopRecoveryExhausted
 					}
-					log.Info(ctx, "runKernelRecoveryLoop",
-						"kernel recovery loop: in-place revival unavailable; using replacement",
+					// BOTH budgets in one line (P2-5). This is the only place that can
+					// state them together: the task fabric knows nothing about agents,
+					// and the recovery policy is handed a dead agent id and nothing
+					// else. The revival budget is the one just refused; the task's own
+					// retry budget decides whether that refusal matters YET — with
+					// attempts left the replacement below simply runs the task again,
+					// while with none the work has nowhere left to go and needs a
+					// human. Reported separately, an operator could see "revival
+					// exhausted" forever without ever learning whether it mattered.
+					snapFields := []any{
 						"snap_id", snapID,
 						"stop_reason", reason.String(),
 						"death_reason", snap.StopReason.String(),
-						"error", err)
+						"task_attempts", rt.Attempts,
+						"task_max_retries", rt.MaxRetries,
+						"error", err,
+					}
+					if rt.Attempts >= rt.MaxRetries {
+						log.Warn(ctx, "runKernelRecoveryLoop",
+							"kernel recovery loop: in-place revival unavailable AND the task's retry budget is spent — nothing is left to try for this task",
+							snapFields...)
+					} else {
+						log.Info(ctx, "runKernelRecoveryLoop",
+							"kernel recovery loop: in-place revival unavailable; using replacement",
+							snapFields...)
+					}
 				}
 			}
 

@@ -51,7 +51,7 @@ func regressionOn() *bool  { v := true; return &v }
 func regressionOff() *bool { v := false; return &v }
 
 func TestBuildRegressionGateDisabled(t *testing.T) {
-	gate, err := buildRegressionGate(regressionOff(), stubEvalClient{}, ares_config.EvolutionGateConfig{})
+	gate, err := buildRegressionGateT(regressionOff(), stubEvalClient{}, ares_config.EvolutionGateConfig{})
 	require.ErrorIs(t, err, errRegressionGateNotConfigured, "explicit false = the intentional-absence sentinel")
 	assert.Nil(t, gate, "disabled = honest absence, not a pass-through")
 }
@@ -61,7 +61,7 @@ func TestBuildRegressionGateDisabled(t *testing.T) {
 // regression_enabled=true).
 func TestBuildRegressionGateAutoArmsWithoutOptIn(t *testing.T) {
 	path := writeSuiteFile(t, suiteYAML)
-	gate, err := buildRegressionGate(nil, stubEvalClient{}, ares_config.EvolutionGateConfig{EvalSuite: path})
+	gate, err := buildRegressionGateT(nil, stubEvalClient{}, ares_config.EvolutionGateConfig{EvalSuite: path})
 	require.NoError(t, err)
 	require.NotNil(t, gate, "nil (auto) with infrastructure present must ARM the gate")
 	assert.Equal(t, "arena_regression", gate.Name())
@@ -70,7 +70,7 @@ func TestBuildRegressionGateAutoArmsWithoutOptIn(t *testing.T) {
 // TestBuildRegressionGateAutoWithoutSuiteIsHonestAbsence: auto + no suite =
 // sentinel, not an error.
 func TestBuildRegressionGateAutoWithoutSuiteIsHonestAbsence(t *testing.T) {
-	gate, err := buildRegressionGate(nil, stubEvalClient{}, ares_config.EvolutionGateConfig{})
+	gate, err := buildRegressionGateT(nil, stubEvalClient{}, ares_config.EvolutionGateConfig{})
 	require.ErrorIs(t, err, errRegressionGateNotConfigured)
 	assert.Nil(t, gate)
 }
@@ -80,21 +80,21 @@ func TestBuildRegressionGateAutoWithoutSuiteIsHonestAbsence(t *testing.T) {
 // gate that can only fail every candidate).
 func TestBuildRegressionGateAutoWithoutClientDegradesLoudlyButNotArmed(t *testing.T) {
 	path := writeSuiteFile(t, suiteYAML)
-	gate, err := buildRegressionGate(nil, nil, ares_config.EvolutionGateConfig{EvalSuite: path})
+	gate, err := buildRegressionGateT(nil, nil, ares_config.EvolutionGateConfig{EvalSuite: path})
 	require.ErrorIs(t, err, errRegressionGateNotConfigured)
 	assert.Nil(t, gate)
 }
 
 func TestBuildRegressionGateFailClosed(t *testing.T) {
 	t.Run("enabled_without_suite", func(t *testing.T) {
-		_, err := buildRegressionGate(regressionOn(), stubEvalClient{}, ares_config.EvolutionGateConfig{})
+		_, err := buildRegressionGateT(regressionOn(), stubEvalClient{}, ares_config.EvolutionGateConfig{})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "no eval_suite")
 	})
 
 	t.Run("enabled_without_llm_client", func(t *testing.T) {
 		gates := ares_config.EvolutionGateConfig{RegressionEnabled: regressionOn(), EvalSuite: "whatever.yaml"}
-		_, err := buildRegressionGate(regressionOn(), nil, gates)
+		_, err := buildRegressionGateT(regressionOn(), nil, gates)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "no eval LLM client")
 	})
@@ -104,7 +104,7 @@ func TestBuildRegressionGateFailClosed(t *testing.T) {
 			RegressionEnabled: regressionOn(),
 			EvalSuite:         filepath.Join(t.TempDir(), "missing.yaml"),
 		}
-		_, err := buildRegressionGate(regressionOn(), stubEvalClient{}, gates)
+		_, err := buildRegressionGateT(regressionOn(), stubEvalClient{}, gates)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "load regression suite")
 	})
@@ -117,7 +117,7 @@ test_cases:
     input: "   "
 `)
 		gates := ares_config.EvolutionGateConfig{RegressionEnabled: regressionOn(), EvalSuite: path}
-		_, err := buildRegressionGate(regressionOn(), stubEvalClient{}, gates)
+		_, err := buildRegressionGateT(regressionOn(), stubEvalClient{}, gates)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "no usable cases")
 	})
@@ -131,7 +131,7 @@ func TestBuildRegressionGateBuildsFromSuite(t *testing.T) {
 		RegressionRuns:       3,
 		RegressionMinWinRate: 0.6,
 	}
-	gate, err := buildRegressionGate(regressionOn(), stubEvalClient{}, gates)
+	gate, err := buildRegressionGateT(regressionOn(), stubEvalClient{}, gates)
 	require.NoError(t, err)
 	require.NotNil(t, gate)
 	assert.Equal(t, "arena_regression", gate.Name())

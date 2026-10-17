@@ -135,11 +135,20 @@ func (g *ArenaRegressionGate) Check(ctx context.Context, cand, active *mutation.
 	defer cancel()
 
 	result, err := g.tester.Run(checkCtx, ares_arena.RegressionConfig{
-		// The prompt template is the artifact the GA mutates; it is what
-		// the eval executor also runs through, so both gates discriminate
-		// on the same surface.
-		OldStrategy:  active.PromptTemplate,
-		NewStrategy:  cand.PromptTemplate,
+		// The WHOLE strategy travels here, not just its prompt template.
+		//
+		// The template is the artifact the GA mutates and the surface both gates
+		// discriminate on, so passing it alone used to look sufficient. It is not:
+		// a template drops Params, and Params is where a candidate declares its
+		// tool whitelist (agents.ParamKeyTools). A gate that scores a candidate by
+		// RUNNING it must run the candidate as declared — otherwise the evaluation
+		// grades a strategy no deployment would ever execute, and the difference
+		// is invisible in the score.
+		//
+		// This carries strictly more than before: the LLM scorer reads the
+		// template out of either shape (see instructionsOf).
+		OldStrategy:  active,
+		NewStrategy:  cand,
 		BaselineRuns: g.cfg.Runs,
 		CompareRuns:  g.cfg.Runs,
 		TestSuite:    "lifecycle-regression",

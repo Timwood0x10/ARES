@@ -149,6 +149,24 @@ func runServe() error {
 		return err
 	}
 
+	// --- Candidate-runtime replay for the arena regression gate (P0-1) ---
+	//
+	// A PROVIDER, installed here rather than passed at boot, because of a real ordering
+	// fact: the evolution components (the gate among them) are built well before this
+	// point, so a factory handed over back then would always have been nil. The provider
+	// closes over the serving tool binder and the chat client — the two things only this
+	// process has — and nothing calls it until a promote check actually runs.
+	//
+	// Whether it is USED is decided by evolution.gates.regression_runtime_replay (default
+	// off; the gate refuses an enabled flag with no provider rather than downgrading
+	// silently).
+	comp.Evolution.CandidateReplayProvider = func() (*ares_bootstrap.CandidateReplayFactory, error) {
+		return ares_bootstrap.NewCandidateReplayFactory(ares_bootstrap.CandidateReplayConfig{
+			ChatClient: chatClient,
+			ToolBinder: toolBinder,
+		})
+	}
+
 	// --- Peer registry: enable direct agent-to-agent messaging ---
 	// setupPeerRegistry builds the registry; the kernel handle powers
 	// collaboration-topic execution through the fabric DAG. The

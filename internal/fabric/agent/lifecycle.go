@@ -280,7 +280,7 @@ func (f *Fabric) Resume(ctx context.Context, agentID string) error {
 //   - error: ErrAgentNotFound / ErrAgentRetired.
 func (f *Fabric) Retire(ctx context.Context, agentID string) error {
 	f.mu.Lock()
-	a, err := f.retireLocked(agentID)
+	a, orphans, err := f.retireLocked(agentID)
 	f.mu.Unlock()
 	if errors.Is(err, ErrAgentRetired) {
 		return nil // already retired: Retire is idempotent by contract
@@ -288,7 +288,7 @@ func (f *Fabric) Retire(ctx context.Context, agentID string) error {
 	if err != nil {
 		return err
 	}
-	f.recordAgentRetired(ctx, a)
+	f.recordAgentRetired(ctx, a, orphans)
 	return nil
 }
 
@@ -300,17 +300,22 @@ func (f *Fabric) Retire(ctx context.Context, agentID string) error {
 // previous call had already retired it, and ErrAgentNotFound when the id is
 // unknown. Caller must hold f.mu; callers record the event AFTER unlocking,
 // because recording does I/O and must not run under the fabric lock.
-func (f *Fabric) retireLocked(agentID string) (*Agent, error) {
+func (f *Fabric) retireLocked(agentID string) (*Agent, []string, error) {
 	a, ok := f.agents[agentID]
 	if !ok {
-		return nil, ErrAgentNotFound
+		return nil, nil, ErrAgentNotFound
 	}
 	if a.State == StateRetired {
 		// Reported as a sentinel rather than (nil, nil) so every caller must
 		// state what it does with "already retired" — Retire treats it as
 		// success, reclamation as "not mine to count".
-		return nil, ErrAgentRetired
+		return nil, nil, ErrAgentRetired
 	}
+	// Read BEFORE the state change: the agents this one spawned stay live (Parent is
+	// provenance, not a lifecycle relation — see Agent.Parent), so they keep their
+	// resource claims and a spawn/retire loop accumulates them (P2-7). The list is
+	// RETURNED rather than logged because the callers record after unlocking.
+	orphans := f.orphanedSpawnsLocked(agentID)
 	// (A RUNNING guard was removed with SetRunning/SetIdle: those transitions
 	// had zero production callers, so no agent could ever be RUNNING here.)
 	f.releaseLocked(a.resources)
@@ -332,15 +337,46 @@ func (f *Fabric) retireLocked(agentID string) (*Agent, error) {
 	// Retire is terminal — any death snapshot from an earlier kill/revive
 	// cycle of this identity must not resurrect later.
 	f.snapshots.clear(agentID)
-	return a, nil
+	return a, orphans, nil
 }
 
-// recordAgentRetired emits the retirement event. Kept out of the locked section
-// by both callers: recording does I/O.
-func (f *Fabric) recordAgentRetired(ctx context.Context, a *Agent) {
-	f.record(ctx, a, EventAgentRetired, map[string]any{
+// orphanedSpawnsLocked lists the still-live agents whose Parent is parentID.
+//
+// Caller must hold f.mu. Each agent's Parent/State is read under its own lock, the
+// f.mu → a.mu order IsIdle already establishes. A root agent has no parent, so an
+// empty parentID short-circuits: there is nothing to look for.
+func (f *Fabric) orphanedSpawnsLocked(parentID string) []string {
+	if parentID == "" {
+		return nil
+	}
+	var out []string
+	for id, a := range f.agents {
+		if id == parentID {
+			continue
+		}
+		a.mu.RLock()
+		parent, state := a.Parent, a.State
+		a.mu.RUnlock()
+		if parent == parentID && state != StateRetired {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+// recordAgentRetired emits the retirement event, carrying the agents this one left
+// live (P2-7). Kept out of the locked section by both callers: recording does I/O.
+func (f *Fabric) recordAgentRetired(ctx context.Context, a *Agent, orphans []string) {
+	payload := map[string]any{
 		PayloadKeyStopReason: StopRetired.String(),
-	})
+	}
+	if len(orphans) > 0 {
+		// Only on retirement that actually orphans something: an empty list on every
+		// event would be noise, and "this agent left N live children" is the fact an
+		// operator acts on.
+		payload[PayloadKeyOrphanedSpawns] = orphans
+	}
+	f.record(ctx, a, EventAgentRetired, payload)
 }
 
 // Kill forcefully terminates an agent (non-graceful; e.g. crash). Unlike

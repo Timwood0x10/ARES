@@ -27,6 +27,17 @@ type EvolutionComponents struct {
 	// G3 eval gate needs it to score candidate strategies through the
 	// AgentTestRunner at promote time. Nil when no LLM client was available.
 	EvalLLMClient eval.LLMClient
+	// CandidateReplayProvider, when non-nil, lets the arena regression gate RUN each
+	// candidate through a real per-candidate runtime
+	// (evolution.gates.regression_runtime_replay) instead of asking a model to role-play it.
+	//
+	// It is a provider (called on first case execution) and it is set by the process that
+	// owns the serving tool binder — cmd/ares — because bootstrap wires the LLM client but
+	// NOT the tool registry, and because that binder does not exist yet when these
+	// components are built. Nil therefore means "replay is not available in this process",
+	// and an enabled flag with a nil provider is refused at gate construction rather than
+	// quietly falling back to the role-play scorer.
+	CandidateReplayProvider func() (*CandidateReplayFactory, error)
 	// FlightRecorder is the recorder created for the Flight→Experience
 	// adapter. It is exposed so Bootstrap can start/stop it explicitly:
 	// without Start the collector never subscribes to events and the GA
