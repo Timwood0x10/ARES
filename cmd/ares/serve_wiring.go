@@ -286,6 +286,16 @@ func wiringServeToolchain(ctx context.Context, cfg *ares_config.Config, comp *ar
 		"capped", false,
 		"note", "fixed at startup (discovery is opt-in); this is the surface the model chooses from",
 		"if_too_wide", "narrow the MCP servers, or enable discovery + let the agent use capability search instead of registering everything")
+	// P2-14②: the WARNING threshold reuses evolution.guardrails.max_tools_enabled rather
+	// than inventing a second number for the same concern ("how many tools should an agent
+	// choose among"). When it is unset (the default) nothing warns — the count above is
+	// still logged, so the surface is never invisible, only unjudged.
+	if limit := cfg.Evolution.Guardrails.MaxToolsEnabled; limit > 0 && nativeTools > limit {
+		log.Warn(ctx, "wiringServeToolchain",
+			"serve: the agent tool surface is wider than evolution.guardrails.max_tools_enabled — tool choice gets harder as this grows",
+			"tools", nativeTools, "max_tools_enabled", limit,
+			"note", "this is a report, not a cap: nothing is dropped silently")
+	}
 
 	return toolBinder, registry, internalReg, nil
 }
