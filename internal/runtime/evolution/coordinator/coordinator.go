@@ -280,15 +280,19 @@ func (ec *UngatedPatcher) SetDeployer(d PatchDeployer) {
 // policy would have allowed — e.g. a GA patch whose fitness is high but
 // whose shadow comparison evidence is insufficient.
 //
-// PRODUCTION WIRING STATUS: SetApplyGate is NOT called from any production
-// assembly path today — the only callers are tests. The gate mechanism is
-// implemented and tested, but until a serve-layer wiring connects it to a
-// StrategyLifecycle-backed adapter, the Coordinator's Apply path remains
-// ungated by StrategyLifecycle (though the Coordinator's own fitness
-// threshold still applies). This is consistent with B5's characterization:
-// the delay bucket (fitness [30,70)) still routes to operator review, and
-// the gate only triggers on the ≥70 Apply branch — but that branch is not
-// externally gated until SetApplyGate is wired in production.
+// PRODUCTION WIRING STATUS: WIRED as of 0.3.5 (M8b). The serve assembly installs a
+// lifecycle-backed gate at the first point where both the coordinator and the strategy
+// lifecycle exist (`ares_bootstrap`, after `newEvol.Lifecycle = wired.Lifecycle`), because
+// the coordinator is built long before the lifecycle.
+//
+// What it enforces: a patch attributed to a strategy that the lifecycle is HOLDING for
+// manual approval is refused, so a candidate awaiting a human cannot be promoted through the
+// patch path. What it does NOT do: unattributed component patches pass (the deployment
+// adapter already refuses them as unmeasurable), and with nothing held — the default —
+// every patch passes, so a deployment that never configured approvals behaves as before.
+//
+// The Coordinator's own fitness threshold still applies independently; the gate and the
+// threshold answer different questions (who may apply vs how good it is).
 //
 // The interface lives in the coordinator package (consumer-side) so the
 // coordinator never imports the evolution package, avoiding a cycle.

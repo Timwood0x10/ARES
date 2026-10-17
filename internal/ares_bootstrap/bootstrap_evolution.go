@@ -370,6 +370,22 @@ func startLifecycleWatch(ctx context.Context, comp *Components, newEvol *NewEvol
 		// Expose the lifecycle for the introspect control plane
 		// so /api/evolution/lifecycle returns a state snapshot.
 		newEvol.Lifecycle = wired.Lifecycle
+
+		// M8b: the patch path now consults the same trust root as the strategy path.
+		//
+		// Installed HERE because this is the first point where both sides exist — the
+		// coordinator is built long before the lifecycle (provide_new_evolution.go), so the
+		// gate cannot be set where the coordinator is constructed. Without it, a candidate
+		// held for manual approval could still be promoted by a patch that belongs to it.
+		//
+		// Behaviour is unchanged unless approvals are configured: with nothing held
+		// (RequireManualApproval default false) every patch passes, and unattributed
+		// component patches are not this gate's subject (the deployment adapter already
+		// refuses them as unmeasurable).
+		newEvol.Coordinator.SetApplyGate(newStrategyApprovalGate(wired.Lifecycle))
+		log.Info("bootstrap: GA apply gate installed (lifecycle-backed)",
+			"refuses", "patches whose strategy is held for manual approval",
+			"passes", "unattributed patches (not comparable) and every patch when nothing is held")
 		// Closure-assertion surfaces: the ASM (Previous/RollbackPolicy)
 		// and the G2 shadow evaluator (the comparison feeder).
 		newEvol.ActiveStrategyManager = wired.ActiveStrategyManager

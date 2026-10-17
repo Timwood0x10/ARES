@@ -301,11 +301,11 @@ func ProvideNewEvolution(dag *engine.MutableDAG, rt *knowledgeruntime.KnowledgeR
 	}
 
 	// 5. Coordinator — decision engine for all patches.
-	// TODO(tech-debt): this wiring installs no ApplyGate, so the patch path
-	// bypasses the StrategyLifecycle trust root (A1). Short term the boundary
-	// is named and declared (UngatedPatcher, A1-c); mid term wire a
-	// lifecycle-backed ApplyGate here (A1-a) — see
-	// internal/runtime/ares_evolution/doc.go (UNGATED PATCH PATH).
+	//
+	// The ApplyGate is NOT installed here, and cannot be: it needs the StrategyLifecycle,
+	// which is assembled after these components. It is installed by
+	// `wireEvolutionLifecycle` (bootstrap_evolution.go) at the first point where both sides
+	// exist — a stage of the same assembly that already had to sequence them.
 	coord := coordinator.NewUngatedPatcher(coordinator.DefaultPolicy(), patchReg)
 
 	return &NewEvolutionComponents{

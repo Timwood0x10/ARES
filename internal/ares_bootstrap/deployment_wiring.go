@@ -235,11 +235,15 @@ func (a *deploymentAdapter) Deploy(ctx context.Context, p patch.RuntimePatch) er
 	// to the cold-start score and the rejection reason would read like a
 	// measured tie ("delta 0.000") rather than an unmeasurable patch.
 	//
-	// Today no patch producer sets StrategyID: genome/diff patches are keyed
-	// by component, while evidence strategy_id comes from the mutation
-	// strategy lifecycle. Those namespaces are disjoint, so enabling the
-	// deployment pipeline rejects every patch until attribution is wired.
-	// That is deliberate — an unjudgeable patch must not be promoted.
+	// Attribution is NOT inferred here, and that stays the rule — but the earlier note that
+	// "no patch producer sets StrategyID" is no longer true: the GA path attributes at
+	// apply time (`generateDiffPatches` stamps every patch it emits with the strategy that
+	// produced it, and refuses to run without one). Component-keyed diff patches still
+	// arrive unattributed, and those are the ones this refusal is for: an unjudgeable patch
+	// must not be promoted just because it looks small.
+	//
+	// The two namespaces are still disjoint (component keys vs strategy ids), so backfilling
+	// from Source or Target would name a strategy that never existed.
 	if p.StrategyID == "" {
 		return fmt.Errorf(
 			"deployment: patch (type %s, target %q, source %q) has no strategy attribution; "+
