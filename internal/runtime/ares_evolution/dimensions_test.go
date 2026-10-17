@@ -19,7 +19,7 @@ import (
 // deployments have no data for them.
 func TestDimensionMapping_CandidateScopedOnly(t *testing.T) {
 	window := WindowResult{
-		PerSource: map[string]sourceStat{
+		PerSource: map[string]SourceStat{
 			"strategy":       {Mean: 0.8, Count: 5},
 			"dimension_eval": {Mean: 0.6, Count: 3},
 			// Present in the window, but global: must NOT become dimensions.
@@ -47,7 +47,7 @@ func TestDimensionMapping_CandidateScopedOnly(t *testing.T) {
 // or scaling it, would apply a rule the evidence does not have.
 func TestDimensionMapping_DirectionAndNormalization(t *testing.T) {
 	window := WindowResult{
-		PerSource: map[string]sourceStat{
+		PerSource: map[string]SourceStat{
 			"strategy":       {Mean: 0.42, Count: 9},
 			"dimension_eval": {Mean: 1.0, Count: 1},
 		},
@@ -71,7 +71,7 @@ func TestDimensionMapping_DirectionAndNormalization(t *testing.T) {
 // it had been tried and failed.
 func TestDimensionMapping_OmitsWhatItCannotMeasure(t *testing.T) {
 	dims := MapCandidateDimensions(WindowResult{
-		PerSource: map[string]sourceStat{
+		PerSource: map[string]SourceStat{
 			"strategy": {Mean: 0.5, Count: 4},
 			// dimension_eval absent entirely.
 		},
@@ -80,7 +80,7 @@ func TestDimensionMapping_OmitsWhatItCannotMeasure(t *testing.T) {
 
 	// A present source with zero samples is the same fact as an absent one.
 	dims = MapCandidateDimensions(WindowResult{
-		PerSource: map[string]sourceStat{"strategy": {Mean: 0.0, Count: 0}},
+		PerSource: map[string]SourceStat{"strategy": {Mean: 0.0, Count: 0}},
 	})
 	assert.Empty(t, dims, "a source with no samples is a gap, not a zero score")
 }
@@ -95,7 +95,7 @@ func TestMultiObjectiveScorerFromWindow_NoEvidenceMeansNoDimensions(t *testing.T
 
 	withEvidence := MultiObjectiveScorerFromWindow(func(id string) WindowResult {
 		assert.Equal(t, "strategy-1", id, "the window must be fetched for the candidate being scored")
-		return WindowResult{PerSource: map[string]sourceStat{"strategy": {Mean: 0.75, Count: 2}}}
+		return WindowResult{PerSource: map[string]SourceStat{"strategy": {Mean: 0.75, Count: 2}}}
 	})
 	dims, _ = withEvidence("strategy-1")
 	assert.Equal(t, map[string]float64{"success_rate": 0.75}, dims)

@@ -701,11 +701,14 @@ func (p *Population) ParetoFrontStrategy() []*mutation.Strategy {
 // ScoreAgentsMulti scores all agents using a multi-objective scorer.
 // Sets both DimensionScores and Score (aggregate) on each agent.
 //
-// Deprecated: this entry API has ZERO production callers. The
-// multi-objective engine (NSGA-II selection) is functional and used
-// internally by the selection path, but this top-level scoring entry
-// point is not wired into any production loop. Experimental: wire it or
-// remove it.
+// Wired as of 0.3.5 (M9): the evolution service calls it after the scalar pass whenever a
+// dimension source is configured (`SystemConfig.DimensionWindow`), so DimensionScores is
+// populated from real execution evidence and NSGA-II selection ranks by Pareto dominance
+// instead of degenerating to the scalar score.
+//
+// It runs AFTER the scalar pass on purpose. A candidate with no evidence must keep the score
+// it already earned; zeroing it here would read as "measured and failed" and drop it out of
+// selection.
 //
 // The scorer runs OUTSIDE the lock, mirroring ScoreAgents: a multi-objective
 // scorer may be an LLM/network call that blocks for seconds, and running it

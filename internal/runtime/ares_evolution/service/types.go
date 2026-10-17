@@ -6,6 +6,10 @@ package evolution
 import (
 	"context"
 	"time"
+
+	// The parent package carries the same name as this one, so it needs an alias here;
+	// service.go aliases it as `evolution` because that file refers to it constantly.
+	aresevolution "github.com/Timwood0x10/ares/internal/runtime/ares_evolution"
 )
 
 // ──────────────────────────────────────────────
@@ -287,6 +291,16 @@ type LLMClient interface {
 type SystemConfig struct {
 	// BaseStrategy is the root strategy to evolve from.
 	BaseStrategy *Strategy
+
+	// DimensionWindow, when set, supplies each candidate's per-strategy fitness window
+	// from REAL execution evidence, so scoring can fill DimensionScores and NSGA-II
+	// selection stops degenerating to single-objective (M9).
+	//
+	// A nil window leaves DimensionScores empty, which is the previous behaviour: the
+	// scalar score still drives selection. It is a function rather than a snapshot because
+	// the window is time-bounded and must be read at scoring time, per candidate, not once
+	// at construction — a snapshot would score every generation against the same evidence.
+	DimensionWindow func(strategyID string) aresevolution.WindowResult
 
 	// PopulationSize is the number of agents per generation (default 20).
 	PopulationSize int

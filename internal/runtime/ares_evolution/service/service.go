@@ -818,6 +818,36 @@ func (s *Service) collectLineages() []StrategyLineage {
 //   - top_k near 30 balances focus vs breadth (penalty dist²/10)
 //   - "precise" prompt template earns a bonus (+15)
 func (s *Service) scoreAgents(ctx context.Context, pop *genome.Population) {
+	s.scoreScalars(ctx, pop)
+	s.scoreDimensions(pop)
+}
+
+// scoreDimensions fills DimensionScores from real execution evidence (M9).
+//
+// It runs AFTER the scalar pass and only adds to it: with no window configured the previous
+// behaviour is untouched, and a candidate with no evidence keeps the score it already earned
+// rather than being zeroed. Zeroing would be a measurement ("everything failed") where the
+// truth is "not measured yet", and it would quietly drop a candidate from selection.
+//
+// The aggregate is derived from the dimensions (not from a second source), so a candidate's
+// Score and its vector describe the same evidence; NSGA-II then ranks by Pareto dominance
+// over dimensions that a candidate's own behaviour can change.
+func (s *Service) scoreDimensions(pop *genome.Population) {
+	if s.config == nil || s.config.DimensionWindow == nil || pop == nil {
+		return
+	}
+	pop.ScoreAgentsMulti(func(agent *mutation.Strategy) (map[string]float64, float64) {
+		dims := evolution.MapCandidateDimensions(s.config.DimensionWindow(agent.ID))
+		if len(dims) == 0 {
+			return nil, agent.Score
+		}
+		return dims, genome.AggregateDimensions(dims, genome.DefaultDimensionWeights)
+	})
+}
+
+// scoreScalars is the single-objective pass; scoreAgents is the entry point that also fills
+// multi-objective dimensions.
+func (s *Service) scoreScalars(ctx context.Context, pop *genome.Population) {
 	// Fast path: deterministic scorer — no clone/concurrency overhead.
 	if s.config.Scorer == nil {
 		pop.ScoreAgents(func(agent *mutation.Strategy) float64 {

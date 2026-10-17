@@ -151,7 +151,7 @@ type WindowResult struct {
 	// they are diagnosis-only records by design, not a unit error.
 	OutOfRange int
 	// PerSource holds the per-source mean and count.
-	PerSource map[string]sourceStat
+	PerSource map[string]SourceStat
 	// LastAt is the NEWEST evidence timestamp inside the window. Under
 	// steady-state churn (window saturated: one record in, one record out)
 	// Count stays flat, so "did the window advance" must be judged by this
@@ -163,9 +163,9 @@ type WindowResult struct {
 	Ok bool
 }
 
-// sourceStat holds the mean, count, and newest timestamp of one evidence
+// SourceStat holds the mean, count, and newest timestamp of one evidence
 // source inside the window.
-type sourceStat struct {
+type SourceStat struct {
 	Mean   float64
 	Count  int
 	LastAt time.Time
@@ -233,7 +233,7 @@ func (a *RuntimeFitnessAggregator) WindowAt(ctx context.Context, strategyID stri
 	a.mu.RUnlock()
 
 	if store == nil {
-		return WindowResult{Mean: cfg.ColdStartScore, PerSource: map[string]sourceStat{}}
+		return WindowResult{Mean: cfg.ColdStartScore, PerSource: map[string]SourceStat{}}
 	}
 
 	sources := []struct {
@@ -273,7 +273,7 @@ func (a *RuntimeFitnessAggregator) WindowAt(ctx context.Context, strategyID stri
 	// meaning, and the payload carries the scalar (`value`, 0..1) read below.
 	dimMean, dimCount, dimLastAt, dimOutOfRange := a.querySourceMeanAt(ctx, store, "", evidence.KindDimensionEval, cfg.WindowSize, "", since, until)
 
-	perSource := make(map[string]sourceStat)
+	perSource := make(map[string]SourceStat)
 	totalCount := 0
 	// strategyCount: samples of the STRATEGY source alone — the judging
 	// gate for the rollback path (see the doc comment on Window).
@@ -300,7 +300,7 @@ func (a *RuntimeFitnessAggregator) WindowAt(ctx context.Context, strategyID stri
 		if c == 0 {
 			continue
 		}
-		perSource[src.name] = sourceStat{Mean: m, Count: c, LastAt: srcLastAt}
+		perSource[src.name] = SourceStat{Mean: m, Count: c, LastAt: srcLastAt}
 		totalCount += c
 		weightedSum += m * src.weight
 		weightSum += src.weight
@@ -319,7 +319,7 @@ func (a *RuntimeFitnessAggregator) WindowAt(ctx context.Context, strategyID stri
 	// A counter that only reports when the signal was fine is worse than none.
 	outOfRangeTotal += dimOutOfRange
 	if dimCount > 0 {
-		perSource["dimension_eval"] = sourceStat{Mean: dimMean, Count: dimCount, LastAt: dimLastAt}
+		perSource["dimension_eval"] = SourceStat{Mean: dimMean, Count: dimCount, LastAt: dimLastAt}
 		totalCount += dimCount
 		weightedSum += dimMean * cfg.Weights.DimensionEval
 		weightSum += cfg.Weights.DimensionEval
@@ -572,17 +572,17 @@ func (a *RuntimeFitnessAggregator) WindowToolStepAt(ctx context.Context, strateg
 	store := a.store
 	a.mu.RUnlock()
 	if store == nil {
-		return WindowResult{Mean: cfg.ColdStartScore, PerSource: map[string]sourceStat{}}
+		return WindowResult{Mean: cfg.ColdStartScore, PerSource: map[string]SourceStat{}}
 	}
 
 	m, c, lastAt, outOfRange := a.querySourceMeanScopedAt(ctx, store, toolCallEvidenceSource, evidence.KindFitness, cfg.WindowSize, strategyID, toolStepID, since, until)
-	result := WindowResult{PerSource: map[string]sourceStat{}, OutOfRange: outOfRange}
+	result := WindowResult{PerSource: map[string]SourceStat{}, OutOfRange: outOfRange}
 	if c == 0 {
 		result.Mean = cfg.ColdStartScore
 		result.Ok = false
 		return result
 	}
-	result.PerSource[toolStepID] = sourceStat{Mean: m, Count: c, LastAt: lastAt}
+	result.PerSource[toolStepID] = SourceStat{Mean: m, Count: c, LastAt: lastAt}
 	result.Mean = m
 	result.Count = c
 	result.LastAt = lastAt
