@@ -189,9 +189,11 @@ a bug in the README.
   `"nsga2"` / `"nondominated"` silently fall back to single-objective tournament
   selection, and `ScoreAgentsMulti` / `ParetoFrontStrategy()` are deprecated with zero
   production callers.
-- **The GA apply gate is not installed in production**, so the patch path decides by
-  its own fitness threshold — that is precisely why the type is named
-  `UngatedPatcher`.
+- **The GA apply gate is installed but narrow.** It refuses a patch whose strategy
+  the lifecycle is holding for manual approval; unattributed component patches pass (the
+  deployment adapter already refuses those as unmeasurable), and with nothing held — the
+  default — every patch passes. It does not grade quality: that stays the coordinator's own
+  fitness threshold, which is why the type is still named `UngatedPatcher`.
 - **Scheduling is cooperative, not preemptive at the token level.** An agent yields
   only at a ReAct-round boundary; a runaway LLM call is bounded by a timeout, not
   sliced.
