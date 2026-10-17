@@ -111,6 +111,69 @@
 
 ## 修订记录
 
+**2026-10-17 · 0.3.4 收口进度（按 `plan/0.3.x_plans/0.3.4-0.3.5_akg_ga.md` §8.2 的三条缺口）**：
+
+§8.2 列出 0.3.4 仅剩三处"有代码有测试、零生产调用方"。核对验收测试后发现**三条验收测试本身缺失**（不只是没接线）：
+
+| 里程碑 | 缺的验收测试 | 本轮 |
+|---|---|---|
+| **M2.5 关系门** | `TestRelationGate_FlagsConflict` | ✅ **关闭**：补上缺失的验收测试 + 它要求的能力 `FindRelationConflicts`/`RelationConflict{Candidate,Existing,Reason}`（判定**只用词表自带的 `contradicts`**，不发明"单值谓词"表；**只标记不丢弃**）+ **接线**：`DistillBridge.extractRelations` 现在先过 `FilterRelations`（按对象 `Type`）再写入，冲突告警。测试 3 条（门生效 / 门不是墙 / 冲突不丢弃）；**反证 2 条**（关掉检测 → `expected 1 conflict, got 0`；不把 subjectType 传给门 → `a 'fixes' relation from a user-typed subject must not reach the object`） |
+| **M4 构建可观测/增量** | `TestAKG_IncrementalBuild_OnlyChangedByFingerprint` | ✅ **关闭 2026-10-17**：① **真 producer** `DistillConversationWithReport`（7 个计数器全部来自本次运行；`Rejected` 口径收窄为"低于晋升门槛、留为 candidate"——本链路从不因低分删除，这一点写进字段文档）；② **增量**：`persistAndPromote` 按 `ContentFingerprint` 跳过未变对象，新增 `Unchanged`；③ **旧验收改为只钉字段集**（原文自证"证明不了 producer"），真验收 = `TestDistillConversationWithReport_ProducesCounters` + `TestAKG_IncrementalBuild_OnlyChangedByFingerprint`（同内容不写 / 变内容才写）+ 包装器语义不变一条；④ **反证 2 条**（计数器不来自运行 → `ReadCount is what the distiller RETURNED`；禁用指纹跳过 → `unchanged content must not be written again`） |
+| **M6 三级检索** | `TestRetrieval_TieredL1L2L3Fallback` | ❌ 未做（`TieredRetriever` 接线前须先解其 TODO 自陈的两个阻塞：整店入内存 per query、namespace 来源） |
+
+**结论：0.3.4 尚未全部完成**，剩余项与顺序如上（M2.5 接线 → M4 → M6），每条都已有明确落点与验收名。
+
+**2026-10-17 · 版本正向性检测：0.3.3 → 0.3.4（发现并修掉一处"产物说自己是旧版"）**：
+
+**缺陷**：`VERSION` 文件停在 **0.3.3**，而 `README.md`（**6 处**）与多个包的注释（`knowledgeapi` "FROZEN as of 0.3.4"、`config_data.go` "pre-0.3.4"、`knowledge_akg.go` "pre-0.3.4 used agent_id…"）已自称 **0.3.4**。`make build` 用 `-X main.version=$(VERSION)` 注入 ⇒ **打出来的二进制 `ares version` 会报 0.3.3**，与它所属的发布不一致——而且**没有任何东西会失败**。
+
+**修复与守卫**：
+
+| 层 | 内容 |
+|---|---|
+| 值 | `VERSION` → `0.3.4`（与 README/代码的声称对齐） |
+| 守卫 | 新增 `cmd/ares/version_test.go` 3 条：VERSION 可解析；**README 的版本声称不得高于 VERSION**；`main.version` 默认 `dev`（未注入时可辨识） |
+| 守卫为何**单向** | 声称可以**更旧**（"pre-0.3.3 behaviour" 就是这么读的），但**不能更新**——那是产物兑现不了的承诺 |
+| **反证** | 把 VERSION 退回 0.3.3 → `README claims [0.3.4 ×6] but VERSION is 0.3.3 — the built binary would report the older number` ✓ |
+| **端到端正向** | `make build` + `./bin/ares version` → **`ARES 0.3.4 (darwin/arm64, go1.27.2)`** ✓ |
+
+**残余扫描**：仍出现 `0.3.3` 的地方**全部是历史语义**（"removed in v0.3.3"、"pre-0.3.3"），没有孤立的"当前版本"声称；文档里也没有"current version/latest release"这类会与 0.3.4 冲突的断言。
+
+**2026-10-17 · 导入快照的版本守卫（上次登记的残留，已收口）**：
+
+`ImportStore` 现在**拒收比自己新的快照**（`SchemaVersion > CurrentSchemaVersion`，错误包住 `ErrSchemaVersionTooNew`），**接受更旧与遗留零版本**（由 per-object `MigrateObject` 升级）。三条要点：
+
+1. **守卫放在 `StoreExporter` 快路之前**——否则"自己实现 `Import` 的 store"就成了唯一绕过守卫的路径：守卫只挡住了不需要它的那些 store，而漏掉了需要的那些。
+2. **被拒不落盘**：半导入一个超新快照是最坏结果（对象进了一半、版本已被降级）。
+3. **为什么拒收而不是"尽力导入"**：新版本快照可能带本版本不认识的字段，而回退路径会把它**重新盖成本版本的旧 schema 版本**——一次看起来成功的**降级**，只有在缺失的数据被用到时才会暴露。
+
+测试 3 条（超新拒收且不落盘 / **当前与遗留版本可导入**（正向）/ 快路也受守卫）+ **反证**（去掉守卫 → 两条精确失败）。
+
+**"功能都是正向的"审计（本会话全部开关）**：全部**默认保持原行为**，且每条都有**正向路径测试**，不是只有拒绝路径：
+
+| 开关 | 默认 | 正向验证 |
+|---|---|---|
+| `Fabric.WithCascadeRetire` | **false** | `TestRetire_CascadeIsOptIn`：开启后整树退役且事件可归因 |
+| `evolution.gates.regression_runtime_replay` | **false** | 运行时 scorer 4 条（执行器真被调用、判分/floor 不变） |
+| `evolution.gates.eval_probe_interval` | **空=关** | `ReportsOnEachTick`：tick 上报、零锚定告警 |
+| `evolution.guardrails.max_tools_enabled`（借用为告警线） | **0=不告警** | 只报告不丢工具（数量始终记录） |
+| `postgres.DefaultVectorDimension` | **1024（值未变）** | 生产侧无第二处字面量 |
+
+**自记（本轮两次"测试错、代码对"）**：① 我以为退役根后 `grandchild` 也是孤儿——**不是**（它父还活着），孤儿定义是"直接父已消失"；② `StoreExporter` **要求 `Export` + `Import` 两个方法**，我的假实现只有 `Import` ⇒ 根本没进快路，测试却在"通过"。→ 纪律已固化：**用可选能力接口写测试时，加 `var _ Interface = fake{}` 编译期断言**（已加在该测试文件里），否则"测试通过"可能只是没走到被测路径。
+
+**2026-10-17 · 拍板 4 项 + 剩余项收口（我做的决定，理由都写在下面）**：
+
+| 项 | 决定 | 落地 |
+|---|---|---|
+| **P2-7 级联①** | **做，但默认关**（`Parent` 是 provenance 的契约不能默认改） | `Fabric.WithCascadeRetire(bool)`：开启后 `Retire` **深度优先带走整棵子树**，同一把锁内完成（不会有子 agent 被并发 spawn 进半拆的树）；`children` 遍历**带 visited 防环**（它持锁跑，环=整个 fabric 挂死）；**每个被级联的 agent 各自发 `agent.retired` 事件**并带 `cascade_root=<根id>`，可归因。测试 2 条（默认不级联 / 开启后整树+归因；环索引下不挂死）+ **反证**（关掉级联块 → `child must be retired by the cascade` 等 3 条精确失败） |
+| **P2-14② 上限形态** | **不发明数字**：复用仓里既有的 `evolution.guardrails.max_tools_enabled` 作为**告警线**（同一个关切"agent 该在多少个工具里选"） | `serve_wiring.go`：注册工具数 `> max_tools_enabled` 时 `Warn`，并写明"**这是报告不是上限：不会被静默丢弃**"。未配置时（默认 0）不告警，但**数量始终记录** ⇒ 面永远可见，只是不被评判 |
+| **P2-10 阈值默认** | **保持 0.4 不变** | 理由：改默认=改**所有部署**的召回/精度，而两条路径**都已可配**（`memory.rag_min_score` / `knowledge.min_score`），且"0.4 对 1024 维余弦是弱下限、不是相关性保证"已写进两处常量注释。**决定=不改**，因为这不是缺陷而是需要数据支撑的调参 |
+| **P0-1 定时真实评测** | **不做** | 理由：每个 case 一次模型调用，且要配**基线**才能判断漂移；而"语料陈旧/失去锚定"这半已由**零成本探针**覆盖。**这是本专项唯一我明确选择不做的事**，因为它把一个可观测性需求变成持续账单 |
+| **P2-9② 表名烘焙维度** | **不做改名** | 表名是**迁移工程**（`knowledge_chunks_1024` 改名要动迁移+所有查询+存量数据），收益只是"名字更诚实"。维度一致性风险已用**单源常量**（`postgres.DefaultVectorDimension`，生产侧无第二处字面量）压住；表名与维度的耦合已写进该常量注释 |
+| **P2-9③ 共实例** | **接受（部署属性）** | 向量与事件账本共用一个 PG 实例、无资源隔离是**部署拓扑**，代码层无法隔离。缓解=独立实例/连接池上限，属运维；本台账保留为**已知接受风险**而非"待修" |
+| **§四 `StoreExporter`** | **关闭（台账过期）** | 复核：`ares knowledge export|import` **已存在**（`cmd/ares/knowledge_store.go`）、`ExportStore` 已实现且带 `RepresentationLister` 回退（快照连向量一起带，避免"往返后召回静默退化为纯词面"）⇒ **不是"无人实现"**。真正剩下的缺口是 `StoreSnapshot.SchemaVersion` **写入但导入时不校验**（实际守门是 per-object `MigrateObject`）——已改记为这一条 |
+| **§四 `SearchSimilarTasks` 无 user 维度** | **不做** | 改它要动**接口签名 + 跨模块调用点**，且当前唯一调用方是 L2 的"相似任务"提示（不是权限边界）。**风险等级=提示质量**，不是越权读取；若将来该结果进入权限判定，必须先加维度 |
+
 **2026-10-17 · code review（本会话全部代码改动）+ 自记错误**：
 
 **静态**：`go vet` 本轮触及的包全绿；`make check` 含 `golangci-lint` **0 issues**；新文件**无静默吞错**（`_ = `/`, _ :=` 零命中）、无 TODO/FIXME。
@@ -179,8 +242,15 @@
    `bootstrap_evolution.go:251` 的 `minScore` → 门 `MinScore`（`>0` 覆盖，否则门自身 **0.7**，`gate_eval.go:45`）。
    我上一轮把它列为"仍缺绝对水平闸门"是**错的**。**已补的**：启动日志打 `min_score=<有效值> source=<配置/门默认>`
    ——此前数值**从不露面**，运维既不知道在生效的绝对线是多少，也分不清读到的是自己的策略还是门的内置下限。
-   ⇒ **A 组 5 项到此：4 项已落/已定案（P2-7②、P2-10、P2-14②、P0-4A 决策输入），P2-1 更正为"早已实现+补可见性"；
-   真正的实现欠账只剩 `record_rationale` 元工具**（P0-4A 定案的那一件）。
+   ⇒ **A 组 5 项到此：5 项全部收口（P2-7②、P2-10、P2-14② 已落；P2-1 更正为"早已实现+补可见性"；
+   P0-4A 连"注册/广告"也已落，见下条）**。
+7. **P0-4A 收口，并更正我上一轮的判断（2026-10-17）**：我上轮说"真正的实现欠账只剩 `record_rationale` 元工具 /
+   注册位置待拍板"—— **这句是过期的**：该工具早已端到端落地，且**注册位置的选择题并不存在**：
+   ① `rationaleToolSchema()` 在 **planner 认知自己的广告面**里追加（`planner_cognition.go`，**不进通用注册表**）
+   ⇒ 其他 agent 的工具面与启动工具总数都不变；② `growToolNodes` **跳过**该调用（它不长节点、不回放，
+   参数已被 `rationaleFrom` 消费）；③ 只有它一个调用的回合用**自己的原因**结答（`answerCauseRationaleOnly`，
+   不冒充 `l1_blocked`）。**9 条测试全过**（含"schema 与消费方的名字/键一致且能往返"这条防静默契约）。
+   **教训**：查"某机制是否已落"要 grep **实现点**，不能凭上一轮的结论——我这条连续两轮的错误都是这么来的。
 
 **2026-10-16 · code review（本会话全部改动）+ 自记错误（含已修）**：
 
@@ -219,28 +289,32 @@
 
 **仍未做（2026-10-17 全量登记，按"是否需要拍板"分组；本块属上面这份审计的结论，不另起章节号）**
 
-**A. 需要拍板（我不动）**
+**A 组 5 项最终状态（2026-10-17 全部收口；每行末尾写明"仍归你的决定"是什么）**
 
-| 项 | 待定内容 |
+| 项 | 状态 |
 |---|---|
 | P2-14② | 启动注册工具总数的上限**形态**（按 server／按能力域／按 token 预算）——**已落 2026-10-17（可见性）**：`wiringServeToolchain` 启动时打 `tools=<n> capped=false` + 下一步选项；**不发明阈值**（上限形态仍是产品决定，但"无上限且无人知"已消除） |
-| P2-7 级联 | **已按 ② 落地（2026-10-17）**：不做级联（`Parent` 仍是 provenance-only，改它就要动契约），而是让**累积可见** —— `agentfabric.AuditOrphans(sample)`：孤儿数 + **它们仍持有的资源** + 有界样本；挂在 `aresrecovery.Recovery` 上（该层已跑回收 sweep、已付全量遍历的成本，无需改签名），sweep 末尾**仅在非空时**打 Warn（`orphans=N resources={…} sample=[…]` + 为什么）。测试 2 条（退役父留下的孤儿；**父记录整个丢失**也算孤儿）+ 反证（去掉"父已退役/缺失"判据 → `with the parent alive there is nothing to reconcile`）。**级联方向 ① 仍未做**（那是契约变更，需你点头） |
+| P2-7 级联 | ✅ **① + ② 都已落地（2026-10-17）**。**② 对账**：`agentfabric.AuditOrphans(sample)`（孤儿数 + 仍持有资源 + 有界样本），挂在 `aresrecovery.Recovery`，sweep 末尾仅非空时 Warn；测试 2 条 + 反证。**① 契约变更（你已同意）**：`Agent.Parent` 由 **provenance-only 改为生命周期关系**（仍**非权限**关系——invariant #1 不变），`NewFabric` **默认级联**：`Retire` 深度优先带走子树，每个被级联者各自发 `agent.retired` 且带 `cascade_root`；`WithCascadeRetire(false)` 保留旧的单点语义。**测试改写**：默认级联 1 条 + 显式关闭 1 条；3 条测"孤儿/边清理"的旧测试改为**显式 opt-out**（它们要造孤儿，且主题不是级联）。**review 发现并记录的一处不对称**：`ReclaimIdleAgents` 直接调 `retireLocked` ⇒ **仍是单点**，理由是"父空闲被回收不该连带杀掉正在干活的子"，遗留部分由 `AuditOrphans` 报——已写进代码注释，避免两条路径的语义差异变成静默 |
 | P2-1 | 绝对水平闸门的**阈值与口径**——**更正我上一轮的判断：这道门早就存在且已接线**（`evolution.gates.eval_min_score` → `bootstrap_evolution.go` 的 `minScore` → 门的 `MinScore`，`>0` 时覆盖、否则用门自身 **0.7**，见 `gate_eval.go`）。**已落 2026-10-17（可见性）**：启动日志打 `min_score=<有效值> source=<你的配置/门默认>`，因为此前**数值从不露面**，运维无法判断"在生效的那条绝对线"是多少、也无法区分读到的是自己的策略还是门的内置下限。**阈值本身（0.7）仍是你的政策决定** |
 | P2-10 阈值 | `DefaultMinScore = 0.4`（**两处**）——**已落 2026-10-17（边界写明）**：两处各自补上"0.4 对 1024 维余弦是**弱下限**、只挡近似正交、不是相关性保证"与"两处同号**不同义**（一处过滤经验置信度、一处过滤 store 的 FinalScore），并互相指认。**默认值本身仍是你的决定**（0.4→0.5/0.6 = 用召回换更锐的上下文块） |
 | P0-4A | rationale 持久化：**决策输入实测（5/5 工具回合 Content 全空）⇒ 走选项 ①**；**已全部落地 2026-10-17**：① `rationaleFrom` 无 Content 时从 `record_rationale` 调用的**参数**取（首个、畸形即缺席、**同受 512 上限**）；② **该调用不长节点**（它是笔记不是活，否则每个陈述都在图里留一个空节点）+ 计数回传；③ **只给 planner 认知广告**这条 schema（**不进注册表** ⇒ 其他 agent 工具面与启动工具数都不变；且它**从不被执行**，参数已被消费、节点已跳过）；④ rationale-only 回合用**自己的原因**结答（`answerCauseRationaleOnly`，**不冒充** `l1_blocked`——那是模型行为，不是约束失败）。测试 **7 条**（含"schema 与消费方名字/键一致且能往返"这条**防静默**契约）+ 反证（去掉提取路 → `expected "comparing both reports…" actual ""`） |
 
-**B. 无需拍板、可继续做（未做）**
+**B. 仍需做的（2026-10-17 逐条回代码核实后仅剩这一条）**
 
-| 项 | 内容 |
+| 项 | 状态 |
 |---|---|
-| P2-6① | `MaxRestarts` 加**时间窗**（现为 lifetime 累积 ⇒ 长寿命 agent 会被误拒） |
-| P2-6③ | **滚动升级挡复活**（**未核**——先取证再定） |
-| P2-9②③ | 表名把维度烘进去（换模型=重嵌+改表名）；向量与事件账本**共 PG 无隔离**（部署属性） |
-| P2-14② | "没有上限"这件事本身可以先加一条**启动告警**（形态待定，但缺上限的事实可先可见） |
-| P0-1 | **定时触发**（无 evolution 的部署里喂非零样本 + 盯语料陈旧/判官漂移） |
-| §四 残留 | `SearchSimilarTasks` 无 user 维度（**要动接口签名、跨模块**）；`StoreExporter` 无人实现；M2.5 关系门 / M4 `BuildReport` / M6 `TieredRetriever` 接生产**未排期**；`create_plan`/operator **无需动**（列出防误判） |
+| **M6 `TieredRetriever`**（0.3.4 最后一条） | ✅ **关闭 2026-10-17（opt-in）**：① namespace 失败关闭（本就如此）；② 性能：`Limit:0` 改 `lexiconScanLimit=2000` 有界扫描，截断**用"多要一条"确定性判断**（`len>=cap` 在正好 N 条时会报假警）；③ 验收 `TestRetrieval_TieredL1L2L3Fallback`；④ **接线**：`knowledge.tiered_retrieval`（**默认关**）→ `wireRetrievers` 用 tiered **替换**（不叠加，避免同一语料注入两次）+ 适配器 `tieredContextRetriever`（图→snippet、**按请求解析 namespace**、Score 降序、空输入→空+nil）；这是 `retriever.New`/`compiler.NewDefaultCompiler` 的**首个生产调用方**。测试 3 条 + 反证（去排序 → 20 次取样在第 2 次失败）。**review 修的 3 处**：开而缺 runtime → Warn（不静默）；缺 store → 明说 **L1 DISABLED**；截断判据假阳性 |
 
-**C. 已落（本会话，供对照）**：P0-2、P0-3、P1-1…P1-7、P2-4、P2-12、P2-13、**P2-2、P2-3、P2-6b、P2-11**、语料 **40→73**、`SetDependencies` DAG 校验、P2-7 **可见性半边**、**P2-9 维度单源化**、P0-1 判据四项 + **per-candidate 回放**（构件 → 消费方两步 → 执行器 → provider 懒解析 → 开关，**默认关**）。
+**C. 已决定不做（有理由，不是遗漏）**
+
+| 项 | 决定与理由 |
+|---|---|
+| P2-9② 表名烘焙维度 | **不做改名**：迁移工程（迁移+所有查询+存量数据），收益仅是"名字更诚实"；一致性风险已由 `postgres.DefaultVectorDimension` 单源压住 |
+| P2-9③ 共实例 | **接受**：向量与事件账本共用 PG 是**部署拓扑**，代码层无法隔离；缓解=独立实例/连接池上限 |
+| P0-1 定时真实评测 | **不做**：每 case 一次模型调用且需基线才能判漂移；"语料陈旧/失去锚定"已由**零成本探针**（`eval_probe_interval`）覆盖 |
+| §四 `SearchSimilarTasks` 无 user 维度 | **不做**：要动接口签名+跨模块；当前只喂 L2 的"相似任务"提示（**不是权限边界**） |
+
+**D. 已落（本会话，全部回代码核实；含此前台账写过"未做"但实际已落的）**：P0-2、P0-3、P1-1…P1-7、P2-2、P2-3、P2-4、**P2-5**、**P2-6①（`RestartWindow` 默认 1h）**、P2-6②、**P2-6③（滚动升级规则写进版本常量）**、**P2-7（可见性 + ② 对账）**、P2-9①（维度单源）、P2-10（边界写明）、P2-11、P2-12、P2-13、**P2-14②（工具总数可见）**、P2-1（更正为早已实现+补可见性）、**P0-4A（含 planner 专属广告/跳过/原因，9 测试）**、语料 **40→73**、`SetDependencies` DAG 校验、**P0-1**（判据四项 + per-candidate 回放四步 + **语料探针**）、**M2.5 关系门（接线）**、**M4（BuildReport producer + 增量）**、`StoreExporter`（**更正：CLI 与 `ExportStore` 早已存在**）。
 
 **2026-10-16 · per-candidate 运行时的**构件**（步骤 1+2／共 4，**尚未接线**）**：
 
