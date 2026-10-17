@@ -24,7 +24,7 @@
 
 | # | 缺陷 | 一句话 | 共因 |
 |---|---|---|---|
-| P0-1 | **G1** GA 无"做对没"信号 〔证据链路已通 2026-10-13；选育侧已接入；**判据四项已落地**：oracle 分层 / **语料 73 条带锚（下限 65）** / 默认 suite / arena 确定性锚〕 | fitness 只奖励"成功+快省"，没 accuracy → **越跑越会糊弄**。**剩余**：定时触发、per-candidate 回放的**执行器实现 + 接线**——**消费方已落两步（2026-10-16）**：① 候选**本体（含 `Params`）抵达 scorer**（门不再只传 `PromptTemplate`；LLM scorer 用 `instructionsOf` 同时接受 string 与 `*mutation.Strategy`）；② **执行步可换**（`ArenaExecutor` 缝 + `NewRuntimeBackedArenaScorer`；判分与 `groundTruthFloor` **共用**，批量在运行时路径下**逐题**）。剩：**懒解析的 factory provider**——**已落**：执行器本体（`RuntimeArenaExecutor`：每候选一运行时、**有界保留 2 个**（A/B 只需两个；"每候选一个且永不释放"在滚动部署里是无界增长）、Close 收口、候选 `Params` 直通沙箱）+ 开关分支与成本日志（`buildRegressionGate(regressionGateConfig{...})`，默认关，**开启而无 factory 时失败关闭**）。**已落 ①（provider 懒解析）**：依据是实测的启动顺序——`comp.Evolution`（含门）在 `serve.go:108` 建成，而 `toolBinder` 在 **`:141`** 才有 ⇒ **值传递在 boot 时必然是 nil**。现在门只存 `func() (*CandidateReplayFactory, error)`，**首次 `Execute` 时**才解析（执行器本来就把"建运行时"推迟到首次调用），`cmd/ares` 在工具链之后安装 provider。测试钉住三点：**构造时不解析**（provider 调用计数为 0）、**只解析一次**（换候选复用）、**provider 报错响亮**。②（调整启动顺序）未采用——动关键路径、风险更大。开关**默认关**，开启而缺 provider **失败关闭并指名缺件**。**构件**（构件已落：缝/隔离运行时/工具沙箱/执行体适配器/工厂，见 2026-10-16 两条修订记录） | 认知/正确性没持久化 |
+| P0-1 | **G1** GA 无"做对没"信号 〔证据链路已通 2026-10-13；选育侧已接入；**判据四项已落地**：oracle 分层 / **语料 73 条带锚（下限 65）** / 默认 suite / arena 确定性锚；**per-candidate 真实回放已端到端完成 2026-10-17**〕 | fitness 只奖励"成功+快省"，没 accuracy → **越跑越会糊弄**。**回放四步全落**：① 候选**本体（含 `Params`）抵达 scorer**（门不再只传 `PromptTemplate`；`instructionsOf` 同时接受 string 与 `*mutation.Strategy`）；② **执行步可换**（`ArenaExecutor` 缝 + `NewRuntimeBackedArenaScorer`；判分与 `groundTruthFloor` **共用**，运行时路径**逐题**执行）；③ **运行时执行器**（`RuntimeArenaExecutor`：每候选一运行时、**有界保留 2**（A/B 只需两个；"每候选一个且永不释放"在滚动部署里是无界增长）、provider **懒解析**（实测启动顺序：`comp.Evolution`@`serve.go:108` 早于 `toolBinder`@`:141`，值传递必然是 nil）、`Close` 收口、候选 `Params` 直通沙箱）；④ **接线**（`regression_runtime_replay` **默认关**、缺 provider **失败关闭并指名缺件**、**成本/边界启动日志**）。**测试 10 条**（门契约 1 + 运行时 scorer 4 + 执行器 5）；**反证 2 条**（只传模板 → `the strategy must travel as itself`；丢 `Params` → 候选拿到**全部 15 个工具**而非它申请的 1 个）。**定时触发（2026-10-17）**：① **零成本那半已落**——`evolution.gates.eval_probe_interval`（**默认关**）驱动的**语料探针**：定时重读 suite，报**指纹变化**（任何编辑可见，含不改计数的那种）与**锚定归零**（`Warn`：此后每个分都只是判官意见），**零模型调用**，随 ctx 退出；`InspectCorpus` 4 条测试 + 反证（把锚定数当案例数 → `expected 1, actual 2`）。② **定时跑真实评测未做**——每 case 一次模型调用，属**成本决策**（与 `regression_runtime_replay` 同一理由：默认开=让默认去乘账单），需你点头后接 | 认知/正确性没持久化 |
 | P0-2 | **T1+T2** LLM `create_task` 不校验 **〔已修 2026-10-12〕** | `create_task` 依赖不存在/成环 → **任务静默永不 READY**（`create_plan` 走 `CompilePlan`、operator 走自带 `findCycle`，都安全；**只有 `create_task` 旁路漏**） | 引用/边界没校验 |
 | P0-3 | **D1+D2** 提前交差不够可见 **〔已修 2026-10-12〕** | maxPlanDepth 撞墙 / L1 全拦 → 强制出 answer；**不标记成因**（D1 已有 Warn+计数，但无面板/告警规则） | 静默早停 |
 | P0-4 | **Q3+A-dispo1+A-F4** 认知有损 **〔B 已动工 · A 与 P0-1 合并立项 2026-10-13〕** | checkpoint/复活只带"进度"不带"思路" → 换人/续跑**丢推理链**；A 的"存什么/如何存"见 `cognition-persistence.md` | 认知/正确性没持久化 |
@@ -45,7 +45,7 @@
 
 | # | 缺陷 | 一句话 |
 |---|---|---|
-| P2-1 | **G2** 三道门盲区 | 门只防"回归"，不防"整体往糊弄漂"。**2026-10-17 收窄**：P0-1 的判据已落地（确定性 floor + 锚定语料 + arena 可选真实执行比对）⇒ "两个候选都答错、判官都给好评"这一种漂移已被堵住；**剩余**：三道门仍**只看相对回归**，缺一个**绝对水平闸门**（例如"绝对分低于 X 不许晋升"）——属判据设计，**待拍板** |
+| P2-1 | **G2** 三道门盲区 **〔已核 2026-10-17：绝对闸门早就在〕** | "门只防回归、不防整体漂移"的**前提不成立于"绝对闸门缺失"**：`evolution.gates.eval_min_score` 早已接进门（`>0` 时覆盖，否则用门自身 **0.7**，`gate_eval.go:45`）⇒ 整片漂移有绝对线兜着。**已补的只是可见性**：启动日志打 `min_score=<有效值> source=<配置/门默认>`（此前数值从不露面，运维分不清读到的是自己的策略还是门的内置下限）。**剩余**：阈值本身（0.7）与口径属政策，**待拍板**；另 P0-1 的确定性 floor 已堵住"两候选都答错、判官都给好评"那一种漂移 |
 | P2-2 | **D3** Reconcile 全量扫 〔**已关闭 2026-10-17**：措辞更正 + 可见性已在〕 | ① **措辞更正（2026-10-16）**：不是"全量拿锁"——只在快照 ID 集时持读锁，重活在锁外；② **"漏事件静默"不成立**：漏事件那条路径**已打** `log.Error("reconcile failed", reason="dropped events")`，重扫完成打 `log.Warn("reconcile complete", created/removed/…)` ⇒ 补一次重导是**可观测**的；③ 残留（非本缺陷）：O(节点) 重扫成本与"瞬态 desync 到下次 tick 收敛"是**规模化属性**，不是静默 |
 | P2-3 | **D6** stableRound 并发前提 **〔已关闭 2026-10-17：前提在当前设计下成立〕** | 该函数按"同一 stable round 重导出同一批 ID"工作，隐含**单写者**。实测：同一 session 的图由**单写者**推进（调度器按 session 串行 lease 任务，一个 session 同时只有一个 quantum 在改图）⇒ 前提成立。**留痕**：若将来引入"并发改同一 session 图"，必须重新评估此前提（届时失败形态是**分叉出重复分支**，而非报错） |
 | P2-4 | **A-F3** requeue ≠ 恢复 〔**已关闭 2026-10-16**：静默半已消除〕 | requeue 只管回队（设计如此）；但"全 agent 超预算 ⇒ 没人能接"**不再静默**：`Scheduler.logFailure` 对 `ErrNoAffordableCandidate` / `ErrNoCapableCandidate` **各占一个节流槽、每 5s 一条 Error（带 task_id）**，READY 每 500ms 重轮询 ⇒ 持续可见且可区分成因。剩余（非本缺陷）：等待计数做面板指标 / durable 事件 |
@@ -110,6 +110,47 @@
 ---
 
 ## 修订记录
+
+**2026-10-17 · code review（本会话全部代码改动）+ 自记错误**：
+
+**静态**：`go vet` 本轮触及的包全绿；`make check` 含 `golangci-lint` **0 issues**；新文件**无静默吞错**（`_ = `/`, _ :=` 零命中）、无 TODO/FIXME。
+
+**覆盖（逐函数，包级数字会掩盖新文件）**：`candidate_replay.go` **100%**；`corpus_monitor.go`：`InspectCorpus` 92.9%、`runCorpusProbe` **52.6% → 100%**；`runtime_arena_executor.go`：`NewRuntimeArenaExecutor` **71.4% → 100%**、`Execute` **0% → 42.9%**、其余 95–100%。
+
+**本轮 review 查出并补掉的三处真缺口**（"接了但没验证"是本专项的常见失败模式）：
+
+1. **`Execute` 覆盖率 0%**——测试只打了内部 `runtimeFor`，**而 scorer 真正调用的是 `Execute`**。已补：它把"无法运行的策略"与"Close 之后"两种失败**从 seam 里抛出来**（不能吞成空答案——空串会被判成"答得差"）。
+2. **构造器缺件分支未测**——已补：无 provider / 无 base ctx / provider 返回 nil 三条都**按名字拒绝**。
+3. **探针的 tick 循环体未测**——已补：首 tick 上报、**零锚定告警**、**语料被改坏后告警而不退出**（后者正是探针存在的理由：G3 只会在 promote 时才撞见）。
+
+**如实标出的剩余缺口（未补）**：`Execute` 的 42.9% 里，**成功分支仍未覆盖**——它需要运行时真的产出一个答案，而 `CandidateReplayFactory` **不暴露 executor 注入**（默认走 router）；用 stub chat client 走默认 router 的产出不稳定，不宜写成单测。**结论**：成功分支目前**只有 live 集成路径能碰**，而那条 live 用例直接驱动 `CandidateRuntime`、**没经过 `RuntimeArenaExecutor`** ⇒ 这个差异是真的，记录在此，不假装已覆盖。
+
+**自记（本会话我自己造的错，均已当场修，且各留下一条纪律）**：
+
+1. **`CandidateRuntime.Close` 初版用 `sync.Once`** ⇒ "先 Close 再 Start"把 once 烧掉，之后 Close 变空操作、**drain 环永不停止**（每候选泄漏一个 goroutine）。*测试逼出来的*。→ 纪律：**有生命周期的 Close 用显式状态，不用 `sync.Once`**（Once 只适合"一次性的初始化"，不适合"可重复的收尾"）。
+2. **删整行时用 `cut -c1-200` 的截断文本作匹配** ⇒ 文件里留下残句（`zh/02`）。→ 纪律：**删除整行必须用 `sed -n 'Np'` 的完整行**。
+3. **多次"只看 `ok` 行"的假绿**：`go test … | grep -E '^ok'` 会漏掉同一次运行里的 `--- FAIL`（`make check` 全绿也可能掩盖单元失败）。→ 纪律：**门禁与单元分开看退出码**。
+4. **反证变异未落地却当成"通过"**（`import` 变未使用导致编译失败、多行 `perl` 没匹配）。→ 纪律：**先数变异标记行数 + 确认编译通过，再跑测试**。
+5. **替换代码块时 `old_str` 漏掉前面的 `r.mu.Lock()`** ⇒ 留下**重复加锁 = 自死锁**（`aresrecovery` 包 601s 超时，靠 goroutine 栈定位到 `recovery.go:373`）。→ 纪律：**替换一段代码必须包含定义其契约的邻近语句**（这里是"谁持锁"）；这类错**不会编译失败，只会静默挂死**。
+6. **候选运行时缓存初版无界**（每候选一个、永不释放）⇒ 滚动部署下是**泄漏**不是缓存。→ 改为**有界保留 2**。→ 纪律：**缓存必须有界，且"有界"要能被测试（`BoundsWhatItKeeps`）**。
+
+**2026-10-17 · 文章清理收口（`docs/articles/*` 的"自我更正框架"全部处理完）**：
+
+判据：文章的**主体**是当前代码；"谁在什么时候写错了"归本台账，不归文章。处置方式三选一——
+**与正文重复的横幅 → 直接删**｜**横幅托着失效正文 → 事实并入正文再删框架**｜**只讲"旧稿漏了/写错了"而无新信息 → 整条删**。
+
+**最终复扫（扩充词典：更正/订正/勘误/传言/旧版/老文/偏离说明/correction/revised N/old version/earlier (draft|version)/older docs/the old article/the old draft/complete rewrite/In the old version/replaced wholesale）只剩 5 个文件命中，全部判定为正当**：
+
+| 文件 | 命中 | 为何保留 |
+|---|---|---|
+| `en/23-quant-trading` | 5 | **整篇就是复盘**："The old article claimed the quant module had 9,768 lines…" / "§2.3 The old article itself (real, but its content is not)" / 教训"docs and reality drift apart"。引用即主题 |
+| `en/24.3` + `zh/24.3` | 1 + 2 | benchmark **环境说明**（机器/编译器/`-benchtime`）+ "自行**订正**首轮的 GC 干扰"= 方法说明 |
+| `zh/00-goagentx-intro` | 1 | **范围免责**："引用的 arena/orchestrator 标识为旧版本/演进过程文本" |
+| `zh/11-autonomous-evolution` | 1 | `active(旧版)` 是**状态图里的状态名**，不是叙述 |
+
+**本轮顺手改的两处**：`en/13` 开头的 "Older docs described… (historical narrative, unverified)" + **一段非真实代码**（`// ⚠️ Illustrative only`）→ **整块删除**，直接进入当下真实装配（`Bootstrap(ctx, cfg, deps)`）；`en/05` 的 "One important correction up front" → "clarification"（那是**对读者的澄清**，不是自我更正，与 `en/16` 措辞一致）。
+
+**方法记录（我踩过两次）**：**不要引用旧的待办清单**——本轮按上一轮的清单去改 `en/22`/`en/06`/`en/12`，三个文件**早已清干净**（grep 空）。清单会过期，**每次动手前先重扫**。
 
 **2026-10-17 · A 组 5 项：两项落地 + 一项用真 provider 实测定案（+ 一项顺带发现）**：
 

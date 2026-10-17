@@ -339,6 +339,18 @@ type EvolutionGateConfig struct {
 	// either: "I never configured one" and "I configured one and it is missing"
 	// are different promises. Default false.
 	EvalStrict bool `yaml:"eval_strict"`
+	// EvalProbeInterval re-reads the eval corpus on a timer and reports what changed
+	// (fingerprint) and whether it still carries deterministic anchors.
+	//
+	// It exists because the corpus is a REPOSITORY FILE with no version stamp: nothing
+	// notices when it is edited, emptied, or when a case quietly loses its checks — the
+	// anchor count just drops, and every later score is judge opinion. This probe makes
+	// that visible over time instead of at the one moment someone reads the file.
+	//
+	// It costs NO model calls (it loads and hashes the file), which is why it can be on
+	// by default where the timed re-scoring cannot. Empty/zero DISABLES it; the zero value
+	// is therefore unchanged behaviour.
+	EvalProbeInterval string `yaml:"eval_probe_interval"`
 	// RegressionEnabled arms the arena preserved-case regression gate
 	// (candidate vs active strategy A/B over the eval suite's cases, Welch
 	// significance; rejects only on a significant drop). M-G2 default:

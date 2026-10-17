@@ -4,18 +4,7 @@
 
 Every framework hits the moment when the user's first question shifts from "how do I call an LLM?" to "how do I wire all this together?" That's the moment you need a bootstrap.
 
-Older docs described starting ares as creating a handful of objects by hand and passing references around. The snippet below is **illustrative, not real repo code** (historical narrative, unverified):
-
-```go
-// ⚠️ Illustrative only — NOT actual repo code (historical narrative, unverified)
-eventStore := events.NewMemoryEventStore()
-memMgr, _ := memory.NewMemoryManager(memory.DefaultMemoryConfig())
-llmClient, _ := llm.NewClient(llm.Config{...})
-rt := runtime.New(runtime.Config{...}, eventStore, memMgr)
-rt.Start(ctx)
-```
-
-The *idea* of manual wiring still holds — miss one dependency and every call site follows. But the real solution is not a container with magic. It's **one function that explicitly turns config into a component graph**.
+Wiring by hand is the obvious alternative, and it fails the same way every time: miss one dependency and every call site follows. But the real solution is not a container with magic. It's **one function that explicitly turns config into a component graph**.
 
 In today's `internal/ares_bootstrap`:
 

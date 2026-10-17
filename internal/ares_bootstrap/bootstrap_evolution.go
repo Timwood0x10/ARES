@@ -265,6 +265,28 @@ func wireLifecycleGates(ctx context.Context, cfg *ares_config.Config, comp *Comp
 			gateCfg.Strict = gates.EvalStrict
 			gates.EvalSuite = gateCfg.SuitePath
 		}
+		// P0-1's定时触发, the half that costs nothing: watch the corpus over time.
+		//
+		// The corpus is a repository file with no version stamp, so "it changed" and "it
+		// lost its anchors" are both silent today. This probe reports them; it does NOT
+		// run the corpus (that is a model call per case, which is why timed re-scoring is
+		// not on by default and is not what this is).
+		if armProbe := cfg.Evolution.Gates.EvalProbeInterval; armProbe != "" {
+			if d, perr := time.ParseDuration(armProbe); perr == nil && d > 0 {
+				path := gateCfg.SuitePath
+				comp.GoBackground(ctx, "eval-corpus-probe", func(ctx context.Context) error {
+					runCorpusProbe(ctx, path, d, nil)
+					return nil
+				})
+				log.Info("bootstrap: eval corpus probe armed",
+					"path", path, "interval", d.String(),
+					"cost", "no model calls: it reads and hashes the suite file only",
+					"reports", "fingerprint changes and the loss of deterministic anchors")
+			} else {
+				log.Warn("bootstrap: evolution.gates.eval_probe_interval is not a positive duration; corpus probe not armed",
+					"value", armProbe)
+			}
+		}
 		evalGate, gerr := buildEvalGate(
 			comp.Evolution.EvaluatorRegistry,
 			comp.Evolution.EvalLLMClient,
