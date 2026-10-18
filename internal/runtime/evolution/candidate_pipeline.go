@@ -175,6 +175,14 @@ func (p *CandidatePipeline) Release(ctx context.Context, candidateID string) (bo
 		return false, fmt.Errorf("%w (status: %s)", ErrCandidateNotVerified, c.Status)
 	}
 
+	// TODO(tech-debt): this is where a candidate's fate is decided, and it is the natural
+	// place to seal an ares_evolution.ExperimentRecord (M10) — but the data is NOT all here:
+	// this pipeline knows the candidate, its evidence ids and the reject reason, while the
+	// genome lineage and the fitness configuration in force live in the GA cycle. Recording
+	// what is here would mean writing a record whose replay key omits the inputs that
+	// determined the outcome, i.e. a record that looks reproducible and is not.
+	// Wire it from the cycle that holds both, then delete this note.
+	//
 	// Release-time gate-3: a verified candidate must not regress the preserved
 	// suite before ANY patch is built/applied. When the check is wired and
 	// fails, the candidate is rejected and no patch reaches the runtime or the
