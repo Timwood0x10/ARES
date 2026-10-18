@@ -152,6 +152,16 @@ type WindowResult struct {
 	OutOfRange int
 	// PerSource holds the per-source mean and count.
 	PerSource map[string]SourceStat
+	// Metrics holds per-source statistics that must NOT contribute to the fitness mean or to
+	// the staging sample count.
+	//
+	// latency and cost live here because they are OPTIMISATION TARGETS (Minimize), not
+	// fitness evidence: folding them into the weighted mean would make a slow-but-correct
+	// candidate score worse than a fast-and-wrong one, which is exactly the trade the
+	// multi-objective path exists to expose instead of hiding. They are also kept out of
+	// totalCount on purpose — that counter is the staging gate, and a channel nobody opted
+	// into must not license a staging verdict.
+	Metrics map[string]SourceStat
 	// LastAt is the NEWEST evidence timestamp inside the window. Under
 	// steady-state churn (window saturated: one record in, one record out)
 	// Count stays flat, so "did the window advance" must be judged by this
@@ -329,6 +339,9 @@ func (a *RuntimeFitnessAggregator) WindowAt(ctx context.Context, strategyID stri
 	}
 
 	result := WindowResult{PerSource: perSource, OutOfRange: outOfRangeTotal}
+	// Metrics are queried SEPARATELY rather than added to `sources`: see the field doc —
+	// they must not move the weighted mean, and must not advance the staging count.
+	result.Metrics = a.metricStats(ctx, store, strategyID, cfg.WindowSize, since, until)
 
 	if weightSum == 0 {
 		result.Mean = cfg.ColdStartScore
@@ -366,6 +379,34 @@ func (a *RuntimeFitnessAggregator) WindowAt(ctx context.Context, strategyID stri
 	result.Ok = totalCount >= cfg.MinSamplesBeforeJudge
 	result.LastAt = globalLastAt
 	return result
+}
+
+// Metric source names. They are evidence sources, not dimensions: the dimension names come
+// from CandidateDimensionSources, and keeping the two sets apart is what stops a rename on one
+// side from silently emptying the other.
+const (
+	latencyMetricSource = "latency"
+	costMetricSource    = "cost"
+)
+
+// metricStats reads the optimisation-target channels (latency, cost) for one strategy.
+//
+// Values are already normalised to [0,1] by the observer (0 = fastest/cheapest, 1 = worst), so
+// the dimension direction table's Minimize is literally correct for them. A source with no
+// samples is absent rather than zero: absence is "not measured", zero is "measured and best".
+func (a *RuntimeFitnessAggregator) metricStats(ctx context.Context, store evidence.Store, strategyID string, windowSize int, since, until time.Time) map[string]SourceStat {
+	out := make(map[string]SourceStat, 2)
+	for _, name := range []string{latencyMetricSource, costMetricSource} {
+		// The out-of-range count is deliberately dropped here: a metric record whose scalar
+		// fell outside [0,1] describes a producer bug, and folding it into WindowResult's
+		// OutOfRange would blame the fitness channels for it.
+		m, c, lastAt, _ := a.querySourceMeanAt(ctx, store, name, evidence.KindFitness, windowSize, strategyID, since, until)
+		if c == 0 {
+			continue
+		}
+		out[name] = SourceStat{Mean: m, Count: c, LastAt: lastAt}
+	}
+	return out
 }
 
 // querySourceMeanAt computes the mean fitness value from evidence matching

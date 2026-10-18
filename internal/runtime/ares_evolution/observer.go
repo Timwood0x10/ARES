@@ -48,6 +48,27 @@ type StrategySample struct {
 	// Score is the normalized fitness score in [0,1].
 	Score float64
 
+	// LatencyCost is the task's normalised wall-time cost in [0,1]: 0 = instant, 1 = at or
+	// beyond the latency scale.
+	//
+	// It is the INVERSE of the multiplicative latency penalty that Score already carries, so
+	// it reads as a Minimize objective — lower is better — which is exactly what
+	// DefaultDimensionDirections declares for "latency". Reporting the penalty itself here
+	// would put "efficiency" under a Minimize name and make the direction table lie.
+	LatencyCost float64
+
+	// SpendCost is the task's normalised token-spend cost in [0,1], same convention as
+	// LatencyCost (0 = cheapest, 1 = at or beyond the spend scale).
+	SpendCost float64
+
+	// Completed reports whether the sample came from a task that reached COMPLETED (including
+	// a degraded completion).
+	//
+	// The cost metrics are only written for those samples: a task with no terminal completed
+	// event has no comparable wall time or spend, and writing 0 for it would read as
+	// "instant and free" — the best possible score on a Minimize objective.
+	Completed bool
+
 	// TaskType categorizes the observed task (e.g. "chat", "workflow").
 	TaskType string
 
@@ -357,21 +378,31 @@ var agentStoppedGracefulReasons = map[string]bool{
 func (o *RuntimeObserver) eventToSample(evt *ares_events.Event) (StrategySample, bool) {
 	score := 0.0
 	success := false
+	// Metrics for the optimisation-target channels (M9③): 0 = fastest/cheapest, 1 = worst.
+	// Computed from the same factors the score is multiplied by, so the two views can never
+	// describe different tasks.
+	var latencyCost, spendCost float64
+	completed := false
 	switch evt.Type {
 	case ares_events.EventTaskCompleted:
 		score = 1.0
 		success = true
+		completed = true
 		// Latency penalty: must-persist task events carry created_at, so the
 		// observer can compute the task's wall time without any new producer.
 		// The penalty is multiplicative and bounded so correctness always
 		// dominates: a failure keeps 0.0, a success keeps (0,1].
-		score *= o.latencyPenalty(evt)
+		latencyFactor := o.latencyPenalty(evt)
+		score *= latencyFactor
+		latencyCost = 1 - latencyFactor
 		// Cost penalty (M4 cost channel): terminal completed events carry the
 		// envelope's cumulative token total (recordLocked stamps
 		// input/output/total_tokens). Same multiplicative-bounded contract as
 		// latency — spend discounts success, never rescues failure, and an
 		// unaccounted task (no keys, pre-v4 envelope) keeps 1.
-		score *= o.costPenalty(evt)
+		costFactor := o.costPenalty(evt)
+		score *= costFactor
+		spendCost = 1 - costFactor
 		// Degraded answer penalty (P0-1): a gap body or a depth-guard-forced
 		// answer is not a success. The factor is 0 for gap (nothing produced)
 		// and 0.5 for truncated (something real came out under duress). Score is
@@ -417,6 +448,9 @@ func (o *RuntimeObserver) eventToSample(evt *ares_events.Event) (StrategySample,
 		StrategyID:  strategyID,
 		Success:     success,
 		Score:       score,
+		LatencyCost: latencyCost,
+		SpendCost:   spendCost,
+		Completed:   completed,
 		TaskType:    taskType,
 		TotalTokens: sampleTokenTotal(evt),
 		At:          time.Now(),
@@ -469,6 +503,37 @@ func (o *RuntimeObserver) writeEvidence(ctx context.Context, sample StrategySamp
 		// days colliding on the same clock reading.
 		ID:        "strategy_" + sample.StrategyID + "_" + sample.At.Format("20060102150405.000000"),
 		Source:    observerEvidenceSource,
+		Kind:      evidence.KindFitness,
+		Payload:   payload,
+		Timestamp: sample.At,
+	})
+
+	// The optimisation-target metrics, as their OWN records (M9③). They cannot ride in the
+	// fitness record above: that payload's scalar is the fitness value, and the aggregator
+	// reads exactly one value per record. Written only for completed tasks — see
+	// StrategySample.Completed for why a missing terminal event must not become "0 = best".
+	if sample.Completed {
+		o.writeMetric(ctx, latencyMetricSource, sample, sample.LatencyCost)
+		o.writeMetric(ctx, costMetricSource, sample, sample.SpendCost)
+	}
+}
+
+// writeMetric appends one optimisation-target record (a Minimize objective: lower is better).
+//
+// Best-effort like the fitness write above: an observer that failed the task because it could
+// not record a metric would be worse than one that lost a sample.
+func (o *RuntimeObserver) writeMetric(ctx context.Context, source string, sample StrategySample, value float64) {
+	payload, err := json.Marshal(map[string]any{
+		"value":               value,
+		evidenceKeyStrategyID: sample.StrategyID,
+		"task_type":           sample.TaskType,
+	})
+	if err != nil {
+		return
+	}
+	_ = o.evStore.Append(ctx, evidence.Evidence{
+		ID:        source + "_" + sample.StrategyID + "_" + sample.At.Format("20060102150405.000000"),
+		Source:    source,
 		Kind:      evidence.KindFitness,
 		Payload:   payload,
 		Timestamp: sample.At,

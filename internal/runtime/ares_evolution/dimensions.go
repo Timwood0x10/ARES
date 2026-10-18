@@ -18,9 +18,17 @@ package evolution
 var candidateDimensionSources = []struct {
 	Source    string
 	Dimension string
+	// Metric marks a source read from WindowResult.Metrics instead of PerSource.
+	//
+	// The two maps are kept apart deliberately: PerSource feeds the fitness mean (higher is
+	// better), Metrics carries optimisation targets (latency/cost, lower is better). Reading
+	// both from one map is how a Minimize dimension ends up ranked as if it were a score.
+	Metric bool
 }{
-	{"strategy", "success_rate"},
-	{"dimension_eval", "quality"},
+	{Source: "strategy", Dimension: "success_rate"},
+	{Source: "dimension_eval", Dimension: "quality"},
+	{Source: latencyMetricSource, Dimension: "latency", Metric: true},
+	{Source: costMetricSource, Dimension: "cost", Metric: true},
 }
 
 // MapCandidateDimensions turns one per-strategy fitness window into NSGA-II dimensions.
@@ -33,13 +41,19 @@ var candidateDimensionSources = []struct {
 //     to [0,1] with "higher is better", which is also the direction of both dimensions here
 //     (see DefaultDimensionDirections); inverting anything would be applying a Minimize rule
 //     to a Maximize number.
-//   - `cost`/`latency` are NOT filled: the aggregator has no raw source for them, and a mean
-//     of a [0,1] fitness is not a millisecond count. They stay absent until an evidence source
-//     for them exists (the remaining half of M9's decision) rather than being approximated.
+//   - `cost`/`latency` come from WindowResult.Metrics, NOT from PerSource, and they are
+//     Minimize objectives: the observer records the INVERSE of its multiplicative penalty
+//     (0 = fastest/cheapest). Reading them from PerSource would apply a higher-is-better
+//     ranking to a lower-is-better number — the direction table would then be a lie rather
+//     than a contract.
 func MapCandidateDimensions(w WindowResult) map[string]float64 {
 	dims := make(map[string]float64, len(candidateDimensionSources))
 	for _, m := range candidateDimensionSources {
-		stat, ok := w.PerSource[m.Source]
+		stats := w.PerSource
+		if m.Metric {
+			stats = w.Metrics
+		}
+		stat, ok := stats[m.Source]
 		if !ok || stat.Count == 0 {
 			// No samples: omit (see the doc — 0 would be a measurement, not a gap).
 			continue

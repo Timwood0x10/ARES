@@ -36,8 +36,43 @@ func TestDimensionMapping_CandidateScopedOnly(t *testing.T) {
 	require.Len(t, dims, 2, "only the per-candidate sources may become dimensions: %v", dims)
 	assert.Equal(t, 0.8, dims["success_rate"])
 	assert.Equal(t, 0.6, dims["quality"])
-	for _, forbidden := range []string{"workflow", "scheduler", "recovery", "collaboration", "tool_call", "cost", "latency"} {
+	for _, forbidden := range []string{"workflow", "scheduler", "recovery", "collaboration", "tool_call"} {
 		assert.NotContains(t, dims, forbidden, "%q must not be a dimension", forbidden)
+	}
+	// latency/cost are legitimate dimensions (Minimize), but they come from Metrics, not from
+	// PerSource — and this window carries no metrics, so they are absent rather than zero.
+	assert.NotContains(t, dims, "latency")
+	assert.NotContains(t, dims, "cost")
+}
+
+// TestDimensionMapping_ReadsOptimisationTargetsFromMetrics is M9③'s mapping contract: latency
+// and cost come from the Metrics channel, which is where the Minimize objectives live.
+//
+// The same-named PerSource entries in this fixture are the trap: a fitness source literally
+// called "latency" must NOT be read as the latency dimension, because the two have opposite
+// meanings (fitness is higher-is-better, the latency dimension is lower-is-better).
+func TestDimensionMapping_ReadsOptimisationTargetsFromMetrics(t *testing.T) {
+	dims := MapCandidateDimensions(WindowResult{
+		PerSource: map[string]SourceStat{
+			"strategy": {Mean: 0.9, Count: 3},
+			// A trap, not a realistic producer: if the mapping read PerSource for latency it
+			// would take 0.1 as "latency" and rank it as a good value.
+			"latency": {Mean: 0.1, Count: 3},
+			"cost":    {Mean: 0.1, Count: 3},
+		},
+		Metrics: map[string]SourceStat{
+			"latency": {Mean: 0.7, Count: 3},
+			"cost":    {Mean: 0.4, Count: 2},
+		},
+	})
+
+	assert.Equal(t, 0.9, dims["success_rate"])
+	assert.Equal(t, 0.7, dims["latency"], "the metric channel is the one that means 'cost', not PerSource")
+	assert.Equal(t, 0.4, dims["cost"])
+
+	for _, dim := range []string{"latency", "cost"} {
+		assert.Equal(t, genome.Minimize, genome.DefaultDimensionDirections[dim],
+			"%q must stay a Minimize objective, and the value is already a cost (0 = best)", dim)
 	}
 }
 
