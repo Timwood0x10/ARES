@@ -5,7 +5,6 @@ import (
 	"context"
 	stderrors "errors"
 	"fmt"
-	"math"
 	"strconv"
 	"strings"
 	"sync"
@@ -983,35 +982,6 @@ func (m *memoryManager) SetDefaultTenantID(tenantID string) {
 	m.mu.Lock()
 	m.defaultTenantID = tenantID
 	m.mu.Unlock()
-}
-
-// cosineSimilarity calculates cosine similarity between two vectors.
-func cosineSimilarity(v1, v2 []float64) float64 {
-	if len(v1) != len(v2) {
-		return 0.0
-	}
-
-	dotProduct := 0.0
-	norm1 := 0.0
-	norm2 := 0.0
-
-	for i := range v1 {
-		dotProduct += v1[i] * v2[i]
-		norm1 += v1[i] * v1[i]
-		norm2 += v2[i] * v2[i]
-	}
-
-	if norm1 == 0 || norm2 == 0 {
-		return 0.0
-	}
-
-	result := dotProduct / math.Sqrt(norm1*norm2)
-
-	if math.IsNaN(result) || math.IsInf(result, 0) {
-		return 0.0
-	}
-
-	return result
 }
 
 // buildCleanedDistillationMessages constructs a cleaned distillation message list.

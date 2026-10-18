@@ -2,7 +2,6 @@ package sdk
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"strings"
 	"sync"
@@ -312,18 +311,6 @@ func (a *Agent) toCoreTools(tt []tools.Tool) []llmcore.Tool {
 		})
 	}
 	return out
-}
-
-// parseArgs unmarshals a JSON arguments string into a map.
-func parseArgs(raw string) map[string]any {
-	if raw == "" {
-		return nil
-	}
-	var m map[string]any
-	if err := json.Unmarshal([]byte(raw), &m); err != nil {
-		return nil
-	}
-	return m
 }
 
 // mcpToolAdapter wraps an MCP client tool as an SDK tool so it can be used
