@@ -111,6 +111,23 @@
 
 ## 修订记录
 
+**2026-10-18 · M10 收尾第一半：持久化实验日志（JSONL 追加）**
+
+上一轮登记"M10 的记录零生产者"。真去接线时发现**更前置的问题**：`ExperimentLog` **在生产里根本没被构造过**（全仓只有一句注释提到它），唯一实现是内存版 ⇒ 即使接上生产者，写进的是**重启即空**的日志，等于把这个功能的目的（事后重放）抹掉。
+
+本轮补上**持久化实现** `FileExperimentLog`（`internal/runtime/ares_evolution/experiment_log_file.go`）：
+
+| 设计点 | 理由 |
+|---|---|
+| **JSONL + `O_APPEND`** | 一行一条记录 = 天然只追加；比数据库少一次迁移，出事时人能直接读 |
+| **`Append` 里 `Sync()`** | 只在页缓存里的记录，正是崩溃时会丢的那条——而崩溃往往就是有人要读日志的原因 |
+| **坏行 → 报错并指明行号** | 静默跳过会让日志回答"我们从没跑过那个实验"，而它其实跑过 |
+| 无 `Update`/`Delete`、空 candidate id 拒写 | 与既有契约一致：可改的记录无法证明当时决定了什么 |
+
+测试 4 条：**跨重启仍可读**（这是内存版给不了的性质）、追加顺序、拒绝无 ID、坏行可定位。
+
+**剩余（下一半）**：把生产者接到"同时持有谱系 + fitness 配置"的 GA 循环（`genome_wiring_run.go` 的 `Run`，`BestStrategy()` 可取候选），并在 bootstrap 构造日志。**卡点已明确**：`ExperimentRecord.Accepted` 是布尔，而 GA 阶段只能给出"**已封存、决策未定**"——直接写 `false` 会把"未决"说成"拒绝"，需要先加三态 `Outcome`（pending/accepted/rejected，SchemaVersion → 2），再接线。
+
 **2026-10-18 · 用 codescope 做 MCP↔源码对照，并更正 `internal/evoapi` 的两处假断言**：
 
 **MCP 准确性实测**（逐条回源码）：行号系统性 **-1**（`ParetoDominance` 报 49 实为 50、`ParetoFront` 报 91 实为 92）；调用方只算同文件的一个函数（`ParetoDominance` 另有测试 6 处）；**缺席断言不可采信**——"死模块 `knowledge/retriever`"实有 2 个 import 者（旧索引）、"死模块 `postgres/services`"目录早已删除（新索引 0 实体）、抽样的 6 个"死函数"**全部有 1–11 处调用**（6/6 误报）、`Features`/`KeyFeatures` 等是 README 小标题被当成"能力声明"。它自报的 `trust_score: 0.2` 与实测吻合。**可用边界**：重建索引后 `find_symbol`/`search`/`trace` 适合做导航（省 token），但**缺席类结论必须回源码**（`go list -deps` 或 grep）。
