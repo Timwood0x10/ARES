@@ -111,6 +111,16 @@
 
 ## 修订记录
 
+**2026-10-18 · M6 接线后的深度 review：三个会静默出错的真问题（已修）**：
+
+| # | 问题 | 后果 | 修法 |
+|---|---|---|---|
+| **1** | 适配器**没有应用 minScore**（tiered 路径本身没有任何阈值） | 开启开关会**静默降低质量门槛**：单发路径丢弃 <0.4 的对象，tiered 路径会放进 prompt | 适配器加 `minScore`（未设时按 `adapter.DefaultMinScore`=0.4 兜底，与单发路径同口径）；测试 `AppliesTheQualityBar` + **反证**（去掉门槛 → `objects below the threshold must not reach the prompt`） |
+| **2** | **L2 合并不受 `MaxResults` 约束**（L1 命中被并进 L2 结果） | 调用方要 5 条可能收到整张图 | 适配器按 Score 排序后**截断到 topK**；并在 `tiers.go` 把"L2 路径不受限、需要硬上限的调用方自行截断"**写进契约**（不谎称有界） |
+| **3** | 启动日志称"无 tenant/user 上下文的请求只会走 L2" | **假话**：`defaultDistillTenant` 非空 ⇒ 无上下文会落到**默认租户**并照常跑 L1 | 日志改为"L1 按**解析后的**命名空间收窄；空命名空间才跳过 L1；无上下文请求会落到默认租户" |
+
+**未覆盖（如实）**：`L2Retriever` 是**具体类型**（`*Retriever`），适配器层无法用假件触发"合并超限"分支，因此截断逻辑**没有直接测试**；它的正确性依据是"排序后截断"这一简单性质 + `tiers.go` 的契约说明。**装配测试**（开关开/关时 appends 的差异）也仍缺——`wireRetrievers` 需要真实 `KnowledgeRuntime` 才能构造该分支。
+
 **2026-10-18 · M10：可复现实验记录 + append-only 日志 + AKG 接缝（只收窄）**：
 
 | 件 | 内容 |

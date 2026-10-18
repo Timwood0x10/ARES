@@ -185,6 +185,14 @@ a bug in the README.
 - **`ask_agent` is fire-and-forget.** The target's answer is logged, not written back
   to the asker (`internal/agentsyscall/syscall.go`: *"the reply is currently
   FIRE-AND-FORGET"*); `Status: "delivered"` is unreachable through the serve wiring.
+- **Tiered AKG recall is opt-in and still bounded by the same quality bar.** With
+  `knowledge.tiered_retrieval`, recall goes L1 (exact keywords over the store) then L2
+  (semantic + graph) instead of the single-shot path. It is off by default because it REPLACES
+  how recall happens. Two properties are worth knowing before enabling it: L1 keeps the same
+  minimum-confidence bar (0.4) the single-shot path enforces, and the merged result is capped
+  at `top_k` — the tiered merge itself is not bounded, so the adapter caps by score. L1 is
+  scoped to the resolved namespace (explicit > tenant > user > default tenant); an empty
+  namespace would skip L1 entirely rather than recall across tenants.
 - **The GA proposes; the kernel disposes.** Nothing the evolution loop produces reaches a
   running strategy without passing the kernel: a candidate is a proposal plus its evidence, the
   apply path is gated on manual approval when the lifecycle is holding one, and knowledge is
