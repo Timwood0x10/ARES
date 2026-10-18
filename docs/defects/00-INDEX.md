@@ -111,6 +111,30 @@
 
 ## 修订记录
 
+**2026-10-18 · 用 codescope 做 MCP↔源码对照，并更正 `internal/evoapi` 的两处假断言**：
+
+**MCP 准确性实测**（逐条回源码）：行号系统性 **-1**（`ParetoDominance` 报 49 实为 50、`ParetoFront` 报 91 实为 92）；调用方只算同文件的一个函数（`ParetoDominance` 另有测试 6 处）；**缺席断言不可采信**——"死模块 `knowledge/retriever`"实有 2 个 import 者（旧索引）、"死模块 `postgres/services`"目录早已删除（新索引 0 实体）、抽样的 6 个"死函数"**全部有 1–11 处调用**（6/6 误报）、`Features`/`KeyFeatures` 等是 README 小标题被当成"能力声明"。它自报的 `trust_score: 0.2` 与实测吻合。**可用边界**：重建索引后 `find_symbol`/`search`/`trace` 适合做导航（省 token），但**缺席类结论必须回源码**（`go list -deps` 或 grep）。
+
+**重建索引的副作用（必须知道）**：`index-parallel` 会**替换** `.codescope/codescope.db`；运行中的 MCP 服务在此之后返回 **0 实体**（`get_graph_stats → total_symbols: 0`），需重启服务才恢复。**触碰/改写 `mcp.json` 不会触发重载**（实测 pid 未变），`kill` 掉子进程后**客户端会在下一次调用时自动拉起**（实测新进程立即看到 25441 实体/7840 关系）。
+
+**重建前 vs 重建后的对照（同一工具、同一参数）**：
+
+| 类别 | 重建前 | 重建后 | 结论 |
+|---|---|---|---|
+| 死模块 `knowledge/retriever` | 报 | **消失** | **陈旧误报**（索引早于我接线） |
+| 死模块 `postgres/services` | 报 | **消失** | 目录已删除，新索引 0 实体 |
+| 死模块 `internal/evoapi` | 报 | **仍报** | ✅ 真（0 importer） |
+| "死函数"（30+ 条，抽样 6 条全部有 1–11 处调用） | 报 | **仍报** | **方法论误报（调用图漏 interface/闭包调用）**，重建不能解决 |
+| capability `Features`/`KeyFeatures`/`AKG…Frozen034Sch` | 10 条 | **10 条** | README 散文被当"能力声明"，属解析噪声 |
+| `trust_score` | 0.2 | **0**（orphans 43） | 工具自己也承认不可信 |
+
+⇒ **可用边界修正**：重建索引只消除"陈旧"这一类；**"死函数/能力缺失"是方法问题，重建不解决**，必须回源码。
+
+**`internal/evoapi`（252 实体 / 11 文件）的裁决**：包内 `doc.go` 自陈是 legacy，且写明"生产路径不可达"——**属实**；但它另外两句**不成立**，已按实证更正：
+1. "internal callers remain during the window" → **0 调用方**（全模块无人 import，`go list -deps ./cmd/ares` 不含它）；
+2. "The production-observable surface … is exposed through NewGenomeWiringView" → `GenomeWiringView`/`NewGenomeWiringView` 全仓 **0 引用**，那是**意图**不是事实。
+**处置**：**不删**（折进 `sdk`、v0.5.0 移除是既有计划，删它会偏离既有决策），但把 doc.go 改成实况，并写明"分析工具继续报它死代码是**正确的**，不是待修缺陷"。`sdk` 目前也**未** import 它。
+
 **2026-10-18 · M6 接线后的深度 review：三个会静默出错的真问题（已修）**：
 
 | # | 问题 | 后果 | 修法 |
