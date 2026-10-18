@@ -58,13 +58,6 @@ type TierResult struct {
 	ElapsedMS int64 `json:"elapsed_ms"`
 }
 
-// TODO(tech-debt): TieredRetriever has no production caller yet — it is only
-// referenced by the (also unwired) EvalHarness, so the runtime/retriever path
-// still goes through Retriever directly. Wire it in before treating M6's
-// tiers as shipped. It also pulls the whole store into memory per query and is
-// currently unscoped by namespace (see lexiconSearch) — do NOT wire it into a
-// per-user recall path before that isolation gap is closed.
-//
 // TieredRetriever implements multi-level retrieval (M6).
 //
 // L1 (lexicon): exact keyword matches against Summary/Normalized.
@@ -89,6 +82,12 @@ func NewTieredRetriever(store knowledge.KnowledgeStore, l2 *Retriever) *TieredRe
 }
 
 // Retrieve executes multi-level retrieval for a query (M6).
+//
+// CAPPING CONTRACT: the L1 path honours MaxResults (it is the store query's Limit), but the
+// L2 path does NOT — L1's hits are merged into whatever L2 returned, so a result served by
+// L2 can exceed MaxResults. A caller that needs a hard cap must apply one itself (the memory
+// adapter does, by Score). Stating it here rather than silently promising a bound: a caller
+// that assumed MaxResults would inject more of the graph than it budgeted for.
 //
 // L1 runs first: cheap keyword match. If L1 finds enough results (>= limit),
 // L2 is skipped — the query was answerable by exact terms.

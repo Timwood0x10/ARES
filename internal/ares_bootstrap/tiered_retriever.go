@@ -5,6 +5,7 @@ import (
 	"sort"
 
 	"github.com/Timwood0x10/ares/internal/knowledge"
+	"github.com/Timwood0x10/ares/internal/knowledge/adapter"
 	"github.com/Timwood0x10/ares/internal/knowledge/retriever"
 	memctx "github.com/Timwood0x10/ares/internal/runtime/memory/context"
 	"github.com/Timwood0x10/ares/internal/tenantctx"
@@ -35,17 +36,28 @@ type tieredContextRetriever struct {
 	fallbackNamespace string
 	// defaultTopK applies when the caller passes topK <= 0.
 	defaultTopK int
+	// minScore is the minimum snippet Score (object Confidence) to return. The tiered path
+	// applies no threshold of its own, so without this the flag would silently LOWER the
+	// quality bar the single-shot retriever enforces (adapter.DefaultMinScore, 0.4) and put
+	// knowledge into prompts that the other path would have filtered out.
+	minScore float64
 }
 
 // newTieredContextRetriever wires the tiered retriever into the memory manager's interface.
-func newTieredContextRetriever(tiered *retriever.TieredRetriever, fallbackNamespace string, defaultTopK int) *tieredContextRetriever {
+func newTieredContextRetriever(tiered *retriever.TieredRetriever, fallbackNamespace string, defaultTopK int, minScore float64) *tieredContextRetriever {
 	if defaultTopK <= 0 {
 		defaultTopK = 5
+	}
+	if minScore <= 0 {
+		// Same fallback as adapter.NewKnowledgeRetriever: an unset threshold means "use the
+		// documented default", not "accept everything".
+		minScore = adapter.DefaultMinScore
 	}
 	return &tieredContextRetriever{
 		tiered:            tiered,
 		fallbackNamespace: fallbackNamespace,
 		defaultTopK:       defaultTopK,
+		minScore:          minScore,
 	}
 }
 
@@ -80,6 +92,11 @@ func (t *tieredContextRetriever) Retrieve(ctx context.Context, input string, top
 			// the "Content is non-empty for any snippet that survives" promise local.
 			continue
 		}
+		if obj.Confidence < t.minScore {
+			// The tiered path has no threshold of its own; see the minScore field for why
+			// dropping this here is what keeps the flag from lowering the quality bar.
+			continue
+		}
 		snippets = append(snippets, memctx.ContextSnippet{
 			Source:  "knowledge",
 			Content: obj.Summary,
@@ -97,5 +114,11 @@ func (t *tieredContextRetriever) Retrieve(ctx context.Context, input string, top
 	// high-precision, L2 adds semantic recall), so the merged order is not sorted by
 	// construction and must be fixed here rather than assumed.
 	sort.SliceStable(snippets, func(i, j int) bool { return snippets[i].Score > snippets[j].Score })
+
+	// Contract: at most topK. The merge is NOT bounded — L1 hits are added to whatever L2
+	// returned — so without this a caller asking for 5 could receive the whole graph.
+	if len(snippets) > topK {
+		snippets = snippets[:topK]
+	}
 	return snippets, nil
 }

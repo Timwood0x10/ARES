@@ -167,7 +167,7 @@ func wireRetrievers(
 		// constructed here because this is the first production caller either has.
 		l2 := retriever.New(knowRt, compiler.NewDefaultCompiler())
 		tiered := retriever.NewTieredRetriever(knowStore, l2)
-		retrievers = append(retrievers, newTieredContextRetriever(tiered, defaultDistillTenant, cfg.Knowledge.TopK))
+		retrievers = append(retrievers, newTieredContextRetriever(tiered, defaultDistillTenant, cfg.Knowledge.TopK, cfg.Knowledge.MinScore))
 		l1 := "enabled (store-backed)"
 		if knowStore == nil {
 			// L1 needs the store: it keyword-matches stored objects. Without one the tiered
@@ -178,7 +178,7 @@ func wireRetrievers(
 		log.Info("bootstrap: TIERED knowledge recall armed (L1 lexicon → L2 semantic+graph; L3 reserved)",
 			"backend", akgStoreBackend(cfg),
 			"l1", l1,
-			"note", "L1 refuses an empty namespace (isolation), so a request without tenant/user context falls to L2 only",
+			"note", "L1 is scoped to the RESOLVED namespace (explicit > tenant > user > default tenant): an empty namespace skips L1 entirely, and a context-less request therefore lands on the default tenant",
 			"cost", "L1 is a bounded in-Go scan (the store has no lexical filter); L2 costs one hybrid search")
 	} else if knowRt != nil {
 		minScore := cfg.Knowledge.MinScore

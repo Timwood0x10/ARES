@@ -40,7 +40,7 @@ func seedTieredStore(t *testing.T) (*retriever.TieredRetriever, *memstore.Store)
 // the tiered merge does not produce that order by construction).
 func TestTieredContextRetriever_MapsTheGraphToSortedSnippets(t *testing.T) {
 	tiered, _ := seedTieredStore(t)
-	r := newTieredContextRetriever(tiered, "tenant-a", 5)
+	r := newTieredContextRetriever(tiered, "tenant-a", 5, 0)
 
 	ctx := tenantctx.With(context.Background(), "tenant-a")
 	// One keyword: L1 matches on ALL keywords (AND semantics), so a two-word query would
@@ -72,7 +72,7 @@ func TestTieredContextRetriever_MapsTheGraphToSortedSnippets(t *testing.T) {
 // whichever tenant the request carries.
 func TestTieredContextRetriever_ResolvesTheNamespacePerRequest(t *testing.T) {
 	tiered, _ := seedTieredStore(t)
-	r := newTieredContextRetriever(tiered, "", 5)
+	r := newTieredContextRetriever(tiered, "", 5, 0)
 
 	// tenant-b's object says "Redis" too; a leak would surface it under tenant-a.
 	snippetsA, err := r.Retrieve(tenantctx.With(context.Background(), "tenant-a"), "Redis caching", 5)
@@ -95,7 +95,7 @@ func TestTieredContextRetriever_ResolvesTheNamespacePerRequest(t *testing.T) {
 // never comes back with a slice.
 func TestTieredContextRetriever_HonoursTheInterfaceContract(t *testing.T) {
 	tiered, _ := seedTieredStore(t)
-	r := newTieredContextRetriever(tiered, "tenant-a", 5)
+	r := newTieredContextRetriever(tiered, "tenant-a", 5, 0)
 
 	got, err := r.Retrieve(context.Background(), "", 5)
 	assert.NoError(t, err)
@@ -108,8 +108,28 @@ func TestTieredContextRetriever_HonoursTheInterfaceContract(t *testing.T) {
 
 	// No usable namespace and no fallback: L1 refuses (isolation) and there is no L2 here,
 	// so the result is empty — NOT an error, because "nothing matched" is a valid answer.
-	rNoScope := newTieredContextRetriever(tiered, "", 5)
+	rNoScope := newTieredContextRetriever(tiered, "", 5, 0)
 	got, err = rNoScope.Retrieve(context.Background(), "Redis caching", 5)
 	require.NoError(t, err)
 	assert.Empty(t, got, "an unscoped request must recall nothing rather than crossing tenants")
+}
+
+// TestTieredContextRetriever_AppliesTheQualityBar is the review finding that would have shipped
+// silently: the tiered path applies NO minimum score, while the single-shot retriever it
+// replaces drops anything below 0.4. Without this filter, turning the flag on would quietly
+// lower the bar and put knowledge into prompts the other path had filtered out.
+func TestTieredContextRetriever_AppliesTheQualityBar(t *testing.T) {
+	tiered, _ := seedTieredStore(t)
+	ctx := tenantctx.With(context.Background(), "tenant-a")
+
+	// The fixture's tenant-a objects carry 0.9 and 0.6.
+	all, err := newTieredContextRetriever(tiered, "tenant-a", 5, 0).Retrieve(ctx, "Redis", 5)
+	require.NoError(t, err)
+	require.Len(t, all, 2, "an unset threshold must NOT filter: both objects are above the 0.4 default")
+
+	// A bar of 0.8 keeps only the 0.9 object.
+	filtered, err := newTieredContextRetriever(tiered, "tenant-a", 5, 0.8).Retrieve(ctx, "Redis", 5)
+	require.NoError(t, err)
+	require.Len(t, filtered, 1, "objects below the threshold must not reach the prompt")
+	assert.Equal(t, "obj_redis", filtered[0].Metadata["object_id"])
 }
