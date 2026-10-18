@@ -185,14 +185,16 @@ a bug in the README.
 - **`ask_agent` is fire-and-forget.** The target's answer is logged, not written back
   to the asker (`internal/agentsyscall/syscall.go`: *"the reply is currently
   FIRE-AND-FORGET"*); `Status: "delivered"` is unreachable through the serve wiring.
-- **Multi-objective GA is wired on the public evolution service, not on the internal loop.**
-  With `SystemConfig.DimensionWindow` set, the service fills `DimensionScores` from
+- **Multi-objective GA is wired on both evolution paths, from one implementation.** The
+  dimension pass lives on `genome.Population` (`ScoreAgentsWithDimensions`), so the public
+  service and the in-process `EvolveAfterScoring` loop fill `DimensionScores` from
   per-candidate execution evidence (`strategy` → success_rate, `dimension_eval` → quality) and
-  `"nsga2"` ranks by Pareto dominance; without it, or for a candidate with no evidence,
-  selection uses the scalar score. The **in-process wired loop** (`EvolveAfterScoring`) still
-  scores scalar-only, so `nsga2` there stays degenerate until that path calls
-  `ScoreAgentsMulti` too. `cost` and `latency` are **not** filled by either: there is no
-  evidence source for them yet, and a normalised fitness mean is not a millisecond count.
+  `"nsga2"` ranks by Pareto dominance. Without a dimension scorer, or for a candidate with no
+  evidence, selection uses the scalar score. `cost` and `latency` are filled from a **separate
+  metrics channel** (the observer records the inverse of its own penalties, so 0 = fastest or
+  cheapest) and are ranked as Minimize objectives. They are kept out of the fitness mean and out
+  of the staging sample count on purpose: folding a spending target into "fitness" would make a
+  slow-but-correct candidate score worse than a fast-and-wrong one.
 - **The GA apply gate is installed but narrow.** It refuses a patch whose strategy
   the lifecycle is holding for manual approval; unattributed component patches pass (the
   deployment adapter already refuses those as unmeasurable), and with nothing held — the

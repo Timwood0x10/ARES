@@ -120,7 +120,9 @@
 | 聚合口径 | ✅ `Score = AggregateDimensions(dims, DefaultDimensionWeights)`，与维度**同源**（分数与向量描述同一份证据） |
 | `SourceStat` 导出 | ✅ 原为未导出 `sourceStat`，却被**公开字段** `WindowResult.PerSource` 使用 ⇒ 外部包既构造不了也读不了；已导出 |
 | 测试 | ✅ 3 条（证据→维度+聚合 / 无证据不动 / 无窗口不启用）+ **反证**（`scoreDimensions` 变空操作 → `actual: map[string]float64(nil)`） |
-| **仍未接** | ❌ **仓内 in-process 循环**（`genome_wiring_run.go` 的 `EvolveAfterScoring`，内部只调标量 `ScoreAgents`）⇒ **那条路径的 `nsga2` 仍然退化**。README 已按"哪条路径已接/哪条没"写精确，不笼统称"已接线" |
+| **收敛为单一执行路径（2026-10-17 续）** | ✅ 按 `code_rules_v2 §5.1`（同一语义只允许一条生产执行路径）**不再在 service 里另写一份**：维度填充下沉到 `genome.Population` —— `SetMultiObjectiveScorer` + `ScoreAgentsWithDimensions`（标量后接维度，顺序有依赖：维度 scorer 要读刚写好的 `agent.Score` 作无证据时的保留值）。**两条循环共用**：service 的三个打分分支与 in-process 的 `EvolveAfterScoring` **最终打分**都走它。测试：`TestEvolveAfterScoring_FillsDimensions`（内部循环真的填了）+ 零值不填一条 + service 侧 3 条；**反证**：把最终打分改回 `ScoreAgents` → `actual: map[string]float64(nil)` |
+| **M9-③ latency/cost 证据采集（2026-10-17 落）** | ✅ `WindowResult.Metrics`：**独立的 metrics 通道**（不进加权均值、**不进 `Count`**——后者是 staging 门，注释明写"没人启用的通道不得替 staging 判定背书"）；observer 写两条独立证据（source `latency`/`cost`，值 = **惩罚的补值**，0=最快/最省 ⇒ 与 `Minimize` 方向一致）；`MapCandidateDimensions` **从 `Metrics` 读**这两维（并保住"缺样本省略、不写 0"）。测试 4 条：`Metrics` 不动 Mean/Count（**契约**）、映射从 Metrics 取（含**同名 PerSource 陷阱**）、completed 才写、未完成不写；**反证**：映射忽略 Metric 标志 → `expected 0.7 actual 0.1`。**未完成的任务不写度量**（写 0 = "瞬时且免费"，在 Minimize 上是最优值） |
+| **仍未做** | `EvolveAfterScoring` 的**第一次**打分仍为纯标量（有理由：那一趟给 `EvolveOnIdle` 选父母打分，填维度描述的是即将被替换的那一代） |
 
 **2026-10-17 · 0.3.5 起步：M8b 接线 + M9 维度映射（含一处归因 bug 与 Q2 拍板）**：
 
