@@ -16,7 +16,24 @@ import (
 // Bump it when fields change meaning; a record without a version cannot be replayed honestly,
 // because the reader cannot tell whether an absent field was never recorded or was dropped by
 // an older writer.
-const ExperimentRecordSchemaVersion = 1
+const ExperimentRecordSchemaVersion = 2
+
+// ExperimentOutcome is the state of a recorded experiment.
+//
+// It is a tri-state rather than a bool because the two halves of an experiment are sealed at
+// different times: the GA cycle can say what it PROPOSED long before the gates say whether it
+// was released. A bool would force "not decided yet" to be written as `false`, i.e. as a
+// refusal — the one thing a reproducibility record must never invent.
+type ExperimentOutcome string
+
+const (
+	// ExperimentOutcomePending: the proposal is sealed, no decision exists yet.
+	ExperimentOutcomePending ExperimentOutcome = "pending"
+	// ExperimentOutcomeAccepted: the candidate was released.
+	ExperimentOutcomeAccepted ExperimentOutcome = "accepted"
+	// ExperimentOutcomeRejected: the candidate was not released.
+	ExperimentOutcomeRejected ExperimentOutcome = "rejected"
+)
 
 // GateVerdict is one verification gate's conclusion about a candidate.
 //
@@ -73,8 +90,13 @@ type ExperimentRecord struct {
 
 	// Verification is what the gates concluded.
 	Verification []GateVerdict `json:"verification,omitempty"`
-	// Accepted reports whether the candidate was released.
-	Accepted bool `json:"accepted"`
+	// Outcome is the decision state at the time this record was sealed.
+	//
+	// A record sealed by the GA cycle is always Pending: the proposal exists, the gates have
+	// not run. The decision arrives as a SECOND, later record sharing the same ReplayKey,
+	// which is what an append-only log is for — rewriting the first would erase the fact that
+	// the proposal preceded the verdict.
+	Outcome ExperimentOutcome `json:"outcome"`
 
 	// PostDeploy is what happened after acceptance. Nil until observed, so "not measured yet"
 	// stays distinguishable from "measured as zero".

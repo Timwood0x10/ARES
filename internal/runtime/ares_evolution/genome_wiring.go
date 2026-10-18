@@ -59,6 +59,13 @@ type GenomePopulationAdapter struct {
 	// per-agent LLM calls into ceil(N/batchSize) batched calls.
 	batchScorer BatchScorer
 
+	// experimentLog, when set, receives one ExperimentRecord per generation (M10). Nil means
+	// "do not seal" — the zero value stays silent, so a deployment that has not configured a
+	// log path keeps its previous behaviour exactly.
+	//
+	// Guarded by runMu: records are sealed inside Run, which already serialises cycles.
+	experimentLog ExperimentLog
+
 	// Guardrails for pre/post evolution safety checks (optional).
 	// When set via WithAdapterGuardrails, Run() runs safety checks before
 	// and after each evolution cycle.

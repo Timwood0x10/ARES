@@ -34,7 +34,7 @@ func experimentFixture(order bool) ExperimentRecord {
 		Dimensions:     map[string]float64{"success_rate": 0.8},
 		Score:          0.62,
 		Verification:   []GateVerdict{{Gate: "regression", Passed: true}},
-		Accepted:       true,
+		Outcome:        ExperimentOutcomeAccepted,
 		At:             time.Unix(1000, 0),
 	}
 }

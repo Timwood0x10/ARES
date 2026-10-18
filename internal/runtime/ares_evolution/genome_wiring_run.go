@@ -6,6 +6,7 @@ package evolution
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -43,6 +44,62 @@ import (
 // Returns:
 //
 //	error - non-nil if evolution fails.
+//
+// SetExperimentLog installs the log that receives one sealed record per generation.
+//
+// Called from bootstrap where the deployment's log path is known; nil disables sealing.
+func (a *GenomePopulationAdapter) SetExperimentLog(l ExperimentLog) {
+	a.experimentLog = l
+}
+
+// sealExperimentRecord appends this generation's PROPOSAL to the experiment log (M10).
+//
+// It seals Outcome=pending on purpose: this cycle can say what it produced and how it scored,
+// but whether the candidate is released is decided later, by the gates. Writing a boolean
+// "accepted=false" here would turn "not decided yet" into a refusal — the one thing a
+// reproducibility record must not invent. The decision arrives as a second record sharing the
+// same ReplayKey.
+//
+// FitnessConfig is the dimension-weight table the aggregate actually used. It is copied rather
+// than referenced so a later change to the defaults cannot rewrite what this run was scored
+// with — a replay applying today's weights to yesterday's decision proves nothing.
+//
+// Best-effort: a log write must not fail the evolution cycle, which has already mutated the
+// population by the time this runs.
+func (a *GenomePopulationAdapter) sealExperimentRecord(ctx context.Context) {
+	if a.experimentLog == nil || a.pop == nil {
+		return
+	}
+	best := a.pop.BestStrategy()
+	if best == nil {
+		return
+	}
+	weights := make(map[string]float64, len(genome.DefaultDimensionWeights))
+	for k, v := range genome.DefaultDimensionWeights {
+		weights[k] = v
+	}
+	rec := ExperimentRecord{
+		SchemaVersion: ExperimentRecordSchemaVersion,
+		Generation:    a.pop.Stats().Generation,
+		CandidateID:   best.ID,
+		ParentID:      best.ParentID,
+		// MutationType is an int enum with no String(): recorded as its numeric id, which is
+		// what ReplayKey needs (determinism), and `go vet` rejects converting an int to string.
+		MutationType:   strconv.Itoa(int(best.StrategyMutationType)),
+		PromptTemplate: best.PromptTemplate,
+		Params:         best.Params,
+		FitnessConfig:  weights,
+		Dimensions:     best.DimensionScores,
+		Score:          best.Score,
+		Outcome:        ExperimentOutcomePending,
+		At:             time.Now(),
+	}
+	if err := a.experimentLog.Append(ctx, rec); err != nil {
+		log.WarnContext(ctx, "adapter: seal experiment record", "method", "Run",
+			"generation", rec.Generation, "candidate", rec.CandidateID, "error", err)
+	}
+}
+
 func (a *GenomePopulationAdapter) Run(ctx context.Context) error {
 	a.runMu.Lock()
 	defer a.runMu.Unlock()
@@ -84,6 +141,10 @@ func (a *GenomePopulationAdapter) Run(ctx context.Context) error {
 			log.WarnContext(ctx, "failed to record lineage", "method", "Run", "generation", prevGeneration, "error", err)
 		}
 	}
+
+	// Seal the generation's proposal (M10). After the lineage block so the record describes a
+	// population whose lineage has already been recorded; failure is non-fatal by contract.
+	a.sealExperimentRecord(ctx)
 
 	// Record outcomes for adaptive distribution and feedback service.
 	// This closes the feedback loop: evolution results flow back to
