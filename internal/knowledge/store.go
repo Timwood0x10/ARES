@@ -138,13 +138,6 @@ type StoreSnapshot struct {
 	Representations []*Representation `json:"representations,omitempty"`
 }
 
-// TODO(tech-debt): ExportStore / ImportStore / StoreExporter now have an
-// operator caller (`ares knowledge export|import`), and the snapshot carries
-// Representations whenever the store can enumerate them — closing the silent
-// recall degradation a round trip used to cause. One gap remains:
-// StoreSnapshot.SchemaVersion is written but never validated on import (the
-// real guard is the per-object MigrateObject).
-//
 // StoreExporter is an optional capability of a KnowledgeStore: the ability
 // to export all objects in a namespace (or all namespaces) as a portable
 // snapshot, and to import a snapshot back. Stores that do not implement

@@ -43,10 +43,6 @@ func DefaultDecayConfig() DecayConfig {
 // archiving anyone's knowledge. A store that cannot enumerate its namespaces is
 // skipped with a warning rather than scanned blind.
 //
-// TODO(tech-debt): BuildReport (below) still has no producer — it is only
-// constructed in tests, so TestAKG_BuildReport_ExposesCounters proves nothing
-// about a real build. Wire it or delete it.
-//
 // ApplyDecay archives stale objects by moving them to StatusSuperseded.
 // It never deletes objects: the knowledge stays in the store, only its
 // lifecycle status changes, preserving traceability (M4).

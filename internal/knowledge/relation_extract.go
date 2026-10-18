@@ -141,13 +141,6 @@ func stripTrailingPunct(s string) string {
 	return s
 }
 
-// TODO(tech-debt): the relation validation gate below (RelationGateConfig /
-// ValidateRelation / FilterRelations) has NO production caller yet — nothing
-// in the distill/extract path invokes it. Wire it into
-// DistillBridge.extractRelations (or the pipeline) before relying on it, or
-// delete it. Note wiring it changes extraction behaviour (it drops
-// type-incompatible relations), so it should land with its own test.
-//
 // RelationGateConfig configures the relation validation gate (M2.5).
 type RelationGateConfig struct {
 	// RequireEvidence, when true, rejects candidate relations that have no
