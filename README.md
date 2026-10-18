@@ -185,6 +185,22 @@ a bug in the README.
 - **`ask_agent` is fire-and-forget.** The target's answer is logged, not written back
   to the asker (`internal/agentsyscall/syscall.go`: *"the reply is currently
   FIRE-AND-FORGET"*); `Status: "delivered"` is unreachable through the serve wiring.
+- **The GA proposes; the kernel disposes.** Nothing the evolution loop produces reaches a
+  running strategy without passing the kernel: a candidate is a proposal plus its evidence, the
+  apply path is gated on manual approval when the lifecycle is holding one, and knowledge is
+  never allowed to grade a candidate. Concretely, GA may tune parameters, choose and combine
+  strategies, and bias candidate generation — it may not bypass permissions, exceed a budget or
+  blast-radius, change running state behind the kernel's back, or apply its own patch. The
+  intended rollout order is one production objective at a time (agent policy parameters first),
+  proving the full six-step loop before widening: running several evolving subsystems at once
+  makes every regression ambiguous.
+- **Experiment records exist, but the only log is in memory.** `ExperimentRecord` captures what
+  makes a run replayable (genome, the evidence that narrowed it, the fitness configuration in
+  force, the gate verdicts, and the outcome once observed) and `ExperimentLog` is append-only by
+  contract. The shipped implementation is `MemoryExperimentLog`, so **records are lost on
+  restart** — wiring it to durable storage is what turns "reproducible" into true across
+  deployments. Knowledge narrows candidates only; recording an outcome deliberately writes
+  nothing back to the graph, which is what keeps the GA from reinforcing its own opinion.
 - **Multi-objective GA is wired on both evolution paths, from one implementation.** The
   dimension pass lives on `genome.Population` (`ScoreAgentsWithDimensions`), so the public
   service and the in-process `EvolveAfterScoring` loop fill `DimensionScores` from
