@@ -63,15 +63,34 @@ func (s scriptedScorer) Score(_ context.Context, input any) (float64, error) {
 }
 
 // capturingScorer records every strategy value the gate hands it.
-type capturingScorer struct{ seen []any }
+//
+// The mutex is not decoration: the arena runs candidates CONCURRENTLY (errgroup inside
+// RegressionTester.runStrategy), so Score is called from several goroutines at once. Without
+// it the capture is a data race — found by `go test -race`, which is why the quality gate
+// requires it (code_rules §4.6).
+type capturingScorer struct {
+	mu   sync.Mutex // guards seen
+	seen []any
+}
 
 func (c *capturingScorer) Score(_ context.Context, input any) (float64, error) {
 	tci, ok := input.(ares_arena.TestCaseInput)
 	if !ok {
 		return 0, errors.New("capturingScorer: expected TestCaseInput")
 	}
+	c.mu.Lock()
 	c.seen = append(c.seen, tci.Strategy)
+	c.mu.Unlock()
 	return 0.5, nil
+}
+
+// captured returns a copy of what the scorer saw, safe to read after the gate returns.
+func (c *capturingScorer) captured() []any {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]any, len(c.seen))
+	copy(out, c.seen)
+	return out
 }
 
 // TestArenaRegressionGate_PassesTheWholeStrategy is the P0-1 replay contract: the gate
@@ -93,7 +112,7 @@ func TestArenaRegressionGate_PassesTheWholeStrategy(t *testing.T) {
 	require.NoError(t, err)
 	_, _, _ = g.Check(context.Background(), cand, active)
 
-	require.NotEmpty(t, captured.seen, "the gate must actually score something")
+	require.NotEmpty(t, captured.captured(), "the gate must actually score something")
 	seenIDs := map[string]bool{}
 	for _, s := range captured.seen {
 		st, ok := s.(*mutation.Strategy)
