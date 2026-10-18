@@ -12,23 +12,27 @@ import (
 	"github.com/Timwood0x10/ares/internal/runtime/ares_evolution/mutation"
 )
 
-// newScoringPopulation builds a population whose members all carry the same scalar score,
-// which is what the scalar pass leaves behind before dimensions are filled.
-func newScoringPopulation(t *testing.T, scalar float64) *genome.Population {
+// newScoringPopulation builds a population that the dimension pass can read.
+func newScoringPopulation(t *testing.T) *genome.Population {
 	t.Helper()
-	base := &mutation.Strategy{ID: "base", Params: map[string]any{"t": 0.7}, Score: scalar}
+	base := &mutation.Strategy{ID: "base", Params: map[string]any{"t": 0.7}, Score: 0.5}
 	pop, err := genome.NewPopulation(context.Background(), base, &mockGenomeMutator{})
 	require.NoError(t, err)
-	pop.ScoreAgents(func(*mutation.Strategy) float64 { return scalar })
 	return pop
 }
 
-// TestScoreDimensions_FillsFromExecutionEvidence is M9's wiring: a candidate with real
+// scoreThrough runs the service's installation step and then the population's combined entry
+// point — the same two calls the real scoring path makes.
+func scoreThrough(svc *Service, pop *genome.Population, scalar float64) {
+	svc.installDimensionScorer(pop)
+	pop.ScoreAgentsWithDimensions(func(*mutation.Strategy) float64 { return scalar })
+}
+
+// TestInstallDimensionScorer_FillsFromExecutionEvidence is M9's wiring: a candidate with real
 // execution evidence gets DimensionScores, which is what stops NSGA-II from degenerating to
 // single-objective selection.
-func TestScoreDimensions_FillsFromExecutionEvidence(t *testing.T) {
-	pop := newScoringPopulation(t, 0.5)
-
+func TestInstallDimensionScorer_FillsFromExecutionEvidence(t *testing.T) {
+	pop := newScoringPopulation(t)
 	svc := &Service{config: &SystemConfig{
 		DimensionWindow: func(id string) aresevolution.WindowResult {
 			if id != "base" {
@@ -40,31 +44,34 @@ func TestScoreDimensions_FillsFromExecutionEvidence(t *testing.T) {
 			}}
 		},
 	}}
-	svc.scoreDimensions(pop)
 
-	dims := genome.DefaultDimensionWeights
+	scoreThrough(svc, pop, 0.5)
+
 	snap, _ := pop.Snapshot()
 	require.NotEmpty(t, snap)
+	seen := false
 	for _, a := range snap {
 		if a.ID != "base" {
 			continue
 		}
+		seen = true
 		assert.Equal(t, map[string]float64{"success_rate": 0.8, "quality": 0.6}, a.DimensionScores)
-		assert.InDelta(t, genome.AggregateDimensions(a.DimensionScores, dims), a.Score, 1e-9,
-			"the aggregate must be derived from the same dimensions, not a second source")
+		assert.InDelta(t, genome.AggregateDimensions(a.DimensionScores, genome.DefaultDimensionWeights),
+			a.Score, 1e-9, "the aggregate must come from the same dimensions")
 	}
+	assert.True(t, seen, "the fixture must contain the base strategy")
 }
 
-// TestScoreDimensions_LeavesUnevidencedCandidatesAlone: filling dimensions must not change
-// the score of a candidate that has no evidence. Reporting 0 there would be a measurement it
-// never earned, and it would drop it out of selection entirely.
-func TestScoreDimensions_LeavesUnevidencedCandidatesAlone(t *testing.T) {
-	pop := newScoringPopulation(t, 0.42)
-
+// TestInstallDimensionScorer_LeavesUnevidencedCandidatesAlone: filling dimensions must not
+// change the score of a candidate with no evidence. Reporting 0 there would be a measurement
+// it never earned, and it would drop it out of selection.
+func TestInstallDimensionScorer_LeavesUnevidencedCandidatesAlone(t *testing.T) {
+	pop := newScoringPopulation(t)
 	svc := &Service{config: &SystemConfig{
 		DimensionWindow: func(string) aresevolution.WindowResult { return aresevolution.WindowResult{} },
 	}}
-	svc.scoreDimensions(pop)
+
+	scoreThrough(svc, pop, 0.42)
 
 	snap, _ := pop.Snapshot()
 	require.NotEmpty(t, snap)
@@ -74,13 +81,12 @@ func TestScoreDimensions_LeavesUnevidencedCandidatesAlone(t *testing.T) {
 	}
 }
 
-// TestScoreDimensions_IsOffWithoutAWindow pins the default: the previous behaviour is what
-// happens when nobody configures a window source, so wiring this in cannot change an existing
-// deployment's selection.
-func TestScoreDimensions_IsOffWithoutAWindow(t *testing.T) {
-	pop := newScoringPopulation(t, 0.33)
+// TestInstallDimensionScorer_IsOffWithoutAWindow pins the default: with no window source the
+// previous behaviour is what happens, so installing this cannot change an existing deployment.
+func TestInstallDimensionScorer_IsOffWithoutAWindow(t *testing.T) {
+	pop := newScoringPopulation(t)
 
-	(&Service{config: &SystemConfig{}}).scoreDimensions(pop)
+	scoreThrough(&Service{config: &SystemConfig{}}, pop, 0.33)
 
 	snap, _ := pop.Snapshot()
 	require.NotEmpty(t, snap)
