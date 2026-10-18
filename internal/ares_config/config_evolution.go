@@ -28,6 +28,17 @@ type EvolutionConfig struct {
 	// Higher = more diversity, slower convergence. Default: 0.6.
 	SurvivalRate float64 `yaml:"survival_rate"`
 
+	// ExperimentLogPath is where the append-only experiment log is written (M10).
+	//
+	// Empty (the default) DISABLES sealing entirely, so a deployment that never sets it keeps
+	// its previous behaviour. When set, each generation appends one JSONL record describing
+	// what was proposed and the fitness weights in force; the file is opened at bootstrap and
+	// fsynced per record, so losing power does not lose the experiment that explains a crash.
+	//
+	// It is a file rather than a table on purpose: append-only by construction, no migration,
+	// and readable with `cat` at 3am.
+	ExperimentLogPath string `yaml:"experiment_log_path"`
+
 	// MutationRate is the base probability of gene mutation per agent.
 	// Higher = more exploration, less stability. Default: 0.2.
 	MutationRate float64 `yaml:"mutation_rate"`

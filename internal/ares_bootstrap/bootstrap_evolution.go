@@ -62,6 +62,9 @@ func buildStrategyStore(ctx context.Context, cfg *ares_config.Config, cleanups *
 
 func assembleGAConfig(ctx context.Context, cfg *ares_config.Config, comp *Components, memStore evolution.StrategyStore, guidanceProvider evolution.GuidanceProvider) evolution.SystemConfig {
 	gaCfg := evolution.DefaultSystemConfig()
+	// M10: forward the configured experiment-log path. Empty stays empty, so a deployment that
+	// never sets it seals nothing and behaves exactly as before.
+	gaCfg.ExperimentLogPath = cfg.Evolution.ExperimentLogPath
 	gaCfg.EnableDreamCycle = false
 	// EnableScheduler is now always true so the ticker path goes
 	// through scheduler.Tick (which applies shouldEvolve + guardrails).
