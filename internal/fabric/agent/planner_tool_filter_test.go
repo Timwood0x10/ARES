@@ -171,3 +171,25 @@ func TestToolCapabilitiesForTask(t *testing.T) {
 	names := []string{got[0].Name, got[1].Name}
 	assert.ElementsMatch(t, []string{"grep", "web.search"}, names)
 }
+
+// TestAdvertisedToolSchemas_UntaggedToolsSurvive is the defect the MCP bridge exposed: a tool
+// that declares NO capability cannot be judged by a capability filter, so hiding it removes a
+// tool the filter was never able to consider. Before this, any task carrying capabilities
+// dropped every untagged tool as long as one tagged tool matched.
+func TestAdvertisedToolSchemas_UntaggedToolsSurvive(t *testing.T) {
+	binder := &tagBinder{schemas: []resources.ToolSchema{
+		{Name: "web.search", Tags: map[string]string{"cap_network": "true"}},
+		{Name: "mcp-weather", Tags: nil}, // declares no capability at all
+		{Name: "sql.exec", Tags: map[string]string{"cap_data": "true"}},
+	}}
+	c := &plannerCognition{binder: binder}
+
+	got := c.advertisedToolSchemas([]string{"network"})
+	names := make([]string, 0, len(got))
+	for _, s := range got {
+		names = append(names, s.Name)
+	}
+	assert.ElementsMatch(t, []string{"web.search", "mcp-weather"}, names,
+		"a tool that declares no capability must survive a capability filter it cannot participate in")
+	assert.NotContains(t, names, "sql.exec", "a tool that declares a different capability is still excluded")
+}

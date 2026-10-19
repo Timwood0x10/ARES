@@ -411,7 +411,11 @@ func (c *plannerCognition) advertisedToolSchemas(caps []string) []resources.Tool
 		if len(c.toolTagFilter) > 0 && !tagsMatch(s.Tags, c.toolTagFilter) {
 			continue
 		}
-		if len(caps) > 0 && !matchesAnyCapability(s.Tags, caps) {
+		// A tool that declares NO capability tag cannot take part in capability routing, so
+		// hiding it would remove a tool this filter was never able to consider. Only tools that
+		// opt in (declare at least one cap_*) are subject to it — otherwise MCP tools, which
+		// carried no tags at all, were silently dropped whenever any builtin happened to match.
+		if len(caps) > 0 && declaresAnyCapability(s.Tags) && !matchesAnyCapability(s.Tags, caps) {
 			continue
 		}
 		kept = append(kept, s)
@@ -424,6 +428,20 @@ func (c *plannerCognition) advertisedToolSchemas(caps []string) []resources.Tool
 		return enabled
 	}
 	return kept
+}
+
+// declaresAnyCapability reports whether a tool opted into capability routing at all.
+//
+// This is the difference between "I serve other capabilities" and "I have no capability
+// vocabulary": the former should be hidden by a capability filter, the latter cannot be judged
+// by one and must stay visible.
+func declaresAnyCapability(tags map[string]string) bool {
+	for k := range tags {
+		if strings.HasPrefix(k, toolCapTagPrefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // matchesAnyCapability reports whether the tool carries ANY of the wanted capability flags.

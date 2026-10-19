@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/Timwood0x10/ares/internal/tools/capability"
 	"github.com/Timwood0x10/ares/internal/tools/resources/base"
 	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
@@ -74,6 +75,31 @@ func (t *MCPTool) Description() string {
 // to be dead, calling through would fail with a raw transport error ("connection
 // closed") that says nothing about why or since when — and the tool would still
 // advertise itself as usable, which is the zombie S-mcp-S5 describes.
+// Tags declares the capability domains this tool serves, derived from its advertised
+// description at registration time.
+//
+// MCP carries no capability metadata, only prose, so this is a keyword read of that prose using
+// the SAME table the task side uses (internal/tools/capability) — one vocabulary in both
+// directions, so a task tagged `network` can actually select an MCP tool that described itself
+// as fetching HTTP. Without this the tool declared nothing, and an untagged tool is invisible to
+// capability narrowing: it could never be selected by it, and (before the fix next to
+// declaresAnyCapability) could be dropped by it.
+func (t *MCPTool) Tags() map[string]string { return capabilityTagsFor(t.Name(), t.Description()) }
+
+// capabilityTagsFor maps a tool's name and description onto cap_* tags. Split out from Tags so
+// it can be exercised without constructing a live MCP client.
+func capabilityTagsFor(name, description string) map[string]string {
+	domains := capability.FromText(name + " " + description)
+	if len(domains) == 0 {
+		return nil
+	}
+	tags := make(map[string]string, len(domains))
+	for _, d := range domains {
+		tags["cap_"+d] = "true"
+	}
+	return tags
+}
+
 func (t *MCPTool) Execute(ctx context.Context, params map[string]interface{}) (core.Result, error) {
 	if health := t.client.Health(); !health.IsAvailable() {
 		return core.NewErrorResult(unavailableToolMessage(t.Name(), t.serverName, health)), nil
@@ -155,3 +181,4 @@ func extractText(blocks []ContentBlock) string {
 
 // Ensure MCPTool implements core.Tool at compile time.
 var _ core.Tool = (*MCPTool)(nil)
+var _ core.TaggableTool = (*MCPTool)(nil)
