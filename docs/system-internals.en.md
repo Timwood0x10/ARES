@@ -53,7 +53,7 @@
 27. [LLM Failover + Tool Organization (`core.Registry`)](#27-llm-failover--tool-organization)
 28. [Event-Driven Bus (who subscribes to what)](#28-event-driven-bus)
 29. [HITL Approval Gate (0.3.3)](#29-hitl-approval-gate-033)
-30. [Version Status: 0.3.4 / 0.3.5 (convergence)](#30-version-status-034--035convergence)
+30. [Version Status: 0.3.4](#30-version-status-034)
 
 ---
 
@@ -2380,7 +2380,7 @@ extraction), zero LLM calls.** It treats message roles differently:
   current behaviour**. Both paths share one `CleanOptions` budget, so the
   switch changes grouping, not how much text survives. Note: the structured
   path `BuildPromptMessages` already always uses `CleanWithTurns`; this switch
-  only affects the text path `BuildContext`. **(0.3.5 update) the token budget is wired on BOTH paths**: `BuildContext` and
+  only affects the text path `BuildContext`. **(0.3.4 update) the token budget is wired on BOTH paths**: `BuildContext` and
   `BuildPromptMessages` (the one that actually reaches the model) trim by an estimated token
   count BEFORE cleaning (drop order: system floor > tool-causal > history). The budget is
   `memory.context_token_budget` when set; otherwise **45% of `memory.model_context_window`**
@@ -2659,7 +2659,7 @@ persists byte-for-byte identically to 0.3.2/0.3.3 — pinned by
 > the dev branch moves. Function names / file paths are more stable than line
 > numbers — locate by symbol when in doubt.
 
-## 30. Version Status: 0.3.4 / 0.3.5 (convergence)
+## 30. Version Status: 0.3.4
 
 **0.3.4 close-out (the AKG↔GA three gaps; ledger wording 2026-10-17/18)**:
 
@@ -2669,7 +2669,7 @@ persists byte-for-byte identically to 0.3.2/0.3.3 — pinned by
 | M4 build observability / incremental | `DistillConversationWithReport` real producer (7 counters from this run); `persistAndPromote` skips unchanged objects by ContentFingerprint | ✅ closed |
 | M6 tiered retrieval | `TieredRetriever` (bounded lexicon scan, deterministic truncation check) + `knowledge.tiered_retrieval` **opt-in** (replaces, does not stack — one corpus, one injection) | ✅ closed (2026-10-17, opt-in) |
 
-**0.3.5**: M8b wiring and M9 dimension mapping are **done**. Dimension scoring lives on
+**0.3.4**: M8b wiring and M9 dimension mapping are **done**. Dimension scoring lives on
 `genome.Population.ScoreAgentsWithDimensions` and both evolution loops use it; `latency` and
 `cost` are collected as Minimize objectives on a separate metrics channel that stays out of the
 fitness mean (so a slow-but-correct strategy is not averaged away). The attribution bug and the

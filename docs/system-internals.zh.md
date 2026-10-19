@@ -49,7 +49,7 @@
 27. [LLM 失败切换 + 工具组织（`core.Registry`）](#27-llm-失败切换与工具组织)
 28. [事件驱动总线（谁订阅了什么）](#28-事件驱动总线)
 29. [HITL 审批门（0.3.3）](#29-hitl-审批门-033)
-30. [版本状态：0.3.4 / 0.3.5（收敛进度）](#30-版本状态034--035收敛进度)
+30. [版本状态：0.3.4](#30-版本状态034)
 
 ---
 
@@ -2047,7 +2047,7 @@ flowchart TB
 - `compressCodeBlocks`（`cleaner.go:128`）就是把 ``` 代码块 整个替换成 `<code block>` 占位，**不读代码内容**。
 - `extractGist`（`cleaner.go:144`）取"第一个句号/叹号/问号前的句子"，取不到就 `WithEllipsis` 硬截。
 - 有 `CleaningMode`（Default/Conservative/Aggressive，`cleaner.go:19`）三档 + `CleanWithTurns`（按"回合"做工具消息的保留/裁剪，`cleaner.go:19`），但**本质仍是规则，不是 LLM**。
-- **（0.3.3 更新）`CleanWithTurns` 已可接进生产读路径**：`memory.turn_aware_cleaning: true`（ares.yaml，映射到 `MemoryConfig.TurnAwareCleaning`）时 `BuildContext` 走 `CleanWithTurns`（tool_call↔tool_result 成对保留），否则（默认）仍走扁平 `Clean`——**开关关闭 = 现状逐字节一致**；两条路径共用同一 `CleanOptions` 预算，开关只改分组、不放宽字符上限。注：结构化路径 `BuildPromptMessages` 本就恒走 `CleanWithTurns`，本开关只影响文本路径 `BuildContext`。**（0.3.5 更新）token 预算**两条路径都已接：`BuildContext` 与 `BuildPromptMessages`（真正喂给模型的那条）都会在清理前按估算 token 裁剪（丢弃序：系统保底 > 工具因果 > 历史）。预算取值：设了 `memory.context_token_budget` 就用它；否则取 **`memory.model_context_window` 的 45%**（`EffectiveContextTokenBudget`）——**45% 而不是 50%+**，因为回答、skills 常驻块与 RAG 片段都是在提示词之后追加的，预算顶到窗口边缘就没地方放了。两者都不设 = 关。估算用厂商口径（**中文 0.6 token/字，其它 0.3/字符**），放在 `internal/runtime/memory/tokencount` 由两处共用，避免存储上限与提示词预算各算一套。存储侧另有独立上限：`memory.session_max_tokens` 限制**单会话占多少**，与条数上限无关（一条大工具结果也算"一条"）。**仍待做**：记忆锚点 LLM 摘要（B-G3，新增 LLM 调用，默认不做）。
+- **（0.3.3 更新）`CleanWithTurns` 已可接进生产读路径**：`memory.turn_aware_cleaning: true`（ares.yaml，映射到 `MemoryConfig.TurnAwareCleaning`）时 `BuildContext` 走 `CleanWithTurns`（tool_call↔tool_result 成对保留），否则（默认）仍走扁平 `Clean`——**开关关闭 = 现状逐字节一致**；两条路径共用同一 `CleanOptions` 预算，开关只改分组、不放宽字符上限。注：结构化路径 `BuildPromptMessages` 本就恒走 `CleanWithTurns`，本开关只影响文本路径 `BuildContext`。**（0.3.4 更新）token 预算**两条路径都已接：`BuildContext` 与 `BuildPromptMessages`（真正喂给模型的那条）都会在清理前按估算 token 裁剪（丢弃序：系统保底 > 工具因果 > 历史）。预算取值：设了 `memory.context_token_budget` 就用它；否则取 **`memory.model_context_window` 的 45%**（`EffectiveContextTokenBudget`）——**45% 而不是 50%+**，因为回答、skills 常驻块与 RAG 片段都是在提示词之后追加的，预算顶到窗口边缘就没地方放了。两者都不设 = 关。估算用厂商口径（**中文 0.6 token/字，其它 0.3/字符**），放在 `internal/runtime/memory/tokencount` 由两处共用，避免存储上限与提示词预算各算一套。存储侧另有独立上限：`memory.session_max_tokens` 限制**单会话占多少**，与条数上限无关（一条大工具结果也算"一条"）。**仍待做**：记忆锚点 LLM 摘要（B-G3，新增 LLM 调用，默认不做）。
 
 ### 26.3 三种"压缩"方案的对照（为什么选这个）
 
@@ -2256,7 +2256,7 @@ workflow step 可通过 YAML `interrupt: { message: "..." }` 或 Go 侧
 > 源码定位说明：本文行号基于 v0.3.2 快照，随 dev 分支演进可能漂移；
 > 函数名/文件路径比行号更稳定，定位时以符号为准。
 
-## 30. 版本状态：0.3.4 / 0.3.5（收敛进度）
+## 30. 版本状态：0.3.4
 
 **0.3.4 收口（AKG↔GA 三条缺口，台账口径 2026-10-17/18）**：
 
@@ -2266,7 +2266,7 @@ workflow step 可通过 YAML `interrupt: { message: "..." }` 或 Go 侧
 | M4 构建可观测/增量 | `DistillConversationWithReport` 真 producer（7 计数器来自本次运行）；`persistAndPromote` 按 ContentFingerprint 跳过未变对象 | ✅ 已关闭 |
 | M6 三级检索 | `TieredRetriever`（有界 lexicon 扫描、截断判定确定性修正）+ `knowledge.tiered_retrieval` **opt-in**（替换不叠加，避免同一语料注入两次） | ✅ 已关闭（2026-10-17，opt-in） |
 
-**0.3.5**：M8b 接线与 M9 维度映射**均已完成**。维度打分落在
+**0.3.4**：M8b 接线与 M9 维度映射**均已完成**。维度打分落在
 `genome.Population.ScoreAgentsWithDimensions`，两条进化路径共用；`latency` 与 `cost` 作为
 Minimize 目标采在**独立指标通道**上，不进入 fitness 均值（否则"慢但正确"的策略会被平均掉）。
 归因 bug 与 Q2 拍板记录见 `docs/defects/00-INDEX.md` 修订日志。
