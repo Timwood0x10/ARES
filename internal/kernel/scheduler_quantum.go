@@ -11,6 +11,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/core/models"
 	apperrors "github.com/Timwood0x10/ares/internal/errors"
+	fabricagent "github.com/Timwood0x10/ares/internal/fabric/agent"
 	taskfabric "github.com/Timwood0x10/ares/internal/fabric/task"
 	"github.com/Timwood0x10/ares/internal/tenantctx"
 	"github.com/Timwood0x10/ares/internal/userctx"
@@ -82,6 +83,14 @@ func (s *Scheduler) buildQuantumStep(
 			out *sub.StepOutcome
 			err error
 		}
+		// executorPayload is what the executor left in the model task's payload. The re-wrap
+		// below rebuilds the envelope from submission-time metadata, so without this capture
+		// every write the executor makes (need_tools widening the toolbelt, and the derived
+		// capability tags) is discarded before the next quantum reads it.
+		//
+		// Written before the send on `done` and read only after the receive, so the channel
+		// provides the happens-before edge; no additional lock is needed.
+		var executorPayload map[string]any
 		done := make(chan stepResult, 1)
 		go func() {
 			defer func() {
@@ -104,6 +113,7 @@ func (s *Scheduler) buildQuantumStep(
 			// envelope field or schema bump is needed.
 			stepCtx := userctx.With(tenantctx.With(ctx, mt.TenantID), userIDFromPayload(mt.Payload))
 			out, stepErr := executor.ExecuteStep(stepCtx, mt)
+			executorPayload = mt.Payload
 			done <- stepResult{out: out, err: stepErr}
 		}()
 		var out *sub.StepOutcome
@@ -148,7 +158,7 @@ func (s *Scheduler) buildQuantumStep(
 			// it and the next quantum resumes from this PCB.
 			return taskfabric.EncodeCheckpoint(taskfabric.DecodedCheckpoint{
 				UserProfile:      meta.UserProfile,
-				Payload:          meta.Payload,
+				Payload:          carryTaskScopedPayload(meta.Payload, executorPayload),
 				UsedExperienceID: meta.UsedExperienceID,
 				StrategyID:       meta.StrategyID,
 				SessionID:        meta.SessionID,
@@ -185,7 +195,7 @@ func (s *Scheduler) buildQuantumStep(
 		// scope from the checkpoint it is about to persist).
 		return taskfabric.EncodeCheckpoint(taskfabric.DecodedCheckpoint{
 			UserProfile:      meta.UserProfile,
-			Payload:          meta.Payload,
+			Payload:          carryTaskScopedPayload(meta.Payload, executorPayload),
 			UsedExperienceID: meta.UsedExperienceID,
 			StrategyID:       meta.StrategyID,
 			SessionID:        meta.SessionID,
@@ -321,6 +331,45 @@ func userIDFromPayload(payload map[string]any) string {
 		return id
 	}
 	return ""
+}
+
+// taskScopedPayloadKeys are payload keys that describe the TASK rather than one quantum. They
+// must survive a yield/done re-wrap even though the executor wrote them, because the re-wrap
+// otherwise rebuilds the envelope from submission-time metadata (see copyPayloadMap for why the
+// executor's map is a copy in the first place).
+//
+// The whitelist IS the point: carrying every key would undo the anti-pollution design that keeps
+// quantum-scoped keys ("checkpoint", per-step scratch) out of the durable envelope. A key
+// belongs here only when losing it changes what the next quantum does and the task cannot
+// recover on its own — tool capabilities are exactly that: without this, need_tools widens the
+// toolbelt for one quantum and the next one re-derives the narrow set again.
+var taskScopedPayloadKeys = []string{
+	fabricagent.TaskToolCapabilityKey,
+}
+
+// carryTaskScopedPayload overlays the whitelisted keys from the executor's task onto the
+// envelope payload. It copies on write so the caller's map is never mutated in place.
+func carryTaskScopedPayload(base, from map[string]any) map[string]any {
+	overlay := false
+	for _, key := range taskScopedPayloadKeys {
+		if _, ok := from[key]; ok {
+			overlay = true
+			break
+		}
+	}
+	if !overlay {
+		return base
+	}
+	out := make(map[string]any, len(base)+len(taskScopedPayloadKeys))
+	for k, v := range base {
+		out[k] = v
+	}
+	for _, key := range taskScopedPayloadKeys {
+		if v, ok := from[key]; ok {
+			out[key] = v
+		}
+	}
+	return out
 }
 
 func (s *Scheduler) ToModelTask(tk *taskfabric.Task) *models.Task {
