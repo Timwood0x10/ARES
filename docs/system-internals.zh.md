@@ -1401,7 +1401,7 @@ flowchart LR
 
 **关键事实（v0.2→0.3 的改名痕迹就藏在这里）：** `leader_checkpoints` 表在迁移里被
 `RENAME TO agent_checkpoints`、`leader_id` 列改 `agent_id`、`idx_leader_checkpoints_status`
-改 `idx_agent_checkpoints_status`（`internal/storage/postgres/migrate.go:123-123`）。
+改 `idx_agent_checkpoints_status`（`internal/storage/postgres/migrate.go:108-123`）。
 这就是"Leader 被删除"在存储层的证据。
 
 | 关注点 | 机制 | 源码 |

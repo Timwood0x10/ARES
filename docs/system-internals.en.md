@@ -1609,7 +1609,7 @@ flowchart LR
 **Key fact (the 0.2→0.3 rename lives here):** the `leader_checkpoints` table is
 `RENAME TO agent_checkpoints`, the `leader_id` column becomes `agent_id`, and
 `idx_leader_checkpoints_status` becomes `idx_agent_checkpoints_status`
-(`internal/storage/postgres/migrate.go:123-123`). This is the storage-layer
+(`internal/storage/postgres/migrate.go:108-123`). This is the storage-layer
 evidence of "the Leader was removed."
 
 | Concern | Mechanism | Source |

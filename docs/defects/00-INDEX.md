@@ -111,6 +111,14 @@
 
 ## 修订记录
 
+**2026-10-19 · 收敛 C（§13–§16 全量，18 条）**
+
+| 判定 | 数量 | 说明 |
+|---|---|---|
+| 准确 | 17 | `Strategy` 的 gene = `Params`+`PromptTemplate`；`RuntimePatch{Type,Target,Value,Rollback}`（`patch.go:116-118` + Rollback 注释）；shadow 门 `delta ≥ 5%`（`PromotionThreshold 0.05`）；无启发式打分时**常量基线 50.0**（`genome_wiring_builders.go:145`）；`InspectCorpus`/`corpus_monitor.go` 存在；`regression_runtime_replay` 默认关；`leader_checkpoints → agent_checkpoints` 迁移（`migrate.go:116`）；`events_retention_days` 默认不删；`pool.go:215` 用 `set_config('app.tenant_id','')` 清租户 |
+| **错误（已修）** | **1** | 文档写 `migrate.go:123-123`——**退化区间**（起止相同，等于没给范围）。真实迁移块为 **108–123**，中英各改一处 |
+
+
 **2026-10-19 · 收敛 C（§9–§12 全量，20 条）**
 
 全部准确，无修改：`ask_agent` 返回 `{Accepted:true, Status:"pending"}`（fire-and-forget）；30s 去重；`Bus` 为**进程内**消息中枢，`Bus.Unregister` 在 `agentipc/bus.go:146`；任务 ID 形如 `sess/<sessionID>/dN/...`；`KeepSet` @ `session.go:311`；`ErrEpochMismatch` @ `fabric.go:22`（单一写者）；`RestartWindow` 默认 1h；`orphaned_spawns` 仅在存在孤儿时写入（`stopreason.go:88`）；`Task.Deadline` 是终态切点；`DegradedInputs` @ **`fabric/task/task.go:88`**（初查误找了 `core/models/task.go`，文档引用本身是对的）。
