@@ -93,6 +93,16 @@ flowchart TB
     hot & cold --> obs
 ```
 
+**通俗理解**：把整个系统想象成一家"开放式厨房"。顾客（用户）下单（提交任务），
+**排班表**（任务 fabric）上记着每道菜的进度，**厨师**（agent）是可替换的——
+今天主厨请假，副主厨照着排班表上的笔记（checkpoint）接着做，菜不会黄。
+厨房外面还有个**评委**（GA 冷路径），闲时翻厨师的"成绩册"（事件账本），
+把好用的做法（prompt + 参数）传下去，把不灵的光淘汰。整间厨房的运转状态
+都能从**监控屏**（introspect 面板）上看。下面 28 章按"先热后冷"的顺序讲：
+§2-§4 是"菜怎么从下单到端上桌"，§5-§11 是"厨房里的规矩"，§12-§15 是
+"出事和变强"，§16-§21 是"后勤（存储/知识/记忆/工具/安全）"，§22-§28 是
+"几个高频追问的专项"。
+
 **三条铁律（贯穿全系统）：**
 
 | 铁律 | 含义 | 源码 |
@@ -138,6 +148,19 @@ flowchart LR
 
 每一步失败都走 `runCleanups()`（逆序清理），避免"装配失败还留一堆活 goroutine"。
 
+**通俗理解**：为什么非得分 7 步、有顺序？因为组件之间有依赖——后面的组件要
+"注入"前面的组件（比如 ④ 的 NewEvolution 需要 ② 的 LLM 和 ③ 的 evidence store）。
+好比搭乐高：得先有底板（Core 的事件存储、runtime），再放轮子（LLM、记忆、工具），
+再装引擎（进化系统），最后接上方向盘（调度、发现、清理循环）。顺序错了就插不上。
+`runCleanups()` 的意义是"装到一半砸了，已经插上来的要按相反顺序拆干净"——
+逆序是因为后装的东西依赖先装的，拆也只能反着拆。
+
+还有一个容易忽略的细节：`runServe` 在 Bootstrap 之后会再检查一次
+`ctx.Err()`（`serve.go:107` 附近）——如果装配期间收到了 SIGINT，就**中止启动**，
+而不是"装完再停"。原因是装完就要起 HTTP 和后台 loop 了，在一个已经被取消的
+context 上起这些组件只会制造一串立即报错的 goroutine。通俗说：客人已经喊"别做了"，
+厨房就别再开火了。
+
 ---
 
 ## 3. 配置面板（config.yaml）
@@ -175,11 +198,39 @@ evolution:                                # GA 开关/种群/安全门/回滚
 | 配置块 | 结构体 | 源码 |
 |---|---|---|
 | `kernel` | `KernelConfig` | `config.go:60` |
-| `agent_budget`（钱包） | `AgentBudgetConfig` | `config.go:141` |
+| `agent_budget`（即"agent 钱包"） | `AgentBudgetConfig` | `config.go:148` |
 | `dag_execution` | `DAGExecutionConfig` | `config.go:157` |
 
-**"agent 钱包"（`agent_budget`）三格限额**：`tokens` / `tools` / `deadline`，
-全零 = 不限。它是"长任务安全门"——没有它，一个失控 agent 没有成本/寿命上限。
+**每个 agent 的限额（`agent_budget`，结构体 `AgentBudgetConfig` 在
+`internal/ares_config/config.go`）**：`tokens` / `tools` / `deadline`，全零 = 不限；
+另外还有一个容易漏掉的 `reserve_ratio`。token 与 tool 的额度是**按量子（quantum）
+消耗**的，由调度器的治理提供者扣减；deadline 在 spawn 时起算。
+
+**真正超额时会怎样**（`Fabric.Admissibility`，`internal/fabric/agent/governance.go`），
+判定有**固定优先级**：
+
+1. **deadline 最先**（超过墙钟寿命的 agent，剩多少预算都不重要）；
+2. **硬耗尽**（`used + 1 > budget`）；
+3. **保留量**（剩余份额跌破 `reserve_ratio`）。
+
+此时 fabric **拒绝再放行这个量子**，agent 手上那个任务会**回到 READY，交给另一个
+agent 从 checkpoint 续跑**。agent 不是被杀掉，也不是"挂起等换新卡"——**流动的是任务**，
+而让这次交接安全的正是 checkpoint。
+
+**通俗理解**：这更像**公司卡的每日额度**，不是惩罚。额度用完，消费停下，但项目没被
+取消——换个人拿着小票（checkpoint）接着做。`reserve_ratio` 是"留够回程票钱"的规则：
+在卡刷空**之前**就停止接新活，好让手上已有的活能收尾。
+
+另外两处**不同层**的真实限额，面试时值得分清：
+
+| 限额 | 限的是什么 | 在哪 |
+|---|---|---|
+| `scoring.Budget` | **每代 GA 打分的模型调用次数**（`MaxLLMCalls`），并把 `CacheHits`/`FallbackCount` 暴露出来，让"预算被削"看得见而不是静默 | `internal/runtime/ares_evolution/scoring/budget.go` |
+| `retryBackoff` + `Fail` | **单个任务的重试次数**：只有"可重试 **且** 还有预算"才重新入队；延迟从 `base` 起按次翻倍、封顶 `max`；等待中的任务对 `ReadyTasks`/`ResumableTasks` 不可见，`Acquire` 也拿不到 | `internal/fabric/task/backoff.go`、`internal/fabric/task/fabric_lifecycle.go` |
+| `ReclaimPolicy`（`IdleTTL` / `SuspendedTTL`） | **空闲/挂起的 agent 还能占多久的位子**，超时由回收 sweep 释放 | `internal/fabric/agent/reclaim.go` |
+
+这三者都不是"单次请求超时"：它们分别约束**花费**、**尝试次数**、**占用时长**，
+混为一谈就会让"预算"这个词失去意义。
 
 ---
 
@@ -231,6 +282,24 @@ ares/root    → rootCognition    （会话准入，零工作量）
 **拆解"边做边长"**：每个 tool 节点又变成一个新 fabric task 回 drain；
 `answer` 节点完成 = 会话结束。
 
+**通俗理解（一次"帮我改这个 bug"的完整走读）**：
+
+1. 你 `POST /api/tasks {"desc": "修复 X 编译不过"}`。内核先给你开一个会话
+   （session），会话本身就是一个 root 任务——"这单我接了"。
+2. 调度器的 drain 循环（事件驱动 + 500ms 轮询兜底）扫到它，给 root 任务挑
+   一个 agent 跑一个"量子"（一小步）。root 步不干活，只是"入场"。
+3. 轮到 `ares/plan` 量子：agent 把"目前手头有什么材料 + 前面步骤的结果"喂给
+   LLM，LLM 回复"我需要先跑 `grep 'TODO'` 再读 `main.go`"——**于是 L2 图上
+   长出两个 tool 节点 + 一个 plan② 节点**（见 §6）。
+4. 这两个 tool 节点被编译成 fabric task，drain 继续派发。agent-B 跑 grep，
+   agent-C 读文件——**可能不是原来那个 agent**，没关系，任务自带
+   checkpoint，谁接都能跑。
+5. 工具跑完，结果写进 fabric。下一个 plan 量子，LLM 看结果说"够了，答案
+   是……"，长出 `answer` 节点。answer 完成 → 会话结束。
+
+关键点：**LLM 只负责"想下一步是什么"（长节点），真正动手的（跑工具）是内核
+调度出去的**，两者从不互相等待。这就是 §22 说的"想把'做'拆成两类节点"。
+
 ### 4.1 失败语义（0.3.3）
 
 一次失败不是一件事，而是三个决策：**值不值得重试**、**什么时候重试**、
@@ -247,6 +316,32 @@ flowchart TD
     casc -- AllowPartial --> deg[保持 READY, 记录缺口]
     casc -- 严格 --> kill[各自的 task.failed, 传递]
 ```
+
+**"值不值得重试"的判断，源码长这样（`failure.go` 的 `classifyFailure`，逐行白话）**：
+
+```go
+func classifyFailure(cause error) bool {
+    if cause == nil { return true }            // 没有原因（operator kill / 扫描）→ 照旧可重试
+    var perm *permanentError
+    if errors.As(cause, &perm) { return false } // ① 产生错误的层明确打了"永久"标 → 终态
+    var retry *retryableError
+    if errors.As(cause, &retry) { return true } // ② 明确打了"可重试"标 → 可重试
+    if errors.Is(cause, ErrTaskDeadlineExceeded) { return false } // ③ 过了绝对 deadline → 终态
+    if isKnownPermanent(cause) { return false } // ④ 命中"已知永久原因"窄清单 → 终态
+    return true                                  // ⑤ 兜底：其余一律可重试（= 0.3.2 行为）
+}
+```
+
+读法（这是全系统"敢故障"的地基）：
+- **顺序就是优先级**：显式标记（①②）永远赢——"最懂这条错误的是产生它的那一层"，
+  它说了算。
+- **④ 是一张故意很窄的清单**（`permanentCauses`）：只有"等也等不好"的错才算永久，
+  比如 `ErrNotFound`（引用的工具/实体不存在）、`ErrInvalidArgument`（请求本身畸形，
+  重试必然复现）、`ErrDependencyCycle`（图上的环不是重试能解的）。
+- **⑤ 是关键的安全底线**：拿不准就**一律当可重试**。注释原话——"误分类的代价
+  是浪费一次重试，而不是弄丢一个任务"。宁可信其能试，不可信其该死。
+- 判定结果写进 `task.failed` 事件的 `retryable` 位，所以"为什么又试了一次"
+  **只看日志就能回答**，不用去翻代码。
 
 | 决策 | 位置 | 规则 |
 |---|---|---|
@@ -274,6 +369,30 @@ flowchart TD
 ```
 score = capability_overlap × (1 - load) × confidence × (1 + priority)
 ```
+
+**源码长这样（`scheduler.go` 的 `ScoreBreakdown`，逐行白话）**：
+
+```go
+func ScoreBreakdown(taskCapability string, c Candidate) ScoreParts {
+    overlap := CapabilityOverlap(taskCapability, c.Capabilities) // ① 算"能力重叠比例"，做不了=0
+    load    := clamp01(c.Load)        // ② 忙度夹到 0~1，越闲越大
+    conf    := clamp01(c.Confidence)  // ③ 可信度夹到 0~1
+    boost   := 1.0
+    if c.Priority > 0 { boost = 1.0 + c.Priority } // ④ 优先级加成，注意【没封顶】
+    parts := ScoreParts{...}
+    if overlap > 0 {
+        parts.Score = overlap * (1 - load) * conf * boost  // ⑤ 四个因子相乘
+    }
+    return parts
+}
+```
+
+读法：① 是**总开关**——能力不重叠（`overlap=0`）时，最后那个 `if` 直接跳过，
+`Score` 保持 0，**绝不会被选中**（这就是"门控"藏在代码里的地方，不是
+事后打 0，而是根本不进乘法）。⑤ 是乘法关系，意味着**任何一个因子为 0
+结果就为 0**（满负荷 `load=1` → `(1-load)=0` → 总分 0，自动让位）。
+④ 的 `boost` 故意不 clamp，是因为"忙的高优先级要能胜过闲的低优先级"
+是操作员故意留的强信号，封掉就扭曲了意图。
 
 | 因子 | 范围 | 意图 | 源码 |
 |---|---|---|---|
@@ -438,7 +557,47 @@ flowchart LR
 | 单 agent 并发=1 | `maxConcurrentPerAgent` | 架构不变量 |
 | 拒绝过期持有者 | epoch fencing | 调度器 drain 时校验 |
 
-**agent 钱包** = `kernel.agent_budget`（`config.go:141`）：`tokens`/`tools`/`deadline`
+**"一个量子到底怎么被跑"（`scheduler_quantum.go` 的 `buildQuantumStep`，逐行白话）**：
+
+调度器不是"把整个 LLM 调用从头跑到尾"，而是把**一小步**（量子）包成一个
+闭包交给 `RunQuantum`。这个闭包有三件事最值得看：
+
+```go
+func (s *Scheduler) buildQuantumStep(ctx, executor, tk, meta, usage) taskfabric.QuantumStep {
+    return func() (any, bool, error) {
+        type stepResult struct{ out *sub.StepOutcome; err error }
+        done := make(chan stepResult, 1)
+        go func() {
+            defer func() { if r := recover(); r != nil { done <- stepResult{err: ...} } } // ① 兜住 panic
+            stepCtx := userctx.With(tenantctx.With(ctx, ...), ...)                          // ② 租户/用户塞进 ctx
+            out, stepErr := executor.ExecuteStep(stepCtx, mt)                               // ③ 真正执行一小步
+            done <- stepResult{out: out, err: stepErr}
+        }()
+        var out *sub.StepOutcome; var stepErr error
+        select {
+        case res := <-done: out, stepErr = res.out, res.err                                 // ④ 正常拿到结果
+        case <-ctx.Done():
+            return nil, false, fmt.Errorf("quantum aborted by scheduler shutdown")           // ⑤ 关停=可让路
+        }
+        ...
+    }
+}
+```
+
+逐行读：
+- **① panic 兜底**：执行体在自己的 goroutine 里跑，`recover` 把 panic 转成
+  一个结构化错误，**不会崩掉整个进程**——这一步炸了只是"这一小步失败"。
+- **② 租户/用户进 ctx**：任务自带的 `tenant_id`/`user_id` 被包进执行上下文，
+  下游每一次工具调用、知识检索都从 `ctx` 取，**而不是进程全局**——这就是
+  "多租户各查各的"的物理实现。
+- **③ 真正干一小步**：`ExecuteStep` 就是 §4 讲的 `routerCognition` 分派（跑工具
+  / 长 plan 节点 / 出 answer）。
+- **④ vs ⑤ 是关键**：用 `select` 同时听"结果到了"和"调度器要关停了"。
+  关停时**立即返回"没做完"（`false`）**，任务就带 checkpoint 回到 SUSPENDED
+  / READY，等下一轮换人接着跑。**这就是"量子可打断、可让路"的代码本体**：
+  不是一跑到底，而是"小步 + 随时能撤"。
+
+**agent 钱包** = `kernel.agent_budget`（`config.go:148`）：`tokens`/`tools`/`deadline`
 /`reserve_ratio` 四格，前三格全零不限。syscall spawn 的 agent 也从出生就带这个钱包
 （`internal/agentsyscall/syscall.go` `SpawnAgent` 的 `Governance: k.governance`）。
 
@@ -496,6 +655,26 @@ must-persist：事件流里有记录、可被 introspect 面板订阅，但不�
 
 "动态"= **L2 图边长节点，边把节点即时编译成任务**。
 
+**通俗理解**：把 L2 图想象成一张**活着的流程图贴在墙上**，planner（LLM）是
+"设计部"，每想一步就画一格；任务 fabric 是"工单系统"，每画一格就自动打印
+一张工单给调度员。所以"图"和"任务"是**同一个东西的两面**：图是给人（和 LLM）
+看的结构，任务是给机器（调度器）跑的状态机。
+
+为什么非要"即时增量编译"，而不是让 LLM 把整个计划一口气想全再跑？因为
+**会话是活的**：LLM 可能改主意、可能刚长了一半就被打断（yield/让路）。
+全量编译等于"整单下锅"，中途不能换勺；增量编译是"一格一格下锅"，
+RUNNING 中的工单不许被整单重建（重排会丢状态）。这就是注释里
+"必须增量"的来由。
+
+为什么还需要"漏事件全量对账"（Reconcile）？图事件走的是内存 hub，订阅通道
+有上限，满了会**丢事件**（drop counter 计数）。丢一两条无所谓，丢多了图和
+工单就对不上账，所以定期拿"图的版本号 + 累计丢事件数"两个信号做一次
+**全量核对**——像"库存盘点"：扫整张图，缺什么补什么、多什么删什么。
+
+**"节点 ID = 任务 ID"的通俗解释**：planner 要读上一步 grep 的结果，不用去
+翻日志，直接拿节点 ID（比如 `tool-7`）去 fabric 查 `task-7` 的 envelope 就行，
+像"工单号即货架号"，一步定位。
+
 ```mermaid
 sequenceDiagram
     participant LLM as plannerCognition (LLM)
@@ -536,6 +715,11 @@ envelope（"join key"）。
 
 **L1 ≠ L2**。L1 是"工具能力目录 + 约束"（`enabled` / `budget` / `prior`），
 **不编译成任务**；L2 是"会话实际执行计划"。
+
+**通俗理解**：L1 像**公司制度手册**（"可以用哪些工具、每个用几次、优先用哪个"），
+L2 像**这个订单的实际工单**（"本单用了 3 次 grep"）。制度手册全公司只有一本、
+长期稳定，GA 进化改的是手册；工单一单一单临时长出来，会话结束就归档。
+手册约束工单，但工单不会反过来改手册。
 
 ```mermaid
 flowchart TB
@@ -591,6 +775,55 @@ if caller := kctx.CallerID(ctx); caller != "" {
 
 **"agent 决定做什么，内核决定以谁的名义做、给多少资源。"**
 
+**通俗理解**：这就像"实习生可以建议招人，但入职手续得 HR 办"。LLM 说
+"帮我生一个会 review 的队友"（`spawn_agent`），它只能给**能力描述**；
+到底"谁生的它"（parent）、"归哪个租户"（tenant）这些身份字段，
+内核一律从 context（调用栈里的真实身份）取，**LLM 填的一律不认**。
+这样 LLM 就算"幻觉"出一个 parent_id 也伪造不了谱系——审计链是
+内核盖章的，不是模型嘴上说的。
+
+再看 `create_task` 的细节，**源码长这样（`syscall.go`，逐行白话）**。这里其实是**两层**，别混：
+
+```go
+// 第一层：内核 CreateTask（syscall.go:485）—— 依赖查不到就【当场失败，任务不建】
+task := &taskfabric.Task{
+    ID: taskID, Capability: args.Capability, Priority: args.Priority,
+    Dependencies: args.Dependencies,
+    RetryPolicy:  taskfabric.RetryPolicy{MaxRetries: 2},
+    Origin:     kctx.CallerID(ctx),            // 谁在调=谁创建，LLM 填不了（防伪造）
+    Checkpoint: tenantStampedEnvelope(ctx, args.Payload), // 租户也从 ctx 取
+}
+if err := k.fabric.Create(task, taskfabric.WithResolvedDependencies()); err != nil {
+    return nil, fmt.Errorf("agentsyscall: create task failed: %w", err) // 失败=不装进 fabric
+}
+```
+
+```go
+// 第二层：工具绑定 BindTools（syscall.go:850）—— 把"依赖查不到"这一类【单独拦下来】
+res, err := kernel.CreateTask(ctx, ct)
+var depErr *taskfabric.DependencyResolutionError
+if errors.As(err, &depErr) {
+    return &CreateTaskResult{                   // 作为【结果】返回，模型能读到、能自己改
+        Rejected:            CreateTaskRejectedUnresolvedDeps, // "unresolved_dependencies"
+        MissingDependencies: depErr.Missing,
+    }, nil
+}
+return res, err                                  // 其它错误照旧当工具错误失败
+```
+
+三个"为什么"逐行读：
+- **`Origin: kctx.CallerID(ctx)`**：创建者不是参数（`CreateTaskArgs` 里**故意没有**
+  creator 字段！），而是从调用上下文取"此刻是谁在跑"。LLM 无法在参数里塞假
+  creator——**谱系是内核盖章的**。
+- **`WithResolvedDependencies()`（第一层）**：LLM 这条路径是**一个节点一个节点
+  地长**，它报出的每个依赖 ID **必须已在 fabric 里存在**；查不到就**当场失败**，
+  任务**不被建**——绝不让它装进去变成一个"永远等不到的依赖"在 READY 里挂死。
+- **`Rejected`（第二层）**：把"依赖查不到"这一**特定类别**单独转成**结果字段**
+  返回给模型（而非工具错误）。为什么？注释原话：工具错误会**炸掉整个 quantum**，
+  而 L2 投影出的任务又不是 AllowPartial，**整条下游分支会被级联 FAILED**——
+  一次"幻觉出来的 ID"就烧掉一整条会话。返回结果则模型"看得到原因、自己改"。
+  通俗说：员工填错工号，HR 退回表单让他改，而不是把整条流水线掀了。
+
 **新 agent vs 静态 agent**：能力等价（同一 LLM+工具），但多几道闸——
 必须 L2 能力（`IsL2Capability`）、从出生带钱包（`Governance`）、可选
 `ToolAllowlist`、要过 spawn 配额。
@@ -623,6 +856,12 @@ flowchart TD
 **提问是 fire-and-forget**：`ask_agent` 立即返回 `{Status: "pending"}`，
 quantum 不阻塞（否则 asker 占住调度器 → 目标排不上 → 死锁）。回答在后台送达
 （当前只记日志，未回写 asker，标 C-1-a 待做）。相同问题 30s 内去重。
+
+**通俗理解"为什么提问不能阻塞"**：想象两个人共用一条电话线。A 打电话问 B，
+如果 A 必须**不挂线**等 B 回话，而 B 要接电话得**先把线腾出来**——可线一直被
+A 占着，B 永远打不进来，这就是死锁。所以规定"发出去就完事"：A 问完先挂线
+去干别的（quantum 结束），B 的答复走后台通道送达。代价是"问的人暂时不知道
+答案"，收益是"系统永远不卡死"。
 
 **`grand_loop` E2E 测试**（`internal/fabric/agent/e2e_grand_loop_test.go`）验证：
 A 死了 B/C/D 继续，B 质疑 A、C 验证 B——**任务不认人，只认"谁有能力"**。
@@ -672,6 +911,18 @@ flowchart LR
 
 **Bus 只管消息流转，不掌握/不释放资源**；agent 死了 fabric 先知道，再摘除。
 
+**通俗理解**：Bus 就像一个**前台总机**（而不是电话网络本身）：
+你（agent-A）找总机"帮我接 B 一下"（Request），总机拨过去，B 接了说
+"稍等我回你"（Reply 走后台），或者没人接/超时了，总机把这条未接记录塞进
+**死信筐**（deadletter）留后查。注意"总机"只管接线，不管员工生死（那是
+fabric 的活）也不管电费（那是调度器 governance 的活）。这种"各管一段"
+的分层是它不出错的关键：一段崩了，别的段不知道要替它善后。
+
+为什么叫 "IPC" 却不是 IPC？IPC（进程间通信）跨进程、要序列化 + socket；
+这个 Bus 的消息走的是**共享内存 + channel**（同进程内 goroutine 之间），
+只是借了 IPC 的词汇（Send/Request/Reply）。所以它的适用边界写得很死：
+**单进程、单租户**，跨机器/跨信任域别用（源码注释原话）。
+
 ---
 
 ## 11. 多 session 并发与资源隔离
@@ -713,11 +964,30 @@ flowchart TB
 **session 与 agent 解耦**：kill agent 不杀 session，任务 lease 过期回 READY，
 调度器换人续跑，session 无感。
 
+**通俗理解**：session 像**订单号**，agent 像**配送员**。订单（任务）挂在
+全局工单池里，前缀 `sess-3-*` 标明属于 3 号订单；配送员是全局共享的，
+按能力和空闲度派活。3 号订单的骑手车祸了（agent 挂），订单不会消失——
+工单回待派区（READY），换一个骑手从**他留下的位置（checkpoint）**接着送。
+而不同订单（session）之间互不依赖：3 号订单卡住，不影响 4 号订单派单。
+唯一的全局约束是"同时在路上的骑手总数"（`maxConcurrent`）和"每个骑手
+的油箱"（`agent_budget` 钱包）。
+
 ---
 
 ## 12. 恢复（aresrecovery）
 
 **agent 挂 → 任务不死**：租约过期 → 重新入队 → 换 agent 从 checkpoint 续跑。
+
+**通俗理解（先建立直觉）**：agent 领任务时会拿一张**临时工作证（lease）**，
+上面盖了时间戳（TTL，比如 5 分钟）和版本号（epoch）。agent 干完活要**交回
+工作证并盖章续期**。如果 agent 中途崩了/失联了，证过期没人续，调度器一扫
+（`RequeueExpiredLeases`）发现"这张证过期了、但任务还挂着"，就把任务打回
+待派区（READY），换一个 agent 领新证、从任务留下的 checkpoint **接着跑**。
+"epoch fencing"（版本盖章）保证：迟到的旧 agent 就算爬回来写结果，也会因
+"证的版本不是最新"被拒（`ErrEpochMismatch`），**任意时刻只有一个有效写者**。
+
+所以"恢复"不是"把 agent 救活"，而是"任务换个人接着干"。agent 是消耗品，
+任务是资产。
 
 ```mermaid
 sequenceDiagram
@@ -805,6 +1075,19 @@ restart budget，重试预算不动。而 `Task.Deadline` 已过是另一种截�
 **chaos 不是恢复机制本身，是"故意把系统搞挂、看 checkpoint+recovery 能不能
 救回来"的演练台。** "checkpoint 让你能恢复，chaos 让你敢信它能恢复。"
 
+**通俗理解**：checkpoint/recovery 像"系了安全带"，但你没撞过车之前，
+你不知道安全带到底会不会断。chaos 演练就是**故意按一下安全气囊的测试按钮**：
+`POST /api/chaos/random-kill` 随机杀掉一个活着的 agent（模拟"猝死"），
+然后看系统能不能自动：租约过期 → 任务回 READY → 换人从 checkpoint 续跑。
+`POST /api/chaos/recover` 是"不等自然过期，强制扫一次"，方便演示/测试时
+快速看到效果。
+
+**GA 静默窗**这个细节值得多说一句：进化（GA）跑起来之后会经过
+"打分→选育→部署"的连续几步，如果**演练在中间插一脚**（比如正好在
+"打分"时杀掉了一个 agent），GA 拿到的数据就半残了，可能做出错误决策。
+所以 `GenerationActive`（进化进行中）期间，chaos 会**暂停注入**，
+等这轮进化走完再动手——"演练别把考试打断了"。
+
 ```mermaid
 flowchart LR
     kill[POST /api/chaos/random-kill<br/>故意杀一个 agent] --> ev[agent.killed 事件]
@@ -830,6 +1113,24 @@ flowchart LR
 
 **"基因"是什么**：`Strategy` 的 `Params`（temperature 等）+ `PromptTemplate`
 （提示词模板）。**进化不改代码，只改这两样。**
+
+**通俗理解（先建立直觉）**：GA 不是"改代码让它更强"，而是"改它的**做题
+习惯**"。一个 agent 做题（跑任务）用的是"提示词模板 + 几个旋钮（比如
+temperature、max tokens）"。GA 做的就是：
+
+1. **打分**：拿"历史做题成绩单"（`ExecutionAttribution`，任务跑完时内核内联
+   写的）给每套习惯打分，看哪套"得分高、花得少、跑得快"。
+2. **选育**：把高分的留下做**父母**，用**交叉**（两段模板拼一起）+
+   **变异**（随机改个数字）生出下一代。
+3. **三道安全门（G1/G2/G3）**：不许瞎放——
+   - G1（种群层面）：卡"停滞/工具越界"（一群基因分数都不动了，或想用一个
+     白名单外的工具，就拦下）；
+   - G2（影子 A/B）：新策略先在**影子环境**偷偷跑一批，和老策略比，**得
+     提升 ≥ 5%** 才放行；
+   - G3（评测回归）：上线后再跑一遍基准，**明显退步就不转正、自动回滚**。
+4. **回滚网**：上线 30s 后采样监控，发现回归 > 10% → 自动回滚到旧策略。
+
+所以"进化"本质是**带安全网的 A/B 灰度发布**，不是"魔法让模型变强"。
 
 > **纠正**：`DreamCycle`（`dream_cycle.go:304`）是同一 GA 引擎的轻量壳，
 > **生产里关着**（`bootstrap` `EnableDreamCycle=false`）。生产实际驱动的是
@@ -943,6 +1244,14 @@ GA 循环本身（打分 → 选育 → 门 → 部署）**不产生任何 LLM �
 观测组件在 Bootstrap ② `assembleExperience` 建一次、多处共享，
 保证面板显示**活数据**而非空列表。
 
+**通俗理解**：introspect 是系统的"中控室"：一排屏幕（7 页面板）+ 一批
+接口（`/api/agents`、`/api/health`、`/api/anomalies`、`/api/insights`）。
+关键设计是"**一次装配，多处共享**"——进化轨迹（EvolutionTracer）、
+反馈（FeedbackStore）、全链路 trace（GlobalTracer）这些组件在 Bootstrap 第②步
+**只建一份**，然后注入到各个面板/接口里，避免"每个面板各建一份、数据
+各说各话"。就像医院只有一套监护仪，各科室的屏幕都是同一根线接出来的，
+而不是每个科室自己买一台。
+
 ---
 
 ## 16. 存储层：Postgres
@@ -984,6 +1293,20 @@ flowchart LR
 （`pool.go:172-238`）。`true` = 事务作用域，连接归还前必清空（`pool.go:215` 防御性清空残留租户）。
 **SQL 注入守卫**：所有标识符过 `validateSQLIdentifier`（`security.go:23-40`，正则 + 长度 + 引号化）。
 
+**通俗理解"方案 B"（为什么不用 RLS）**：Postgres 自带行级安全（RLS）
+可以在 DB 层做租户隔离，但"让 DB 替你做访问控制"意味着**策略散在数据库里**，
+应用改了逻辑数据库不知道，排查和演进都难受。v0.3.x 的选择是：**DB 只管
+存数据，访问控制全部在应用层**——每次开连接先 `set_config('app.tenant_id',
+当前租户)` 盖章，DB 里的行只是"贴着标签的数据"，看谁的数据由应用代码决定。
+代价是"忘了盖章就查不到数据"（默认安全，宁可查不到也不串租户）；
+收益是策略集中、可测试、可回滚。所以注释明说 RLS 是"pre-enforcement
+清单"——**还没启用**，现在靠应用层这套"盖章"机制兜底。
+
+再看"保留策略"这段：`events_retention_days` 是 **opt-in（不配就不删）**，
+也就是说默认"事件账本永不清理"——因为账本是事件溯源的底座，清错了就
+丢历史；真正会过期的是**证据行**（evidence TTL）和**蒸馏经验行**（TTL），
+它们由"每小时清理 worker"（`startExpiryCleanupWorker`）统一回收。
+
 ---
 
 ## 17. 知识层：AKG
@@ -991,6 +1314,18 @@ flowchart LR
 AKG（Agent Knowledge Graph，BETA）的 `KnowledgeObject` 是统一知识表示，
 **三层**：`Raw`（原始字节，留作再蒸馏）→ `Normalized`（清洗后给向量/匹配）→
 `Summary`（LLM 友好摘要）。
+
+**通俗理解**：AKG 是"知识超市"。任何知识（代码文件、Git 记录、跑出来的
+经验）都先被打成标准的**商品**（`KnowledgeObject`），分三层打包：
+- **Raw** = 原包装（原始字节），留着以防"要重新分装"；
+- **Normalized** = 拆袋称重（去掉乱码控制字符、规范化文本），是拿去
+  "扫码比对"（向量/关键词匹配）用的；
+- **Summary** = 货架说明卡（LLM 友好摘要），是给模型快速理解的。
+
+关键是"写"和"读"是两条独立的路：写侧（DistillBridge）把商品上架，
+读侧（HybridSearch → KnowledgeRuntime）从货架取货喂给 agent 的工具和
+RAG 检索器。而且**BETA 不绑架热路径**——AKG 挂了，系统打个警告继续跑，
+不会因为"知识库暂时不可用"就把活干不了。
 
 ```mermaid
 flowchart TB
@@ -1050,6 +1385,23 @@ flowchart LR
 
 **token 成本**：蒸馏走 LLM 抽取（30s 超时），是系统里少数"后台烧 token"的地方，
 用 `MaxDistilledTasks`（条数上限）+ `DistilledTaskTTL`（过期回收）+ 异步 embedding 三条控制成本。
+
+**通俗理解（整章一张图）**：任务跑完（无论成败）会发一条 `task.completed`
+事件，蒸馏器像"值班复盘员"听到铃响就翻这条记录：**"这次做了什么、怎么
+成的/怎么败的、有什么坑"**（Problem/Solution/Constraints 三栏），用 LLM
+抽出来存进经验库。下次**新 agent 出生时**（spawn），调度器会把"跟这个任务
+最像的历史经验"作为先验塞进它的提示词——**新实习生一入职就带着前辈的
+踩坑笔记**；跑到一半要查资料时，RAG 再从经验库按语义检索 top-5 相关
+snippet 塞进上下文。写侧（蒸馏）和读侧（检索/先验）之间是**异步解耦**的：
+蒸馏失败不影响任务本身（BETA 不绑架热路径），只是"这次没学到东西"。
+
+两个安全细节值得单独说：
+- **fenceUntrusted 围栏**：任务正文（可能是用户输入的恶意内容）被
+  `---UNTRUSTED-TASK-DATA---` 包起来才进提示词。为什么？防"持久化注入"：
+  攻击者把恶意指令藏进任务 → 被蒸馏进经验库 → 下次 RAG 检索回来注入给
+  另一个任务的提示词。围栏让 LLM 明白"围栏里的只是数据，不是指令"。
+- **成败都蒸**：失败案例往往比成功案例更值钱（"这条路上有坑"），所以
+  `ShouldDistill` 不挑成败，只过滤"内容太短没东西可学"的。
 
 ---
 
@@ -1189,6 +1541,22 @@ tool-calling / DAG / multi-agent / evolution / chaos / HITL / MCP / full-app，
 v0.3.x **删除了 ReAct 工具循环**（源码多处注释明说 "the ReAct tool loop is deleted"，
 见 `internal/agents/sub/agent.go:55` / `internal/fabric/agent/l2graph.go:22`）。
 替代它的不是"另一个循环"，而是**动态 DAG + 想把"做"拆成两类节点 + 外层进化轮**三者配合。
+
+**通俗理解（为什么不用 ReAct 了）**：ReAct 是"一个人边想边做"——LLM 脑子里
+循环"想→调工具→看结果→再想→再调工具"。问题是：这个人**脑子里的东西全在
+内存里**，他一旦崩了（panic/超时/被杀），**"现在想到哪了"全丢**，只能从头再来。
+而且他**爱调多久调多久**，没有收敛上限，烧钱烧命没顶。
+
+v0.3.x 的做法是把"想"和"做"**拆成两类格子**挂在 DAG 上：
+- **想（plan 格子）**：每个 plan 量子调一次 LLM，**只负责"长出新的工具格子"**，
+  从不亲手跑工具。
+- **做（tool 格子）**：每个工具调用都是**一等公民任务**，被内核统一调度执行，
+  跑完结果写回 fabric，planner 下个量子再来看。
+- **外层进化轮**：跑完一轮，GA 注入变异，整个 DAG 重跑——这是"越跑越强"
+  的外圈。
+
+一句话：**ReAct 是"一个人"，动态 DAG 是"一群工位 + 一张流程图"，流程图
+（L2 图 + 任务）是持久的，人（agent）可换，所以挂一个不丢整体进度。**
 
 ### 22.1 一个比喻
 
@@ -1338,6 +1706,16 @@ agent fabric 的运行时状态（agent 群体、`CognitiveState`）是**进程�
 
 向量检索在数据量大时**天生噪声大**，四个来源：
 
+**通俗理解（先建立直觉）**：把向量检索想象成"在图书室里按'感觉像'找书"。
+书只有几十本时，你一眼就能扫出来；书有十万本时，"感觉像"就失灵了——
+一堆书都"半像"，你分不清哪本才是真的。四个噪声来源对应四件事：
+① **维度灾难**：十万本书挤在书架同一片区，"像不像"的分数全挤在 0.7~0.9
+这个窄缝里，区分度没了；② **近似索引（ivfflat）**：为了快，只翻最近几个
+"桶"，可能漏掉真正相关的、或混进不相关的；③ **长尾冷数据**：那些被
+写进库里但很少被用到的"死数据"，向量短、含糊、质量低，但照样被检索
+出来；④ **纯 cosine 不精排**：标题像但内容错的书，光靠"像不像"的分是
+分不出来的。
+
 ```mermaid
 flowchart LR
     q[查询向量] --> n1[① 维度灾难<br/>几万条挤在 cosine 0.7~0.9, 区分度没了]
@@ -1384,6 +1762,18 @@ flowchart LR
 ## 25. Checkpoint 与恢复
 
 ### 25.1 两层"记忆"（面试第一道追问）
+
+**通俗理解**：把任务想象成一盘棋，agent 是执棋的人。系统里其实存了
+**两份"记忆"**，别混：
+- **任务进度（Task.Checkpoint）**：棋下到第几步、每个格子什么状态——
+  这是"棋盘快照"，持久在 fabric 账本里，换谁来接着下都能看懂。
+- **agent 脑子（CognitiveState）**：这个人脑子里的上下文、他调过哪些
+  工具、他正在想的中间结论——这是"棋手的脑子里的东西"，属于 agent 自身。
+
+恢复时的区别就在这：**换人（requeue）** 只拿"棋盘快照"（新棋手坐下接着下，
+脑子是全新的）；**原地复活（RestartAgent）** 是把"旧棋手的脑子"原样装进
+"新身体"（同 ID 复活，认知连续）。两者都能救任务，但"认知连续性"只有
+后者给得了。
 
 | 层 | 存哪 | 存什么 | 大白话 |
 |---|---|---|---|
@@ -1463,6 +1853,19 @@ sequenceDiagram
 > 本章实事求是说明：项目**没有做 LLM 摘要式压缩**（不是 OpenAI `compact`
 > 那种"把历史总结成一段喂回去"）。它做的是**"滑窗截断 + 规则裁剪 + RAG
 > 注入"**，零 LLM 成本。这是有意的 trade-off，边界也明确。
+
+**通俗理解（先建立直觉）**：LLM 的上下文窗口有"座位数"（token 上限）。
+系统要给这个"座位"填内容，有三种思路：
+- **LLM 摘要压缩**（没做）：把整段历史让另一个 LLM 总结成一小段再喂回去。
+  最完整，但要多花一次 LLM 调用（贵 + 慢 + 摘要本身有损 + 多一个故障点）。
+- **滑窗截断**（做了）：只拿**最近 N 条**，旧的直接扔。零成本、确定，但
+  丢旧上下文。
+- **规则裁剪 + RAG 注入**（做了）：截下来的消息用**正则规则**砍掉工具
+  噪音（代码块、工具返回只留首句），同时用向量检索把"不最近但相关"的旧
+  知识 snippet 塞进去补回来。
+
+一句话：**项目选了"便宜的三件套"，明确没上"贵的那件（LLM 摘要）"**——
+这是 trade-off 不是遗漏，边界（超长任务两头漏）在 §26.4 写清了。
 
 ### 26.1 三层机制（源码核实）
 
@@ -1549,6 +1952,23 @@ flowchart TB
 > 本章补足前面只讲了"agent 层 / 任务层"容错、漏掉的**第三层——LLM 供应商层**，
 > 以及一直被简称 "core.Registry" 的工具组织。逐行核实，不吹。
 
+**通俗理解（三级容错放一起看）**：前面讲了两级容错——"agent 挂了，任务
+不死"（§12）和"任务做崩了，知道重试/退避/降级"（§12.1）。但还有第三种
+故障：**LLM 供应商本身挂了/限流了**（OpenAI 429、本地 LLM 崩了）。
+这级靠 `FailoverClient` 兜底：配一个**主供应商 + N 个备供应商**，
+主的不行就按顺序切备的，被切过的供应商"冷却 60 秒"不许再碰，全挂了就
+报"所有供应商都在冷却"。
+
+**通俗说**：这就像"外卖平台挂了一个主厨，还有几个备厨顶班"——主厨
+被限流（忙不过来）就先休息 60 秒，订单转给备厨；但**每个 agent 一生
+能烧多少 token（钱包）是另一本账**，两件事互不干扰。failover 管"这个
+请求发给谁"，钱包管"这个 agent 最多能花多少"。
+
+为什么"底层关单重试、重试交给 failover 层"？因为如果每个供应商自己内部
+再重试 3 次，切到下一个供应商前**光重试就烧了一大截时间**；把重试的
+决定权收拢到 failover 层（`MaxAttempts=1` + 熔断关），"切不切下一个"
+只有一个地方做，行为可预期。
+
 ### 27.1 LLM 失败切换（`FailoverClient`，`internal/llm/failover.go`）
 
 三级容错里补上的第三级：前两级是"agent 挂了 / 任务挂了"（§12），
@@ -1613,6 +2033,18 @@ agent 钱包   = 【任务级】一个 agent 一生能烧多少 token/工具
 > `.Subscribe(`（ObserverPlugin、EvolutionScheduler、flight collectors、记忆蒸馏器、SDK 蒸馏…），
 > 本表是精选子集，不是全集。
 
+**通俗理解（为什么用"事件总线"而不是"函数直接调"）**：想象工厂的
+**广播喇叭**而不是"打电话挨个通知"。任务一完成，内核往总线上喊一声
+"task-X 完成了"，谁关心谁自己接喇叭（订阅）：调度器接了就去拉后继
+任务，蒸馏器接了就去复盘，GA 接了就去记成绩，观测面板接了就去记日志。
+**发事件的人（内核）不知道也不关心有谁来接**——加一个新模块只需要
+"接上喇叭"，不用改内核。这就是热路径和冷路径解耦的物理基础。
+
+注意一个容易误解的点：`ExecutionAttribution`（GA 的成绩记录）**不是
+订阅来的**，而是内核在任务跑完时**顺手内联写进事件总线**的
+（`scheduler_quantum.go:258`）。订阅驱动的是"读它/用它的下游"，
+写它的是内核自己——别把"数据从哪来"和"谁消费"混为一谈。
+
 ### 28.1 主链上的 7 个订阅点（`EventFilter` 精确到类型）
 
 | 订阅点 | 订阅哪些事件 | 干嘛 |
@@ -1655,6 +2087,17 @@ agent 钱包   = 【任务级】一个 agent 一生能烧多少 token/工具
 workflow step 可通过 YAML `interrupt: { message: "..." }` 或 Go 侧
 `engine.Step.Interrupt` 声明"需人工批准"。编译后的任务进入 READY 但被审批闸门挡住——
 与既有的 backoff 闸门、deadline 闸门同构的第三道闸门。
+
+**通俗理解**：有些格子（比如"部署上线""删数据"）不允许机器擅自做主，
+要**人点头**。声明了 `interrupt` 的 step 编译出来就是一个"卡在门口等签字"
+的 READY 任务：调度器的 `ReadyTasks` 不给它、直接 `Acquire` 也会被
+`ErrTaskAwaitingApproval` 拦下——**两条路都过不去**，和"在退避中"、
+"已过 deadline"是同级别的硬闸。人来解决它（`ResolveApproval`）：
+**批准** → 闸门打开，调度器下一轮取走继续跑；**拒绝** → 任务直接 FAILED，
+严格的下游跟着级联失败（声明了 AllowPartial 的下游则记个缺口、继续跑）。
+关键在"重启安全"：审批决定**写进事件 payload、restore 时折回来**——
+进程重启后，待批的闸门**不会自己悄悄打开**（安全），已解决的决定
+**不会丢**（连续），审批人（`ApprovalBy`）留作审计。
 
 **三处闸门同时生效：**
 1. `ReadyTasks` / `ResumableTasks` 排除待批任务（不交给调度器）。

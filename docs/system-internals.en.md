@@ -98,6 +98,21 @@ flowchart TB
     hot & cold --> obs
 ```
 
+**Plain-English picture**: think of the whole system as an open kitchen.
+Customers (users) place orders (submit tasks). A **shift sheet** (the task
+fabric) keeps track of every dish's progress; the **cooks** (agents) are
+swappable — if today's chef calls in sick, the sous-chef picks up the recipe
+notes left on the shift sheet (checkpoint) and keeps cooking; the dish never
+burns. Outside the kitchen there is a **judge panel** (the GA cold path) that,
+when idle, flips through the cooks' "score cards" (the event ledger) and
+propagates the recipes (prompts + params) that worked, culling the ones that
+did not. The whole kitchen's state is visible on a **monitoring wall**
+(introspect panels). The 28 sections below follow "hot before cold":
+§2–§4 are "how a dish goes from order to plate", §5–§11 are "the kitchen
+rules", §12–§15 are "when things break and how it gets better",
+§16–§21 are "back of house (storage / knowledge / memory / tools / security)",
+§22–§28 are "the frequent follow-up questions, each with a dedicated section".
+
 **Three invariants (thread through the whole system):**
 
 | Invariant | Meaning | Source |
@@ -145,6 +160,22 @@ wildcard bind (`0.0.0.0` / `::`) with no auth/JWT/`introspect.token` is
 Every failed step runs `runCleanups()` (reverse order) so a failed bootstrap
 never leaves live goroutines behind.
 
+**Why seven ordered steps at all**: later components *inject* earlier ones
+(step ④'s NewEvolution needs step ②'s LLM and step ③'s evidence store). It is
+lego: baseplate first (Core's event store + runtime), then wheels (LLM,
+memory, tools), then the engine (evolution), then the steering wheel
+(scheduling, discovery, expiry loops). Wrong order = pieces do not fit.
+`runCleanups()` means "if assembly breaks halfway, undo what is already
+inserted, in reverse" — reverse, because later pieces depend on earlier ones.
+
+One easily missed detail: `runServe` re-checks `ctx.Err()` **after**
+Bootstrap (around `serve.go:107`) — if a SIGINT arrived *during* the
+assembly, startup **aborts** rather than "finish then stop". Reason: the
+next steps start HTTP and background loops; starting them on an already
+canceled context just spawns a pile of immediately-erroring goroutines.
+In plain terms: if the customer already said "stop", the kitchen does not
+keep the fire lit.
+
 ---
 
 ## 3. Configuration Panel (config.yaml)
@@ -182,12 +213,44 @@ evolution:                                # GA on/off / population / gates / rol
 | Block | Struct | Source |
 |---|---|---|
 | `kernel` | `KernelConfig` | `config.go:60` |
-| `agent_budget` (wallet) | `AgentBudgetConfig` | `config.go:141` |
+| `agent_budget` (the "agent wallet") | `AgentBudgetConfig` | `config.go:148` |
 | `dag_execution` | `DAGExecutionConfig` | `config.go:157` |
 
-**The "agent wallet" (`agent_budget`)** is a three-slot cap: `tokens` /
-`tools` / `deadline`, all-zero = unlimited. It is the "long-task safety
-gate": without it a runaway agent has no cost or lifetime ceiling.
+**Per-agent limits (`agent_budget`, `AgentBudgetConfig` in
+`internal/ares_config/config.go`)**: `tokens` / `tools` / `deadline`, all-zero =
+unlimited — plus a `reserve_ratio` that is easy to miss. Token and tool budgets are
+consumed **per quantum** through the scheduler's governance provider; the deadline is
+armed at spawn.
+
+**What actually happens when a limit is hit** (`Fabric.Admissibility` in
+`internal/fabric/agent/governance.go`) — checked in a fixed precedence:
+
+1. **deadline** first (an agent past its wall-clock life is dead weight, whatever budget
+   it has left);
+2. **hard exhaustion** (`used + 1 > budget`);
+3. **reserve** (the remaining share dropped below `reserve_ratio`).
+
+The fabric then refuses to admit the quantum, and the task the agent was holding goes
+**back to READY for another agent to resume from its checkpoint**. The agent is not killed
+and not parked "until a new card is issued" — the *work* moves, and the checkpoint is what
+makes that move safe.
+
+**Plain-English picture**: a **daily cash limit on a company card**, not a punishment. When
+the card is maxed the purchases stop, but the project is not cancelled — someone else picks
+it up with the receipt (checkpoint) in hand. `reserve_ratio` is the "keep enough for the
+return trip" rule: stop taking *new* work before the card is empty, so finishing what you
+already hold stays possible.
+
+Two more real limits, at different layers — worth keeping apart in an interview:
+
+| Limit | What it bounds | Where |
+|---|---|---|
+| `scoring.Budget` | **GA scorer calls per generation** (`MaxLLMCalls`), with `CacheHits` / `FallbackCount` exposed so a budget cut is visible rather than silent | `internal/runtime/ares_evolution/scoring/budget.go` |
+| `retryBackoff` + `Fail` | **Retry attempts on one task**: requeue only when the failure is retryable **and** budget remains; delay is `base` doubling to `max`, and a waiting task is hidden from `ReadyTasks`/`ResumableTasks` and refused by `Acquire` | `internal/fabric/task/backoff.go`, `internal/fabric/task/fabric_lifecycle.go` |
+| `ReclaimPolicy` (`IdleTTL` / `SuspendedTTL`) | **How long an idle or suspended agent keeps its slot** before the reclaim sweep releases it | `internal/fabric/agent/reclaim.go` |
+
+None of these is a request timeout: they bound *spend*, *attempts* and *residency*
+separately, and conflating them is how "budget" stops meaning anything in particular.
 
 ---
 
@@ -239,6 +302,30 @@ ares/root    -> rootCognition    (session admission, zero work)
 **"Grow-as-you-go" decomposition**: each tool node becomes a new fabric task
 back in the drain; the `answer` node completing = session ends.
 
+**Plain-English walkthrough (one "fix this bug" order end to end)**:
+
+1. You `POST /api/tasks {"desc": "make X compile"}`. The kernel opens a
+   session; the session itself is a root task — "this order is accepted".
+2. The scheduler's drain loop (event-driven + 500ms poll as backstop) picks
+   it up and runs one **quantum** for the root task. The root step does no
+   work; it is just "walking in the door".
+3. The `ares/plan` quantum: the agent feeds "what I have on hand + the
+   previous steps' results" to the LLM; the LLM replies "I need to run
+   `grep 'TODO'` and then read `main.go`" — **so two tool nodes + a
+   plan-2 node grow on the L2 graph** (see §6).
+4. Those two tool nodes are compiled into fabric tasks; drain continues.
+   agent-B runs grep, agent-C reads the file — **it may not be the same
+   agent**. That is fine: the task carries its own checkpoint, so whoever
+   picks it up can run it.
+5. Tools finish, results are written into the fabric. The next plan quantum:
+   the LLM looks at the results, says "enough, here is the answer…", and an
+   `answer` node grows. answer completes → session ends.
+
+The key point: **the LLM only decides "what the next step is" (grows
+nodes); the actual doing (running tools) is scheduled out by the kernel**.
+The two never block on each other. That is the "split 'do' into two node
+kinds" from §22.
+
 ### 4.1 Failure semantics (0.3.3)
 
 A failure is three decisions, not one event: **is it worth retrying**, **when**,
@@ -255,6 +342,36 @@ flowchart TD
     casc -- AllowPartial --> deg[stay READY, record the gap]
     casc -- strict --> kill[their own task.failed, transitive]
 ```
+
+**How the "worth retrying?" judgment actually looks in source (`classifyFailure` in `failure.go`, read line by line)**:
+
+```go
+func classifyFailure(cause error) bool {
+    if cause == nil { return true }            // no cause (operator kill / sweep) -> keep retrying
+    var perm *permanentError
+    if errors.As(cause, &perm) { return false } // 1 the producing layer marked "permanent" -> terminal
+    var retry *retryableError
+    if errors.As(cause, &retry) { return true } // 2 marked "retryable" -> retry
+    if errors.Is(cause, ErrTaskDeadlineExceeded) { return false } // 3 past the absolute deadline -> terminal
+    if isKnownPermanent(cause) { return false } // 4 hits the narrow "known permanent" list -> terminal
+    return true                                 // 5 fall-through: everything else is retryable (= 0.3.2)
+}
+```
+
+How to read it (this is the foundation of the system's "dare to fail"):
+- **Order = precedence**: explicit markers (①②) always win — "the layer that
+  produced the error knows it best, and it decides".
+- **④ is a deliberately narrow list** (`permanentCauses`): only errors that
+  "waiting cannot fix" count as permanent — e.g. `ErrNotFound` (the referenced
+  tool/entity does not exist), `ErrInvalidArgument` (the request itself is
+  malformed; retrying reproduces it exactly), `ErrDependencyCycle` (a cycle is a
+  property of the graph, not a race to retry).
+- **⑤ is the safety floor**: when unsure, **treat it as retryable**. Verbatim
+  comment: "a misclassification costs a retry rather than a task". Better to
+  believe it can be tried than to believe it should die.
+- The verdict is recorded as the `retryable` bit on the `task.failed` event, so
+  "why did it try again?" is answerable **from the log alone**, without reading
+  code.
 
 | Decision | Where | Rule |
 |---|---|---|
@@ -287,6 +404,32 @@ the highest.
 ```
 score = capability_overlap × (1 - load) × confidence × (1 + priority)
 ```
+
+**What the source actually looks like (`ScoreBreakdown` in `scheduler.go`, read line by line)**:
+
+```go
+func ScoreBreakdown(taskCapability string, c Candidate) ScoreParts {
+    overlap := CapabilityOverlap(taskCapability, c.Capabilities) // 1 overlap fraction; 0 = cannot do it
+    load    := clamp01(c.Load)        // 2 busyness clamped to 0..1; the idle one scores higher
+    conf    := clamp01(c.Confidence)  // 3 trust clamped to 0..1
+    boost   := 1.0
+    if c.Priority > 0 { boost = 1.0 + c.Priority } // 4 priority boost, deliberately NOT clamped
+    parts := ScoreParts{...}
+    if overlap > 0 {
+        parts.Score = overlap * (1 - load) * conf * boost  // 5 all four factors multiplied
+    }
+    return parts
+}
+```
+
+How to read it: ① is the **master switch** — when capability does not overlap
+(`overlap=0`) the `if` is skipped and `Score` stays 0, so it is **never chosen**
+(the "gate" lives right in the code, not as a post-hoc zero). ⑤ is a
+*product*, so **any factor being 0 makes the total 0** (fully busy `load=1` →
+`(1-load)=0` → total 0, it yields automatically). ④'s `boost` is
+deliberately un-clamped because "a busy high-priority agent beats an idle
+low-priority one" is an operator-intended strong signal; clamping it would
+distort the intent.
 
 | Factor | Range | Intent | Source |
 |---|---|---|---|
@@ -456,7 +599,52 @@ flowchart LR
 | One concurrent quantum per agent | `maxConcurrentPerAgent` | architectural invariant |
 | Reject expired holder | epoch fencing | validated at drain |
 
-**The agent wallet** = `kernel.agent_budget` (`config.go:141`): `tokens` /
+**What one quantum actually does (`buildQuantumStep` in `scheduler_quantum.go`, read line by line)**:
+
+The scheduler does not "run the whole LLM call to the end"; it wraps **one
+small step** (a quantum) in a closure and hands it to `RunQuantum`. Three
+things in that closure are worth reading:
+
+```go
+func (s *Scheduler) buildQuantumStep(ctx, executor, tk, meta, usage) taskfabric.QuantumStep {
+    return func() (any, bool, error) {
+        type stepResult struct{ out *sub.StepOutcome; err error }
+        done := make(chan stepResult, 1)
+        go func() {
+            defer func() { if r := recover(); r != nil { done <- stepResult{err: ...} } } // 1 catch the panic
+            stepCtx := userctx.With(tenantctx.With(ctx, ...), ...)                          // 2 tenant/user into ctx
+            out, stepErr := executor.ExecuteStep(stepCtx, mt)                               // 3 actually run the step
+            done <- stepResult{out: out, err: stepErr}
+        }()
+        var out *sub.StepOutcome; var stepErr error
+        select {
+        case res := <-done: out, stepErr = res.out, res.err                                 // 4 got the result
+        case <-ctx.Done():
+            return nil, false, fmt.Errorf("quantum aborted by scheduler shutdown")           // 5 shut down = may yield
+        }
+        ...
+    }
+}
+```
+
+Line by line:
+- **① panic catch**: the executor runs in its own goroutine; `recover` turns a
+  panic into a structured error, so **the whole process does not crash** — a
+  broken step is just "this small step failed".
+- **② tenant/user into ctx**: the task's own `tenant_id` / `user_id` are wrapped
+  into the execution context, and every downstream tool call / knowledge lookup
+  reads them from `ctx` **rather than a process global** — that is the physical
+  implementation of "multi-tenant, each sees its own".
+- **③ the real step**: `ExecuteStep` is the `routerCognition` dispatch from §4
+  (run a tool / grow a plan node / emit an answer).
+- **④ vs ⑤ is the key**: the `select` listens to "result arrived" and "the
+  scheduler is shutting down" at the same time. On shutdown it **returns
+  "not done" (`false`) immediately**, so the task goes back to SUSPENDED /
+  READY with its checkpoint, and the next round (same or another agent)
+  resumes it. **That is the code body of "a quantum is interruptible and can
+  yield"**: not run-to-the-end, but "small step + can always back out".
+
+**The agent wallet** = `kernel.agent_budget` (`config.go:148`): `tokens` /
 `tools` / `deadline` / `reserve_ratio`; the first three are all-zero =
 unlimited. A syscall-spawned agent carries this wallet from birth
 (`SpawnAgent`'s `Governance: k.governance` in
@@ -530,6 +718,36 @@ Two "graphs" are the most confusing part:
 "Dynamic" = **as the L2 graph grows a node, it is immediately compiled into a
 task**.
 
+**Plain-English picture**: imagine the L2 graph as a **live flowchart pinned
+to the wall**; the planner (LLM) is the "design department" that draws one
+box at a time as it thinks; the task fabric is the "work-order system" that
+auto-prints a work order to the dispatcher for each box drawn. So "the graph"
+and "the tasks" are **two faces of the same thing**: the graph is structure
+for humans (and the LLM), the task is the state machine for machines
+(the scheduler) to run.
+
+Why the indirection of "immediate incremental compilation" instead of just
+having the LLM think the whole plan up front and then run it? Because **a
+session is alive**: the LLM may change its mind, or may be interrupted
+mid-growth (yield / hand-off). Full compilation is like "putting the whole
+dish in the pot at once" — you cannot change spoons halfway; incremental
+compilation is "box by box", and a RUNNING work order may not be rebuilt as a
+whole batch (reordering would lose state). That is where the "must be
+incremental" comment comes from.
+
+Why the "missed-event full reconcile" (Reconcile) at all? Graph events travel
+over an in-memory hub whose subscription channel is bounded, so when it fills
+it **drops events** (counted by the drop counter). Losing one or two is fine;
+lose too many and the graph and the work orders fall out of sync — so
+periodically, using two signals ("graph version + cumulative dropped count"),
+it does a **full stock-take** (Reconcile: scan the whole graph, add what is
+missing, remove what is extra).
+
+**"Node ID = task ID" in plain terms**: when the planner wants to read the
+previous grep's result, it does not dig through logs — it takes the node ID
+(e.g. `tool-7`) straight to the fabric and looks up `task-7`'s envelope,
+like "the work-order number *is* the shelf number", one hop to the data.
+
 ```mermaid
 sequenceDiagram
     participant LLM as plannerCognition (LLM)
@@ -571,6 +789,14 @@ node ID to look up the task's fabric envelope (the "join key").
 **L1 ≠ L2.** L1 is the "tool capability catalog + constraints" (`enabled` /
 `budget` / `prior`) and is **not compiled into tasks**; L2 is the "session's
 actual execution plan".
+
+**Plain-English picture**: L1 is the **company policy manual** ("which tools
+you may use, how many times each, which to prefer"); L2 is **this order's
+actual work orders** ("this order used grep 3 times"). The policy manual is
+one copy company-wide and long-stable — GA evolution edits *the manual*; the
+work orders are born one at a time per session and archived when the session
+ends. The manual constrains the work orders, but work orders never rewrite
+the manual.
 
 ```mermaid
 flowchart TB
@@ -633,6 +859,66 @@ if caller := kctx.CallerID(ctx); caller != "" {
 **"The agent decides what to do; the kernel decides on whose authority and
 with what resources."**
 
+**Plain-English picture**: like an intern who may *suggest* hiring a
+teammate, but onboarding is done by HR. The LLM says "give me a teammate
+that can review" (`spawn_agent`); it may only supply the **capability
+description**. Identity fields like "who created it" (parent) and "which
+tenant does it belong to" are taken by the kernel **from the call stack's
+real identity (context)** — anything the LLM fills in is ignored. So even if
+the LLM *hallucinates* a parent_id it cannot forge the genealogy; the audit
+chain is stamped by the kernel, not spoken by the model.
+
+The `create_task` detail, **as the source actually looks** (`syscall.go`, read line
+by line). It is actually **two layers** — do not conflate them:
+
+```go
+// Layer 1: kernel CreateTask (syscall.go:485) — if a dependency does not resolve,
+// the call FAILS NOW and the task is NOT installed.
+task := &taskfabric.Task{
+    ID: taskID, Capability: args.Capability, Priority: args.Priority,
+    Dependencies: args.Dependencies,
+    RetryPolicy:  taskfabric.RetryPolicy{MaxRetries: 2},
+    Origin:     kctx.CallerID(ctx),            // "who is calling" = the creator; the LLM cannot fill it (anti-forgery)
+    Checkpoint: tenantStampedEnvelope(ctx, args.Payload), // tenant also from ctx
+}
+if err := k.fabric.Create(task, taskfabric.WithResolvedDependencies()); err != nil {
+    return nil, fmt.Errorf("agentsyscall: create task failed: %w", err) // fail = not installed
+}
+```
+
+```go
+// Layer 2: the tool binding BindTools (syscall.go:850) — catches EXACTLY this
+// one error class and turns it into a result the model can read and fix.
+res, err := kernel.CreateTask(ctx, ct)
+var depErr *taskfabric.DependencyResolutionError
+if errors.As(err, &depErr) {
+    return &CreateTaskResult{                   // returned as a RESULT, not a tool error
+        Rejected:            CreateTaskRejectedUnresolvedDeps, // "unresolved_dependencies"
+        MissingDependencies: depErr.Missing,
+    }, nil
+}
+return res, err                                 // every other error still fails the call
+```
+
+Three "whys", line by line:
+- **`Origin: kctx.CallerID(ctx)`**: the creator is **not** an argument
+  (`CreateTaskArgs` deliberately has *no* creator field!) — it is taken from the
+  call context's "who is actually running now". The LLM cannot smuggle a fake
+  creator — **the genealogy is stamped by the kernel**.
+- **`WithResolvedDependencies()` (layer 1)**: the LLM path grows node by node, so
+  every dependency ID it names **must already exist** in the fabric; if it does
+  not, the call **fails now** and the task is **not created** — it never gets
+  installed as a "dependency that can never be satisfied" and hangs in READY
+  forever.
+- **`Rejected` (layer 2)**: that *specific* error class is converted into a
+  **result field** the model reads (not a tool error). Why? Verbatim comment: a
+  tool error would **fail the whole quantum**, and the L2-projected tasks are
+  not AllowPartial, so **one hallucinated id cascades FAILED through the entire
+  downstream subgraph** — it would cost the whole session branch. Returned as a
+  result, the model reads the reason and fixes its own call. In plain terms:
+  when an employee types a wrong order number, HR returns the form to be
+  corrected rather than smashing the whole line.
+
 **Spawned vs configured agents**: equivalent capability (same LLM + tools),
 but a spawned agent carries extra gates — must be an L2 capability
 (`IsL2Capability`), carries the wallet from birth (`Governance`), optional
@@ -669,6 +955,14 @@ immediately; the quantum does not block (or the asker would hold the
 scheduler, the target could never be drained, deadlock). The reply arrives in
 the background (currently only logged, not written back to the asker — marked
 C-1-a as future work). Identical questions are deduped within 30s.
+
+**Plain-English "why asking cannot block"**: imagine two people sharing one
+phone line. A calls B and, if A must *keep the line open* waiting for B to
+answer, while B needs the line *free* to call back — the line stays held by
+A, B can never get through. Deadlock. So the rule is "send it and forget
+it": A asks, hangs up, goes back to work (the quantum ends); B's answer
+arrives over a separate background channel. Cost: the asker does not get the
+answer instantly. Benefit: the system can never jam.
 
 **The `grand_loop` E2E test** (`internal/fabric/agent/e2e_grand_loop_test.go`)
 verifies: A dies, B/C/D continue; B questions A, C verifies B — **the task
@@ -723,6 +1017,24 @@ flowchart LR
 **The Bus only moves messages; it owns and releases no resources.** When an
 agent dies, the fabric knows first, then unregisters it.
 
+**Plain-English picture**: the Bus is a **front-office operator**, not the
+telephone network itself. You (agent-A) tell the operator "connect me to B"
+(Request); the operator dials, B picks up and says "hold, I will call back"
+(Reply over the background); or no one picks up / it times out, and the
+operator files the missed call in the **dead-letter basket** (deadletter) for
+later. Note: the operator only makes connections — it does not manage
+employee life/death (that is the fabric's job) nor electricity bills (that
+is the scheduler's governance). This "each layer owns one segment" split is
+why it stays correct: if one segment crashes, the others do not have to clean
+up after it.
+
+Why is it called "IPC" but is not IPC? Real inter-process communication
+crosses process boundaries, needing serialization + sockets. This Bus's
+messages travel over **shared memory + channels** (between goroutines in the
+same process); it only borrows IPC's *vocabulary* (Send/Request/Reply). Its
+applicability boundary is written hard in the source comment: **single
+process, single tenant** — do not use it across machines / trust domains.
+
 ---
 
 ## 11. Multi-Session Concurrency & Resource Isolation
@@ -767,12 +1079,39 @@ timer) → `Release` (answer completes/fails) → Reaper harvest
 session; the task's lease expires, it returns to READY, and the scheduler
 hands it to a replacement — the session is unaware.
 
+**Plain-English picture**: a session is an **order number**; an agent is a
+**delivery rider**. Orders (tasks) sit in a global work-order pool, prefixed
+`sess-3-*` to say "belongs to order 3"; riders are shared globally and
+assigned by capability + idleness. If order-3's rider has an accident
+(agent dies), the order does not vanish — it goes back to the unassigned
+pile (READY) and another rider resumes **from where he left off
+(checkpoint)**. And different orders are independent of each other: order 3
+stuck does not block order 4's dispatch. The only global constraints are
+"how many riders are on the road at once" (`maxConcurrent`) and "each
+rider's fuel tank" (`agent_budget` wallet).
+
 ---
 
 ## 12. Recovery (aresrecovery)
 
 **Agent dies → task does not die**: lease expires → requeue → replacement
 agent resumes from checkpoint.
+
+**Plain-English intuition first**: when an agent picks up a task it is handed
+a **temporary work badge (lease)** stamped with a time (TTL, say 5 minutes)
+and a version number (epoch). When it finishes work it must **hand the badge
+back and re-stamp it (renew)**. If the agent crashes / goes quiet mid-way and
+the badge lapses with no renewal, the scheduler's sweep
+(`RequeueExpiredLeases`) notices "this badge is expired but the task is still
+hanging" and bounces the task back to the unassigned pile (READY); a new agent
+takes a fresh badge and **resumes from the checkpoint the task left behind**.
+"Epoch fencing" (the version stamp) guarantees: even if the old agent crawls
+back and tries to write its result, it is rejected because "its badge version
+is not the latest" (`ErrEpochMismatch`) — **there is exactly one valid writer
+at any instant**.
+
+So "recovery" is not "saving the agent" — it is "the task keeps going with a
+new holder". The agent is consumable; the task is the asset.
 
 ```mermaid
 sequenceDiagram
@@ -874,6 +1213,22 @@ degradation by `classifyFailure` (this section).
 it and check checkpoint+recovery can save it" drill stand.** "The checkpoint
 lets you recover; chaos makes you *dare to believe* it recovers."
 
+**Plain-English picture**: checkpoint/recovery is like "wearing a seatbelt",
+but until you have actually crashed, you do not know whether the belt will
+hold. Chaos is **pressing the airbag test button on purpose**:
+`POST /api/chaos/random-kill` randomly kills a live agent (simulating a
+sudden death), then you watch whether the system automatically does: lease
+expires → task back to READY → a replacement resumes from the checkpoint.
+`POST /api/chaos/recover` is "do not wait for natural expiry, force one
+sweep now", handy for demos/tests to see the effect quickly.
+
+The **GA quiet window** detail is worth a sentence: once evolution (GA) is
+running it goes through consecutive "score → breed → deploy" steps; if a
+drill **stretches in mid-way** (say it kills an agent right during "scoring"),
+GA's data comes out half-broken and it may make a wrong decision. So during
+`GenerationActive` (a generation in flight), chaos **pauses injection** and
+waits until the round finishes — "do not let the drill interrupt the exam".
+
 ```mermaid
 flowchart LR
     kill[POST /api/chaos/random-kill<br/>deliberately kill one agent] --> ev[agent.killed event]
@@ -900,6 +1255,31 @@ disturb a GA cycle about to make a decision.
 
 **What is a "gene"**: the `Strategy`'s `Params` (temperature, etc.) +
 `PromptTemplate`. **Evolution never changes code — only these two.**
+
+**Plain-English intuition first**: GA is not "change the code to make it
+smarter"; it is "change the agent's **habits of doing the work**". An agent
+doing a task runs with a "prompt template + a few knobs (temperature, max
+tokens…)". GA does exactly:
+
+1. **Score**: take the "historical score cards" (`ExecutionAttribution`,
+   written inline by the kernel when each task finishes) and score each habit
+   set on "high score, low spend, fast".
+2. **Breed**: keep the high scorers as **parents**; breed the next generation
+   by **crossover** (splice two templates) + **mutation** (nudge a number).
+3. **Three safety gates (G1/G2/G3)**: no free-for-all —
+   - G1 (population level): block "stagnation / tool out-of-bounds" (a whole
+     population stopped improving, or someone wants a tool outside the
+     allowlist, gets held);
+   - G2 (shadow A/B): the new strategy quietly runs a batch in a **shadow
+     environment**, compared against the old; it passes only on **≥ 5%
+     improvement**;
+   - G3 (eval regression): after going live, re-run the baseline; a
+     significant drop is **not promoted, auto-rolled back**.
+4. **Rollback net**: sample-monitor 30s after deployment; a regression > 10%
+   → automatic rollback to the old strategy.
+
+So "evolution" is fundamentally a **canary A/B rollout with a safety net**,
+not "magic that makes the model smarter".
 
 > **Correction**: `DreamCycle` (`dream_cycle.go:304`) is a lightweight shell
 > of the same GA engine and is **off in production**
@@ -1031,6 +1411,16 @@ The observability components are built once in Bootstrap step ②
 (`assembleExperience`) and shared across surfaces, so the panels show
 **live data** instead of empty lists.
 
+**Plain-English picture**: introspect is the system's **control room**: a row
+of screens (7 panels) + a batch of APIs (`/api/agents`, `/api/health`,
+`/api/anomalies`, `/api/insights`). The key design is "**assemble once, share
+many places**" — components like the evolution trajectory (EvolutionTracer),
+feedback (FeedbackStore), and full trace (GlobalTracer) are **built once** in
+Bootstrap step ②, then injected into each panel/API, avoiding "every panel
+builds its own copy, data disagrees with itself". Like a hospital having one
+set of monitors: every department's screen is wired to the *same* line, not
+each department buying its own unit.
+
 ---
 
 ## 16. Storage Layer: Postgres
@@ -1077,6 +1467,27 @@ defensively cleared before return to the pool (`pool.go:215` so no tenant
 leaks across requests). **SQL-injection guard**: every identifier passes
 `validateSQLIdentifier` (`security.go:23-40`: regex + length + quoting).
 
+**Plain-English "Scheme B" (why not RLS)**: Postgres has built-in row-level
+security (RLS) that can isolate tenants at the DB layer, but "letting the DB
+do access control" means the **policy is scattered inside the database** —
+when the app changes its logic, the DB does not know, and both debugging and
+evolution get painful. The v0.3.x choice: **the DB only stores data; all
+access control lives in the app layer** — each connection first
+`set_config('app.tenant_id', <current tenant>)` to stamp itself; the rows in
+the DB are just "labeled data"; the app code decides who sees what. The cost
+is "forget to stamp and you cannot find data" (fail-safe: better to find
+nothing than to leak across tenants); the benefit is that the policy is
+centralized, testable, and rollable. That is why the comment calls RLS a
+"pre-enforcement checklist" — **not enabled yet**; today the app-layer
+"stamping" is what keeps the line.
+
+On "retention": `events_retention_days` is **opt-in (unset = never
+delete)**, i.e. the event ledger is by default *not* cleaned, because the
+ledger is the base of event sourcing — clean it wrong and you lose history.
+What actually expires are the **evidence rows** (evidence TTL) and
+**distilled-experience rows** (TTL), reclaimed together by the "hourly
+cleanup worker" (`startExpiryCleanupWorker`).
+
 ---
 
 ## 17. Knowledge Layer: AKG
@@ -1085,6 +1496,23 @@ AKG (Agent Knowledge Graph, BETA) uses `KnowledgeObject` as the universal
 knowledge representation, with **three layers**: `Raw` (original bytes, kept
 for re-distillation) → `Normalized` (cleaned text for vectors/matching) →
 `Summary` (LLM-friendly summary).
+
+**Plain-English picture**: AKG is a **knowledge supermarket**. Any knowledge
+(code files, Git records, distilled experience) is first turned into a
+standard **product** (`KnowledgeObject`), packed in three layers:
+- **Raw** = the original packaging (raw bytes), kept in case you "need to
+  re-pack it";
+- **Normalized** = opened and weighed (control chars stripped, text
+  normalized), what you use to "scan & compare" (vector / keyword match);
+- **Summary** = the shelf label card (LLM-friendly summary), what the model
+  reads quickly.
+
+The key is that "write" and "read" are two separate roads: the write side
+(DistillBridge) shelves the product; the read side (HybridSearch →
+KnowledgeRuntime) pulls it off the shelf and feeds the agent's tools and the
+RAG retriever. And **BETA never blocks the hot path** — if AKG goes down, the
+system just warns and keeps running; a temporarily unavailable knowledge base
+cannot stop the work.
 
 ```mermaid
 flowchart TB
@@ -1153,6 +1581,32 @@ flowchart LR
 few "background token-burning" places. Cost is controlled three ways:
 `MaxDistilledTasks` (row cap), `DistilledTaskTTL` (expiry reclamation), and the
 async embedding path.
+
+**Plain-English picture of the whole chapter**: when a task finishes (win or
+lose) it emits a `task.completed` event; the distiller is like an "on-shift
+reviewer" who, hearing the bell, opens that record: **"what was done, how it
+won/lost, what the traps were"** (the three columns Problem / Solution /
+Constraints), extracted by the LLM and stored in the experience library. The
+next time a **new agent is born** (spawn), the scheduler stuffs "the most
+similar historical experience to this task" into its prompt as a prior —
+**a new intern joins already carrying the veterans' "pitfall notes"**;
+mid-run, when it needs to look something up, RAG semantically retrieves the
+top-5 relevant snippets from the experience library and stuffs them into the
+context. The write side (distillation) and the read side (retrieval/prior) are
+**asynchronously decoupled**: a distillation failure does not hurt the task
+itself (BETA never blocks the hot path) — it just means "nothing learned this
+time".
+
+Two safety details worth their own line:
+- **the `fenceUntrusted` fence**: the task body (possibly user-supplied
+  malicious content) is wrapped in `---UNTRUSTED-TASK-DATA---` before it
+  enters the prompt. Why? To stop **persistent injection**: an attacker hides
+  an instruction inside a task → it gets distilled into the experience store →
+  next time RAG retrieves it back and injects it into *another* task's prompt.
+  The fence tells the LLM "what is inside is data, not an instruction".
+- **success *and* failure are both distilled**: failure cases are often more
+  valuable than successes ("this road has a trap"), so `ShouldDistill` does
+  not filter by win/lose — only by "too short to learn from".
 
 ---
 
@@ -1306,6 +1760,26 @@ v0.3.x **deletes the ReAct tool loop** (many source comments state
 `internal/fabric/agent/l2graph.go:22`). Its replacement is not "another
 loop" but the **dynamic DAG + splitting "do" into two node kinds + an outer
 evolution round** working together.
+
+**Plain-English picture (why not ReAct)**: ReAct is "one person thinking
+while doing" — the LLM loops in its head "think → call tool → see result →
+think again → call tool again". The problem: **everything is in its memory**
+— once it crashes (panic / timeout / killed), **"where I got to" is lost
+entirely** and it must start from scratch. And it **runs as long as it wants**
+with no convergence bound, so it burns money and time without a ceiling.
+
+v0.3.x splits "think" and "do" into **two kinds of boxes** on the DAG:
+- **Think (plan box)**: each plan quantum calls the LLM once and **only
+  grows new tool boxes**; it never runs a tool itself.
+- **Do (tool box)**: every tool call is a **first-class task**, scheduled and
+  executed by the kernel; results are written back to the fabric for the
+  next planner quantum to read.
+- **Outer evolution round**: after a round, GA injects a mutation and the
+  whole DAG re-runs — this is the "gets sharper over time" outer loop.
+
+In one line: **ReAct is "one person"; the dynamic DAG is "a line of stations
++ one flowchart" — the flowchart (L2 graph + tasks) is durable while the
+cooks (agents) are swappable, so losing one does not lose overall progress.**
 
 ### 22.1 A metaphor
 
@@ -1473,6 +1947,21 @@ PG. (`migrate.go:97` creates the generic `embeddings` table as
 
 Vector search gets **noisier as data grows** — four sources:
 
+**Plain-English intuition first**: imagine vector search as "finding books in
+a library by how they *feel* similar". With a few dozen books you can glance
+and spot the right one; with a hundred thousand, "feels similar" stops
+working — a pile of books all "half-similar", and you cannot tell which is
+the real one. The four noise sources correspond to four things:
+① **curse of dimensionality**: a hundred thousand books crammed into one
+shelf area, all "similarity scores" squeezed into the narrow 0.7~0.9 band, so
+there is no separation; ② **approximate index (ivfflat)**: to be fast it only
+flips through the nearest few "buckets", so it can miss what is truly
+relevant or mix in what is not; ③ **long-tail cold data**: "dead data" that
+was written into the store but rarely used — short, vague, low-quality
+vectors, yet still retrieved; ④ **pure cosine, no re-rank**: books whose
+title looks similar but content is wrong cannot be told apart by "similarity
+score" alone.
+
 ```mermaid
 flowchart LR
     q[query vector] --> n1[1 curse of dimensionality<br/>tens of thousands cluster in cosine 0.7~0.9, no separation]
@@ -1533,6 +2022,22 @@ Plus three (by cost-effectiveness):
 ## 25. Checkpoint & Recovery
 
 ### 25.1 Two layers of "memory" (the first follow-up question)
+
+**Plain-English picture**: think of a task as a chess game and the agent as
+the player. The system actually keeps **two "memories"** — do not mix them:
+- **Task progress (Task.Checkpoint)**: which move we are on, the state of
+  every box — a "board snapshot", durable in the fabric ledger; anyone who
+  picks it up can read it and continue.
+- **Agent brain (CognitiveState)**: the player's own context, which tools it
+  has called, the intermediate conclusions it is thinking — "what is in this
+  player's head", belonging to the agent itself.
+
+The difference in recovery shows up exactly here: **swapping the holder
+(requeue)** takes only the "board snapshot" (a new player sits down and
+continues, with a fresh brain); **in-place revival (RestartAgent)** moves the
+"old player's brain" intact into a "new body" (same-ID revival, cognition
+continuous). Both save the task; only the latter gives you "cognition
+continuity".
 
 | Layer | Stored in | What | Plain |
 |---|---|---|---|
@@ -1619,6 +2124,25 @@ sequenceDiagram
 > history into one paragraph and feed it back"). What it does is
 > **"sliding-window truncation + rule-based cleaning + RAG injection"**,
 > zero LLM cost. This is a deliberate trade-off with a clear boundary.
+
+**Plain-English intuition first**: the LLM's context window has a fixed
+number of "seats" (the token cap). To fill those "seats" there are three
+ways:
+- **LLM summary compaction** (NOT done): hand the whole history to another
+  LLM to summarize into a small paragraph, then feed it back. Most complete,
+  but costs an extra LLM call (expensive + slow + the summary is itself lossy
+  + one more failure point).
+- **Sliding-window truncation** (done): take only the **most recent N**
+  messages and drop the old ones. Zero cost, deterministic — but it loses the
+  older context.
+- **Rule-based cleaning + RAG injection** (done): the truncated messages are
+  cut with **regex rules** to strip tool noise (code blocks, tool returns keep
+  only the first sentence), while vector retrieval stuffs back "not-recent
+  but related" old knowledge snippets.
+
+In one line: **the project picked "the cheap three-piece set" and clearly did
+NOT add "the expensive piece (LLM summary)"** — a trade-off, not an oversight;
+the boundary (long tasks miss on both ends) is spelled out in §26.4.
 
 ### 26.1 Three-layer mechanism (source-verified)
 
@@ -1742,6 +2266,30 @@ extraction), zero LLM calls.** It treats message roles differently:
 > explains the tool organization previously just called "core.Registry".
 > Line-verified, no hype.
 
+**Plain-English picture (the three fault-tolerance tiers together)**: we have
+already covered two tiers — "an agent dies, the task lives" (§12) and "a task
+breaks, we know to retry / back off / degrade" (§12.1). There is a third
+failure mode: **the LLM provider itself dies / gets rate-limited** (OpenAI
+429, a local LLM crashes). This tier is backstopped by `FailoverClient`:
+configure **one primary + N fallbacks**; when the primary fails, switch to the
+fallbacks in order; a switched-from provider is "cooled down for 60 seconds"
+and must not be touched; if all are down, it reports "all N providers are in
+cooldown".
+
+**In plain terms**: like "a delivery platform with one head chef plus a few
+relief chefs" — when the head chef is rate-limited (too busy) he rests for
+60 seconds and orders go to the relief chefs; but **how many tokens an agent
+may burn in its life (the wallet) is a separate ledger** — the two do not
+interfere. Failover decides "who serves this request"; the wallet decides
+"how much this agent can spend at most".
+
+Why "disable single-call retry at the bottom, and let the failover layer own
+retry"? Because if each provider internally retried 3 times, *just the
+retries* would burn a long stretch before we even switched to the next
+provider; centralizing the retry decision in the failover layer
+(`MaxAttempts=1` + circuit breaker off) means "whether to switch to the next
+provider" is decided in exactly one place — predictable behaviour.
+
 ### 27.1 LLM failover (`FailoverClient`, `internal/llm/failover.go`)
 
 The third tier missing from the two already covered in §12: this one is
@@ -1815,6 +2363,22 @@ drive §19's envcap capability search, not the L1 graph.
 > flight collectors, memory distiller, SDK distillation, …) — this table is a
 > curated subset, not the full set.
 
+**Plain-English picture (why an "event bus" instead of "call the function
+directly")**: think of the factory's **PA system**, not "dialing each
+department". When a task completes, the kernel shouts over the bus "task-X
+is done"; whoever cares picks up their own mic (subscribes): the scheduler
+pulls the successor task, the distiller reviews, GA records the score, the
+observability panel logs it. **The one emitting the event (the kernel) does
+not know — and does not care — who is listening**; adding a new module just
+means "plug into the PA", no kernel change. That is the physical basis for
+decoupling the hot path from the cold path.
+
+One easy misreading: `ExecutionAttribution` (GA's score record) is **not
+pulled in by a subscriber** — the kernel writes it **inline into the event
+bus** when the task finishes (`scheduler_quantum.go:258`). Subscribers drive
+the "readers/users of it" downstream; the one that *writes* it is the kernel
+itself — do not confuse "where the data comes from" with "who consumes it".
+
 ### 28.1 The 7 main-chain subscription points (each `EventFilter` down to its types)
 
 | Subscriber | Subscribes to | Why |
@@ -1865,6 +2429,21 @@ A workflow step can declare `interrupt: { message: "..." }` (YAML) or set
 `engine.Step.Interrupt` (Go) to require human approval **before execution**.
 The compiled task enters READY but is blocked by an approval gate — a third
 gate alongside the existing backoff and deadline gates.
+
+**Plain-English picture**: some boxes (e.g. "deploy to production", "delete
+data") must not be decided by the machine alone — **a human has to nod**. A
+step that declares `interrupt` compiles into a READY task that is "stuck at
+the door waiting for a signature": the scheduler's `ReadyTasks` does not hand
+it out, and a direct `Acquire` is refused by `ErrTaskAwaitingApproval` —
+**both roads are blocked**, the same hard level as "in backoff" or "deadline
+already passed". A human resolves it (`ResolveApproval`): **approve** → the
+gate opens, the scheduler picks it up next tick; **reject** → the task goes
+straight to FAILED, strict dependents cascade to FAILED (an `AllowPartial`
+dependent records the gap and continues). The crux is **restart safety**:
+the decision is **written into the event payload and folded back on
+restore** — after a process restart, a pending gate **does not silently open**
+(safe), a resolved decision **is not lost** (continuous), and the approver
+(`ApprovalBy`) is kept for audit.
 
 **Three gates, all enforced:**
 1. `ReadyTasks` / `ResumableTasks` exclude pending-approval tasks (they are
