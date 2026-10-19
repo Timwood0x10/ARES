@@ -111,6 +111,18 @@
 
 ## 修订记录
 
+**2026-10-19 · 收敛 C（§1–§5 全量，58 条）**
+
+抽取规则：含反引号标识符 / `file.go:NNN` / 数字+单位，且句中带可判真假的谓语。§1–§5 共 **58 条**，逐条对源码判定：
+
+| 判定 | 数量 | 说明 |
+|---|---|---|
+| 准确 | 56 | 含：`?wait=` 上限 300s/默认 60s、500 条会话上限、`classifyFailure`/`Fail`/`cascadeFailureLocked` 的三个锚点、`ScoreBreakdown` 的四因子（overlap/load/priority/prior）、`scoring.Budget`（`MaxLLMCalls`/`CacheHits`/`FallbackCount`）、`ReclaimPolicy`（`IdleTTL`/`SuspendedTTL`）、`StopReason` **8 种**、`SetAgentConfidence`（`load_tracker.go:183`）、`TaskResolved`/`AwaitSessionResult`（`await.go:317/397`）、`default_capability` 存在、`ToolAdvertisementSink` 已接 |
+| **错误（已修）** | **2** | ① §2 写"in **four** stages"，其下表格实为 **7 步**（①–⑦）→ 改为 seven ordered stages；② §5 引 `` `agent.go:81` `` 说 "busy is the R4 bridge"，实际在 **`agent.go:113`** |
+
+���此 §1–§5 **每一条候选断言都有判定**，不再是抽样。
+
+
 **2026-10-19 · 收敛 C（散文断言，§26–§30）**
 
 | 断言 | 源码证据 | 判定 |

@@ -155,7 +155,7 @@ is a first-class citizen" only closes the loop here.
 
 ## 2. Entry Point & Startup (serve / Bootstrap)
 
-`runServe` in `ares serve` is the assembly hub, in four stages:
+`runServe` in `ares serve` is the assembly hub, in seven ordered stages:
 **load config → Bootstrap assembly → build peer kernel → start HTTP + loops**.
 
 ```mermaid
@@ -583,7 +583,7 @@ subAgent executing → SetBusy(true) → fabric IsIdle() = StateIdle && !a.busy
 
 **Effect**: the two state systems **align on "is it schedulable"**, no longer
 relying on `maxConcurrentPerAgent=1` as a backstop. Comment verbatim
-(`agent.go:81`): *"busy is the R4 bridge between subAgent execution state and
+(`agent.go:113`): *"busy is the R4 bridge between subAgent execution state and
 fabric (there is no RUNNING lifecycle state)."*
 
 **`StopUnfit` immediate reclaim (`scheduler_execute.go:146/158`)**:

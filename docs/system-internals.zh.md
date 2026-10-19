@@ -534,7 +534,7 @@ subAgent 执行中 → SetBusy(true) → fabric IsIdle() = StateIdle && !a.busy
 ```
 
 **效果**：两套状态在"能不能被调度"这个点上**对齐了**，不再靠 `maxConcurrentPerAgent=1`
-兜底。注释原话（`agent.go:81`）：*"busy is the R4 bridge between subAgent
+兜底。注释原话（`agent.go:113`）：*"busy is the R4 bridge between subAgent
 execution state and fabric (there is no RUNNING lifecycle state)."*
 
 **`StopUnfit` 即时 reclaim（`scheduler_execute.go:146/158`）**：
