@@ -219,9 +219,9 @@ evolution:                                # GA 开关/种群/安全门/回滚
 
 | 配置块 | 结构体 | 源码 |
 |---|---|---|
-| `kernel` | `KernelConfig` | `config.go:60` |
-| `agent_budget`（即"agent 钱包"） | `AgentBudgetConfig` | `config.go:148` |
-| `dag_execution` | `DAGExecutionConfig` | `config.go:171` |
+| `kernel` | `KernelConfig` | `config.go:47` |
+| `agent_budget`（即"agent 钱包"） | `AgentBudgetConfig` | `config.go:151` |
+| `dag_execution` | `DAGExecutionConfig` | `config.go:143` |
 
 **每个 agent 的限额（`agent_budget`，结构体 `AgentBudgetConfig` 在
 `internal/ares_config/config.go`）**：`tokens` / `tools` / `deadline`，全零 = 不限；
@@ -369,7 +369,7 @@ func classifyFailure(cause error) bool {
 |---|---|---|
 | 可重试吗 | `classifyFailure` | `internal/fabric/task/failure.go:132` —— 显式标记优先（`MarkPermanent` / `MarkRetryable`：最了解情况的是产生错误的那一层），错过任务 deadline 的原因视为终态，**其余一律可重试**，与 0.3.2 完全一致（裸的 `context.DeadlineExceeded` 也在内）。判定结果写进 `task.failed` 事件的 `retryable`，所以"为什么又试了一次"只看日志就能回答。 |
 | 什么时候 | `Fail` | `internal/fabric/task/fabric_lifecycle.go:397` —— 只有"原因可重试 **且** 还有预算"才回 READY。`BackoffBase` 是首次延迟、每次翻倍，由 `BackoffMax` 封顶（`internal/fabric/task/backoff.go:19`）；不配置就是立即重试，即 0.3.2 的行为。等待中的任务对 `ReadyTasks`/`ResumableTasks` 不可见、`Acquire` 会拒绝，且 `NextAttemptAt` 已持久化，重启不会让它提前重试。 |
-| 下游怎么办 | `cascadeFailureLocked` | `internal/fabric/task/dag.go:178` —— 终态失败会级联失败所有可达的 READY 依赖者；**除非**该依赖者显式 `AllowPartial`：它保持 READY，把失败前驱记进 `DegradedInputs`。这条记录正是解锁它的东西（`dependencySatisfied`，`internal/fabric/task/dag.go:131`）：只有被记录的缺口才算满足，所以**另一个仍在运行的依赖依旧阻塞它**。 |
+| 下游怎么办 | `cascadeFailureLocked` | `internal/fabric/task/dag.go:178` —— 终态失败会级联失败所有可达的 READY 依赖者；**除非**该依赖者显式 `AllowPartial`：它保持 READY，把失败前驱记进 `DegradedInputs`。这条记录正是解锁它的东西（`dependencySatisfied`，`internal/fabric/task/dag.go:138`）：只有被记录的缺口才算满足，所以**另一个仍在运行的依赖依旧阻塞它**。 |
 
 **Deadline 与租约过期是两件事。** 租约过期意味着"执行权失效"：任务回 READY，
 换人从 checkpoint 续跑（见 §12）。而 `Task.Deadline` 是绝对截止——
@@ -420,7 +420,7 @@ func ScoreBreakdown(taskCapability string, c Candidate) ScoreParts {
 |---|---|---|---|
 | `capability_overlap` | [0,1] | **门控**：做不了这个能力 → 0 分，绝不被选中（重叠比例，非"有一点就算"） | `CapabilityOverlap` |
 | `1 - load` | [0,1] | 越闲越高；`load=1`（满负荷）→ 归零、让位。这是"能并行的并行"的底层 | `LoadTracker`（`load_tracker.go`） |
-| `confidence` | [0,1] | 经验先验/实测："它以前干这事成不成" | `ConfidenceForMeasured`（`scheduler_execute.go:192`） |
+| `confidence` | [0,1] | 经验先验/实测："它以前干这事成不成" | `ConfidenceForMeasured`（`scheduler_execute.go:282`） |
 | `1 + priority` | ≥1 | 优先级加成；`priority=0` 时加成 1。**忙的高优先级能胜过闲的低优先级**，故 boost 故意不封顶 | `scheduler.go:75` |
 
 **confidence 三档（最容易被追问，`scheduler_execute.go:176`）**：
@@ -436,7 +436,7 @@ func ScoreBreakdown(taskCapability string, c Candidate) ScoreParts {
 **实时覆盖**某 agent 对某类任务的置信度，下个 drain 立即生效——GA 不改代码，改的是
 "某个 agent 做某类任务的可信度"。
 
-**候选池与两个非显而易见点（`buildCandidates`，`scheduler_execute.go:97`）**：
+**候选池与两个非显而易见点（`buildCandidates`，`scheduler_execute.go:119`）**：
 
 ```
 候选 = 已注册 + 未绑定 + 能力重叠 + 空闲 的 executor  ∪  线上 IDLE 的 fabric agent
@@ -462,7 +462,7 @@ func ScoreBreakdown(taskCapability string, c Candidate) ScoreParts {
 
 | 位置 | 行号 |
 |---|---|
-| 评分公式 `Score`/`ScoreBreakdown` | `internal/fabric/task/scheduler.go:71/71` |
+| 评分公式 `Score`/`ScoreBreakdown` | `internal/fabric/task/scheduler.go:44/71` |
 | 候选评分 `scoreCandidates` | `internal/kernel/decision_recorder.go:107` |
 | 预算过滤 + 置信度解析 | `internal/kernel/scheduler_execute.go:159/192` |
 | `LoadTracker`（Begin/End/TryBegin/SetAgentConfidence） | `internal/kernel/load_tracker.go` |
@@ -550,9 +550,9 @@ execution state and fabric (there is no RUNNING lifecycle state)."*
 | `StopReason` 全量定义（8 码） | `internal/fabric/agent/stopreason.go:43-70` |
 | `Admissibility`（统一准入判定） | `internal/fabric/agent/governance.go:113` |
 | `reserveExhausted` | `internal/fabric/agent/governance.go`（`Admissibility` 下方） |
-| `busy` 桥（`SetBusy` / `IsIdle`） | `internal/fabric/agent/agent.go:81/171`、`fabric.go:205` |
+| `busy` 桥（`SetBusy` / `IsIdle`） | `internal/fabric/agent/agent.go:235/171`、`fabric.go:205` |
 | `StopUnfit` reclaim（`handleStaleWinner`） | `internal/kernel/scheduler_execute.go:144-170` |
-| `filterBudgetAffordable` + `ErrNoAffordableCandidate` | `internal/kernel/scheduler_execute.go:205-217` |
+| `filterBudgetAffordable` + `ErrNoAffordableCandidate` | `internal/kernel/scheduler_execute.go:254-217` |
 
 ---
 
@@ -673,7 +673,7 @@ func (s *Scheduler) buildQuantumStep(ctx, executor, tk, meta, usage) taskfabric.
   / READY，等下一轮换人接着跑。**这就是"量子可打断、可让路"的代码本体**：
   不是一跑到底，而是"小步 + 随时能撤"。
 
-**agent 钱包** = `kernel.agent_budget`（`config.go:148`）：`tokens`/`tools`/`deadline`
+**agent 钱包** = `kernel.agent_budget`（`config.go:151`）：`tokens`/`tools`/`deadline`
 /`reserve_ratio` 四格，前三格全零不限。syscall spawn 的 agent 也从出生就带这个钱包
 （`internal/agentsyscall/syscall.go` `SpawnAgent` 的 `Governance: k.governance`）。
 
@@ -831,8 +831,8 @@ LLM 执行 quantum 时，和调 `web_search` 一样，还能调这几个"系统�
 
 | 工具 | 干什么 | 函数 | 源码 |
 |---|---|---|---|
-| `spawn_agent` | "再养一个队友" | `SpawnAgent` | `internal/agentsyscall/syscall.go:354` |
-| `create_task` | "这事拆成子任务" | `CreateTask` | `syscall.go:485` |
+| `spawn_agent` | "再养一个队友" | `SpawnAgent` | `internal/agentsyscall/syscall.go:24` |
+| `create_task` | "这事拆成子任务" | `CreateTask` | `syscall.go:27` |
 | `ask_agent` | "问一下某队友" | `AskAgent` | `syscall.go:730` |
 | `create_plan` | 一次长一串 DAG 节点 | `CreatePlan` | `internal/agentsyscall/plan.go` |
 
@@ -1144,10 +1144,10 @@ restart budget，重试预算不动。而 `Task.Deadline` 已过是另一种截�
 |---|---|---|
 | `Deadline` | `task.go:30` | 绝对截止；`ExpireDeadlines` 走独立终态（不回 READY），`Acquire` 拒过期 |
 | `RetryPolicy` | `task.go:139`（结构 `:91`） | 重试预算：`MaxRetries` 总次数 / `Attempts` 已试；`CanRetry`（`:104`）= `Attempts < MaxRetries` |
-| `BackoffBase`/`BackoffMax` | `task.go:37/39` | 重试延迟翻倍、封顶；`0`=立即重试（旧行为） |
+| `BackoffBase`/`BackoffMax` | `task.go:39/39` | 重试延迟翻倍、封顶；`0`=立即重试（旧行为） |
 | `NextAttemptAt` | `task.go:45` | 早于此刻 `Acquire` 拒绝；**持久化**，重启不会提前重试 |
-| `AllowPartial` | `task.go:68` | 前驱**永久失败**时本任务仍可带缺口跑（creation-time 策略） |
-| `DegradedInputs` | `task.go:72` | 记录"缺口是哪些前驱"，即解锁调度者的那把钥匙 |
+| `AllowPartial` | `task.go:82` | 前驱**永久失败**时本任务仍可带缺口跑（creation-time 策略） |
+| `DegradedInputs` | `task.go:88` | 记录"缺口是哪些前驱"，即解锁调度者的那把钥匙 |
 
 **降级（部分输入）机制**（`AllowPartial` + `DegradedInputs`）：
 
@@ -1315,7 +1315,7 @@ GA 循环本身（打分 → 选育 → 门 → 部署）**不产生任何 LLM �
 | 冷启动无记录 | 返回 `ColdStartScore=0.5`（中性，不偏向） | **零** |
 | 可选开 `evolution.llm_scoring` | `TieredScorer` 里挂 LLM Judge（`genome_wiring_idle.go:155`） | 有，但受 `MaxLLMCallsPerGeneration` 预算限制，超了降级回 heuristic |
 
-**选育路径**：`pop.EvolveAfterScoring`（`genome_wiring_run.go:76`）按 fitness 数值排序 →
+**选育路径**：`pop.EvolveAfterScoring`（`genome_wiring_run.go:157`）按 fitness 数值排序 →
 淘汰弱者 → 对存活者做 `PromptTemplate` 字符串交叉 + `Params`（temperature 等浮点）算术变异。
 **全部是字符串拼接和数值运算，无 LLM。**
 
@@ -1408,7 +1408,7 @@ flowchart LR
 |---|---|---|
 | 事件/会话/checkpoint 表 | `migrate.go` 各 `CREATE TABLE IF NOT EXISTS` | `migrate.go:33/55/132/153` |
 | 保留策略（opt-in） | `events_retention_days`，默认**永删** | `bootstrap_builder.go:83-91` |
-| 每小时 TTL 清理 | `startExpiryCleanupWorker` + `CleanupExpired` | `bootstrap_builder.go:527` / `maintenance_worker.go:60` |
+| 每小时 TTL 清理 | `startExpiryCleanupWorker` + `CleanupExpired` | `bootstrap_builder.go:534` / `maintenance_worker.go:199` |
 | 证据行 TTL | 注册进同一 worker，S-10 租户作用域 | `bootstrap_builder.go:303-306` / `bootstrap_steps.go:50-56` |
 
 **租户守卫 = "方案 B"**（要特别记牢）：**刻意不启用 DB 层 RLS**（`migrate_storage.go:47-52` 注释明说
@@ -1578,7 +1578,7 @@ flowchart TB
 | 层 | 干什么 | 时机 | 源码 |
 |---|---|---|---|
 | **① 服务发现** | 主动扫 Claude/Cursor/VSCode/ARES 配置 + PATH 二进制，发现有哪些 MCP 服务器 | 每 5min（默认）+ 自愈循环 | `internal/discovery/engine.go` |
-| **② 工具发现** | 连上服务器主动 `ListTools` + `OnChange` 动态增删 | 启动 + 服务端通知 | `internal/runtime/protocol/mcp/client.go:186` |
+| **② 工具发现** | 连上服务器主动 `ListTools` + `OnChange` 动态增删 | 启动 + 服务端通知 | `internal/runtime/protocol/mcp/client.go:228` |
 | **③ 工具选择** | 全量入池，只按需喂 LLM 子集（渐进披露 + envcap） | LLM 调用时 | `cmd/ares/serve_wiring.go:215` |
 
 ```mermaid
@@ -1608,7 +1608,7 @@ flowchart TB
 | Provider 接口 | `DiscoveryProvider.Discover` | `internal/discovery/discovery.go:87` |
 | 各 IDE 配置扫描 | `NewClaudeProvider`/`NewCursorProvider`/`NewVSCodeProvider`/`NewARESProvider` | `internal/discovery/providers/filesystem.go` |
 | 自动发现循环（自愈+退避） | `StartAutoDiscovery` | `internal/discovery/engine.go` |
-| 装配 + 事件桥 | `ProvideDiscovery`/`forwardDiscoveryEvent` | `internal/ares_bootstrap/provide_discovery.go:78` |
+| 装配 + 事件桥 | `ProvideDiscovery`/`forwardDiscoveryEvent` | `internal/ares_bootstrap/provide_discovery.go:51` |
 
 ---
 
@@ -1932,7 +1932,7 @@ flowchart LR
 ### 25.3 agent 原地复活（`aresrecovery.RestartAgent` 内部 7 步）
 
 查 death snapshot、绑定 task-X、从 `StepCheckpoint` 续跑这三件事**不在**
-`RestartAgent` 内，而在调用方（`runKernelRecoveryLoop`，`cmd/ares/kernel_loop.go:389`）和调度器里。
+`RestartAgent` 内，而在调用方（`runKernelRecoveryLoop`，`cmd/ares/kernel_loop.go:451`）和调度器里。
 
 ```mermaid
 sequenceDiagram
@@ -1963,7 +1963,7 @@ sequenceDiagram
 | 同 ID 仲裁 | death snapshot 驱动同 ID 原地复活，provenance/审计连续 | `recovery.go:326` |
 | CognitionFactory spawn | 造"真实认知体"不是空壳 | `recovery.go:151` |
 | 装脑子 | A 的 LLM 上下文/工具历史装进 B | `recovery.go:340` |
-| 绑定 + 续跑（**调用方**） | *不在* `RestartAgent` 内：`runKernelRecoveryLoop` 绑定 task-X，调度器从 `StepCheckpoint` 续跑 | `kernel_loop.go:336` |
+| 绑定 + 续跑（**调用方**） | *不在* `RestartAgent` 内：`runKernelRecoveryLoop` 绑定 task-X，调度器从 `StepCheckpoint` 续跑 | `kernel_loop.go:451` |
 
 > `RecoverTaskCheckpoint`（`recovery.go:305`）与 `RecoverFromAgentDeath`（`recovery.go:555`）
 > 被标为 TEST/CHAOS-ONLY；`RestartAgent` 才是生产路径。
@@ -2026,7 +2026,7 @@ flowchart TB
 | 层 | 做什么 | 源码 |
 |---|---|---|
 | ① 存储上限 | 每个 session 最多存 `SessionMaxHistory=500` 条，满了丢最旧（防长会话 OOM，修过的 bug） | `context/session.go:23` `defaultMaxSessionMessages=500` |
-| ② 读取截断 | `BuildContext` 只取**最近 `MaxHistory`（10~50）条**，不是全量 | `manager_impl.go:563` `messages[len-maxHistory:]` |
+| ② 读取截断 | `BuildContext` 只取**最近 `MaxHistory`（10~50）条**，不是全量 | `manager_impl.go:582` `messages[len-maxHistory:]` |
 | ② 规则裁剪 | `ContextCleaner.Clean` 对截断后的消息做"角色差异化压缩" | `context/cleaner.go` |
 | ③ RAG 注入 | prepend 检索到的相关经验/知识 snippet（用当前 input 当查询） | `manager_rag.go:17` `retrieveContextString` |
 
@@ -2046,7 +2046,7 @@ flowchart TB
 - **没有"总结""提炼要点"的语义动作**——是"砍代码块""取首句""截断"，规则化的。
 - `compressCodeBlocks`（`cleaner.go:128`）就是把 ``` 代码块 整个替换成 `<code block>` 占位，**不读代码内容**。
 - `extractGist`（`cleaner.go:144`）取"第一个句号/叹号/问号前的句子"，取不到就 `WithEllipsis` 硬截。
-- 有 `CleaningMode`（Default/Conservative/Aggressive，`cleaner.go:24`）三档 + `CleanWithTurns`（按"回合"做工具消息的保留/裁剪，`cleaner.go:169`），但**本质仍是规则，不是 LLM**。
+- 有 `CleaningMode`（Default/Conservative/Aggressive，`cleaner.go:19`）三档 + `CleanWithTurns`（按"回合"做工具消息的保留/裁剪，`cleaner.go:19`），但**本质仍是规则，不是 LLM**。
 - **（0.3.3 更新）`CleanWithTurns` 已可接进生产读路径**：`memory.turn_aware_cleaning: true`（ares.yaml，映射到 `MemoryConfig.TurnAwareCleaning`）时 `BuildContext` 走 `CleanWithTurns`（tool_call↔tool_result 成对保留），否则（默认）仍走扁平 `Clean`——**开关关闭 = 现状逐字节一致**；两条路径共用同一 `CleanOptions` 预算，开关只改分组、不放宽字符上限。注：结构化路径 `BuildPromptMessages` 本就恒走 `CleanWithTurns`，本开关只影响文本路径 `BuildContext`。**（0.3.3 更新）token 预算（B-G2）已接**：`memory.context_token_budget>0` 时 `BuildContext` 在清理前按保守 token 估算裁剪窗口（丢弃序：系统保底>工具因果>历史），0=关。**仍待做**：记忆锚点 LLM 摘要（B-G3，新增 LLM 调用，默认不做）。
 
 ### 26.3 三种"压缩"方案的对照（为什么选这个）
@@ -2131,7 +2131,7 @@ Generate / GenerateStream（遍历 provider）:
 | 默认冷却 | 限流(429)供应商冷却 60s；其它错误只冷却 **1/3**（clamp 100ms~60s） | `failover.go:17`、`:180` |
 | 只限流主 | token bucket 只挂 primary，fallback 不受限 | `failover.go:81` |
 | 关单重试 | 底层 client `MaxAttempts=1` **且熔断也关掉**；切换由 failover 层负责 | `failover.go:76-77` |
-| caller 取消 | `callerAborted` → `coolDown` 返回 0，立即停、不记、不 blame | `failover.go:208-215` |
+| caller 取消 | `callerAborted` → `coolDown` 返回 0，立即停、不记、不 blame | `failover.go:200-215` |
 | 流式超时 | 首块超时（以及首块带 `Err`、首块前通道关闭）=失败 → 继续 failover | `failover.go:387-436`——**注：`GenerateStream` 目前没有生产调用方**（`:302-304`） |
 
 **和 agent 钱包（§3 `agent_budget`）的区别**：
@@ -2157,7 +2157,7 @@ agent 钱包   = 【任务级】一个 agent 一生能烧多少 token/工具
 | `Execute(name, params)` | 执行单个工具 | `:177` |
 | `OnChange(fn)` | 池子变化通知（MCP 动态增删同步到这） | `:41` |
 
-**和前面模块的咬合**：L1 工具类图（§7/§23）是启动时从**工具 schema** 构建的——`toolBinder.GetToolSchemas()` → `buildToolClassDAG`（`cmd/ares/serve_peer.go:647-515,622`），节点 id = `工具名#<参数键集合>`（`core/convert.go` 的 `ToolClassID` / `ToolArgShape`）。`core/capability.go` 里的能力标签是**另一套**机制：它驱动 §19 的 envcap 能力检索，与 L1 图无关。
+**和前面模块的咬合**：L1 工具类图（§7/§23）是启动时从**工具 schema** 构建的——`toolBinder.GetToolSchemas()` → `buildToolClassDAG`（`cmd/ares/serve_peer.go:660-515,622`），节点 id = `工具名#<参数键集合>`（`core/convert.go` 的 `ToolClassID` / `ToolArgShape`）。`core/capability.go` 里的能力标签是**另一套**机制：它驱动 §19 的 envcap 能力检索，与 L1 图无关。
 
 ---
 

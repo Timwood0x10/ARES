@@ -242,9 +242,9 @@ evolution:                                # GA on/off / population / gates / rol
 
 | Block | Struct | Source |
 |---|---|---|
-| `kernel` | `KernelConfig` | `config.go:60` |
-| `agent_budget` (the "agent wallet") | `AgentBudgetConfig` | `config.go:148` |
-| `dag_execution` | `DAGExecutionConfig` | `config.go:171` |
+| `kernel` | `KernelConfig` | `config.go:47` |
+| `agent_budget` (the "agent wallet") | `AgentBudgetConfig` | `config.go:151` |
+| `dag_execution` | `DAGExecutionConfig` | `config.go:143` |
 
 **Per-agent limits (`agent_budget`, `AgentBudgetConfig` in
 `internal/ares_config/config.go`)**: `tokens` / `tools` / `deadline`, all-zero =
@@ -407,7 +407,7 @@ How to read it (this is the foundation of the system's "dare to fail"):
 |---|---|---|
 | Retryable? | `classifyFailure` | `internal/fabric/task/failure.go:132` — explicit markers win (`MarkPermanent` / `MarkRetryable`: the producing layer knows best), a cause past the task's deadline is terminal, and **everything else is retryable**, exactly as in 0.3.2 (a bare `context.DeadlineExceeded` included). The verdict is recorded as `retryable` on the `task.failed` event, so "why did it try again" is answerable from the log alone. |
 | When? | `Fail` | `internal/fabric/task/fabric_lifecycle.go:397` — requeue only when the cause is retryable **and** budget remains. `BackoffBase` is the first delay and doubles per attempt, capped by `BackoffMax` (`internal/fabric/task/backoff.go:19`); unset means an immediate requeue, which is 0.3.2's behaviour. A waiting task is hidden from `ReadyTasks`/`ResumableTasks` and refused by `Acquire`, and `NextAttemptAt` is persisted, so a restart cannot make it retry early. |
-| Downstream? | `cascadeFailureLocked` | `internal/fabric/task/dag.go:178` — a terminal failure fails every transitive READY dependent, unless that dependent opted into `AllowPartial`: it stays READY with the failed predecessor recorded in `DegradedInputs`. That record is what unlocks it (`dependencySatisfied`, `internal/fabric/task/dag.go:131`): only recorded gaps count, so a second dependency that is still running keeps blocking. |
+| Downstream? | `cascadeFailureLocked` | `internal/fabric/task/dag.go:178` — a terminal failure fails every transitive READY dependent, unless that dependent opted into `AllowPartial`: it stays READY with the failed predecessor recorded in `DegradedInputs`. That record is what unlocks it (`dependencySatisfied`, `internal/fabric/task/dag.go:138`): only recorded gaps count, so a second dependency that is still running keeps blocking. |
 
 **A deadline is not a lease expiry.** An expired lease means the execution rights
 lapsed: the task returns to READY and a replacement may resume it from its
@@ -465,7 +465,7 @@ distort the intent.
 |---|---|---|---|
 | `capability_overlap` | [0,1] | **Gate**: can't do this capability → 0, never chosen (overlap *fraction*, not "any overlap counts") | `CapabilityOverlap` |
 | `1 - load` | [0,1] | idle scores higher; `load=1` (fully busy) → 0, yield. This is what makes "parallel if possible" work | `LoadTracker` (`load_tracker.go`) |
-| `confidence` | [0,1] | experience prior / measured: "has it succeeded at this before?" | `ConfidenceForMeasured` (`scheduler_execute.go:192`) |
+| `confidence` | [0,1] | experience prior / measured: "has it succeeded at this before?" | `ConfidenceForMeasured` (`scheduler_execute.go:282`) |
 | `1 + priority` | ≥1 | priority boost; at `priority=0` the boost is 1. A busy high-priority agent can outscore an idle low-priority one, so the boost is deliberately un-capped | `scheduler.go:75` |
 
 **The three confidence tiers (most-asked, `scheduler_execute.go:176`)**:
@@ -482,7 +482,7 @@ evolution feedback loop **override an agent's per-capability confidence in real 
 effective from the next drain — GA does not change code, it changes "how trustworthy this
 agent is for this kind of task".
 
-**Candidate pool and two non-obvious points (`buildCandidates`, `scheduler_execute.go:97`)**:
+**Candidate pool and two non-obvious points (`buildCandidates`, `scheduler_execute.go:119`)**:
 
 ```
 candidates = registered + unbound + capability-overlapping + idle executors
@@ -510,7 +510,7 @@ each Schedule records one ScheduleDecision: every candidate + four-factor breakd
 
 | Location | Line |
 |---|---|
-| Score formula `Score`/`ScoreBreakdown` | `internal/fabric/task/scheduler.go:71/71` |
+| Score formula `Score`/`ScoreBreakdown` | `internal/fabric/task/scheduler.go:44/71` |
 | Candidate scoring `scoreCandidates` | `internal/kernel/decision_recorder.go:107` |
 | Budget filter + confidence resolution | `internal/kernel/scheduler_execute.go:159/192` |
 | `LoadTracker` (Begin/End/TryBegin/SetAgentConfidence) | `internal/kernel/load_tracker.go` |
@@ -599,9 +599,9 @@ Now:    handleStaleWinner → immediate ReleaseReason(taskID, winner, epoch, "ca
 | `StopReason` full definition (8 codes) | `internal/fabric/agent/stopreason.go:43-70` |
 | `Admissibility` (single admission predicate) | `internal/fabric/agent/governance.go:113` |
 | `reserveExhausted` | `internal/fabric/agent/governance.go` (just below `Admissibility`) |
-| `busy` bridge (`SetBusy` / `IsIdle`) | `internal/fabric/agent/agent.go:81/171`, `fabric.go:205` |
+| `busy` bridge (`SetBusy` / `IsIdle`) | `internal/fabric/agent/agent.go:235/171`, `fabric.go:205` |
 | `StopUnfit` reclaim (`handleStaleWinner`) | `internal/kernel/scheduler_execute.go:144-170` |
-| `filterBudgetAffordable` + `ErrNoAffordableCandidate` | `internal/kernel/scheduler_execute.go:205-217` |
+| `filterBudgetAffordable` + `ErrNoAffordableCandidate` | `internal/kernel/scheduler_execute.go:254-217` |
 
 ---
 
@@ -740,7 +740,7 @@ Line by line:
   resumes it. **That is the code body of "a quantum is interruptible and can
   yield"**: not run-to-the-end, but "small step + can always back out".
 
-**The agent wallet** = `kernel.agent_budget` (`config.go:148`): `tokens` /
+**The agent wallet** = `kernel.agent_budget` (`config.go:151`): `tokens` /
 `tools` / `deadline` / `reserve_ratio`; the first three are all-zero =
 unlimited. A syscall-spawned agent carries this wallet from birth
 (`SpawnAgent`'s `Governance: k.governance` in
@@ -932,8 +932,8 @@ calls `web_search`:
 
 | Tool | What | Function | Source |
 |---|---|---|---|
-| `spawn_agent` | "hire a teammate" | `SpawnAgent` | `internal/agentsyscall/syscall.go:354` |
-| `create_task` | "split this into subtasks" | `CreateTask` | `syscall.go:485` |
+| `spawn_agent` | "hire a teammate" | `SpawnAgent` | `internal/agentsyscall/syscall.go:24` |
+| `create_task` | "split this into subtasks" | `CreateTask` | `syscall.go:27` |
 | `ask_agent` | "ask a teammate" | `AskAgent` | `syscall.go:730` |
 | `create_plan` | grow a whole DAG at once | `CreatePlan` | `internal/agentsyscall/plan.go` |
 
@@ -1303,10 +1303,10 @@ judge of "is this failure worth retrying?" with a three-rule precedence:
 |---|---|---|
 | `Deadline` | `task.go:30` | absolute cut-off; `ExpireDeadlines` takes its own terminal path (no requeue), `Acquire` refuses expired |
 | `RetryPolicy` | `task.go:139` (struct at `:91`) | retry budget: `MaxRetries` total / `Attempts` used; `CanRetry` (`:104`) = `Attempts < MaxRetries` |
-| `BackoffBase`/`BackoffMax` | `task.go:37/39` | retry delay doubles, capped; `0` = immediate retry (old behaviour) |
+| `BackoffBase`/`BackoffMax` | `task.go:39/39` | retry delay doubles, capped; `0` = immediate retry (old behaviour) |
 | `NextAttemptAt` | `task.go:45` | `Acquire` refuses before this instant; **persisted**, so a restart cannot retry early |
-| `AllowPartial` | `task.go:68` | run with a gap even when a predecessor dies permanently (a creation-time policy) |
-| `DegradedInputs` | `task.go:72` | records "which predecessors are the gap" — the very record that unblocks scheduling |
+| `AllowPartial` | `task.go:82` | run with a gap even when a predecessor dies permanently (a creation-time policy) |
+| `DegradedInputs` | `task.go:88` | records "which predecessors are the gap" — the very record that unblocks scheduling |
 
 **The degradation (partial-input) mechanism** (`AllowPartial` + `DegradedInputs`):
 
@@ -1505,7 +1505,7 @@ That record **already exists**; GA does not re-query the LLM.
 | Cold start (no records) | returns `ColdStartScore=0.5` (neutral, no bias) | **zero** |
 | Optional `evolution.llm_scoring=true` | `TieredScorer` with LLM Judge (`genome_wiring_idle.go:155`) | yes, but budget-capped by `MaxLLMCallsPerGeneration`; over budget falls back to heuristic |
 
-**Evolution path**: `pop.EvolveAfterScoring` (`genome_wiring_run.go:76`)
+**Evolution path**: `pop.EvolveAfterScoring` (`genome_wiring_run.go:157`)
 sorts by fitness → culls the weak → cross-bred `PromptTemplate` strings +
 arithmetic mutation on `Params` (temperature etc.). **Pure string
 concatenation and numeric arithmetic, no LLM.**
@@ -1616,7 +1616,7 @@ evidence of "the Leader was removed."
 |---|---|---|
 | events / sessions / checkpoints tables | `CREATE TABLE IF NOT EXISTS` | `migrate.go:33/55/132/153` |
 | Retention (opt-in) | `events_retention_days`, default = **never delete** | `bootstrap_builder.go:83-91` |
-| Hourly TTL cleanup | `startExpiryCleanupWorker` + `CleanupExpired` | `bootstrap_builder.go:527` / `maintenance_worker.go:60` |
+| Hourly TTL cleanup | `startExpiryCleanupWorker` + `CleanupExpired` | `bootstrap_builder.go:534` / `maintenance_worker.go:199` |
 | Evidence-row TTL | registered on the same worker, S-10 tenant-scoped | `bootstrap_builder.go:303-306` / `bootstrap_steps.go:50-56` |
 
 **Tenant guard = "Scheme B"** (worth memorizing): DB-layer RLS is
@@ -1827,7 +1827,7 @@ configs on the machine and auto-detects usable providers**.
 | Layer | What | When | Source |
 |---|---|---|---|
 | **① Service discovery** | Scan Claude/Cursor/VSCode/ARES configs + PATH binaries; find which MCP servers exist | every 5min (default) + self-healing loop | `internal/discovery/engine.go` |
-| **② Tool discovery** | connect + `ListTools` + `OnChange` dynamic add/remove | boot + server notifications | `internal/runtime/protocol/mcp/client.go:186` |
+| **② Tool discovery** | connect + `ListTools` + `OnChange` dynamic add/remove | boot + server notifications | `internal/runtime/protocol/mcp/client.go:228` |
 | **③ Tool selection** | full set registered, only a relevant subset fed to the LLM (progressive disclosure + envcap) | at LLM call time | `cmd/ares/serve_wiring.go:215` |
 
 ```mermaid
@@ -1862,7 +1862,7 @@ flowchart TB
 | Provider interface | `DiscoveryProvider.Discover` | `internal/discovery/discovery.go:87` |
 | Per-IDE config scanning | `NewClaudeProvider` / `NewCursorProvider` / `NewVSCodeProvider` / `NewARESProvider` | `internal/discovery/providers/filesystem.go` |
 | Auto-discovery loop (self-heal + backoff) | `StartAutoDiscovery` | `internal/discovery/engine.go` |
-| Assembly + event bridge | `ProvideDiscovery` / `forwardDiscoveryEvent` | `internal/ares_bootstrap/provide_discovery.go:78` |
+| Assembly + event bridge | `ProvideDiscovery` / `forwardDiscoveryEvent` | `internal/ares_bootstrap/provide_discovery.go:51` |
 
 ---
 
@@ -2267,7 +2267,7 @@ sequenceDiagram
 | same-ID arbitration | death snapshot drives same-ID in-place revival; provenance/audit continuous | `recovery.go:326` |
 | spawn via CognitionFactory | builds a "real cognition", not an empty shell | `recovery.go:151` |
 | load the brain | A's LLM context/tool history moves into B | `recovery.go:340` |
-| bind + resume (**caller side**) | *not* in `RestartAgent`: `runKernelRecoveryLoop` binds task-X, the scheduler resumes from `StepCheckpoint` | `kernel_loop.go:336` |
+| bind + resume (**caller side**) | *not* in `RestartAgent`: `runKernelRecoveryLoop` binds task-X, the scheduler resumes from `StepCheckpoint` | `kernel_loop.go:451` |
 
 > `RecoverTaskCheckpoint` (`recovery.go:305`) and `RecoverFromAgentDeath`
 > (`recovery.go:371`) are marked TEST/CHAOS-ONLY; `RestartAgent` is the
@@ -2342,7 +2342,7 @@ flowchart TB
 | Layer | What | Source |
 |---|---|---|
 | ① storage cap | each session stores at most `SessionMaxHistory=500` messages, oldest dropped past the cap (prevents long-session OOM, a bug that was fixed) | `context/session.go:23` `defaultMaxSessionMessages=500` |
-| ② read truncation | `BuildContext` takes only the **most recent `MaxHistory` (10-50)** messages, not the full history | `manager_impl.go:563` `messages[len-maxHistory:]` |
+| ② read truncation | `BuildContext` takes only the **most recent `MaxHistory` (10-50)** messages, not the full history | `manager_impl.go:582` `messages[len-maxHistory:]` |
 | ② rule cleaning | `ContextCleaner.Clean` does "role-differential compression" on the truncated messages | `context/cleaner.go` |
 | ③ RAG injection | prepends retrieved relevant experience/knowledge snippets (current input is the query) | `manager_rag.go:17` `retrieveContextString` |
 
@@ -2367,7 +2367,7 @@ extraction), zero LLM calls.** It treats message roles differently:
 - `extractGist` (`cleaner.go:144`) takes "the sentence before the first
   period/exclamation/question mark", or `WithEllipsis` hard-truncation as a
   fallback.
-- There is `CleaningMode` (Default/Conservative/Aggressive, `cleaner.go:24`)
+- There is `CleaningMode` (Default/Conservative/Aggressive, `cleaner.go:19`)
   and `CleanWithTurns` (turn-aware tool-message keep/cut, `cleaner.go:169`),
   but **the essence is still rules, not LLM.**
 - **(0.3.3 update) `CleanWithTurns` can now be wired into the production read
@@ -2492,7 +2492,7 @@ Generate / GenerateStream (walk the providers):
 | default cooldown | a rate-limited (429) provider is cooled for 60s; other errors get **1/3** of that (clamped 100ms..60s) | `failover.go:17`, `:180` |
 | primary-only limit | token bucket on primary only; fallbacks unlimited | `failover.go:81` |
 | retry off | underlying clients `MaxAttempts=1` **and circuit breaker disabled**; the failover layer owns switching | `failover.go:76-77` |
-| caller cancel | `callerAborted` -> `coolDown` returns 0: stop, record nothing, blame nothing | `failover.go:208-215` |
+| caller cancel | `callerAborted` -> `coolDown` returns 0: stop, record nothing, blame nothing | `failover.go:200-215` |
 | stream timeout | first-chunk timeout (also a first-chunk `Err`, also a pre-chunk channel close) = failure -> keep failing over | `failover.go:387-436` — **note: `GenerateStream` has no production caller yet** (`:302-304`) |
 
 **Difference from the agent wallet (§3 `agent_budget`)**:
@@ -2521,7 +2521,7 @@ disclosure); this is "how they are **organized** once in".
 
 **How it meshes with earlier modules**: the L1 ToolClass graph (§7/§23) is built
 at boot from **tool schemas** — `toolBinder.GetToolSchemas()` →
-`buildToolClassDAG` (`cmd/ares/serve_peer.go:647-515,622`), with node id =
+`buildToolClassDAG` (`cmd/ares/serve_peer.go:660-515,622`), with node id =
 `toolName#<argKeySet>` (`core/convert.go` `ToolClassID` / `ToolArgShape`).
 The capability tags in `core/capability.go` are a **different** mechanism: they
 drive §19's envcap capability search, not the L1 graph.
