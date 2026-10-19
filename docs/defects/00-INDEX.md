@@ -111,6 +111,22 @@
 
 ## 修订记录
 
+**2026-10-19 · 收敛 C（§6–§8 全量，14 条）**
+
+逐条对源码判定，**全部准确，无修改**：
+
+| 断言 | 证据 |
+|---|---|
+| L2 = `L2Graph`，节点 = tool/plan/answer，内存中、随会话存活 | `internal/fabric/agent/l2graph.go:34`（`type L2Graph struct`） |
+| `L2Graph.AddToolNode` @ `l2graph.go:282` | 该行即函数定义 ✓ |
+| `SubscribeGraphEvents` 用 **drop-counter + DAG-version 双信号**触发全量 `Reconcile`（F-21） | `internal/fabric/planprojection/coordinator.go:228-236` 注释逐字对应 |
+| `create_plan` → `CreatePlan`，在 `agentsyscall/plan.go` | `plan.go:121` ✓ |
+| `create_task` 的 `Origin` 取自 `kctx.CallerID(ctx)`，**LLM 不能伪造** | `syscall.go:445-447` 注释明写 "deliberately no creator argument" |
+| 租户始终来自 context，LLM 值被覆盖 | 同上（`syscall.go` 的 kernel 盖章处） |
+| `CreateTaskArgs` **没有** creator 字段 | 结构体无该字段（注释解释原因） |
+| `spawn_agent` 受 `ToolAllowlist` + 配额约束 | `fabric/agent/fabric.go:27`（`resourceBudget`） |
+
+
 **2026-10-19 · 收敛 C（§1–§5 全量，58 条）**
 
 抽取规则：含反引号标识符 / `file.go:NNN` / 数字+单位，且句中带可判真假的谓语。§1–§5 共 **58 条**，逐条对源码判定：
