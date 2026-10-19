@@ -110,95 +110,95 @@ func RegisterGeneralTools(reg *core.Registry, deps ...GeneralToolsDeps) error {
 	tools := []core.Tool{
 		// Math capability
 		base.WithToolTags(builtin_math.NewCalculator(), map[string]string{
-			"domain": "math", "input_type": "text", "output_type": "number",
+			"domain": "math", "cap_math": "true", "input_type": "text", "output_type": "number",
 			"side_effects": "false",
 		}),
 		base.WithToolTags(builtin_math.NewDateTime(), map[string]string{
-			"domain": "math", "input_type": "text", "output_type": "text",
+			"domain": "math", "cap_math": "true", "input_type": "text", "output_type": "text",
 			"side_effects": "false",
 		}),
 		base.WithToolTags(builtin_math.NewTextProcessor(), map[string]string{
-			"domain": "text", "input_type": "text", "output_type": "text",
+			"domain": "text", "cap_text": "true", "input_type": "text", "output_type": "text",
 			"side_effects": "false",
 		}),
 
 		// Network capability
 		base.WithToolTags(builtin_network.NewHTTPRequest(), map[string]string{
-			"domain": "network", "input_type": "json", "output_type": "text",
+			"domain": "network", "cap_network": "true", "input_type": "json", "output_type": "text",
 			"side_effects": "true", "requires_network": "true",
 		}),
 		base.WithToolTags(
 			builtin_network.NewWebScraper(builtin_network.NewWebFetcher(builtin_network.NewDefaultHTTPClient(30*time.Second))),
-			map[string]string{"domain": "network", "input_type": "url", "output_type": "text",
+			map[string]string{"domain": "network", "cap_network": "true", "input_type": "url", "output_type": "text",
 				"side_effects": "false", "requires_network": "true"},
 		),
 		base.WithToolTags(builtin_network.NewWebSearch(), map[string]string{
-			"domain": "network", "input_type": "text", "output_type": "text",
+			"domain": "network", "cap_network": "true", "input_type": "text", "output_type": "text",
 			"side_effects": "false", "requires_network": "true",
 		}),
 
 		// File capability — restricted to the configured allowed directory.
 		base.WithToolTags(builtin_file.NewFileTools(builtin_file.WithAllowedDir(fileSandboxDir)), map[string]string{
-			"domain": "file", "input_type": "text", "output_type": "text",
+			"domain": "file", "cap_file": "true", "input_type": "text", "output_type": "text",
 			"side_effects": "true", "mutates_state": "true",
 		}),
 
 		// Text capability
 		base.WithToolTags(builtin_text.NewJSONTools(), map[string]string{
-			"domain": "data", "input_type": "json", "output_type": "json",
+			"domain": "data", "cap_data": "true", "input_type": "json", "output_type": "json",
 			"side_effects": "false",
 		}),
 		base.WithToolTags(builtin_text.NewDataValidation(), map[string]string{
-			"domain": "data", "input_type": "text", "output_type": "boolean",
+			"domain": "data", "cap_data": "true", "input_type": "text", "output_type": "boolean",
 			"side_effects": "false",
 		}),
 		base.WithToolTags(builtin_text.NewDataTransform(), map[string]string{
-			"domain": "data", "input_type": "text", "output_type": "text",
+			"domain": "data", "cap_data": "true", "input_type": "text", "output_type": "text",
 			"side_effects": "false",
 		}),
 		base.WithToolTags(builtin_text.NewRegexTool(), map[string]string{
-			"domain": "text", "input_type": "text", "output_type": "text",
+			"domain": "text", "cap_text": "true", "input_type": "text", "output_type": "text",
 			"side_effects": "false",
 		}),
 		base.WithToolTags(builtin_text.NewLogAnalyzer(), map[string]string{
-			"domain": "text", "input_type": "text", "output_type": "text",
+			"domain": "text", "cap_text": "true", "input_type": "text", "output_type": "text",
 			"side_effects": "false",
 		}),
 
 		// System capability
 		base.WithToolTags(builtin_system.NewIDGenerator(), map[string]string{
-			"domain": "system", "input_type": "text", "output_type": "text",
+			"domain": "system", "cap_system": "true", "input_type": "text", "output_type": "text",
 			"side_effects": "false",
 		}),
 
 		// Execution capability
 		base.WithToolTags(builtin_execution.NewCodeRunner(), map[string]string{
-			"domain": "execution", "input_type": "text", "output_type": "text",
+			"domain": "execution", "cap_execution": "true", "input_type": "text", "output_type": "text",
 			"side_effects": "true",
 		}),
 
 		// Embedding capability
 		base.WithToolTags(builtin_embedding.NewEmbeddingTool(""), map[string]string{
-			"domain": "embedding", "input_type": "text", "output_type": "json",
+			"domain": "embedding", "cap_embedding": "true", "input_type": "text", "output_type": "json",
 			"side_effects": "false", "requires_network": "true",
 		}),
 
 		// Hash capability
 		base.WithToolTags(builtin_hash.NewHashTool(), map[string]string{
-			"domain": "crypto", "input_type": "text", "output_type": "text",
+			"domain": "crypto", "cap_crypto": "true", "input_type": "text", "output_type": "text",
 			"side_effects": "false",
 		}),
 
 		// String utils capability
 		base.WithToolTags(builtin_stringutils.NewStringUtils(), map[string]string{
-			"domain": "text", "input_type": "text", "output_type": "text",
+			"domain": "text", "cap_text": "true", "input_type": "text", "output_type": "text",
 			"side_effects": "false",
 		}),
 
 		// PDF capability — sandboxed to the same allowed directory as
 		// FileTools so it cannot read arbitrary files (REVIEW #30).
 		base.WithToolTags(builtin_pdf.NewPDFTool(builtin_pdf.WithAllowedDir(fileSandboxDir)), map[string]string{
-			"domain": "pdf", "input_type": "file", "output_type": "text",
+			"domain": "pdf", "cap_pdf": "true", "input_type": "file", "output_type": "text",
 			"side_effects": "false",
 		}),
 	}
@@ -210,47 +210,47 @@ func RegisterGeneralTools(reg *core.Registry, deps ...GeneralToolsDeps) error {
 	// and/or the distilled-memory repo; the planner needs an LLM client.
 	if d.KnowledgeSearcher != nil {
 		tools = append(tools, base.WithToolTags(builtin_knowledge.NewKnowledgeSearch(d.KnowledgeSearcher), map[string]string{
-			"domain": "knowledge", "input_type": "text", "output_type": "json",
+			"domain": "knowledge", "cap_knowledge": "true", "input_type": "text", "output_type": "json",
 			"side_effects": "false",
 		}))
 	}
 	if d.KnowledgeService != nil {
 		tools = append(tools,
 			base.WithToolTags(builtin_knowledge.NewKnowledgeAdd(d.KnowledgeService), map[string]string{
-				"domain": "knowledge", "input_type": "json", "output_type": "boolean",
+				"domain": "knowledge", "cap_knowledge": "true", "input_type": "json", "output_type": "boolean",
 				"side_effects": "true", "mutates_state": "true",
 			}),
 			base.WithToolTags(builtin_knowledge.NewKnowledgeUpdate(d.KnowledgeService), map[string]string{
-				"domain": "knowledge", "input_type": "json", "output_type": "boolean",
+				"domain": "knowledge", "cap_knowledge": "true", "input_type": "json", "output_type": "boolean",
 				"side_effects": "true", "mutates_state": "true",
 			}),
 			base.WithToolTags(builtin_knowledge.NewKnowledgeDelete(d.KnowledgeService), map[string]string{
-				"domain": "knowledge", "input_type": "text", "output_type": "boolean",
+				"domain": "knowledge", "cap_knowledge": "true", "input_type": "text", "output_type": "boolean",
 				"side_effects": "true", "mutates_state": "true",
 			}),
 		)
 	}
 	if d.KnowledgeRepo != nil {
 		tools = append(tools, base.WithToolTags(builtin_knowledge.NewCorrectKnowledge(d.KnowledgeRepo), map[string]string{
-			"domain": "knowledge", "input_type": "json", "output_type": "boolean",
+			"domain": "knowledge", "cap_knowledge": "true", "input_type": "json", "output_type": "boolean",
 			"side_effects": "true", "mutates_state": "true",
 		}))
 	}
 	if d.MemoryMgr != nil {
 		tools = append(tools, base.WithToolTags(builtin_memory.NewMemorySearch(d.MemoryMgr), map[string]string{
-			"domain": "memory", "input_type": "text", "output_type": "json",
+			"domain": "memory", "cap_memory": "true", "input_type": "text", "output_type": "json",
 			"side_effects": "false",
 		}))
 	}
 	if d.MemoryMgr != nil {
 		tools = append(tools, base.WithToolTags(builtin_memory.NewUserProfile(d.MemoryMgr), map[string]string{
-			"domain": "memory", "input_type": "text", "output_type": "json",
+			"domain": "memory", "cap_memory": "true", "input_type": "text", "output_type": "json",
 			"side_effects": "false",
 		}))
 	}
 	if d.LLMClient != nil {
 		tools = append(tools, base.WithToolTags(builtin_planning.NewTaskPlanner(d.LLMClient), map[string]string{
-			"domain": "planning", "input_type": "text", "output_type": "json",
+			"domain": "planning", "cap_planning": "true", "input_type": "text", "output_type": "json",
 			"side_effects": "false",
 		}))
 	}

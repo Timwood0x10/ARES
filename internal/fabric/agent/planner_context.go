@@ -278,7 +278,7 @@ func toolHistoryPair(step *engine.Step, nodeID, output string) []*llmcore.LLMMes
 			Content: "",
 			ToolCalls: []llmcore.ToolCall{{
 				ID:   nodeID,
-				Type: "function",
+				Type: toolTypeFunction,
 				Function: llmcore.FunctionCall{
 					Name:      tool,
 					Arguments: string(argsJSON),

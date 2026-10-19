@@ -833,7 +833,7 @@ func answerArgTruncated(args map[string]any) bool {
 	case bool:
 		return v
 	case string:
-		return v == "true"
+		return v == tagValueTrue
 	default:
 		return false
 	}

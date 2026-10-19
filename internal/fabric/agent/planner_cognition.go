@@ -41,6 +41,14 @@ type PlannerDeps struct {
 	// Fabric is the task fabric used to read predecessor outputs by
 	// node-ID = task-ID join (the node does not store Output).
 	Fabric FabricReader
+
+	// ToolTagFilter, when non-empty, narrows the tools ADVERTISED to the model to those whose
+	// Tags match every entry. Empty (the default) advertises everything, so a deployment that
+	// never sets it behaves exactly as before.
+	//
+	// It filters only what the model is shown; L1 node ids and priors still read the full set
+	// (see advertisedToolSchemas for why).
+	ToolTagFilter map[string]string
 	// L1DAG is the L1 ToolClass capability graph. The planner reads
 	// each tool's enabled/budget/prior metadata before growing an L2 tool
 	// node — enabled=false blocks growth, budget=N caps instances per
@@ -94,13 +102,15 @@ type FabricReader interface {
 // to toolCognition through the same fabric → scheduler → routerCognition
 // path as every other node.
 type plannerCognition struct {
-	chat     ChatClient
-	binder   ToolBinder
-	sessions *SessionRegistry
-	fabric   FabricReader
-	l1       *engine.MutableDAG // L1 ToolClass graph, nil = permissive
-	maxDepth int
-	strategy agents.StrategySource // live evolution strategy, nil = unsteered
+	chat   ChatClient
+	binder ToolBinder
+	// toolTagFilter narrows the advertised tool set; nil/empty advertises everything.
+	toolTagFilter map[string]string
+	sessions      *SessionRegistry
+	fabric        FabricReader
+	l1            *engine.MutableDAG // L1 ToolClass graph, nil = permissive
+	maxDepth      int
+	strategy      agents.StrategySource // live evolution strategy, nil = unsteered
 	// agentFabric reads the EXECUTING agent's cognitive Context (the
 	// spawn-time experience prior). Nil = no prior injection.
 	agentFabric *Fabric
@@ -149,15 +159,16 @@ func NewPlannerCognition(deps PlannerDeps) (Cognition, error) {
 		logger = slog.Default()
 	}
 	return &plannerCognition{
-		chat:        deps.ChatClient,
-		binder:      deps.ToolBinder,
-		sessions:    deps.Sessions,
-		fabric:      deps.Fabric,
-		l1:          deps.L1DAG,
-		maxDepth:    maxD,
-		strategy:    deps.StrategySource,
-		agentFabric: deps.AgentFabric,
-		logger:      logger,
+		chat:          deps.ChatClient,
+		binder:        deps.ToolBinder,
+		toolTagFilter: deps.ToolTagFilter,
+		sessions:      deps.Sessions,
+		fabric:        deps.Fabric,
+		l1:            deps.L1DAG,
+		maxDepth:      maxD,
+		strategy:      deps.StrategySource,
+		agentFabric:   deps.AgentFabric,
+		logger:        logger,
 	}, nil
 }
 
@@ -210,6 +221,235 @@ const (
 //
 // Returns "" when the tool has no schema: an unknown tool has no ToolClass to
 // constrain, and the caller treats a lookup miss as permissive.
+// advertisedToolSchemas returns the schemas the model is shown for this quantum.
+//
+// A non-empty toolTagFilter narrows the list to tools whose Tags match EVERY entry: the
+// prompt is the cost, and a smaller candidate set is also a smaller chance of picking wrong.
+//
+// An empty filter returns everything — the behaviour before this existed.
+//
+// A filter that matches NOTHING falls back to everything and says so. A wrong or stale filter
+// must degrade to today's behaviour, never silently remove a capability the model needs: an
+// empty advertisement is indistinguishable from "that tool does not exist" and cannot be
+// falsified from the transcript.
+//
+// Only the ADVERTISEMENT is filtered. l1ToolClassID and l1Priors deliberately keep reading the
+// full set: L1 node ids and per-tool priors must be stable regardless of what is advertised,
+// and a lookup that missed an existing-but-filtered tool would fall through to the permissive
+// default and quietly ignore enabled=false.
+// TaskToolCapabilityKey is the task payload key carrying the capability flags that narrow the
+//
+// CONVENTION: the payload carries BARE capability names ("network", "file"). The `cap_` prefix
+// is a TOOL-side registration spelling (see builtin.WithToolTags); matching accepts both so a
+// payload that arrives with prefixes still works, but do not rely on that — write bare names.
+// advertised tool set for THIS quantum.
+//
+// It lives on the task rather than on the planner because it is per-task and the planner is
+// shared by every session ("one shared planner serves every session"): writing it on the
+// planner would let one task's routing decide what another task's model can see.
+const TaskToolCapabilityKey = "tool_capabilities"
+
+// toolCapabilitiesFromTask reads the task's capability flags.
+//
+// Accepted forms: []string, []any of strings, or a comma-separated string. Anything else —
+// including an absent key — means "no narrowing", which is the previous behaviour. A malformed
+// value degrades to no narrowing rather than to an empty tool list.
+// toolCapabilitiesForTask returns the capability tags that narrow this quantum's toolbelt.
+//
+// Explicit payload tags win; when a caller has not tagged the task, the description is tagged
+// here by keyword. Deriving at read time (rather than requiring every submitter to tag) is what
+// makes the routing live without changing the task fabric — but it is deliberately biased
+// towards NOT narrowing: an unknown description yields no caps, which advertises everything.
+//
+// The bias matters because a wrong cap is asymmetric: missing a cap only costs tokens, while
+// inventing one hides a tool the model needed. So the keyword table holds only terms that name
+// a capability unambiguously, and no stemming/fuzzy matching is attempted.
+func toolCapabilitiesForTask(task *models.Task) []string {
+	if caps := explicitTaskCapabilities(task); len(caps) > 0 {
+		return caps
+	}
+	if task == nil {
+		return nil
+	}
+	return capabilitiesFromText(taskTextForCapabilities(task))
+}
+
+// taskTextForCapabilities reads the task's request text from the payload keys the rest of the
+// system already uses for it (see agents/sub/event_payload.go). Task has no Description field:
+// the request has always lived in the payload, so reading anything else would invent a second
+// convention.
+func taskTextForCapabilities(task *models.Task) string {
+	if task == nil {
+		return ""
+	}
+	for _, key := range []string{"request", "query", "input", "prompt", "instruction"} {
+		if v, ok := task.Payload[key].(string); ok && v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// toolCapTagPrefix names the namespaced spelling of a capability tag.
+const toolCapTagPrefix = "cap_"
+
+// tagValueTrue is the only value a capability tag may carry; shared with l2graph so the two
+// spellings cannot drift.
+const tagValueTrue = "true"
+
+// capabilityKeywords maps a capability to the terms that select it. Keep entries specific:
+// broad words (e.g. "task", "fix") would route most work into one bucket and make the
+// narrowing indistinguishable from no narrowing at all.
+var capabilityKeywords = map[string][]string{
+	// Capability names are the SAME vocabulary the tools use for their domain tag, so a task
+	// tag and a tool tag can be compared directly. "A weather request" is not a tool domain —
+	// what it needs is network access — and inventing a `weather` capability would have made
+	// the routing table describe tools that do not exist.
+	"network": {"天气", "气温", "下雨", "预报", "weather", "forecast", "http", "api", "curl", "fetch", "网页", "url", "搜索", "search"},
+	"file":    {"源码", "代码", "函数", "文件", "grep", "todo", "main.go", "code", "source"},
+	"math":    {"计算", "数学", "求和", "加减", "calculate"},
+	"data":    {"json", "校验", "validate", "转换", "format"},
+	"text":    {"文本", "摘要", "翻译", "text"},
+	"git":     {"git", "commit", "diff", "branch", "仓库"},
+	"shell":   {"shell", "bash", "命令", "终端"},
+}
+
+// capabilitiesFromText returns every capability whose keywords appear in text.
+//
+// Case-insensitive because the same request arrives in both cases; the CJK terms are matched
+// literally (no tokenizer here, and a substring match on a two-character term is precise
+// enough for this table).
+func capabilitiesFromText(text string) []string {
+	if text == "" {
+		return nil
+	}
+	lower := strings.ToLower(text)
+	var caps []string
+	for cap, terms := range capabilityKeywords {
+		for _, term := range terms {
+			if strings.Contains(lower, term) {
+				caps = append(caps, cap)
+				break
+			}
+		}
+	}
+	// Sorted so the same request always yields the same tag set (the advertisement is logged
+	// and compared between runs; map iteration order would make the log noisy for no reason).
+	sort.Strings(caps)
+	return caps
+}
+
+func explicitTaskCapabilities(task *models.Task) []string {
+	if task == nil {
+		return nil
+	}
+	switch v := task.Payload[TaskToolCapabilityKey].(type) {
+	case []string:
+		return v
+	case []any:
+		out := make([]string, 0, len(v))
+		for _, e := range v {
+			if s, ok := e.(string); ok && s != "" {
+				out = append(out, s)
+			}
+		}
+		return out
+	case string:
+		if v == "" {
+			return nil
+		}
+		parts := strings.Split(v, ",")
+		out := make([]string, 0, len(parts))
+		for _, part := range parts {
+			if t := strings.TrimSpace(part); t != "" {
+				out = append(out, t)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+// advertisedToolSchemas returns the schemas the model is shown for this quantum.
+//
+// Three filters, in this order and with this precedence:
+//
+//  1. L1 policy — a ToolClass the evolution disabled is NEVER advertised. That is not routing
+//     and it is not waivable below: advertising a tool whose node can never grow spends a turn
+//     to produce nothing.
+//  2. c.toolTagFilter — construction-time hard constraints, ALL of which must match.
+//  3. caps — the task's capability flags, ANY of which may match (union).
+//
+// Union for caps is deliberate: Tags is map[string]string, one value per key, so a task that
+// needs weather AND code reading cannot express that by ANDing two values onto one key — it
+// would match nothing and fall open, i.e. route nowhere.
+//
+// When a narrowing was requested and nothing survives, the ROUTING is waived (every enabled
+// tool is advertised) but the L1 policy is not. A stale or wrong filter must degrade to
+// "like before", never to an empty list: an empty advertisement is indistinguishable from
+// "the tool does not exist" and nothing in the transcript would show the filter as the cause.
+func (c *plannerCognition) advertisedToolSchemas(caps []string) []resources.ToolSchema {
+	if c.binder == nil {
+		return nil
+	}
+	all := c.binder.GetToolSchemas()
+
+	enabled := make([]resources.ToolSchema, 0, len(all))
+	for _, s := range all {
+		if c.isToolEnabled(s.Name) {
+			enabled = append(enabled, s)
+		}
+	}
+	if len(c.toolTagFilter) == 0 && len(caps) == 0 {
+		return enabled
+	}
+
+	kept := make([]resources.ToolSchema, 0, len(enabled))
+	for _, s := range enabled {
+		if len(c.toolTagFilter) > 0 && !tagsMatch(s.Tags, c.toolTagFilter) {
+			continue
+		}
+		if len(caps) > 0 && !matchesAnyCapability(s.Tags, caps) {
+			continue
+		}
+		kept = append(kept, s)
+	}
+	if len(kept) == 0 {
+		if c.logger != nil {
+			c.logger.Warn("planner cognition: tool routing matched nothing; advertising every enabled tool",
+				"filter", c.toolTagFilter, "capabilities", caps, "tools", len(enabled))
+		}
+		return enabled
+	}
+	return kept
+}
+
+// matchesAnyCapability reports whether the tool carries ANY of the wanted capability flags.
+func matchesAnyCapability(tags map[string]string, caps []string) bool {
+	for _, cap := range caps {
+		// Both spellings count: a tool may declare its capability as `cap_weather: "true"`
+		// (namespaced, avoids colliding with the routing keys the static filter uses) or
+		// plainly `weather: "true"`. Accepting only one of them silently turned every match
+		// into a miss, and a miss fails open to the full toolbelt — i.e. the feature would
+		// look enabled and narrow nothing.
+		if tags[cap] == tagValueTrue || tags[toolCapTagPrefix+cap] == tagValueTrue {
+			return true
+		}
+	}
+	return false
+}
+
+// tagsMatch reports whether every wanted tag is present with the wanted value.
+func tagsMatch(have, want map[string]string) bool {
+	for k, v := range want {
+		if have[k] != v {
+			return false
+		}
+	}
+	return true
+}
+
 func (c *plannerCognition) l1ToolClassID(toolName string) string {
 	if c.binder == nil {
 		return ""
@@ -309,7 +549,27 @@ func (c *plannerCognition) ExecuteStep(ctx context.Context, task *models.Task) (
 	// Build the tool schemas for the LLM.
 	var llmTools []llmcore.Tool
 	if c.binder != nil {
-		schemas := c.binder.GetToolSchemas()
+		caps := toolCapabilitiesForTask(task)
+		// Write the derived caps back so the next quantum (and a restart) can answer "why did
+		// this task see these tools": re-deriving from the description every time made the
+		// answer depend on the keyword table at read time, with nothing to audit afterwards.
+		if len(caps) > 0 && task.Payload[TaskToolCapabilityKey] == nil {
+			if task.Payload == nil {
+				task.Payload = make(map[string]any, 1)
+			}
+			task.Payload[TaskToolCapabilityKey] = caps
+		}
+		schemas := c.advertisedToolSchemas(caps)
+		if c.logger != nil && c.binder != nil {
+			// The success path was silent, so "only a few tools were offered" was unanswerable.
+			// total vs advertised shows the narrowing, and caps show what caused it.
+			c.logger.Info("planner: tool advertisement",
+				"caps", caps,
+				"advertised", len(schemas),
+				"total", len(c.binder.GetToolSchemas()),
+				"narrowed", len(caps) > 0,
+				"task_id", task.TaskID)
+		}
 		llmTools = make([]llmcore.Tool, 0, len(schemas)+1)
 		for _, s := range schemas {
 			llmTools = append(llmTools, toCoreTool(s))
@@ -319,6 +579,10 @@ func (c *plannerCognition) ExecuteStep(ctx context.Context, task *models.Task) (
 		// no way to state a reason on a tool-call turn, which is the measured common case
 		// (empty Content), so the rationale feature would exist and never fire.
 		llmTools = append(llmTools, rationaleToolSchema())
+		// The escape hatch travels with every advertisement (P4). Without it a partly-wrong
+		// keyword match is unrecoverable: the model cannot see the missing tool and has no way
+		// to ask for it, so the only recovery is a retry that fails the same way.
+		llmTools = append(llmTools, needToolsToolSchema())
 	}
 
 	// Call the LLM once with the context and tool schemas.
@@ -475,6 +739,12 @@ func (c *plannerCognition) growToolNodes(
 		// the caller can tell this ending apart from "L1 blocked every call".
 		if toolName == RecordRationaleToolName {
 			rationales++
+			continue
+		}
+		// The escape hatch: union the requested capabilities into the task so the NEXT quantum
+		// advertises them. It grows no node — asking for a tool is not doing work.
+		if toolName == NeedToolsToolName {
+			c.applyNeedTools(ctx, task, tc)
 			continue
 		}
 

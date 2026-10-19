@@ -144,17 +144,17 @@ func rationaleFromToolCalls(calls []llmcore.ToolCall) string {
 // execution of it can never be reached.
 func rationaleToolSchema() llmcore.Tool {
 	return llmcore.Tool{
-		Type: "function",
+		Type: toolTypeFunction,
 		Function: llmcore.FunctionDefinition{
 			Name: RecordRationaleToolName,
 			Description: "State, in one or two sentences, WHY you are about to take the next step. " +
 				"Call this before your other tool calls when the reason would not be obvious from them. " +
 				"It records context for whoever continues this work (including a different agent) and performs no work itself.",
 			Parameters: map[string]interface{}{
-				"type": "object",
+				schemaKeyType: "object",
 				"properties": map[string]interface{}{
 					rationaleArgKey: map[string]interface{}{
-						"type": "string",
+						schemaKeyType: "string",
 						"description": "The reason for the next step, in natural language (kept to " +
 							strconv.Itoa(rationaleMaxRunes) + " characters).",
 					},
