@@ -446,7 +446,7 @@ func ScoreBreakdown(taskCapability string, c Candidate) ScoreParts {
 
 | 点 | 说明 | 源码 |
 |---|---|---|
-| **预算过滤先于 schedule** | 区分"没有 agent 匹配"（`ErrNoCapableCandidate`，该报警）vs"匹配的 agent 都超预算"（该等钱包恢复） | `scheduler_execute.go:159` |
+| **预算过滤先于 schedule** | 区分"没有 agent 匹配"（`ErrNoCapableCandidate`，该报警）vs"匹配的 agent 都超预算"（该等钱包恢复） | `scheduler_execute.go:264` |
 | **`TryBegin` 准入闸** | 候选快照在 `Schedule` 前构建，两个并发 goroutine 可能都读 `load=0`；`TryBegin` 用 load counter 当原子闸，防"两个任务都以为抢到同一空闲 agent" | `load_tracker.go:82` |
 
 **谁赢（`Pick`）与可解释（`ScheduleDecision`）**：
@@ -464,7 +464,7 @@ func ScoreBreakdown(taskCapability string, c Candidate) ScoreParts {
 |---|---|
 | 评分公式 `Score`/`ScoreBreakdown` | `internal/fabric/task/scheduler.go:44/71` |
 | 候选评分 `scoreCandidates` | `internal/kernel/decision_recorder.go:107` |
-| 预算过滤 + 置信度解析 | `internal/kernel/scheduler_execute.go:159/192` |
+| 预算过滤 + 置信度解析 | `internal/kernel/scheduler_execute.go:264/192` |
 | `LoadTracker`（Begin/End/TryBegin/SetAgentConfidence） | `internal/kernel/load_tracker.go` |
 | 决策记录 `ScheduleDecision` | `internal/kernel/decision_recorder.go:42` |
 
@@ -1304,7 +1304,7 @@ GA 循环本身（打分 → 选育 → 门 → 部署）**不产生任何 LLM �
 ```
 
 **LLM 只在热路径被调用**（planner 每次量子拆节点时）。GA 读的是任务结束时内核
-`kernel/scheduler_quantum.go:258` 内联写入的 `ExecutionAttribution` 记录
+`kernel/scheduler_quantum.go:309` 内联写入的 `ExecutionAttribution` 记录
 （哪个 strategy 跑的、成功与否、花了几 token、多快）——这条记录**早就存在**，GA 不需要重新问 LLM。
 
 **打分路径（默认 LLM-free）**：
@@ -1401,7 +1401,7 @@ flowchart LR
 
 **关键事实（v0.2→0.3 的改名痕迹就藏在这里）：** `leader_checkpoints` 表在迁移里被
 `RENAME TO agent_checkpoints`、`leader_id` 列改 `agent_id`、`idx_leader_checkpoints_status`
-改 `idx_agent_checkpoints_status`（`internal/storage/postgres/migrate.go:107-123`）。
+改 `idx_agent_checkpoints_status`（`internal/storage/postgres/migrate.go:123-123`）。
 这就是"Leader 被删除"在存储层的证据。
 
 | 关注点 | 机制 | 源码 |
@@ -1501,9 +1501,9 @@ flowchart LR
 | 蒸馏门槛 | `ShouldDistill`（成功/失败都可蒸，仅内容长度过滤） | `distillation_service.go` `ShouldDistill` |
 | **存储型间接注入防护** | `fenceUntrusted`：任务正文包 `---UNTRUSTED-TASK-DATA---` 围栏，防"存进经验库再 RAG 注入回 prompt"的持久化注入 | `distillation_service.go` `buildExtractionPrompt` |
 | 蒸馏装配 | `wireDistillation` + `subscribeDistillationEvents`（订阅 `task.completed`） | `internal/ares_bootstrap/bootstrap_steps.go:26` / `:105` |
-| 读侧检索 | `MemoryRetriever`（vector, 默认 `MinScore=0.4`/`TopK=5`） | `internal/runtime/memory/context/memory_retriever.go:65` |
-| 调度侧先验 | `ExperiencePrior` 注入 spawn（截断 4096 字） | `internal/fabric/agent/lifecycle.go:49` / `planner_cognition.go:186`（`maxExperiencePriorRunes`） |
-| 成本/阈值旋钮 | `DistillationThreshold` / `MaxDistilledTasks` / `DistilledTaskTTL` | `internal/runtime/memory/manager.go:102/116/125` |
+| 读侧检索 | `MemoryRetriever`（vector, 默认 `MinScore=0.4`/`TopK=5`） | `internal/runtime/memory/context/memory_retriever.go:93` |
+| 调度侧先验 | `ExperiencePrior` 注入 spawn（截断 4096 字） | `internal/fabric/agent/lifecycle.go:49` / `planner_cognition.go:209`（`maxExperiencePriorRunes`） |
+| 成本/阈值旋钮 | `DistillationThreshold` / `MaxDistilledTasks` / `DistilledTaskTTL` | `internal/runtime/memory/manager.go:113/123/132` |
 | 异步向量回填 | `embeddingEnqueuer`（默认同步；配了队列则先落行后异步补向量，不阻塞事件循环） | `distillation_service.go` `WithEmbeddingEnqueuer` |
 
 **token 成本**：蒸馏走 LLM 抽取（30s 超时），是系统里少数"后台烧 token"的地方，
@@ -2188,7 +2188,7 @@ agent 钱包   = 【任务级】一个 agent 一生能烧多少 token/工具
 | **恢复循环** `kernel_loop.go:290` | `task.expired/failed/acquired/yielded`（4 类） | 租约/失败 → 恢复处理 |
 | **answer 失败释放** `peer_assembly.go:432` | `task.failed` | answer 失败 → 释放会话（idle TTL 是兜底） |
 | **蒸馏** `bootstrap_steps.go:112` | `task.completed/failed` | 蒸经验（§18，**成功失败都蒸**） |
-| **GA 成绩** `ares_evolution/observer.go:216`（+ `scheduler.go:433`） | `task.completed/failed/agent.stopped` | 转成策略样本 / `KindFitness` 证据喂 GA（§14）。注：`ExecutionAttribution` 是内核调度器**内联**写入的（`kernel/scheduler_quantum.go:258`），不是订阅驱动 |
+| **GA 成绩** `ares_evolution/observer.go:216`（+ `scheduler.go:433`） | `task.completed/failed/agent.stopped` | 转成策略样本 / `KindFitness` 证据喂 GA（§14）。注：`ExecutionAttribution` 是内核调度器**内联**写入的（`kernel/scheduler_quantum.go:309`），不是订阅驱动 |
 | **skill 结果写入** `skill_outcome_writer.go:81` | `task.completed/failed` | 把任务结果写进 skills 经验 |
 | **观测** `serve_wiring.go:384`（`EventFilter{}` = match-all） | 所有事件 | 飞行记录 / 面板回放（§15） |
 

@@ -493,7 +493,7 @@ candidates = registered + unbound + capability-overlapping + idle executors
 
 | Point | Why | Source |
 |---|---|---|
-| **Budget filter before schedule** | distinguishes "no agent matched" (`ErrNoCapableCandidate`, should alert) vs "matching agents are all over budget" (should wait for budget recovery) | `scheduler_execute.go:159` |
+| **Budget filter before schedule** | distinguishes "no agent matched" (`ErrNoCapableCandidate`, should alert) vs "matching agents are all over budget" (should wait for budget recovery) | `scheduler_execute.go:264` |
 | **`TryBegin` admission gate** | the candidate snapshot is built *before* `Schedule`, so two concurrent goroutines can both read `load=0`; `TryBegin` uses the load counter as an atomic gate, preventing "two tasks both think they got the same idle agent" | `load_tracker.go:82` |
 
 **Winner (`Pick`) and explainability (`ScheduleDecision`)**:
@@ -512,7 +512,7 @@ each Schedule records one ScheduleDecision: every candidate + four-factor breakd
 |---|---|
 | Score formula `Score`/`ScoreBreakdown` | `internal/fabric/task/scheduler.go:44/71` |
 | Candidate scoring `scoreCandidates` | `internal/kernel/decision_recorder.go:107` |
-| Budget filter + confidence resolution | `internal/kernel/scheduler_execute.go:159/192` |
+| Budget filter + confidence resolution | `internal/kernel/scheduler_execute.go:264/192` |
 | `LoadTracker` (Begin/End/TryBegin/SetAgentConfidence) | `internal/kernel/load_tracker.go` |
 | Decision record `ScheduleDecision` | `internal/kernel/decision_recorder.go:42` |
 
@@ -1493,7 +1493,7 @@ Hot path (task execution)                    Cold path (idle GA)
 
 **LLM is only invoked in the hot path** (planner once per quantum to grow
 nodes). GA reads the `ExecutionAttribution` record that the kernel already
-inlined into the event bus at `kernel/scheduler_quantum.go:258` when the
+inlined into the event bus at `kernel/scheduler_quantum.go:309` when the
 task finished — *which strategy ran, success or not, token cost, latency*.
 That record **already exists**; GA does not re-query the LLM.
 
@@ -1609,7 +1609,7 @@ flowchart LR
 **Key fact (the 0.2→0.3 rename lives here):** the `leader_checkpoints` table is
 `RENAME TO agent_checkpoints`, the `leader_id` column becomes `agent_id`, and
 `idx_leader_checkpoints_status` becomes `idx_agent_checkpoints_status`
-(`internal/storage/postgres/migrate.go:107-123`). This is the storage-layer
+(`internal/storage/postgres/migrate.go:123-123`). This is the storage-layer
 evidence of "the Leader was removed."
 
 | Concern | Mechanism | Source |
@@ -1733,9 +1733,9 @@ flowchart LR
 | Distill gate | `ShouldDistill` (success **and** failure both eligible; only content-length filters) | `distillation_service.go` `ShouldDistill` |
 | **Stored indirect-injection guard** | `fenceUntrusted`: task content wrapped in `---UNTRUSTED-TASK-DATA---` fences, preventing a "stored into the experience store then RAG-injected back into a prompt" persistent-injection path | `distillation_service.go` `buildExtractionPrompt` |
 | Distillation wiring | `wireDistillation` + `subscribeDistillationEvents` (subscribes `task.completed`) | `internal/ares_bootstrap/bootstrap_steps.go:26` / `:105` |
-| Read-side retrieval | `MemoryRetriever` (vector, defaults `MinScore=0.4` / `TopK=5`) | `internal/runtime/memory/context/memory_retriever.go:65` |
-| Scheduler-side prior | `ExperiencePrior` injected at spawn (truncated to 4096 runes) | `internal/fabric/agent/lifecycle.go:49` / `planner_cognition.go:186` (`maxExperiencePriorRunes`) |
-| Cost / threshold knobs | `DistillationThreshold` / `MaxDistilledTasks` / `DistilledTaskTTL` | `internal/runtime/memory/manager.go:102/116/125` |
+| Read-side retrieval | `MemoryRetriever` (vector, defaults `MinScore=0.4` / `TopK=5`) | `internal/runtime/memory/context/memory_retriever.go:93` |
+| Scheduler-side prior | `ExperiencePrior` injected at spawn (truncated to 4096 runes) | `internal/fabric/agent/lifecycle.go:49` / `planner_cognition.go:209` (`maxExperiencePriorRunes`) |
+| Cost / threshold knobs | `DistillationThreshold` / `MaxDistilledTasks` / `DistilledTaskTTL` | `internal/runtime/memory/manager.go:113/123/132` |
 | Async vector backfill | `embeddingEnqueuer` (default synchronous; with a queue it persists the row first, then backfills the vector async so the event loop never blocks) | `distillation_service.go` `WithEmbeddingEnqueuer` |
 
 **Token cost**: distillation runs an LLM extraction (30s timeout) — one of the
@@ -2561,7 +2561,7 @@ itself — do not confuse "where the data comes from" with "who consumes it".
 | **Recovery loop** `kernel_loop.go:290` | `task.expired/failed/acquired/yielded` (4) | lease / failure -> recovery |
 | **answer-fail release** `peer_assembly.go:432` | `task.failed` | answer failed -> release the session (idle TTL is the backstop) |
 | **Distillation** `bootstrap_steps.go:112` | `task.completed/failed` | distill experience (§18, success **and** failure) |
-| **GA fitness** `ares_evolution/observer.go:216` (+ `scheduler.go:433`) | `task.completed/failed/agent.stopped` | turn outcomes into strategy samples / `KindFitness` evidence (§14). Note: `ExecutionAttribution` is written **inline** by the kernel scheduler (`kernel/scheduler_quantum.go:258`), not by a subscriber |
+| **GA fitness** `ares_evolution/observer.go:216` (+ `scheduler.go:433`) | `task.completed/failed/agent.stopped` | turn outcomes into strategy samples / `KindFitness` evidence (§14). Note: `ExecutionAttribution` is written **inline** by the kernel scheduler (`kernel/scheduler_quantum.go:309`), not by a subscriber |
 | **skill outcome writer** `skill_outcome_writer.go:81` | `task.completed/failed` | write task outcomes into skills experience |
 | **Observability** `serve_wiring.go:384` (`EventFilter{}` = match-all) | every event | flight record / panel replay (§15) |
 

@@ -111,6 +111,27 @@
 
 ## 修订记录
 
+**2026-10-19 · 收敛 C（收尾）：24 条锚点逐条过完，剩 17 条经阅读判定正确**
+
+逐条定位后修正 **6 处**（中英各 6）：
+
+| 原锚点 | 真实位置 | 依据 |
+|---|---|---|
+| `memory_retriever.go:65` | **:93** | `type MemoryRetriever struct` |
+| `planner_cognition.go:186` | **:209** | `const maxExperiencePriorRunes = 4096` |
+| `manager.go:102/116/125` | **:113/123/132** | `DistillationThreshold` / `MaxDistilledTasks` / `DistilledTaskTTL` |
+| `migrate.go:107` | **:123** | `ALTER INDEX … idx_agent_checkpoints_status` |
+| `scheduler_execute.go:159` | **:264** | `ErrNoAffordableCandidate` 的返回点 |
+| `scheduler_quantum.go:258` | **:309** | `s.attribution.RecordWithMetrics(...)`（文档原断言"kernel 内联写入"是**对的**，只是行号漂移） |
+
+**剩余 17 条**逐条读过，属**检查器假阳性**而非文档错误，例如：
+- `backoff.go:19` 的候选是 `BackoffBase`/`BackoffMax`，但该行是 `func retryBackoff` —— 句子讲的是字段语义，锚点指实现函数，**正确**；
+- `coordinator.go:384/695` 在 `internal/fabric/planprojection/coordinator.go` 里确实存在（检查器在同名文件里找）；
+- `scheduler_execute.go:146` 是该行 `StopUnfit.String()` 的**使用点**（字符串 `capability_unfit` 定义在 `stopreason.go`）。
+
+⇒ 锚点这件事到此为止：**234 条中 140 条原本正确、76 条已修、17 条经人工确认正确**（剩余无一条是"指错"）。
+
+
 **2026-10-19 · 收敛 C（第二半）：散文断言抽样核对**
 
 抽 6 条"默认值"类断言回源码核对：`RestartWindow`=1h ✓、`events_retention_days` 默认不清理 ✓、`MemoryRetriever.DefaultMinScore` 存在 ✓、discovery 默认 5min ✓、`Discovery.Enabled` 默认 false ✓（配置层），**`defaultServeHost` 的行号漂移**（文档 327 → 实际 `cmd/ares/serve.go:353`，已修，中英各一处）。
