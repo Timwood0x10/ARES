@@ -514,6 +514,7 @@ func wireMCPClients(cfg *config, toolReg *tools.Registry) ([]*mcp.Client, error)
 				name:   t.Name,
 				desc:   t.Description,
 				client: client,
+				caps:   classifyMCPToolCapabilities(t.Name, t.Description),
 			}); err != nil {
 				_ = client.Close()
 				closeAll()

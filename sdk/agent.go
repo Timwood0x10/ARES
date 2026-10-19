@@ -319,6 +319,10 @@ type mcpToolAdapter struct {
 	name   string
 	desc   string
 	client *mcp.Client
+	// caps are the planner capabilities derived from the tool's advertised description at
+	// registration time (see classifyMCPToolCapabilities). Empty means "not classified", which
+	// leaves the tool out of capability routing — the behaviour every MCP tool had before.
+	caps []string
 }
 
 // a mcpToolAdapter Name returns the MCP tool name.
@@ -330,8 +334,13 @@ func (a mcpToolAdapter) Description() string { return a.desc }
 // a mcpToolAdapter Parameters returns nil since MCP schemas are handled by the client.
 func (a mcpToolAdapter) Parameters() map[string]any { return nil }
 
-// a mcpToolAdapter Capabilities returns nil since MCP tools expose no capabilities.
-func (a mcpToolAdapter) Capabilities() []string { return nil }
+// a mcpToolAdapter Capabilities returns the categories derived from the tool's description.
+//
+// It used to return nil unconditionally, with a comment claiming MCP tools expose no
+// capabilities. MCP itself carries no capability metadata, but the description is enough to
+// place a tool in the planner's vocabulary — and returning nil forever meant every MCP tool was
+// invisible to capability routing no matter how clearly it described itself.
+func (a mcpToolAdapter) Capabilities() []string { return a.caps }
 
 // a mcpToolAdapter Execute calls the MCP tool with the given params.
 func (a mcpToolAdapter) Execute(ctx context.Context, params map[string]any) (tools.Result, error) {
