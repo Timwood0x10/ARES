@@ -43,7 +43,7 @@ func (c *plannerCognition) assembleContext(ctx context.Context, task *models.Tas
 	}
 
 	messages := []*llmcore.LLMMessage{
-		{Role: "user", Content: rootPrompt},
+		{Role: roleUser, Content: rootPrompt},
 	}
 
 	// Collect this plan node's full ancestor set (BFS over ALL DependsOn

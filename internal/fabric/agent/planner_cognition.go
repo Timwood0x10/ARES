@@ -43,6 +43,12 @@ type PlannerDeps struct {
 	// node-ID = task-ID join (the node does not store Output).
 	Fabric FabricReader
 
+	// Tagger, when set, derives the task's capability tags with a model call instead of relying
+	// only on the keyword table. Nil (the default) uses keywords.
+	Tagger CapabilityTagger
+	// AdvertisementSink, when set, receives one record per advertisement so "why did this
+	// quantum see these tools" is answerable after the fact, not only in a log line.
+	AdvertisementSink ToolAdvertisementSink
 	// ToolTagFilter, when non-empty, narrows the tools ADVERTISED to the model to those whose
 	// Tags match every entry. Empty (the default) advertises everything, so a deployment that
 	// never sets it behaves exactly as before.
@@ -107,11 +113,15 @@ type plannerCognition struct {
 	binder ToolBinder
 	// toolTagFilter narrows the advertised tool set; nil/empty advertises everything.
 	toolTagFilter map[string]string
-	sessions      *SessionRegistry
-	fabric        FabricReader
-	l1            *engine.MutableDAG // L1 ToolClass graph, nil = permissive
-	maxDepth      int
-	strategy      agents.StrategySource // live evolution strategy, nil = unsteered
+	// tagger, when set, replaces the keyword table for per-task capability derivation.
+	tagger CapabilityTagger
+	// adSink, when set, records every advertisement.
+	adSink   ToolAdvertisementSink
+	sessions *SessionRegistry
+	fabric   FabricReader
+	l1       *engine.MutableDAG // L1 ToolClass graph, nil = permissive
+	maxDepth int
+	strategy agents.StrategySource // live evolution strategy, nil = unsteered
 	// agentFabric reads the EXECUTING agent's cognitive Context (the
 	// spawn-time experience prior). Nil = no prior injection.
 	agentFabric *Fabric
@@ -163,6 +173,8 @@ func NewPlannerCognition(deps PlannerDeps) (Cognition, error) {
 		chat:          deps.ChatClient,
 		binder:        deps.ToolBinder,
 		toolTagFilter: deps.ToolTagFilter,
+		tagger:        deps.Tagger,
+		adSink:        deps.AdvertisementSink,
 		sessions:      deps.Sessions,
 		fabric:        deps.Fabric,
 		l1:            deps.L1DAG,
@@ -297,6 +309,31 @@ const toolCapTagPrefix = "cap_"
 // tagValueTrue is the only value a capability tag may carry; shared with l2graph so the two
 // spellings cannot drift.
 const tagValueTrue = "true"
+
+// capabilitiesFor derives the capability tags that narrow this quantum's toolbelt.
+//
+// Order: explicit payload tags, then the model tagger when configured, then the keyword table.
+// The payload wins because a submitter that tagged the task knows better than either heuristic;
+// a failing tagger falls through to keywords rather than narrowing to nothing, since the cost
+// of a missed capability is a hidden tool while the cost of no narrowing is only tokens.
+func (c *plannerCognition) capabilitiesFor(ctx context.Context, task *models.Task) []string {
+	if task == nil {
+		return nil
+	}
+	if caps := explicitTaskCapabilities(task); len(caps) > 0 {
+		return caps
+	}
+	text := taskTextForCapabilities(task)
+	if c.tagger != nil {
+		if caps, err := c.tagger.Tags(ctx, text); err == nil && len(caps) > 0 {
+			return caps
+		}
+		if c.logger != nil {
+			c.logger.Warn("planner: capability tagger returned nothing; using the keyword table", "task_id", task.TaskID)
+		}
+	}
+	return capabilitiesFromText(text)
+}
 
 // capabilitiesFromText delegates to the shared table (internal/tools/capability) so the routing
 // keywords have exactly one home: the drift test that compares them with the capabilities tools
@@ -513,7 +550,7 @@ func (c *plannerCognition) ExecuteStep(ctx context.Context, task *models.Task) (
 	// Build the tool schemas for the LLM.
 	var llmTools []llmcore.Tool
 	if c.binder != nil {
-		caps := toolCapabilitiesForTask(task)
+		caps := c.capabilitiesFor(ctx, task)
 		// Write the derived caps back so the next quantum (and a restart) can answer "why did
 		// this task see these tools": re-deriving from the description every time made the
 		// answer depend on the keyword table at read time, with nothing to audit afterwards.
@@ -533,6 +570,15 @@ func (c *plannerCognition) ExecuteStep(ctx context.Context, task *models.Task) (
 				"total", len(c.binder.GetToolSchemas()),
 				"narrowed", len(caps) > 0,
 				"task_id", task.TaskID)
+		}
+		if c.adSink != nil {
+			// A log line answers "why now"; a recorded event answers "why last Tuesday", which
+			// is what cost attribution and keyword-table tuning need.
+			total := 0
+			if c.binder != nil {
+				total = len(c.binder.GetToolSchemas())
+			}
+			c.adSink.OnToolAdvertisement(ctx, task.SessionID, task.TaskID, caps, len(schemas), total)
 		}
 		llmTools = make([]llmcore.Tool, 0, len(schemas)+1)
 		for _, s := range schemas {

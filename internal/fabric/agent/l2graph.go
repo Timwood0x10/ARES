@@ -740,7 +740,7 @@ func (c *answerCognition) synthesizeAnswer(ctx context.Context, task *models.Tas
 	if !ok {
 		return "" // the assembler already logged why
 	}
-	msgs = append(msgs, &llmcore.LLMMessage{Role: "user", Content: answerSynthesisInstruction})
+	msgs = append(msgs, &llmcore.LLMMessage{Role: roleUser, Content: answerSynthesisInstruction})
 	// No tool schemas and no param overrides: this is a plain completion
 	// over the session's history, not a planning call — the session is
 	// terminating, so a tool call could never execute, and strategy
