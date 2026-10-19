@@ -111,6 +111,15 @@
 
 ## 修订记录
 
+**2026-10-19 · codescope 重建索引后的复测 + arena 死导出清理 + 一处"评分输入恒 0"的真缺陷**：
+
+| 项 | 结论 |
+|---|---|
+| **索引重建** | `codescope index <path>` **不建索引**（它只是启动 MCP 服务）；真正可用的是 `index-parallel --workers N`。索引会**替换** DB 文件 ⇒ 运行中的服务读到空/旧数据，必须重启 |
+| **复测（新索引 25505 节点 / 1729 文件）** | 陈旧类误报**消失**：`knowledge/retriever`、`postgres/services` 两条"死模块"不再出现；`internal/evoapi` 仍报（**真**，0 importer）。死函数仍大量误报（抽样 5/8），并新增一例 `proposalKeyFor`——它以**函数值**传给 `SetExperimentLog`，`DeadFunction` 看不见函数值。`trust_score` 仍为 0 |
+| **`RecordFailover`/`FailoverCount` 已删** | 无任何生产者、也**不参与评分**（`CalculateScore` 不读），仅测试调用 ⇒ 按 TODO 一并移除（方法 + 快照字段 + 测试引用） |
+| ⚠️ **`RecordRecovery`/`RecordConsistency` 保留并写清后果** | 它们的快照字段（`TotalRecoveries`、`Avg/Min/Max/LastRecoveryTime`、`DataConsistencyRate`）**被 `CalculateScore`/`calcConsistency` 读取**，但生产里**从不调用这两个方法** ⇒ **字段恒为 0**，评分的"恢复/一致性"分量**永久走启发式兜底**。这是**真缺陷**（评分输入从未被填充），不是清理项；删掉生产者会把证据一起删，故在方法注释里写明"先修评分，再删" |
+
 **2026-10-18 · M10 收尾第一半：持久化实验日志（JSONL 追加）**
 
 上一轮登记"M10 的记录零生产者"。真去接线时发现**更前置的问题**：`ExperimentLog` **在生产里根本没被构造过**（全仓只有一句注释提到它），唯一实现是内存版 ⇒ 即使接上生产者，写进的是**重启即空**的日志，等于把这个功能的目的（事后重放）抹掉。
