@@ -111,6 +111,14 @@
 
 ## 修订记录
 
+**2026-10-19 · 收敛 C（§26–§30 全量，44 条）**
+
+| 判定 | 数量 | 说明 |
+|---|---|---|
+| 准确 | 42 | 500 条存储上限；`BuildContext` 只取最近 `MaxHistory`；cleaner 的 `MaxToolLen`/`MaxAssistantLen`/`extractGist`/`compressCodeBlocks`/`CleaningMode`/`CleanWithTurns`；failover 60s 冷却 + 1/3（100ms..60s）+ 主模型限流桶；`ErrTaskAwaitingApproval`、`approvalCleared`（`dag.go:106`）、`failTerminalLocked`（`lifecycle:498`）、`ApprovalBy`；token 预算双路径与 45% 推导（本轮改写） |
+| **错误（已修）** | **2** | ① `` `SessionMaxHistory=500` `` 把**配置字段**与**硬上限常量**混称——真实常量是 `defaultMaxSessionMessages = 500`（`session.go:25`），配置项 `session_memory.max_history` 是另一件事；中英各 2 处（含图内文本）；② "**0.3.5 起步：M8b + M9 已动工**"已过期——两者**已完成**（`genome.Population.ScoreAgentsWithDimensions`，两条进化路径共用；latency/cost 在独立指标通道），已改写为完成态 |
+
+
 **2026-10-19 · 收敛 C（§21–§25 全量，23 条）**
 
 | 判定 | 数量 | 说明 |

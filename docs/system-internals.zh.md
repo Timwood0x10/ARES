@@ -2008,7 +2008,7 @@ sequenceDiagram
 flowchart TB
     subgraph store[① 存储层]
         m[session 消息流]
-        c["SessionMaxHistory=500<br/>AddMessage 满 500 丢最旧的<br/>(session.go:23)"]
+        c["defaultMaxSessionMessages = 500<br/>AddMessage 满 500 丢最旧的<br/>(session.go:23)"]
     end
     subgraph read[② 读取层 BuildContext]
         w["MaxHistory(默认 10~50)<br/>只取最近 N 条<br/>(manager_impl.go:563)"]
@@ -2025,7 +2025,7 @@ flowchart TB
 
 | 层 | 做什么 | 源码 |
 |---|---|---|
-| ① 存储上限 | 每个 session 最多存 `SessionMaxHistory=500` 条，满了丢最旧（防长会话 OOM，修过的 bug） | `context/session.go:23` `defaultMaxSessionMessages=500` |
+| ① 存储上限 | 每个 session 最多存 `defaultMaxSessionMessages = 500` 条，满了丢最旧（防长会话 OOM，修过的 bug） | `context/session.go:23` `defaultMaxSessionMessages=500` |
 | ② 读取截断 | `BuildContext` 只取**最近 `MaxHistory`（10~50）条**，不是全量 | `manager_impl.go:582` `messages[len-maxHistory:]` |
 | ② 规则裁剪 | `ContextCleaner.Clean` 对截断后的消息做"角色差异化压缩" | `context/cleaner.go` |
 | ③ RAG 注入 | prepend 检索到的相关经验/知识 snippet（用当前 input 当查询） | `manager_rag.go:17` `retrieveContextString` |
@@ -2266,8 +2266,10 @@ workflow step 可通过 YAML `interrupt: { message: "..." }` 或 Go 侧
 | M4 构建可观测/增量 | `DistillConversationWithReport` 真 producer（7 计数器来自本次运行）；`persistAndPromote` 按 ContentFingerprint 跳过未变对象 | ✅ 已关闭 |
 | M6 三级检索 | `TieredRetriever`（有界 lexicon 扫描、截断判定确定性修正）+ `knowledge.tiered_retrieval` **opt-in**（替换不叠加，避免同一语料注入两次） | ✅ 已关闭（2026-10-17，opt-in） |
 
-**0.3.5 起步**：M8b 接线 + M9 维度映射已动工（含一处归因 bug 与 Q2 拍板，
-见 `docs/defects/00-INDEX.md` 修订记录）。
+**0.3.5**：M8b 接线与 M9 维度映射**均已完成**。维度打分落在
+`genome.Population.ScoreAgentsWithDimensions`，两条进化路径共用；`latency` 与 `cost` 作为
+Minimize 目标采在**独立指标通道**上，不进入 fitness 均值（否则"慢但正确"的策略会被平均掉）。
+归因 bug 与 Q2 拍板记录见 `docs/defects/00-INDEX.md` 修订日志。
 
 **仍待拍板（5 项，详见 `docs/defects/00-INDEX.md`"全量登记"块）**：
 P0-1 定时真跑评测（成本决策）/ P2-1 绝对线 0.7 的口径 / P2-7 孤儿级联退役

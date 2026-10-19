@@ -2326,7 +2326,7 @@ the boundary (long tasks miss on both ends) is spelled out in §26.4.
 flowchart TB
     subgraph store[1 storage layer]
         m[session message stream]
-        c["SessionMaxHistory=500<br/>AddMessage drops the oldest past 500<br/>(session.go:23)"]
+        c["defaultMaxSessionMessages = 500<br/>AddMessage drops the oldest past 500<br/>(session.go:23)"]
     end
     subgraph read[2 read layer BuildContext]
         w["MaxHistory(default 10-50)<br/>take only the most recent N<br/>(manager_impl.go:563)"]
@@ -2343,7 +2343,7 @@ flowchart TB
 
 | Layer | What | Source |
 |---|---|---|
-| ① storage cap | each session stores at most `SessionMaxHistory=500` messages, oldest dropped past the cap (prevents long-session OOM, a bug that was fixed) | `context/session.go:23` `defaultMaxSessionMessages=500` |
+| ① storage cap | each session stores at most `defaultMaxSessionMessages = 500` messages, oldest dropped past the cap (prevents long-session OOM, a bug that was fixed) | `context/session.go:23` `defaultMaxSessionMessages=500` |
 | ② read truncation | `BuildContext` takes only the **most recent `MaxHistory` (10-50)** messages, not the full history | `manager_impl.go:582` `messages[len-maxHistory:]` |
 | ② rule cleaning | `ContextCleaner.Clean` does "role-differential compression" on the truncated messages | `context/cleaner.go` |
 | ③ RAG injection | prepends retrieved relevant experience/knowledge snippets (current input is the query) | `manager_rag.go:17` `retrieveContextString` |
@@ -2669,9 +2669,11 @@ persists byte-for-byte identically to 0.3.2/0.3.3 — pinned by
 | M4 build observability / incremental | `DistillConversationWithReport` real producer (7 counters from this run); `persistAndPromote` skips unchanged objects by ContentFingerprint | ✅ closed |
 | M6 tiered retrieval | `TieredRetriever` (bounded lexicon scan, deterministic truncation check) + `knowledge.tiered_retrieval` **opt-in** (replaces, does not stack — one corpus, one injection) | ✅ closed (2026-10-17, opt-in) |
 
-**0.3.5 start**: M8b wiring + M9 dimension mapping are underway (one
-attribution bug and a Q2 decision recorded in the `docs/defects/00-INDEX.md`
-revision log).
+**0.3.5**: M8b wiring and M9 dimension mapping are **done**. Dimension scoring lives on
+`genome.Population.ScoreAgentsWithDimensions` and both evolution loops use it; `latency` and
+`cost` are collected as Minimize objectives on a separate metrics channel that stays out of the
+fitness mean (so a slow-but-correct strategy is not averaged away). The attribution bug and the
+Q2 decision are recorded in the `docs/defects/00-INDEX.md` revision log.
 
 **Still pending a decision (5, see the "full registry" block in
 `docs/defects/00-INDEX.md`)**: P0-1 timed real-eval runs (a cost decision) /
