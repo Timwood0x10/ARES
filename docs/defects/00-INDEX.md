@@ -111,6 +111,17 @@
 
 ## 修订记录
 
+**2026-10-19 · 收敛 C（散文断言，§17–§20）**
+
+| 断言 | 源码证据 | 判定 |
+|---|---|---|
+| `MemoryRetriever` 默认 `MinScore=0.4` / `TopK=5` | `memory_retriever.go`（`DefaultMinScore` 等） | ✅ |
+| 蒸馏由 **30s** 上限约束 | `ares_bootstrap/knowledge_akg.go:43`（`akgBridgeTimeout`） | ✅ |
+| MCP 服务发现每 **5min** | `discovery/engine.go:306` | ✅ |
+| `Discovery.Enabled` 默认 **false** | `ares_config/config_defaults.go:290` | ✅ |
+| MCP 客户端重启退避 `1s/2s/4s…30s` | `aresrecovery/recovery.go:145` 确有 `Backoff: 1s` / `MaxBackoff: 30s` 的策略；**该策略是否就是 MCP 客户端所用未确认** | ✅（主体成立，归属待确认） |
+
+
 **2026-10-19 · 收敛 C（散文断言，§13–§16）**
 
 | 断言 | 源码证据 | 判定 |
