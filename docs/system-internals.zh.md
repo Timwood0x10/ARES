@@ -154,7 +154,7 @@ flowchart LR
 
 **安全 fail-closed**（`cmd/ares/serve.go:292` `validateServeConfig`）：通配符 bind
 （`0.0.0.0` / `::`）若没配 auth/JWT/`introspect.token`，**直接拒绝启动**，而非
-"启动后打个日志"。默认绑定 `127.0.0.1`（`serve.go:327` `defaultServeHost`）。
+"启动后打个日志"。默认绑定 `127.0.0.1`（`serve.go:353` `defaultServeHost`）。
 
 **Bootstrap 7 步装配顺序**（组件有依赖，按顺序搭）：
 

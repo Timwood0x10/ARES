@@ -173,7 +173,7 @@ flowchart LR
 **Security fail-closed** (`cmd/ares/serve.go:292` `validateServeConfig`): a
 wildcard bind (`0.0.0.0` / `::`) with no auth/JWT/`introspect.token` is
 **refused at startup**, not logged-and-started. Default bind is
-`127.0.0.1` (`serve.go:327` `defaultServeHost`).
+`127.0.0.1` (`serve.go:353` `defaultServeHost`).
 
 **Bootstrap 7-step assembly order** (components have dependencies, built in order):
 
