@@ -109,7 +109,7 @@ burns. Outside the kitchen there is a **judge panel** (the GA cold path) that,
 when idle, flips through the cooks' "score cards" (the event ledger) and
 propagates the recipes (prompts + params) that worked, culling the ones that
 did not. The whole kitchen's state is visible on a **monitoring wall**
-(introspect panels). The 28 sections below follow "hot before cold":
+(introspect panels). The 30 sections below follow "hot before cold":
 §2–§4 are "how a dish goes from order to plate", §5–§11 are "the kitchen
 rules", §12–§15 are "when things break and how it gets better",
 §16–§21 are "back of house (storage / knowledge / memory / tools / security)",

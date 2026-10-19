@@ -111,6 +111,18 @@
 
 ## 修订记录
 
+**2026-10-19 · 收敛 C（散文断言，§1–§5）**
+
+| 断言 | 源码证据 | 判定 |
+|---|---|---|
+| `?wait=` 超过 300s 拒绝 400，默认 60s | `cmd/ares/agent_routes_tasks.go:39/42`（`taskWaitDefaultDuration`/`taskWaitMaxDuration`） | ✅ 准确 |
+| 会话存储上限 500 条 | `internal/runtime/memory/context/session.go:25`（`defaultMaxSessionMessages`） | ✅ 准确 |
+| drain 事件驱动 + **500ms** 轮询兜底 | `internal/kernel/scheduler.go`（`PollInterval: 500 * time.Millisecond`） | ✅ 准确 |
+| "The **28** sections below" | 实际 **30** 个 `## N.` 章节（§29 HITL、§30 版本状态是后加的） | ❌ **已修为 30** |
+
+§1–§5 只做了**抽样**（4 条）；§6–§30 未开始。
+
+
 **2026-10-19 · 收敛 C（收尾）：24 条锚点逐条过完，剩 17 条经阅读判定正确**
 
 逐条定位后修正 **6 处**（中英各 6）：
