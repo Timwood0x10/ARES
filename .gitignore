@@ -114,3 +114,7 @@ coverage.html
 
 # Local eval run artifacts (contain run timestamps; never committed)
 eval-report.json
+
+# Build cache produced by local tooling (GOCACHE=.gocache). 320MB of compiled objects;
+# never source, and never should be committed.
+.gocache/
