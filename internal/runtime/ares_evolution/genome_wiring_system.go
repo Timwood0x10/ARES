@@ -422,6 +422,12 @@ func attachSchedulerAndLifecycle(
 		lc := NewStrategyLifecycle(system.ActiveStrategyManager, agg, lcCfg, lcOpts...)
 		system.Lifecycle = lc
 		popAdapter.lifecycle = lc
+		if popAdapter.experimentLog != nil {
+			// The verdict half of M10: the lifecycle seals its decision against the proposal the
+			// cycle recorded (same ReplayKey, carried explicitly because the key covers fitness
+			// weights this layer does not have).
+			lc.SetExperimentLog(popAdapter.experimentLog, popAdapter.proposalKeyFor)
+		}
 		// The SAME aggregator that gates deployment also feeds SELECTION (defect
 		// P0-1(ii), the hop that was missing): until this line the measured
 		// accuracy/outcome/cost of a strategy could stop it from being deployed

@@ -66,6 +66,18 @@ type GenomePopulationAdapter struct {
 	// Guarded by runMu: records are sealed inside Run, which already serialises cycles.
 	experimentLog ExperimentLog
 
+	// proposalKeys maps a candidate id to the ReplayKey of the proposal that introduced it,
+	// so the lifecycle can seal its verdict against the right experiment (M10).
+	//
+	// The map exists because the two halves are sealed by different components at different
+	// times: the cycle knows the key, the lifecycle decides later.
+	//
+	// It has its OWN mutex rather than runMu: the lifecycle may promote synchronously from
+	// inside Run (which holds runMu) and call back through proposalKeyFor — re-taking runMu
+	// there would deadlock on a non-reentrant mutex.
+	proposalMu   sync.Mutex
+	proposalKeys map[string]string
+
 	// Guardrails for pre/post evolution safety checks (optional).
 	// When set via WithAdapterGuardrails, Run() runs safety checks before
 	// and after each evolution cycle.

@@ -97,7 +97,32 @@ func (a *GenomePopulationAdapter) sealExperimentRecord(ctx context.Context) {
 	if err := a.experimentLog.Append(ctx, rec); err != nil {
 		log.WarnContext(ctx, "adapter: seal experiment record", "method", "Run",
 			"generation", rec.Generation, "candidate", rec.CandidateID, "error", err)
+		return
 	}
+	// Remember the key so the lifecycle's verdict can name this proposal. Bounded: the map
+	// only has to outlive the window in which a candidate can still be decided (the hold),
+	// and an unbounded one would grow with every generation forever.
+	a.proposalMu.Lock()
+	if a.proposalKeys == nil {
+		a.proposalKeys = make(map[string]string, 8)
+	}
+	if len(a.proposalKeys) > 1024 {
+		for id := range a.proposalKeys {
+			delete(a.proposalKeys, id)
+			break
+		}
+	}
+	a.proposalKeys[rec.CandidateID] = rec.ReplayKey()
+	a.proposalMu.Unlock()
+}
+
+// proposalKeyFor returns the proposal key recorded for a candidate, or "" when the cycle did
+// not seal one (no log configured, or the entry aged out). An empty key is reported as an
+// uncorrelated decision rather than paired with a guess.
+func (a *GenomePopulationAdapter) proposalKeyFor(candidateID string) string {
+	a.proposalMu.Lock()
+	defer a.proposalMu.Unlock()
+	return a.proposalKeys[candidateID]
 }
 
 func (a *GenomePopulationAdapter) Run(ctx context.Context) error {

@@ -90,6 +90,21 @@ type ExperimentRecord struct {
 
 	// Verification is what the gates concluded.
 	Verification []GateVerdict `json:"verification,omitempty"`
+	// ProposalKey is the ReplayKey of the PROPOSAL this record decides, set only on decision
+	// records. Empty means "this record IS the proposal".
+	//
+	// It exists because the two halves are sealed at different times and by different
+	// components: the GA cycle seals the proposal, the lifecycle seals the verdict. ReplayKey
+	// cannot serve as the join because it includes the fitness weights in force, and the
+	// lifecycle does not have them — recomputing would produce a key that silently names a
+	// different experiment the moment the defaults change. So the link is carried explicitly
+	// rather than inferred.
+	//
+	// Excluded from ReplayKey on purpose: it is a reference BETWEEN records, not part of what
+	// determines the outcome. Folding it in would make a decision record's identity depend on
+	// the proposal's, which is exactly the coupling a join key must not create.
+	ProposalKey string `json:"proposal_key,omitempty"`
+
 	// Outcome is the decision state at the time this record was sealed.
 	//
 	// A record sealed by the GA cycle is always Pending: the proposal exists, the gates have

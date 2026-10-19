@@ -276,6 +276,16 @@ type StrategyLifecycle struct {
 	metrics *observability.PrometheusMetrics
 	evStore evidence.Store
 
+	// experimentLog, when set, receives one decision record per verdict (M10). nil means the
+	// lifecycle seals nothing, so a deployment that configured no log keeps its behaviour.
+	//
+	// proposalKey maps a candidate id to the ReplayKey of the proposal that introduced it. The
+	// lifecycle cannot compute that key itself: ReplayKey covers the fitness weights in force
+	// when the proposal was scored, and those are not in scope here — recomputing would name a
+	// different experiment as soon as the defaults changed.
+	experimentLog ExperimentLog
+	proposalKey   func(candidateID string) string
+
 	cfg LifecycleConfig
 
 	mu sync.Mutex
