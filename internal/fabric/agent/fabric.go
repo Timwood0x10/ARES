@@ -36,9 +36,12 @@ type Fabric struct {
 	// Agent-level cognitive resurrection.
 	snapshots *snapshotStore
 
-	// cascadeRetire makes Retire also retire the target's descendants (P2-7's opt-in
-	// policy half). False by default: Parent is provenance, so cascading is a change of
-	// contract that a deployment must ask for. Guarded by mu.
+	// cascadeRetire makes Retire also retire the target's descendants (P2-7's policy half).
+	// TRUE by default as of 0.3.4: Parent became a lifecycle relation, so a fabric cascades
+	// unless a deployment opts out explicitly (WithCascadeRetire(false)). Guarded by mu.
+	//
+	// (This comment used to say "false by default", which contradicted NewFabric — a reader
+	// deciding whether to enable it would have concluded it was already off.)
 	cascadeRetire bool
 }
 

@@ -5,55 +5,100 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.3.4] — AKG GA + evolution observability
+## [0.3.4] — AKG out of beta; evolution becomes observable and safe
 
-Multi-objective scoring, durable experiment records and per-task tool narrowing; the
-defaults leave existing deployments unchanged.
+AKG is frozen and stable, the GA loop records what it proposed and what the gates did with it,
+and the planner stops advertising every tool on every turn. Defaults keep existing deployments
+unchanged: the token budget, the tool filter and the experiment log are all opt-in.
+
+> **Upgrade notes**
+> - `evolution.experiment_log_path` (empty = off) turns on durable experiment records.
+> - `memory.model_context_window` derives a prompt budget of 45% of the window; an explicit
+>   `memory.context_token_budget` still wins, and setting neither keeps the old behaviour.
+> - `memory.session_max_tokens` bounds one session's stored size; the count cap is unchanged.
+> - `kernel.tool_tag_filter` and `kernel.llm_tool_tagging` are new and both default to off.
+> - `Registry.SetActiveTools`/`ActiveTools`/`ClearActiveTools` were **removed** (no callers).
 
 ### Added
 
-- **Per-task toolbelt narrowing**: each quantum advertises a subset — L1 `enabled` (a disabled
-  ToolClass is never shown), static `kernel.tool_tag_filter` (all tags must match), then the
-  task's capability tags (union). Every filter fails open; `need_tools` is the escape hatch, and
-  it reaches the next quantum because task-scoped payload keys survive the checkpoint re-wrap
-  (`carryTaskScopedPayload`).
+**Knowledge (AKG 0.3.4, API frozen)**
+- KnowledgeObject gains a schema version and temporal validity, so facts can expire instead of
+  being true forever by accident.
+- User namespace scoping (M5) end to end, plus a migration command for existing objects.
+- Tiered recall (L1 exact over the store, then L2 semantic + graph) behind
+  `knowledge.tiered_retrieval`, keeping the single-shot confidence bar and a `top_k` cap.
+- Relation gate and import-side schema guard: contradictions are **marked, never dropped**.
 
-- **Capability tagger**: payload tags > keyword table (`internal/tools/capability`) > optional
-  model call (`kernel.llm_tool_tagging`, off by default, falls back on failure).
+**Evolution**
+- NSGA-II dimensions are filled from per-candidate execution evidence; scoring lives once on
+  `genome.Population` and both loops use it.
+- `latency` and `cost` collected as Minimize objectives on a separate metrics channel, so they
+  never enter the fitness mean or the staging sample count.
+- Durable experiment records: append-only JSONL (`FileExperimentLog`, fsync per record), a
+  tri-state `Outcome`, and a decision record joined to its proposal by `ProposalKey`.
+- GA patches are gated on the approval the lifecycle is holding, and a promotion keeps the
+  strategy attribution it was submitted with.
+- Timed eval-corpus probe with anchor/fingerprint health, plus arena regression candidates run
+  through a real runtime.
 
-- **Durable experiment records**: `FileExperimentLog` (JSONL, fsync per record) armed by
-  `evolution.experiment_log_path`; tri-state `Outcome`; a decision record joins its proposal via
-  `ProposalKey`.
+**Tools and routing**
+- Per-task toolbelt narrowing: L1 `enabled` → static `kernel.tool_tag_filter` → task capability
+  tags (union), failing open at every step.
+- Capability tags come from the task payload, else a shared keyword table
+  (`internal/tools/capability`), else an optional model call (`kernel.llm_tool_tagging`).
+- `need_tools` escape hatch for the case the keyword read misses a capability the task needs.
+- MCP tools report planner capabilities derived from their advertised description at
+  registration.
 
-- **Latency and cost as objectives**: collected on a separate metrics channel that stays out of
-  the fitness mean and the staging sample count.
+**Memory**
+- Prompt budget by tokens on **both** paths (`BuildContext` and `BuildPromptMessages`), estimated
+  with the vendor rates (0.6 per CJK character, 0.3 per other).
+- Per-session token cap independent of the message count: one large tool result is one message.
+
+**Fabric**
+- `Parent` is a lifecycle relation with cascade retirement; cognition L0 persists across restarts
+  and rationales get their own container.
+- Idle reclamation scan enabled by default; retired-agent tombstones and the dispatch window are
+  closed (P1-6).
 
 ### Changed
 
-- Multi-objective scoring lives on `genome.Population` and is used by both evolution loops.
-- MCP tools get planner capabilities from their advertised description at registration.
-- `MetricsSnapshot.Unmeasured` names the score inputs that no producer fills.
+- `Strategy.Score` standardised to the GA 0–100 scale; lineage improvement is judged on the score
+  scale rather than a ratio.
+- Retrieval: IVFFlat probes actually take effect; rerank recency and HTTP status are scored
+  consistently; the CLI and the service sort weights the same way.
+- `MetricsSnapshot.Unmeasured` names the score inputs no producer fills, instead of letting a
+  zero look like a measurement.
 
 ### Removed
 
-- `Registry.SetActiveTools` / `ActiveTools` / `ClearActiveTools` and the `activeTools` field: no
+- `Registry.SetActiveTools`/`ActiveTools`/`ClearActiveTools` and the `activeTools` field: no
   production caller, duplicate semantics, and a global switch that cannot be task-scoped.
+- Two helpers that only their own tests called (`parseArgs`, one `cosineSimilarity`).
+- `RecordFailover`/`FailoverCount`: no producer and not read by the score.
 
 ### Fixed
 
-- `need_tools` widened the toolbelt for exactly one quantum (the rewrap rebuilt the envelope from
-  submission-time metadata).
-- `applyNeedTools` read the payload with a `[]string` assertion while writers used three shapes,
-  silently dropping capabilities a task already had.
+- `need_tools` widened the toolbelt for exactly one quantum — the checkpoint re-wrap rebuilt the
+  envelope from submission-time metadata (`carryTaskScopedPayload` now carries task-scoped keys).
+- `applyNeedTools` read the payload as `[]string` while writers used three shapes, silently
+  dropping the capabilities a task already had.
 - Five capability domains (`system`, `embedding`, `crypto`, `execution`, `pdf`) had no keyword
   that could select them.
-- 74 stale `file.go:NNN` anchors in `system-internals` (both languages).
+- Agent quota leak, a reclamation race with retired agents, dangling dependencies and premature
+  completion visibility.
+- 74 stale `file.go:NNN` anchors in `system-internals` (both languages), and six claims that
+  described behaviour the code does not have.
 
 ### Known gaps
 
-- `internal/evoapi` has no importers; removal is scheduled for 0.5.0.
-- Recovery timing and consistency remain unmeasured (see README, Honest limits).
-- MCP tools sit outside kernel-side capability narrowing.
+- **MCP tools are outside kernel-side capability narrowing**: they are registered into the SDK's
+  tool registry and carry planner capabilities instead of `cap_*` tags.
+- **L1 metadata has no production writer**: `enabled`/`budget`/`prior` come from tool
+  declarations, not from the GA loop — a GA-to-L1 patch executor does not exist yet.
+- **Two resilience-score inputs are unmeasured** (recovery timing, data consistency); the
+  snapshot now says so instead of reporting zero as if measured.
+- `internal/evoapi` still has no importers; removal is scheduled for 0.5.0.
 
 ## [0.3.3]
 
