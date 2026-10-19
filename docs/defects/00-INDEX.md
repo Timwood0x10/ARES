@@ -111,6 +111,16 @@
 
 ## 修订记录
 
+**2026-10-19 · 收敛 C（散文断言，§9–§12）**
+
+| 断言 | 源码证据 | 判定 |
+|---|---|---|
+| `ask_agent` 的回复**只记日志、不回写** | `internal/agentsyscall/syscall.go:119`（"FIRE-AND-FORGET"） | ✅ |
+| 相同提问 30s 内去重 / `Request` 30s 超时 | `syscall.go:624`、`agentipc/primitives.go:20` | ✅ |
+| `KeepSet`：活会话的任务永不被回收 | `internal/agentruntime/session.go:311`，用于 `NewReaperWithKeep(..., "sess/", ...)` | ✅ |
+| 跨会话任务 ID 前缀 `` `sess-N-*` `` | 实际为 **`sess/<sessionID>/dN/...`**（`agentruntime/submit.go:105`、`await.go:67`） | ❌ **已修** |
+
+
 **2026-10-19 · 收敛 C（散文断言，§6–§8）**
 
 | 断言 | 源码证据 | 判定 |

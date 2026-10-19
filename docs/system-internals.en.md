@@ -1156,7 +1156,7 @@ flowchart TB
 | Isolation layer | Mechanism | Source |
 |---|---|---|
 | Same-session admission serialized | per-session lock `lockAdmission` | `internal/agentruntime/session.go:67` |
-| Cross-session tasks independent | unique task-ID prefix `sess-N-*`; deps only within a session | `session.go` |
+| Cross-session tasks independent | unique task-ID prefix `sess/<sessionID>/dN/...`; deps only within a session | `session.go` |
 | Global resource cap | `maxConcurrent` + `agent_budget` + `kernel.resources` | the scheduler |
 | Reaper protection | `KeepSet`: a live session is never touched | `session.go:311` |
 

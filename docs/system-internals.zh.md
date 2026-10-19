@@ -1023,7 +1023,7 @@ flowchart TB
 | 隔离层 | 机制 | 源码 |
 |---|---|---|
 | 同 session 准入序列化 | per-session 锁 `lockAdmission` | `internal/agentruntime/session.go:67` |
-| 跨 session 任务无依赖 | 任务 ID 唯一前缀 `sess-N-*`，依赖只在同 session 内 | `session.go` |
+| 跨 session 任务无依赖 | 任务 ID 唯一前缀 `sess/<sessionID>/dN/...`，依赖只在同 session 内 | `session.go` |
 | 全局资源约束 | `maxConcurrent` + `agent_budget` + `kernel.resources` | 调度器 |
 | 收割保护 | `KeepSet`：活体 session 永不碰 | `session.go:311` |
 
