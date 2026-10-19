@@ -5,6 +5,56 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.5] — convergence
+
+Multi-objective scoring, durable experiment records and per-task tool narrowing; the
+defaults leave existing deployments unchanged.
+
+### Added
+
+- **Per-task toolbelt narrowing**: each quantum advertises a subset — L1 `enabled` (a disabled
+  ToolClass is never shown), static `kernel.tool_tag_filter` (all tags must match), then the
+  task's capability tags (union). Every filter fails open; `need_tools` is the escape hatch, and
+  it reaches the next quantum because task-scoped payload keys survive the checkpoint re-wrap
+  (`carryTaskScopedPayload`).
+
+- **Capability tagger**: payload tags > keyword table (`internal/tools/capability`) > optional
+  model call (`kernel.llm_tool_tagging`, off by default, falls back on failure).
+
+- **Durable experiment records**: `FileExperimentLog` (JSONL, fsync per record) armed by
+  `evolution.experiment_log_path`; tri-state `Outcome`; a decision record joins its proposal via
+  `ProposalKey`.
+
+- **Latency and cost as objectives**: collected on a separate metrics channel that stays out of
+  the fitness mean and the staging sample count.
+
+### Changed
+
+- Multi-objective scoring lives on `genome.Population` and is used by both evolution loops.
+- MCP tools get planner capabilities from their advertised description at registration.
+- `MetricsSnapshot.Unmeasured` names the score inputs that no producer fills.
+
+### Removed
+
+- `Registry.SetActiveTools` / `ActiveTools` / `ClearActiveTools` and the `activeTools` field: no
+  production caller, duplicate semantics, and a global switch that cannot be task-scoped.
+
+### Fixed
+
+- `need_tools` widened the toolbelt for exactly one quantum (the rewrap rebuilt the envelope from
+  submission-time metadata).
+- `applyNeedTools` read the payload with a `[]string` assertion while writers used three shapes,
+  silently dropping capabilities a task already had.
+- Five capability domains (`system`, `embedding`, `crypto`, `execution`, `pdf`) had no keyword
+  that could select them.
+- 74 stale `file.go:NNN` anchors in `system-internals` (both languages).
+
+### Known gaps
+
+- `internal/evoapi` has no importers; removal is scheduled for 0.5.0.
+- Recovery timing and consistency remain unmeasured (see README, Honest limits).
+- MCP tools sit outside kernel-side capability narrowing.
+
 ## [0.3.3]
 
 Task execution becomes explainable and selectively tolerant: failures carry a

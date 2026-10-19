@@ -193,6 +193,22 @@ a bug in the README.
   at `top_k` — the tiered merge itself is not bounded, so the adapter caps by score. L1 is
   scoped to the resolved namespace (explicit > tenant > user > default tenant); an empty
   namespace would skip L1 entirely rather than recall across tenants.
+- **Tool advertising is narrowed per task, and the narrowing fails open.** The planner used to
+  advertise the whole registry; each quantum now filters by ① L1 `enabled` (a ToolClass the
+  evolution disabled is never shown), ② a static `kernel.tool_tag_filter` (all tags must match),
+  ③ the task's capability tags (union). Tags come from the task payload when a submitter set
+  them, otherwise from a keyword table in `internal/tools/capability`, otherwise from the model
+  when `kernel.llm_tool_tagging` is on (one call per quantum). A filter matching nothing falls
+  back to the previous set with a warning: an empty toolbelt is indistinguishable from "that tool
+  does not exist". `need_tools` is the escape hatch for the partial-miss case, and it reaches the
+  next quantum only because the kernel carries task-scoped payload keys across the checkpoint
+  re-wrap. **MCP tools are outside this path** — they register into the SDK's own registry and
+  report planner capabilities instead of `cap_*` tags, so kernel-side narrowing does not apply.
+- **Two resilience-score inputs have no producer.** `TotalRecoveries`, the recovery-time fields
+  and `DataConsistencyRate` are read by `CalculateScore`, but nothing in production calls
+  `RecordRecovery`/`RecordConsistency`, so they are always zero and the score silently runs on
+  its heuristics. `MetricsSnapshot.Unmeasured` names them rather than letting a zero look like a
+  measurement; filling them needs a health-observation point the arena does not have.
 - **The GA proposes; the kernel disposes.** Nothing the evolution loop produces reaches a
   running strategy without passing the kernel: a candidate is a proposal plus its evidence, the
   apply path is gated on manual approval when the lifecycle is holding one, and knowledge is
@@ -202,13 +218,16 @@ a bug in the README.
   intended rollout order is one production objective at a time (agent policy parameters first),
   proving the full six-step loop before widening: running several evolving subsystems at once
   makes every regression ambiguous.
-- **Experiment records exist, but the only log is in memory.** `ExperimentRecord` captures what
-  makes a run replayable (genome, the evidence that narrowed it, the fitness configuration in
-  force, the gate verdicts, and the outcome once observed) and `ExperimentLog` is append-only by
-  contract. The shipped implementation is `MemoryExperimentLog`, so **records are lost on
-  restart** — wiring it to durable storage is what turns "reproducible" into true across
-  deployments. Knowledge narrows candidates only; recording an outcome deliberately writes
-  nothing back to the graph, which is what keeps the GA from reinforcing its own opinion.
+- **Experiment records are durable, and a verdict is a second record.** `ExperimentRecord`
+  captures what makes a run replayable (genome, the evidence that narrowed it, the fitness
+  configuration in force — copied, not referenced — the gate verdicts, and the outcome once
+  observed). `FileExperimentLog` appends JSONL and fsyncs every record; it is armed by
+  `evolution.experiment_log_path` (empty = off, which seals nothing). A generation seals
+  `outcome: pending`; the lifecycle seals a **second** record with the verdict and a
+  `ProposalKey` pointing at the proposal, because the two are decided at different times by
+  different components — rewriting the first would erase the fact that the proposal preceded the
+  verdict. Knowledge narrows candidates only: recording an outcome deliberately writes nothing
+  back to the graph, which is what keeps the GA from reinforcing its own opinion.
 - **Multi-objective GA is wired on both evolution paths, from one implementation.** The
   dimension pass lives on `genome.Population` (`ScoreAgentsWithDimensions`), so the public
   service and the in-process `EvolveAfterScoring` loop fill `DimensionScores` from
