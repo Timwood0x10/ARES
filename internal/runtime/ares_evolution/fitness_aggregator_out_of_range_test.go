@@ -193,6 +193,10 @@ func TestAggregator_OutOfRangeCountsOnlyTheScopedPopulation(t *testing.T) {
 // and any other test touching the same name would make the first call return false.
 func TestWarnOutOfRangeValue_OncePerSource(t *testing.T) {
 	defer discardLogs()()
+	// The limiter is process-wide, so without a reset this test only passes on its FIRST run in
+	// a process — which is exactly how it behaved as a flaky test under -count>1.
+	resetOutOfRangeWarnings()
+	t.Cleanup(resetOutOfRangeWarnings)
 	ctx := context.Background()
 	const source = "unit-test-out-of-range-source"
 

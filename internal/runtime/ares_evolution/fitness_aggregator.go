@@ -561,6 +561,19 @@ var (
 //
 // The value travels with the warning on purpose: "3600" and "1.4" point at
 // different producers, and the number is the fastest way to identify the unit.
+// resetOutOfRangeWarnings clears the process-wide suppression state.
+//
+// The limiter is process-wide on purpose: a per-call limit would warn on every record, and the
+// point is to report each bad SOURCE once. That makes a test which asserts on the first warning
+// order-dependent — the second run in the same process sees the source as already warned. This
+// hook exists so such a test can start from a known state instead of relying on run order.
+func resetOutOfRangeWarnings() {
+	outOfRangeWarnMu.Lock()
+	defer outOfRangeWarnMu.Unlock()
+	outOfRangeWarnedSources = make(map[string]struct{})
+	outOfRangeWarnSuppressed = false
+}
+
 func warnOutOfRangeValue(ctx context.Context, source string, kind evidence.EvidenceKind, value float64) bool {
 	key := source + "\x00" + string(kind)
 	if source == "" {
