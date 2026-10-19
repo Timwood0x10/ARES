@@ -111,6 +111,11 @@
 
 ## 修订记录
 
+**2026-10-19 · 收敛 C（§9–§12 全量，20 条）**
+
+全部准确，无修改：`ask_agent` 返回 `{Accepted:true, Status:"pending"}`（fire-and-forget）；30s 去重；`Bus` 为**进程内**消息中枢，`Bus.Unregister` 在 `agentipc/bus.go:146`；任务 ID 形如 `sess/<sessionID>/dN/...`；`KeepSet` @ `session.go:311`；`ErrEpochMismatch` @ `fabric.go:22`（单一写者）；`RestartWindow` 默认 1h；`orphaned_spawns` 仅在存在孤儿时写入（`stopreason.go:88`）；`Task.Deadline` 是终态切点；`DegradedInputs` @ **`fabric/task/task.go:88`**（初查误找了 `core/models/task.go`，文档引用本身是对的）。
+
+
 **2026-10-19 · 收敛 C（§6–§8 全量，14 条）**
 
 逐条对源码判定，**全部准确，无修改**：
