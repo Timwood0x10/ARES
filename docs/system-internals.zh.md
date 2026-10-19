@@ -1,4 +1,4 @@
-# ARES 系统内部机制速览（v0.3.3）
+# ARES 系统内部机制速览（v0.3.x）
 
 > 本文梳理 ARES（goagent）v0.3.x AgentOS 全项目如何工作，覆盖 15 个核心模块，
 > 每个模块附 Mermaid 图与源码文件/行号引用。
@@ -48,6 +48,8 @@
 26. [上下文管理（滑窗截断 + 规则裁剪 + RAG 注入，非 LLM 摘要）](#26-上下文管理)
 27. [LLM 失败切换 + 工具组织（`core.Registry`）](#27-llm-失败切换与工具组织)
 28. [事件驱动总线（谁订阅了什么）](#28-事件驱动总线)
+29. [HITL 审批门（0.3.3）](#29-hitl-审批门-033)
+30. [版本状态：0.3.4 / 0.3.5（收敛进度）](#30-版本状态034--035收敛进度)
 
 ---
 
@@ -554,6 +556,60 @@ execution state and fabric (there is no RUNNING lifecycle state)."*
 
 ---
 
+### 4.4 工具选择面收窄与 planner 注入工具（0.3.x 新增）
+
+planner（`plannerCognition`）**不再把整个注册表广告给模型**：每个量子只展示
+与任务相关的子集。三层过滤，顺序与优先级固定（`advertisedToolSchemas`，
+`planner_cognition.go`）：
+
+| 层 | 内容 | 匹配语义 |
+|---|---|---|
+| ① L1 策略（硬闸） | evolution 禁用的 ToolClass **永不广告** | 不可豁免 |
+| ② 静态过滤器 `tool_tag_filter`（部署级配置） | 工具 tags 必须全中 | AND |
+| ③ capability flags（任务级） | 任务的能力标签 | ANY（union） |
+
+caps 推导顺序：任务 payload 显式标签 > 模型 tagger（opt-in，配置
+`llm_tool_tagging`：一个模型调用/量子，失败回落关键词表）> 关键词表。
+关键词表抽成共享 leaf 包 `internal/tools/capability`（路由方和"表 vs 工具实际
+声明的 capability"的漂移守卫测试共用一份，单一来源）。
+
+**偏置设计：宁可收窄失败，不可收窄过头。** 未识别描述 → 无 caps → 广告全部
+（只费 token）；收窄到空集 → **fail-open 回全部 enabled 工具**（带 Warn 日志），
+永不出空列表——空列表与"工具不存在"不可区分，transcript 里没人能看出是过滤器
+的锅。
+
+**两个"不做功"的注入工具**（只进 prompt、不在注册表，planner 会话专属）：
+
+- **`need_tools`**（收窄逃生口，`planner_need_tools.go`）：关键词表错的方向是
+  "部分命中"（要 network+git 但只命中 network → git 工具被静默藏掉）。模型用它
+  声明"我需要但看不见的能力"，参数写入任务 payload `tool_capabilities`，**下一个
+  量子**广告面加宽（任务级，planner 跨 session 共享）。参数 JSON 不合法 = 没请求，
+  不 fail 量子。
+- **`record_rationale`**（`planner_rationale.go`）：模型调它**说明为什么要做下一步**。
+  动机是实测：本部署 provider 上工具调用回合 **5/5 Content 为空**（live 集成测试
+  `rationale_availability_live_test.go` 记录），旧的"存 Content 当理由"在最需要理由
+  的回合上一无所得，且"没理由"与"模型选择不解释"不可区分。理由改走工具参数
+  （`rationaleFrom` 在 Content 为空时回落读参数）；只广告给 planner（理由的唯一消费
+  方），不进全局注册表。回合**只**调了 record_rationale → 强制 answer，成因标
+  `rationale_only`（不误标 L1-blocked，见 §6 的 `answerCauseRationaleOnly`）。
+
+**可观测**：每次广告经 `ToolAdvertisementSink` 记一条（caps、广告数、总数）；
+启动时打注册总数（**刻意不设上限**——上限形态是产品决定，静默限流比响亮的数字糟）。
+
+**MCP 工具不在这条路上**：MCP 工具注册进 SDK 自己的 registry、靠 description 上报
+capability（`sdk/mcp_capabilities.go`），kernel 侧的 tag filter / caps 收窄对它们
+**不适用**。
+
+| 环节 | 源码 |
+|---|---|
+| 三层过滤 + fail-open | `internal/fabric/agent/planner_cognition.go` `advertisedToolSchemas` |
+| 关键词表（单一来源 + 漂移守卫） | `internal/tools/capability/capability.go` |
+| 模型 tagger（opt-in） | `internal/fabric/agent/planner_tagger.go` |
+| `need_tools` 逃生口 | `internal/fabric/agent/planner_need_tools.go` |
+| `record_rationale` | `internal/fabric/agent/planner_rationale.go` |
+
+---
+
 ## 5. 量子化与资源预算
 
 **量子化的核心不是"记账"，是"断点续跑 / 可打断 / 可让路"（鲁棒性）；
@@ -1028,19 +1084,38 @@ sequenceDiagram
     end
 ```
 
-**防风暴**：restart budget（lifetime 累积，成功不回退计数）+ 指数 backoff。
+**防风暴**：restart budget + 指数 backoff。预算计数已改为**时间窗内计数**
+（`RestartPolicy.RestartWindow`，默认 1h；`recovery.go`）：只数窗口内的重启，
+窗口外的时间戳在 gate 读取时就地剪掉，切片长度正比于预算而非 agent 寿命——
+长寿命健康的 agent 每月死一次不再被误判成崩溃环而永久拒复活；**零值窗口保留
+旧的 lifetime 累积语义**（零值策略行为不变）。成功复活不回退计数（复活就是被
+防的环）。
 
-**Deadline 不是租约过期**：上面讲的是**执行权失效**，这里救回来的任务消耗的是
-restart budget，重试预算不动。而 `Task.Deadline` 已过是另一种截止——终态，
-这个扫描不会再把它入队（见 §4.1）。
+**孤儿 agent 可见（P2-7，"可见"不"回收"）**：退役**不级联**——`Agent.Parent`
+是 provenance 而非生命周期关系（改它是契约变更，需拍板），所以 spawn/retire 循环
+留下的子 agent 继续活着、继续占资源。两侧机制（`orphan_audit.go` /
+`lifecycle.go`）：
+
+- **事件侧**：`retireLocked` 在状态变更前读仍存活的直接子（`orphanedSpawnsLocked`），
+  退役事件 payload 带 `orphaned_spawns` 键（**仅有孤儿时才带**，避免每条事件噪声）。
+- **对账侧**：`Fabric.AuditOrphans(sample)` = 父已退役或父记录缺失（restore 可丢
+  记录）的存活 agent 数 + 它们仍持有的资源合计 + 有界样本 id；挂在
+  `aresrecovery.Recovery` 上（sweep 已付全量遍历成本，零新增签名改动），
+  内核 sweep 末尾**仅非空时**打 Warn（"N 个孤儿、M 单位资源、例如这三个"）。
 
 | 环节 | 函数 | 源码 |
 |---|---|---|
 | 恢复系统 | `Recovery` | `internal/aresrecovery/recovery.go:21` |
 | 租约过期扫描 | `RequeueExpiredLeases` | `recovery.go:254` |
-| 原地复活 | `RestartAgent`（death snapshot） | `recovery.go:370` |
+| 原地复活（窗口预算） | `RestartAgent` | `recovery.go`（`RestartWindow` / `pruneRestarts`） |
 | 完整恢复链 | `RecoverFromAgentDeath` | `recovery.go:555` |
+| 孤儿审计 | `Fabric.AuditOrphans` | `internal/fabric/agent/orphan_audit.go` |
+| 孤儿事件键 | `PayloadKeyOrphanedSpawns` | `internal/fabric/agent/stopreason.go` |
 | 内核恢复循环 | `runKernelRecoveryLoop` | `cmd/ares/kernel_loop.go:389` |
+
+**Deadline 不是租约过期**：上面讲的是**执行权失效**，这里救回来的任务消耗的是
+restart budget，重试预算不动。而 `Task.Deadline` 已过是另一种截止——终态，
+这个扫描不会再把它入队（见 §4.1）。
 
 ### 12.1 task 失败降级（0.3.3 新增，紧挨 agent 层）
 
@@ -1247,6 +1322,34 @@ GA 循环本身（打分 → 选育 → 门 → 部署）**不产生任何 LLM �
 > **总结**：GA 进化的是"用哪套 prompt + 参数跑任务"，而"这套参数效果如何"的数据
 > 是任务执行时 LLM 已经帮你采好、写在 evidence store 里的。GA 只是事后"算分→淘汰→繁殖"，
 > 不需要再调 LLM 做评测。这是**热路径产生数据、冷路径消费数据**的经典解耦。
+
+### 14.2 语料会腐烂：零模型调用的探针（0.3.x 新增）
+
+G3 的 arena 门跑的是**仓库里的一份评测语料**——没有版本号、没人盯的文件。它的腐烂
+是静默的：case 被删、锚（确定性检查）被去掉，唯一的症状是"后面的分数全成了判官
+意见"。`corpus_monitor.go` 把这件事变成**零成本可观测**：
+
+- **`InspectCorpus`**：读 suite 文件，报"可用 case 数"（与门同口径的空输入过滤）、
+  "带确定性锚的 case 数"、"原始字节 sha256 指纹"。
+- **`runCorpusProbe`**（`evolution.gates.eval_probe_interval` 驱动，**默认关**）：
+  定时重读，**指纹变化**打 Info（语料在演化是预期行为，包括不改计数的编辑），
+  **锚定归零**打 Warn（此后每个分都只是判官意见，pipeline 里没有别的机制会说这句）。
+  读不动文件也 Warn——文件坏了若等 G3 promote 时才发现就晚了。
+- **它明确不做的事**：定时跑真实评测（每 case 一次模型调用，属成本决策，未做）；
+  定时真跑与 `regression_runtime_replay` 同一理由——默认开关不应去乘账单。
+
+同一批的 per-candidate 回放：`regression_runtime_replay`（默认关）让门把候选
+**放进真实运行时逐题跑**（`RuntimeArenaExecutor`：每候选一个运行时、有界保留 2、
+判官与确定性 floor 共用），而不是让模型**扮演**候选——"分数差异是执行差异，
+不是判断差异"。开启而无 provider（cmd/ares 的 tool binder 装配顺序决定）时
+**失败关闭并指名缺件**，不静默降级回 role-play。
+
+| 环节 | 源码 |
+|---|---|
+| 语料指纹/锚定探针 | `internal/ares_bootstrap/corpus_monitor.go` |
+| 探针配置键 | `internal/ares_config/config_evolution.go`（`eval_probe_interval`） |
+| 回放执行器 | `internal/ares_bootstrap/runtime_arena_executor.go` |
+| 可换执行缝 + 共用判官 | `internal/runtime/ares_evolution/service/llm_arena_scorer.go`（`ArenaExecutor`） |
 
 ---
 
@@ -1838,7 +1941,7 @@ sequenceDiagram
     participant F as AgentFabric
     participant B as Agent B(replacement)
     S->>R: agent A 没了, task-X 还在 RUNNING
-    R->>R: ① 查 restartBudget(lifetime 累积, 默认5, 成功复活不回退)
+    R->>R: ① 查 restartBudget（窗口内: 默认 RestartWindow=1h 内 5 次; 成功复活不回退; 零窗口=lifetime 累积）
     alt 超 budget
         R--xS: 拒活, task-X FAILED
     else 没超
@@ -1854,7 +1957,7 @@ sequenceDiagram
 
 | 步 | 关键点 | 源码 |
 |---|---|---|
-| budget 检查（lifetime 累积） | "总共 5 次"不是"连续 5 次"，防循环 | `recovery.go:277` |
+| budget 检查（窗口内：`RestartWindow` 默认 1h 内 5 次；零窗口 = lifetime 累积） | "窗口内 5 次"而非"历史共 5 次"，长寿命健康 agent 能挣回预算；防循环 | `recovery.go:277` |
 | 原子预留 | check+increment 一次，先占坑再 sleep | `recovery.go:283` |
 | 指数退避 | 防 crash-restart 风暴 | `recovery.go:310` |
 | 同 ID 仲裁 | death snapshot 驱动同 ID 原地复活，provenance/审计连续 | `recovery.go:326` |
@@ -2114,7 +2217,7 @@ agent 钱包   = 【任务级】一个 agent 一生能烧多少 token/工具
 
 ---
 
-## 16. HITL 审批门 (0.3.3)
+## 29. HITL 审批门 (0.3.3)
 
 workflow step 可通过 YAML `interrupt: { message: "..." }` 或 Go 侧
 `engine.Step.Interrupt` 声明"需人工批准"。编译后的任务进入 READY 但被审批闸门挡住——
@@ -2152,3 +2255,24 @@ workflow step 可通过 YAML `interrupt: { message: "..." }` 或 Go 侧
 
 > 源码定位说明：本文行号基于 v0.3.2 快照，随 dev 分支演进可能漂移；
 > 函数名/文件路径比行号更稳定，定位时以符号为准。
+
+## 30. 版本状态：0.3.4 / 0.3.5（收敛进度）
+
+**0.3.4 收口（AKG↔GA 三条缺口，台账口径 2026-10-17/18）**：
+
+| 项 | 内容 | 状态 |
+|---|---|---|
+| M2.5 关系门 | `FilterRelations` + `FindRelationConflicts`（只用词表自带 `contradicts`，**只标记不丢弃**），`DistillBridge.extractRelations` 先过门再写 | ✅ 已接线 |
+| M4 构建可观测/增量 | `DistillConversationWithReport` 真 producer（7 计数器来自本次运行）；`persistAndPromote` 按 ContentFingerprint 跳过未变对象 | ✅ 已关闭 |
+| M6 三级检索 | `TieredRetriever`（有界 lexicon 扫描、截断判定确定性修正）+ `knowledge.tiered_retrieval` **opt-in**（替换不叠加，避免同一语料注入两次） | ✅ 已关闭（2026-10-17，opt-in） |
+
+**0.3.5 起步**：M8b 接线 + M9 维度映射已动工（含一处归因 bug 与 Q2 拍板，
+见 `docs/defects/00-INDEX.md` 修订记录）。
+
+**仍待拍板（5 项，详见 `docs/defects/00-INDEX.md`"全量登记"块）**：
+P0-1 定时真跑评测（成本决策）/ P2-1 绝对线 0.7 的口径 / P2-7 孤儿级联退役
+（契约变更）/ P2-14② 工具面上限形态 / P2-9② 向量与事件账本是否拆独立 PG 实例。
+
+**纯欠账（无需拍板）**：P2-8 dead-letter 非持久（进程内存，重启即失）；
+P2-10 RAG 默认关 + 0.4 弱下限（产品决定）；`RuntimeArenaExecutor.Execute`
+成功分支测试缺口（只有 live 集成路径能碰，台账已如实记录）。

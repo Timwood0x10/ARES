@@ -1,4 +1,4 @@
-# ARES System Internals (v0.3.3)
+# ARES System Internals (v0.3.x)
 
 > A reference walkthrough of how the ARES (goagent) v0.3.x AgentOS works,
 > covering 15 core modules, each with a Mermaid diagram and source
@@ -52,6 +52,8 @@
 26. [Context Management (sliding-window truncation + rule-based cleaning + RAG injection, NOT LLM summarization)](#26-context-management)
 27. [LLM Failover + Tool Organization (`core.Registry`)](#27-llm-failover--tool-organization)
 28. [Event-Driven Bus (who subscribes to what)](#28-event-driven-bus)
+29. [HITL Approval Gate (0.3.3)](#29-hitl-approval-gate-033)
+30. [Version Status: 0.3.4 / 0.3.5 (convergence)](#30-version-status-034--035convergence)
 
 ---
 
@@ -600,6 +602,72 @@ Now:    handleStaleWinner → immediate ReleaseReason(taskID, winner, epoch, "ca
 | `busy` bridge (`SetBusy` / `IsIdle`) | `internal/fabric/agent/agent.go:81/171`, `fabric.go:205` |
 | `StopUnfit` reclaim (`handleStaleWinner`) | `internal/kernel/scheduler_execute.go:144-170` |
 | `filterBudgetAffordable` + `ErrNoAffordableCandidate` | `internal/kernel/scheduler_execute.go:205-217` |
+
+---
+
+### 4.4 Narrowing the Advertised Toolbelt & Planner-Injected Tools (new in 0.3.x)
+
+The planner (`plannerCognition`) no longer advertises the whole registry to the
+model: each quantum sees only the subset relevant to the task. Three filters,
+fixed order and precedence (`advertisedToolSchemas`, `planner_cognition.go`):
+
+| Layer | What | Match semantics |
+|---|---|---|
+| ① L1 policy (hard gate) | a ToolClass evolution disabled is **never advertised** | not waivable below |
+| ② static filter `tool_tag_filter` (deployment-level config) | tool tags must ALL match | AND |
+| ③ capability flags (per-task) | the task's capability tags | ANY (union) |
+
+caps derivation order: explicit task-payload tags > model tagger (opt-in, config
+`llm_tool_tagging`: one model call per quantum, falls back to keywords on
+failure) > keyword table. The keyword table lives in a shared leaf package
+`internal/tools/capability` (the router and the "table vs tools that actually
+declare capabilities" drift guard share one copy, single source).
+
+**Bias: prefer failing open, never over-narrow.** Unrecognized description → no
+caps → advertise everything (only costs tokens); narrowing to the empty set →
+**fail-open back to every enabled tool** (with a Warn), never an empty list — an
+empty advertisement is indistinguishable from "the tool does not exist" and no
+transcript would show the filter as the cause.
+
+**Two "do-no-work" injected tools** (prompt-only, not in the registry,
+planner-session specific):
+
+- **`need_tools`** (narrowing escape hatch, `planner_need_tools.go`): the
+  keyword table's error direction is "partial hit" (needs network+git but only
+  matches network → the git tool is silently hidden). The model uses it to say
+  "I need a capability I cannot see"; the argument is written to the task
+  payload `tool_capabilities` and the **next** quantum's advertised surface
+  widens (per-task; the planner is shared across sessions). Malformed JSON =
+  no request, does not fail the quantum.
+- **`record_rationale`** (`planner_rationale.go`): the model calls it to state
+  **why** it is about to act. The driver is a measurement: on this deployment's
+  provider, tool-call turns returned **5/5 empty Content** (recorded by the
+  live integration test `rationale_availability_live_test.go`), so the old
+  "store Content as the rationale" got nothing on exactly the turns where a
+  reason matters, and "no reason" was indistinguishable from "the model chose
+  not to explain". The rationale now rides in the tool argument (`rationaleFrom`
+  falls back to it when Content is empty); it is advertised to the planner only
+  (the rationale's sole consumer), not the global registry. A turn that called
+  **only** `record_rationale` forces an answer, labelled `rationale_only`
+  (not mislabelled L1-blocked; see §6 `answerCauseRationaleOnly`).
+
+**Observability**: each advertisement is recorded via `ToolAdvertisementSink`
+(caps, advertised count, total); the registered total is logged at boot
+(**deliberately no cap** — what shape a cap should take is a product decision,
+and a silent limit is worse than a loud number).
+
+**MCP tools are OFF this path**: they register into the SDK's own registry and
+report planner capabilities from their description
+(`sdk/mcp_capabilities.go`), so kernel-side tag filter / caps narrowing does not
+apply to them.
+
+| Stage | Source |
+|---|---|
+| Three filters + fail-open | `internal/fabric/agent/planner_cognition.go` `advertisedToolSchemas` |
+| Keyword table (single source + drift guard) | `internal/tools/capability/capability.go` |
+| Model tagger (opt-in) | `internal/fabric/agent/planner_tagger.go` |
+| `need_tools` escape hatch | `internal/fabric/agent/planner_need_tools.go` |
+| `record_rationale` | `internal/fabric/agent/planner_rationale.go` |
 
 ---
 
@@ -1160,21 +1228,48 @@ sequenceDiagram
     end
 ```
 
-**Storm prevention**: a restart budget (lifetime-cumulative, success does not
-refund the count) + exponential backoff.
+**Storm prevention**: a restart budget + exponential backoff. The budget now
+counts **inside a time window** (`RestartPolicy.RestartWindow`, default 1h,
+`recovery.go`): only restarts within the window are counted, and stamps older
+than it are pruned in place at gate-read time — the slice stays proportional
+to the budget, not the agent's lifetime. A long-lived healthy agent that dies
+once a month is no longer mistaken for a crash loop and refused for good;
+**a zero window keeps the old lifetime-cumulative semantics** (a zero-value
+policy is unchanged). A successful revival does not refund the count (a
+revival is exactly the cycle the budget exists to stop).
 
-**Deadlines are not lease expiries**: everything above is about *execution
-rights* lapsing, and a task recovered here resumes with its budget spent but its
-retry budget intact. A passed `Task.Deadline` is a different cut-off — terminal,
-never requeued by this sweep (see §4.1).
+**Orphan visibility (P2-7, "visible, not reclaimed")**: retirement does NOT
+cascade — `Agent.Parent` is provenance, not a lifecycle relation (changing it
+is a contract change, pending a decision) — so the children a spawn/retire
+loop leaves behind stay live and keep their resource claims. Two halves
+(`orphan_audit.go` / `lifecycle.go`):
+
+- **Event side**: `retireLocked` reads the still-live direct children before
+  the state change (`orphanedSpawnsLocked`), and the retirement event payload
+  carries an `orphaned_spawns` key (**only when there are orphans**, to keep
+  every event noise-free).
+- **Reconciliation side**: `Fabric.AuditOrphans(sample)` = the count of live
+  agents whose parent is retired or whose parent record is missing (a
+  restored store can lose it) + the sum of the resources they still hold + a
+  bounded sample of ids. It rides on `aresrecovery.Recovery` (the sweep
+  already pays the full walk; no new signature change), and the kernel sweep
+  logs a Warn **only when non-empty** ("N orphans, M resource units, e.g.
+  these three").
 
 | Stage | Function | Source |
 |---|---|---|
 | Recovery subsystem | `Recovery` | `internal/aresrecovery/recovery.go:21` |
 | Lease-expiry sweep | `RequeueExpiredLeases` | `recovery.go:254` |
-| In-place revive | `RestartAgent` (death snapshot) | `recovery.go:370` |
+| In-place revive (windowed budget) | `RestartAgent` | `recovery.go` (`RestartWindow` / `pruneRestarts`) |
 | Full recovery chain | `RecoverFromAgentDeath` | `recovery.go:555` |
+| Orphan audit | `Fabric.AuditOrphans` | `internal/fabric/agent/orphan_audit.go` |
+| Orphan event key | `PayloadKeyOrphanedSpawns` | `internal/fabric/agent/stopreason.go` |
 | Kernel recovery loop | `runKernelRecoveryLoop` | `cmd/ares/kernel_loop.go:389` |
+
+**Deadlines are not lease expiries**: everything above is about *execution
+rights* lapsing, and a task recovered here resumes with its budget spent but its
+retry budget intact. A passed `Task.Deadline` is a different cut-off — terminal,
+never requeued by this sweep (see §4.1).
 
 ### 12.1 Task-failure degradation (new in 0.3.3, sits right next to the agent layer)
 
@@ -1421,6 +1516,44 @@ concatenation and numeric arithmetic, no LLM.**
 > written to the evidence store. GA just does post-hoc "score → cull →
 > breed" — no LLM evaluation re-run needed. Classic
 > **hot-path-produces-data / cold-path-consumes-data** decoupling.
+
+### 14.2 The corpus rots: a zero-model-call probe (new in 0.3.x)
+
+G3's arena gate runs against **a copy of the evaluation corpus in the
+repository** — a file with no version stamp and no one watching it. Its decay
+is silent: cases get deleted, their deterministic anchors get removed, and the
+only symptom is "every score after this is judge opinion." `corpus_monitor.go`
+makes that **cheaply observable**:
+
+- **`InspectCorpus`**: reads the suite and reports the usable case count
+  (same empty-input filter the gate applies), the count of cases carrying a
+  deterministic anchor, and a sha256 fingerprint of the raw bytes.
+- **`runCorpusProbe`** (driven by `evolution.gates.eval_probe_interval`,
+  **default off**): re-reads on a timer; a **fingerprint change** is logged at
+  Info (the corpus evolving is expected, including edits that don't change the
+  counts), and **zero anchors** is logged at Warn (from then on every score is
+  judge opinion, and nothing else in the pipeline says so). A file it cannot
+  read is also a Warn — if a broken file only surfaces at G3 promote time,
+  that is too late.
+- **What it deliberately does NOT do**: run the real eval on a timer (one model
+  call per case; a cost decision, not done). The reason is the same as
+  `regression_runtime_replay`: a default switch should not multiply the bill.
+
+The per-candidate replay that shipped in the same batch:
+`regression_runtime_replay` (default off) makes the gate **run each candidate
+through a real runtime, case by case** (`RuntimeArenaExecutor`: one runtime per
+candidate, bounded to 2 retained, shared judge + deterministic floor) instead
+of having a model **role-play** the candidate — "a score difference is an
+execution difference, not a judging difference." When enabled with no provider
+(the serving tool binder's boot ordering decides that), it **fails closed and
+names the missing piece** rather than silently downgrading to role-play.
+
+| Stage | Source |
+|---|---|
+| Fingerprint / anchor probe | `internal/ares_bootstrap/corpus_monitor.go` |
+| Probe config key | `internal/ares_config/config_evolution.go` (`eval_probe_interval`) |
+| Replay executor | `internal/ares_bootstrap/runtime_arena_executor.go` |
+| Swappable-executor seam + shared judge | `internal/runtime/ares_evolution/service/llm_arena_scorer.go` (`ArenaExecutor`) |
 
 ---
 
@@ -2112,7 +2245,7 @@ sequenceDiagram
     participant F as AgentFabric
     participant B as Agent B(replacement)
     S->>R: agent A is gone, task-X still RUNNING
-    R->>R: 1 check restartBudget (lifetime-cumulative, default 5; a successful revival does not reset it)
+    R->>R: 1 check restartBudget (windowed: default 5 within RestartWindow=1h; a successful revival does not reset it; zero window = lifetime-cumulative)
     alt over budget
         R--xS: refuse; task-X FAILED
     else within budget
@@ -2128,7 +2261,7 @@ sequenceDiagram
 
 | Step | Key point | Source |
 |---|---|---|
-| budget check (lifetime-cumulative) | "5 total", not "5 consecutive" — prevents the reset-loop | `recovery.go:277` |
+| budget check (windowed: 5 within `RestartWindow`, default 1h; zero window = lifetime-cumulative) | "5 in the window", not "5 ever" — a long-lived healthy agent earns its budget back; prevents the reset-loop | `recovery.go:277` |
 | atomic reserve | check+increment in one shot; claim the slot before the sleep | `recovery.go:283` |
 | exponential backoff | prevents a crash-restart storm | `recovery.go:310` |
 | same-ID arbitration | death snapshot drives same-ID in-place revival; provenance/audit continuous | `recovery.go:326` |
@@ -2464,7 +2597,7 @@ lifecycle events**", not "any event drives anything".
 
 ---
 
-## 16. HITL Approval Gate (0.3.3)
+## 29. HITL Approval Gate (0.3.3)
 
 A workflow step can declare `interrupt: { message: "..." }` (YAML) or set
 `engine.Step.Interrupt` (Go) to require human approval **before execution**.
@@ -2516,3 +2649,29 @@ persists byte-for-byte identically to 0.3.2/0.3.3 — pinned by
 > **Source-location note**: line numbers are a v0.3.2 snapshot and may drift as
 > the dev branch moves. Function names / file paths are more stable than line
 > numbers — locate by symbol when in doubt.
+
+## 30. Version Status: 0.3.4 / 0.3.5 (convergence)
+
+**0.3.4 close-out (the AKG↔GA three gaps; ledger wording 2026-10-17/18)**:
+
+| Item | What | Status |
+|---|---|---|
+| M2.5 relation gate | `FilterRelations` + `FindRelationConflicts` (uses only the vocabulary's own `contradicts`; **marks, never drops**); `DistillBridge.extractRelations` runs through the gate before writing | ✅ wired |
+| M4 build observability / incremental | `DistillConversationWithReport` real producer (7 counters from this run); `persistAndPromote` skips unchanged objects by ContentFingerprint | ✅ closed |
+| M6 tiered retrieval | `TieredRetriever` (bounded lexicon scan, deterministic truncation check) + `knowledge.tiered_retrieval` **opt-in** (replaces, does not stack — one corpus, one injection) | ✅ closed (2026-10-17, opt-in) |
+
+**0.3.5 start**: M8b wiring + M9 dimension mapping are underway (one
+attribution bug and a Q2 decision recorded in the `docs/defects/00-INDEX.md`
+revision log).
+
+**Still pending a decision (5, see the "full registry" block in
+`docs/defects/00-INDEX.md`)**: P0-1 timed real-eval runs (a cost decision) /
+P2-1 the 0.7 absolute-floor semantics / P2-7 orphan cascade retirement (a
+contract change) / P2-14② the tool-surface cap shape / P2-9② whether vector
+and event-ledger move to a separate PG instance.
+
+**Un-decision debt (no decision needed)**: P2-8 dead-letter not durable
+(process memory, lost on restart); P2-10 RAG off by default + 0.4 weak floor
+(a product call); the `RuntimeArenaExecutor.Execute` success-branch test gap
+(only the live integration path reaches it — recorded in the ledger, not
+claimed as covered).
