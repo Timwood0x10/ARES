@@ -34,3 +34,29 @@ func TestBuildToolClassDAG_CarriesADeclaredPrior(t *testing.T) {
 	require.NotNil(t, priors)
 	assert.Equal(t, "0.8", priors[l1MetaPrior])
 }
+
+// TestBuildToolClassDAG_CarriesDeclaredGateFields: enabled and budget are declarable for the same
+// reason prior is — otherwise they are values with no producer, and a reader cannot tell
+// "permissive by default" from "nobody ever set this".
+//
+// The declarations are also the only route that SURVIVES A RESTART: the graph is rebuilt from
+// the schemas at every boot, so a runtime writer's edits would be discarded with it.
+func TestBuildToolClassDAG_CarriesDeclaredGateFields(t *testing.T) {
+	dag, err := buildToolClassDAG([]core_tools.ToolSchema{
+		{Name: "legacy", Tags: map[string]string{l1MetaEnabledTag: "false", l1MetaBudgetTag: "50"}},
+		{Name: "plain"},
+	})
+	require.NoError(t, err)
+
+	byName := map[string]map[string]string{}
+	for _, step := range dag.Steps() {
+		byName[step.Name] = step.Metadata
+	}
+	assert.Equal(t, "false", byName["legacy"][l1MetaEnabled])
+	assert.Equal(t, "50", byName["legacy"][l1MetaBudget])
+
+	// Undeclared keeps the permissive default, and it is visible as the default rather than as
+	// an empty string that the planner would have to interpret.
+	assert.Equal(t, "true", byName["plain"][l1MetaEnabled])
+	assert.Equal(t, "0", byName["plain"][l1MetaBudget])
+}

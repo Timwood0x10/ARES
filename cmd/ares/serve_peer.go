@@ -626,6 +626,10 @@ const (
 	l1MetaEnabled = "enabled"
 	l1MetaBudget  = "budget"
 	l1MetaPrior   = "prior"
+	// Tool-side declaration tags for the other two metadata fields. They exist so all three
+	// have a value today; none of them is a measurement.
+	l1MetaEnabledTag = "enabled"
+	l1MetaBudgetTag  = "budget"
 	// l1MetaPriorTag is the tool-side tag an author uses to declare that prior.
 	l1MetaPriorTag = "prior"
 )
@@ -644,6 +648,15 @@ const (
 // taskfabric — it is a capability catalog, not an execution plan.
 //
 // Returns (nil, errNoToolSchemas) when the binder exposes no tools.
+// declaredOrDefault returns the tool's declared value for a metadata field, or the permissive
+// default when it declares nothing. Empty is "undeclared", never "false"/"0 by accident".
+func declaredOrDefault(declared, fallback string) string {
+	if declared == "" {
+		return fallback
+	}
+	return declared
+}
+
 func buildToolClassDAG(schemas []core_tools.ToolSchema) (*engine.MutableDAG, error) {
 	if len(schemas) == 0 {
 		return nil, errNoToolSchemas
@@ -666,8 +679,16 @@ func buildToolClassDAG(schemas []core_tools.ToolSchema) (*engine.MutableDAG, err
 			AgentType: "tool/" + s.Name,
 			Input:     s.Description,
 			Metadata: map[string]string{
-				l1MetaEnabled: "true",
-				l1MetaBudget:  "0", // 0 = unlimited
+				// Declared, like prior, with the permissive default when nothing is declared.
+				//
+				// Why a declaration and not a feedback loop: this graph is REBUILT at every
+				// boot from the tool schemas (injectToolClassDAG -> buildToolClassDAG), so a
+				// writer that mutated it in memory would have its decisions discarded on the
+				// next restart — the fake-loop shape this repository keeps closing. Opening
+				// the "GA writes enabled/budget/prior into L1" loop requires the decisions to
+				// live in durable storage that this builder reads, which is a separate design.
+				l1MetaEnabled: declaredOrDefault(s.Tags[l1MetaEnabledTag], "true"),
+				l1MetaBudget:  declaredOrDefault(s.Tags[l1MetaBudgetTag], "0"), // 0 = unlimited
 				// A DECLARED prior, copied from the tool's own tags: the author says "this tool
 				// is usually the right one for this class of work", and the planner surfaces it
 				// as a hint. It is deliberately not a measurement — nothing observes per-tool

@@ -160,3 +160,7 @@ LLM 每轮都会收到**全部工具 schema**（`planner_cognition.go` 里 `c.bi
 只读 `applyNeedTools` 会以为"写进 payload 就生效了"，漏掉这半环。
 
 **prior 的语义**：L1 的 `prior` 现在是**工具声明**（`tags["prior"]`）在建图时抄入，不是测量值；没有观测源不构成缺陷。
+
+**L1 的三项 metadata 现在都有值（2026-10-19 补）**：`prior` / `enabled` / `budget` 都改为**工具声明**（`tags["prior"|"enabled"|"budget"]`），未声明时取宽松默认（`""` / `"true"` / `"0"`）。
+
+**为什么不开"GA 回灌 L1"的回路**：L1 图在**每次启动**由 `injectToolClassDAG → buildToolClassDAG(toolBinder.GetToolSchemas())` **重建**，所以任何只写内存的写入方，其决定都会在下次重启时被丢弃——这正是本仓反复关闭的"假回路"形状。要让 GA 真正控制 `enabled/budget/prior`，前提是把决定放进**这个 builder 会读取的持久化存储**，那是独立设计，不在本计划内。
