@@ -2378,11 +2378,18 @@ extraction), zero LLM calls.** It treats message roles differently:
   current behaviour**. Both paths share one `CleanOptions` budget, so the
   switch changes grouping, not how much text survives. Note: the structured
   path `BuildPromptMessages` already always uses `CleanWithTurns`; this switch
-  only affects the text path `BuildContext`. **(0.3.3 update) the token budget
-  (B-G2) is now wired**: with `memory.context_token_budget>0`, `BuildContext`
-  trims the window by a conservative token estimate BEFORE cleaning (drop
-  order: system floor > tool-causal > history); 0 = off. **Still TODO**: the
-  memory-anchor LLM summary (B-G3) — a new LLM call, intentionally not done.
+  only affects the text path `BuildContext`. **(0.3.5 update) the token budget is wired on BOTH paths**: `BuildContext` and
+  `BuildPromptMessages` (the one that actually reaches the model) trim by an estimated token
+  count BEFORE cleaning (drop order: system floor > tool-causal > history). The budget is
+  `memory.context_token_budget` when set; otherwise **45% of `memory.model_context_window`**
+  (`EffectiveContextTokenBudget`) — 45 rather than 50+ because the answer, the skills block and
+  RAG snippets are added around the prompt, so a budget at the window's edge leaves them
+  nowhere. Unset on both = off. The estimate uses the vendor rates (**0.6 token per CJK
+  character, 0.3 per other**) from `internal/runtime/memory/tokencount`, shared with the
+  storage cap so the two cannot drift apart. Storage has its own bound:
+  `memory.session_max_tokens` caps how much one session HOLDS, independent of the message count
+  (one large tool result is a single message). **Still TODO**: the memory-anchor LLM summary
+  (B-G3) — a new LLM call, intentionally not done.
 
 ### 26.3 The three "compression" approaches compared (why this one)
 
@@ -2513,7 +2520,7 @@ disclosure); this is "how they are **organized** once in".
 | Method | What | Line |
 |---|---|---|
 | `Register(tool)` / `Unregister(name)` | tool in/out of the pool (id de-dupe, type check) | `:97` / `:126` |
-| `SetActiveTools(names)` | activate only these tools — the progressive-disclosure switch; **but serve keeps the full set active by default**, the live disclosure in §19 is envcap + the skills catalog | `:52` |
+| `advertisedToolSchemas` (planner) | narrows what the model is shown **per quantum**: L1 `enabled` → static tag filter → task capability tags, failing open at each step. The registry no longer carries a global active-tool switch — it was removed because it had no production caller and could not be scoped to one task | `internal/fabric/agent/planner_cognition.go` |
 | `Filter(*ToolFilter)` / `FilterByCategory` | pick tools by condition / category | `:201` / `:243` |
 | `GetSchemas()` / `GetLLMTools()` | emit schemas; the planner filters them per quantum (`advertisedToolSchemas`) before they reach the LLM | `:250` / `:291` |
 | `Execute(name, params)` | run one tool | `:177` |

@@ -111,6 +111,18 @@
 
 ## 修订记录
 
+**2026-10-19 · 收敛 C（散文断言，§26–§30）**
+
+| 断言 | 源码证据 | 判定 |
+|---|---|---|
+| 会话存储上限 **500** 条 | `context/session.go:25` | ✅ |
+| `BuildPromptMessages` 恒走 `CleanWithTurns` | `manager_impl.go` | ✅ |
+| failover 冷却 **60s**，其它错误 1/3（100ms..60s） | `llm/failover.go:17/186`（`defaultCooldownDuration`、`short = 100ms`） | ✅ |
+| `MaxHistory` 默认 **10** | `manager.go:433` | ✅ |
+| **`SetActiveTools(names)` 是渐进披露开关** | 该方法**已删除**（本轮收敛 B），文档仍在引用 | ❌ **已改为 `advertisedToolSchemas` 的三层收窄** |
+| §26「token 预算只作用于 `BuildContext`」 | 现已同时作用于 `BuildPromptMessages`，并支持 **45% 模型窗口**推导与 `session_max_tokens` 存储上限 | ❌ **中英各更新一段** |
+
+
 **2026-10-19 · 收敛 C（散文断言，§21–§25）**
 
 | 断言 | 源码证据 | 判定 |

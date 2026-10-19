@@ -2047,7 +2047,7 @@ flowchart TB
 - `compressCodeBlocks`（`cleaner.go:128`）就是把 ``` 代码块 整个替换成 `<code block>` 占位，**不读代码内容**。
 - `extractGist`（`cleaner.go:144`）取"第一个句号/叹号/问号前的句子"，取不到就 `WithEllipsis` 硬截。
 - 有 `CleaningMode`（Default/Conservative/Aggressive，`cleaner.go:19`）三档 + `CleanWithTurns`（按"回合"做工具消息的保留/裁剪，`cleaner.go:19`），但**本质仍是规则，不是 LLM**。
-- **（0.3.3 更新）`CleanWithTurns` 已可接进生产读路径**：`memory.turn_aware_cleaning: true`（ares.yaml，映射到 `MemoryConfig.TurnAwareCleaning`）时 `BuildContext` 走 `CleanWithTurns`（tool_call↔tool_result 成对保留），否则（默认）仍走扁平 `Clean`——**开关关闭 = 现状逐字节一致**；两条路径共用同一 `CleanOptions` 预算，开关只改分组、不放宽字符上限。注：结构化路径 `BuildPromptMessages` 本就恒走 `CleanWithTurns`，本开关只影响文本路径 `BuildContext`。**（0.3.3 更新）token 预算（B-G2）已接**：`memory.context_token_budget>0` 时 `BuildContext` 在清理前按保守 token 估算裁剪窗口（丢弃序：系统保底>工具因果>历史），0=关。**仍待做**：记忆锚点 LLM 摘要（B-G3，新增 LLM 调用，默认不做）。
+- **（0.3.3 更新）`CleanWithTurns` 已可接进生产读路径**：`memory.turn_aware_cleaning: true`（ares.yaml，映射到 `MemoryConfig.TurnAwareCleaning`）时 `BuildContext` 走 `CleanWithTurns`（tool_call↔tool_result 成对保留），否则（默认）仍走扁平 `Clean`——**开关关闭 = 现状逐字节一致**；两条路径共用同一 `CleanOptions` 预算，开关只改分组、不放宽字符上限。注：结构化路径 `BuildPromptMessages` 本就恒走 `CleanWithTurns`，本开关只影响文本路径 `BuildContext`。**（0.3.5 更新）token 预算**两条路径都已接：`BuildContext` 与 `BuildPromptMessages`（真正喂给模型的那条）都会在清理前按估算 token 裁剪（丢弃序：系统保底 > 工具因果 > 历史）。预算取值：设了 `memory.context_token_budget` 就用它；否则取 **`memory.model_context_window` 的 45%**（`EffectiveContextTokenBudget`）——**45% 而不是 50%+**，因为回答、skills 常驻块与 RAG 片段都是在提示词之后追加的，预算顶到窗口边缘就没地方放了。两者都不设 = 关。估算用厂商口径（**中文 0.6 token/字，其它 0.3/字符**），放在 `internal/runtime/memory/tokencount` 由两处共用，避免存储上限与提示词预算各算一套。存储侧另有独立上限：`memory.session_max_tokens` 限制**单会话占多少**，与条数上限无关（一条大工具结果也算"一条"）。**仍待做**：记忆锚点 LLM 摘要（B-G3，新增 LLM 调用，默认不做）。
 
 ### 26.3 三种"压缩"方案的对照（为什么选这个）
 
@@ -2151,7 +2151,7 @@ agent 钱包   = 【任务级】一个 agent 一生能烧多少 token/工具
 | 方法 | 干嘛 | 行号 |
 |---|---|---|
 | `Register(tool)` / `Unregister(name)` | 工具进池 / 出池（id 去重、类型校验） | `:97` / `:126` |
-| `SetActiveTools(names)` | 只激活指定工具——渐进披露的开关；**但 serve 默认保持全量 active**，§19 落地的披露是 envcap + skills 目录 | `:52` |
+| `advertisedToolSchemas`（planner） | **每个量子**收窄模型看到的工具：L1 `enabled` → 静态 tag 过滤 → 任务能力标签，每一步都失败放开。注册表**不再有全局 active-tool 开关**——它没有任何生产调用方，且无法按任务隔离，已删除 | `internal/fabric/agent/planner_cognition.go` |
 | `Filter(*ToolFilter)` / `FilterByCategory` | 按条件/类别挑工具 | `:201` / `:243` |
 | `GetSchemas()` / `GetLLMTools()` | 输出 schema；**喂给 LLM 前还要经 planner 的 `advertisedToolSchemas` 按量子收窄** | `:250` / `:291` |
 | `Execute(name, params)` | 执行单个工具 | `:177` |
