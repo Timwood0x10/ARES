@@ -142,7 +142,7 @@
 | 回归 **> 10%** 自动回滚 | `deployment.go:50`（`RollbackThreshold: 0.10`） | ✅ |
 | 部署后 `MonitorAndRollback` 监控 | `deployment.go:313`；30s 是**评估超时**（`EvaluationTimeout`），文档措辞"monitor 30s"与实现基本对应但不算精确 | ✅（措辞偏松） |
 | `events_retention_days` 默认永不删除 | `bootstrap_builder.go`（未设置则不清理） | ✅ |
-| `regression_runtime_replay` 默认关，且启用时必须有 provider | `bootstrap/regression_gate_wiring.go:139`（缺 provider 直接报错） | ✅ |
+| `regression_runtime_replay` 默认关，且启用时必须有 provider | `internal/ares_bootstrap/regression_gate_wiring.go:139`（缺 provider 直接报错） | ✅ |
 | `defaultPlanner` 用 `containsAny` 关键词 + 权重 | `internal/knowledge/planner/default.go:112` | ✅ |
 
 
