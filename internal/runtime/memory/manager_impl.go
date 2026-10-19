@@ -146,6 +146,9 @@ func NewMemoryManager(config *MemoryConfig) (MemoryManager, error) {
 	if cap := effectiveSessionMaxHistory(config); cap > 0 {
 		sessionMemory.WithMaxMessages(cap)
 	}
+	// Independent of the count cap: "keep N messages" says nothing about their size, and a
+	// deployment may well bound bytes while leaving the count at its default.
+	sessionMemory.WithMaxTokens(config.SessionMaxTokens)
 
 	taskMemory := memctx.NewTaskMemory(
 		config.MaxTasks,
@@ -191,6 +194,9 @@ func NewMemoryManagerWithDistiller(config *MemoryConfig, embedder apiembed.Embed
 	if cap := effectiveSessionMaxHistory(config); cap > 0 {
 		sessionMemory.WithMaxMessages(cap)
 	}
+	// Independent of the count cap: "keep N messages" says nothing about their size, and a
+	// deployment may well bound bytes while leaving the count at its default.
+	sessionMemory.WithMaxTokens(config.SessionMaxTokens)
 
 	taskMemory := memctx.NewTaskMemory(
 		config.MaxTasks,
@@ -362,7 +368,7 @@ func (m *memoryManager) ApplyLiveConfig(cfg *MemoryConfig) {
 	// clamps up to the read window, and a zero config value pushes 0, which
 	// WithMaxMessages translates back to the component default. Skipping the
 	// push when the knob is zero would leave a previously tightened cap live.
-	m.sessionMemory.WithMaxMessages(effectiveSessionMaxHistory(cfg))
+	m.sessionMemory.WithMaxMessages(effectiveSessionMaxHistory(cfg)).WithMaxTokens(cfg.SessionMaxTokens)
 	if m.distiller != nil && m.distillConfig != nil && cfg.DistillationThreshold >= 0 {
 		if updater, ok := m.distiller.(interface {
 			UpdateConfig(*distillation.DistillationConfig)
@@ -511,6 +517,7 @@ func (m *memoryManager) BuildPromptMessages(ctx context.Context, sessionID strin
 	// with these reads (runRetrieval does the same for its fields).
 	m.mu.RLock()
 	maxHistory := m.config.MaxHistory
+	tokenBudget := m.config.EffectiveContextTokenBudget()
 	var cleanOpts *memctx.CleanOptions
 	if m.config.CleanOptions != nil {
 		snap := *m.config.CleanOptions
@@ -521,6 +528,19 @@ func (m *memoryManager) BuildPromptMessages(ctx context.Context, sessionID strin
 	// Apply max-history limit
 	if len(messages) > maxHistory {
 		messages = messages[len(messages)-maxHistory:]
+	}
+
+	// Token budget, same order as BuildContext (budget first, clean second).
+	//
+	// This path had none: a message-count window says nothing about how many TOKENS the
+	// prompt costs, and this is the slice that actually reaches the model. Ten long tool
+	// results pass a MaxHistory of 10 and still overflow the window — the count limit bounds
+	// how many turns are considered, not how big the request is.
+	//
+	// 0 = disabled, which keeps the previous behaviour for every deployment that has not
+	// configured a budget.
+	if tokenBudget > 0 {
+		messages, _ = trimToTokenBudget(messages, tokenBudget)
 	}
 
 	// Apply intelligent context cleaning with configured options
@@ -576,7 +596,7 @@ func (m *memoryManager) BuildContext(ctx context.Context, input string, sessionI
 	m.mu.RLock()
 	maxHistory := m.config.MaxHistory
 	turnAware := m.config.TurnAwareCleaning
-	tokenBudget := m.config.ContextTokenBudget
+	tokenBudget := m.config.EffectiveContextTokenBudget()
 	m.mu.RUnlock()
 	if len(messages) > maxHistory {
 		messages = messages[len(messages)-maxHistory:]

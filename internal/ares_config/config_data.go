@@ -65,7 +65,24 @@ type MemoryConfig struct {
 	// ContextTokenBudget is an optional estimated-token ceiling applied to the
 	// windowed history before cleaning. 0 (default) disables it. It only
 	// trims (plain history before tool-causal, never system); it never widens.
+	//
+	// Leave it 0 and set ModelContextWindow instead to get the default share: the budget is
+	// then 45% of the window (see memory.DefaultContextBudgetRatio). An explicit value here
+	// always wins, which is how a deployment pins a number after measuring its own prompts.
 	ContextTokenBudget int `yaml:"context_token_budget"`
+
+	// ModelContextWindow is the model's total context window in tokens (e.g. 131072).
+	//
+	// It exists so the prompt budget can be expressed as a SHARE of the window rather than a
+	// number someone has to remember to tune: at 0 nothing is derived and the previous
+	// behaviour stands. 45% is the default share — the prompt is not the only thing that has
+	// to fit (the answer, the skills block and RAG snippets are added around it).
+	ModelContextWindow int `yaml:"model_context_window"`
+
+	// SessionMaxTokens bounds how much memory one session may store (0 = no cap). It is the
+	// storage counterpart of ContextTokenBudget: max_history bounds how many messages are
+	// kept, which says nothing about size — one large tool result is a single message.
+	SessionMaxTokens int `yaml:"session_max_tokens"`
 
 	// RAGTopK is the maximum number of retrieved snippets to inject.
 	// Defaults to 5 when zero (only applied when EnableRAG is true).

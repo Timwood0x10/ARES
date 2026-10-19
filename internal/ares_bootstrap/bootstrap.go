@@ -365,6 +365,12 @@ func wireMemory(cfg *ares_config.Config, eventStore ares_events.EventStore) (are
 		memCfg.TurnAwareCleaning = true
 	}
 	// Token budget (opt-in): closed-loop from ares.yaml. 0 = disabled.
+	if cfg.Memory.ModelContextWindow > 0 {
+		memCfg.ModelContextWindow = cfg.Memory.ModelContextWindow
+	}
+	if cfg.Memory.SessionMaxTokens > 0 {
+		memCfg.SessionMaxTokens = cfg.Memory.SessionMaxTokens
+	}
 	if cfg.Memory.ContextTokenBudget > 0 {
 		memCfg.ContextTokenBudget = cfg.Memory.ContextTokenBudget
 	}

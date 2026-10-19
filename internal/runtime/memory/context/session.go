@@ -5,6 +5,8 @@ import (
 	"errors"
 	"sync"
 	"time"
+
+	"github.com/Timwood0x10/ares/internal/runtime/memory/tokencount"
 )
 
 // Memory errors.
@@ -22,12 +24,55 @@ var (
 // context builder draws from is always available.
 const defaultMaxSessionMessages = 500
 
+// sessionMessageOverhead approximates the role + delimiter framing per stored message, matching
+// the prompt-side estimate so the two agree about what a message costs.
+const sessionMessageOverhead = 4
+
+// sessionMessageTokens estimates one stored message.
+func sessionMessageTokens(m Message) int {
+	return sessionMessageOverhead + tokencount.Rounded(m.Content)
+}
+
+// trimToTokenCap drops the oldest messages until the session fits maxTokens.
+//
+// The count cap bounds how MANY messages a session keeps, which says nothing about how much
+// memory it holds: one 2MB tool result is a single message. This cap bounds the size, and it
+// drops from the front so what remains is the recent history the readers actually use.
+//
+// maxTokens <= 0 is a no-op, so the previous behaviour is untouched for deployments that have
+// not configured a cap.
+func trimToTokenCap(msgs []Message, maxTokens int) []Message {
+	if maxTokens <= 0 || len(msgs) == 0 {
+		return msgs
+	}
+	total := 0
+	for i := range msgs {
+		total += sessionMessageTokens(msgs[i])
+	}
+	drop := 0
+	for total > maxTokens && drop < len(msgs) {
+		total -= sessionMessageTokens(msgs[drop])
+		drop++
+	}
+	if drop == 0 {
+		return msgs
+	}
+	// Keep at least the newest message: a session that stores nothing is indistinguishable
+	// from a missing one, and the caller would lose the turn that just happened.
+	if drop >= len(msgs) {
+		drop = len(msgs) - 1
+	}
+	return msgs[drop:]
+}
+
 // SessionMemory stores conversation context for a session.
 type SessionMemory struct {
-	sessions     map[string]*SessionData
-	mu           sync.RWMutex
-	maxSize      int
-	maxMessages  int
+	sessions    map[string]*SessionData
+	mu          sync.RWMutex
+	maxSize     int
+	maxMessages int
+	// maxTokens bounds how much memory a session HOLDS; 0 = no cap.
+	maxTokens    int
 	ttl          time.Duration
 	cleanupTick  time.Duration
 	stopCleanup  chan struct{}
@@ -121,6 +166,17 @@ func (m *SessionMemory) Reconfigure(maxSize int, ttl time.Duration) {
 // runtime path (memoryManager.ApplyLiveConfig pushing a patched cap) runs
 // concurrently with AddMessage/GetMessages, which read maxMessages under the
 // same lock — an unlocked write there is a data race.
+// WithMaxTokens sets the per-session stored-token cap (0 or negative restores "no cap").
+//
+// The count cap bounds how many messages a session keeps, not how big they are: a single
+// large tool result is one message. This bounds the size as well.
+func (m *SessionMemory) WithMaxTokens(n int) *SessionMemory {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.maxTokens = n
+	return m
+}
+
 func (m *SessionMemory) WithMaxMessages(n int) *SessionMemory {
 	if n <= 0 {
 		n = defaultMaxSessionMessages
@@ -247,6 +303,7 @@ func (m *SessionMemory) Set(ctx context.Context, sessionID, userID string, messa
 	if m.maxMessages > 0 && len(msgCopy) > m.maxMessages {
 		msgCopy = msgCopy[len(msgCopy)-m.maxMessages:]
 	}
+	msgCopy = trimToTokenCap(msgCopy, m.maxTokens)
 
 	session := &SessionData{
 		SessionID:  sessionID,
@@ -283,6 +340,7 @@ func (m *SessionMemory) AddMessage(ctx context.Context, sessionID string, msg Me
 		// caller holds a reference to (GetMessages/Get always copy out).
 		session.Messages = session.Messages[len(session.Messages)-m.maxMessages:]
 	}
+	session.Messages = trimToTokenCap(session.Messages, m.maxTokens)
 	session.AccessedAt = time.Now()
 
 	return nil
