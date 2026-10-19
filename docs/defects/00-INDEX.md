@@ -111,6 +111,14 @@
 
 ## 修订记录
 
+**2026-10-19 · 收敛 C（§21–§25 全量，23 条）**
+
+| 判定 | 数量 | 说明 |
+|---|---|---|
+| 准确 | 22 | `ValidateURL` 拦 loopback/private/link-local（`ssrf.go:97`，含 169.254）；`agents/sub/agent.go:55` 确为"ReAct tool loop is deleted"；`maxPlanDepth` 默认 10；`SchemaVersion` v5；`RAGTopK:5 / MinScore:0.4` @ `manager.go:448-449`；`knowledge_chunks_1024` 在生产侧出现（`provide_new_evolution.go:605`）；`RestartWindow` 5/1h；`StrategyID` 只盖一次 |
+| **错误（已修）** | **1** | "**GA patches L1 metadata**" 是**假断言**：生产里**没有任何写 L1 的 `SetNodeMetadata`**（两处分别写工作流 DAG 与 live 任务 DAG）。已改写为"**L2 会话不受 L1 变更影响**（节点已长出）"这一**真实成立**的性质，并注明 L1 写入路径尚不存在——保留设计意图，但不再把它说成已实现 |
+
+
 **2026-10-19 · 收敛 C（§17–§20 全量，17 条）**
 
 全部准确，无修改：`DefaultNormalizer` 为规则式（`normalizer.go:18`，无 LLM）；`wireAKGLoop` 位于 `assembleExperience`（`bootstrap_builder.go:162-231`，调用在 :196）；`ShouldDistill` 成功与失败**都**可蒸馏、只有内容长度过滤（`distillation_service.go:93-97`）；`MemoryRetriever` 默认 `MinScore=0.4`/`TopK=5`；`EmbeddingEnqueuer` 为可选接口（未设置 = 同步）；渐进披露三层与 `need_tools`（本文档前轮已按实现改写）；`Discovery.Enabled` 默认 false。

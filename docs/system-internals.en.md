@@ -2088,9 +2088,11 @@ flowchart TB
 
 1. **Sharing**: the tool catalog is naturally "one for the whole system"; mix it
    with session work-orders and every session gets a copy.
-2. **Evolution safety**: GA patches L1 metadata; **in-flight L2 sessions are
-   unaffected** (their nodes are already grown; the patch only governs
-   "next time").
+2. **Evolution safety**: **in-flight L2 sessions are unaffected by an L1 metadata change**
+   (their nodes are already grown; the change only governs "next time"). One caveat worth
+   stating: nothing in production writes L1 metadata yet — the only two `SetNodeMetadata` call
+   sites target the workflow DAG and the live-task (L2) DAG — so this is what the separation
+   guarantees *once* a writer exists, not something observable today.
 3. **Cadence**: L1 is stable (occasionally evolved), L2 is volatile
    (growing every quantum). One object = broken locking.
 
