@@ -111,6 +111,18 @@
 
 ## 修订记录
 
+**2026-10-19 · 收敛 C（散文断言，§21–§25）**
+
+| 断言 | 源码证据 | 判定 |
+|---|---|---|
+| `maxPlanDepth` 默认 **10** | `planner_cognition.go:26`（`DefaultMaxPlanDepth = 10`） | ✅ |
+| RAG 默认 `TopK=5 / MinScore=0.4` | `memory/manager.go:448-449` | ✅（原引用 429-430 指向函数开头，已改到实际赋值行） |
+| checkpoint `SchemaVersion` = **v5** | `checkpoint_schema.go:37`（`CurrentCheckpointSchemaVersion = 5`） | ✅ |
+| 重启预算 **5 次 / `RestartWindow`=1h** | `aresrecovery/recovery.go:124/131`（`MaxRestarts: 5`、`RestartWindow: time.Hour`） | ✅ |
+| 退避 `1s,2s,4s … 30s cap` | `recovery.go:145`（`Backoff: 1s`）＋测试里的 `MaxBackoff: 30s` | ✅ |
+| 租户/`StrategyID` 不被 LLM 覆盖、只写一次 | `syscall.go:119` 的 caller 派生、注释"stamped once" | ✅（与 §6–§8 同源） |
+
+
 **2026-10-19 · 收敛 C（散文断言，§17–§20）**
 
 | 断言 | 源码证据 | 判定 |
