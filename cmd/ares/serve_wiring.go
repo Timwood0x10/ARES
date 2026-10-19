@@ -214,9 +214,11 @@ func wiringServeToolchain(ctx context.Context, cfg *ares_config.Config, comp *ar
 	// Primitive 7 wiring: probe host commands from the ARES_NATIVE_TOOLS
 	// allowlist and register them into the internal registry (command -v +
 	// --help; security boundary = allowlist only). Registered tools flow into
-	// GetLLMTools naturally; SetActiveTools lets the runtime narrow the active
-	// subset per task (progressive disclosure), and serve keeps the full set
-	// active by default (zero-value behavior, no change to LLM tool injection).
+	// GetLLMTools naturally, and the PLANNER narrows what the model actually sees
+	// per quantum (advertisedToolSchemas: L1 enabled, static tag filter, per-task
+	// capabilities) — the registry itself no longer carries a global active-tool
+	// switch, which would be second path for the same semantics and would leak
+	// across concurrently running tasks.
 	if err := registerNativeTools(ctx, internalReg, cfg); err != nil {
 		return nil, nil, nil, fmt.Errorf("register native tools: %w", err)
 	}
