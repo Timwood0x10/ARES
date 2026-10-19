@@ -113,13 +113,41 @@ rules", §12–§15 are "when things break and how it gets better",
 §16–§21 are "back of house (storage / knowledge / memory / tools / security)",
 §22–§28 are "the frequent follow-up questions, each with a dedicated section".
 
-**Three invariants (thread through the whole system):**
+**Four invariants (thread through the whole system):**
 
 | Invariant | Meaning | Source |
 |---|---|---|
 | Agents never self-schedule | agents are scheduled, they never decide "who next" | `cmd/ares/kernel.go` (`kernelScheduler`; HTTP submission is the single entry) |
 | Tasks outlive agents | agents are disposable; tasks are durable in the fabric | `internal/aresrecovery/recovery.go` |
 | Kernel enforces provenance | origin/tenant/source come from context, never LLM args | `internal/agentsyscall/syscall.go` |
+| Tasks are externally observable / schedulable | the task is a first-class citizen: "submit / check status / await result" all go through the same task interfaces; "what counts as done" is defined once | `cmd/ares/agent_routes_tasks.go`, `agent_routes_task_read.go`, `internal/agentruntime/await.go` (added in 0.3.2) |
+
+**Plain-English picture (why the fourth one matters)**: the first two say
+"agents are consumable, tasks are the asset" — but an "asset" is only valuable
+if **the outside world can actually touch it**; not a black box you submit
+into and forget. Since 0.3.2 the task is a **first-class external interface**:
+
+- **Submit**: `POST /api/tasks {"query": "..."}`. Note the body **does not even
+  name the capability** — it defaults to `server.default_capability`, so an
+  external caller **does not need to know the internal task model** to place an
+  order.
+- **Check status**: `GET /api/tasks/{id}` returns the task view — on success
+  the session's answer, on failure the failure reason
+  (`agent_routes_task_read.go`).
+- **Await**: `POST /api/tasks?wait=<dur>` blocks until the task reaches a
+  terminal state; when the wait expires it **degrades to 202 with the current
+  state** ("submission itself never fails because a wait expired"). A wait over
+  300s is rejected with 400; a larger configured value is **clamped to the cap**
+  (default 60s).
+- **The rule is written once**: `TaskResolved` / `AwaitSessionResult`
+  (`await.go:317/397`) replace the three hand-rolled poll loops ("serve read",
+  "SDK submit", "evolution") — "what counts as resolved" (terminal state, plus
+  the session answer where one exists) is **defined once** and shared by all
+  three entry points.
+
+In one line: the first two let a task **outlive the agent**; the fourth lets a
+task **be submitted, queried, and awaited by the outside world** — "the task
+is a first-class citizen" only closes the loop here.
 
 ---
 
@@ -214,7 +242,7 @@ evolution:                                # GA on/off / population / gates / rol
 |---|---|---|
 | `kernel` | `KernelConfig` | `config.go:60` |
 | `agent_budget` (the "agent wallet") | `AgentBudgetConfig` | `config.go:148` |
-| `dag_execution` | `DAGExecutionConfig` | `config.go:157` |
+| `dag_execution` | `DAGExecutionConfig` | `config.go:171` |
 
 **Per-agent limits (`agent_budget`, `AgentBudgetConfig` in
 `internal/ares_config/config.go`)**: `tokens` / `tools` / `deadline`, all-zero =
@@ -285,8 +313,8 @@ flowchart TD
 | Submit | `Submitter.Submit` | `internal/agentruntime/submit.go:151` |
 | Queue drain | `Scheduler.drain` | `internal/kernel/scheduler_dispatch.go:43` |
 | Select + acquire | Schedule/Acquire inside `drain` | `internal/kernel/scheduler_dispatch.go:43` |
-| Execute | `Scheduler.execute` | `internal/kernel/scheduler_execute.go:52` |
-| Quantum | `buildQuantumStep` | `internal/kernel/scheduler_quantum.go:38` |
+| Execute | `Scheduler.execute` | `internal/kernel/scheduler_execute.go:70` |
+| Quantum | `buildQuantumStep` | `internal/kernel/scheduler_quantum.go:65` |
 | Dispatch | `routerCognition.ExecuteStep` | `internal/fabric/agent/l2graph.go:388` |
 
 **`routerCognition` is the dispatcher**: one session agent declares its full
@@ -375,9 +403,9 @@ How to read it (this is the foundation of the system's "dare to fail"):
 
 | Decision | Where | Rule |
 |---|---|---|
-| Retryable? | `classifyFailure` | `internal/fabric/task/failure.go:77` — explicit markers win (`MarkPermanent` / `MarkRetryable`: the producing layer knows best), a cause past the task's deadline is terminal, and **everything else is retryable**, exactly as in 0.3.2 (a bare `context.DeadlineExceeded` included). The verdict is recorded as `retryable` on the `task.failed` event, so "why did it try again" is answerable from the log alone. |
-| When? | `Fail` | `internal/fabric/task/fabric_lifecycle.go:242` — requeue only when the cause is retryable **and** budget remains. `BackoffBase` is the first delay and doubles per attempt, capped by `BackoffMax` (`internal/fabric/task/backoff.go:19`); unset means an immediate requeue, which is 0.3.2's behaviour. A waiting task is hidden from `ReadyTasks`/`ResumableTasks` and refused by `Acquire`, and `NextAttemptAt` is persisted, so a restart cannot make it retry early. |
-| Downstream? | `cascadeFailureLocked` | `internal/fabric/task/dag.go:160` — a terminal failure fails every transitive READY dependent, unless that dependent opted into `AllowPartial`: it stays READY with the failed predecessor recorded in `DegradedInputs`. That record is what unlocks it (`dependencySatisfied`, `internal/fabric/task/dag.go:113`): only recorded gaps count, so a second dependency that is still running keeps blocking. |
+| Retryable? | `classifyFailure` | `internal/fabric/task/failure.go:132` — explicit markers win (`MarkPermanent` / `MarkRetryable`: the producing layer knows best), a cause past the task's deadline is terminal, and **everything else is retryable**, exactly as in 0.3.2 (a bare `context.DeadlineExceeded` included). The verdict is recorded as `retryable` on the `task.failed` event, so "why did it try again" is answerable from the log alone. |
+| When? | `Fail` | `internal/fabric/task/fabric_lifecycle.go:397` — requeue only when the cause is retryable **and** budget remains. `BackoffBase` is the first delay and doubles per attempt, capped by `BackoffMax` (`internal/fabric/task/backoff.go:19`); unset means an immediate requeue, which is 0.3.2's behaviour. A waiting task is hidden from `ReadyTasks`/`ResumableTasks` and refused by `Acquire`, and `NextAttemptAt` is persisted, so a restart cannot make it retry early. |
+| Downstream? | `cascadeFailureLocked` | `internal/fabric/task/dag.go:178` — a terminal failure fails every transitive READY dependent, unless that dependent opted into `AllowPartial`: it stays READY with the failed predecessor recorded in `DegradedInputs`. That record is what unlocks it (`dependencySatisfied`, `internal/fabric/task/dag.go:131`): only recorded gaps count, so a second dependency that is still running keeps blocking. |
 
 **A deadline is not a lease expiry.** An expired lease means the execution rights
 lapsed: the task returns to READY and a replacement may resume it from its
@@ -447,7 +475,7 @@ for each candidate (agentID, task capability):
   ③ no prior → the neutral value stands (historical default)
 ```
 
-This is where GA lands on the hot path: `SetAgentConfidence` (`load_tracker.go:15`) lets the
+This is where GA lands on the hot path: `SetAgentConfidence` (`load_tracker.go:183`) lets the
 evolution feedback loop **override an agent's per-capability confidence in real time**,
 effective from the next drain — GA does not change code, it changes "how trustworthy this
 agent is for this kind of task".
@@ -480,7 +508,7 @@ each Schedule records one ScheduleDecision: every candidate + four-factor breakd
 
 | Location | Line |
 |---|---|
-| Score formula `Score`/`ScoreBreakdown` | `internal/fabric/task/scheduler.go:44/71` |
+| Score formula `Score`/`ScoreBreakdown` | `internal/fabric/task/scheduler.go:71/71` |
 | Candidate scoring `scoreCandidates` | `internal/kernel/decision_recorder.go:107` |
 | Budget filter + confidence resolution | `internal/kernel/scheduler_execute.go:159/192` |
 | `LoadTracker` (Begin/End/TryBegin/SetAgentConfidence) | `internal/kernel/load_tracker.go` |
@@ -499,7 +527,7 @@ The table above covers "**who gets picked**" (the score formula). But an agent o
 | `budget_exhausted` | one dimension fully spent (tokens/tools/deadline) | no (reset on respawn) | `Admissibility` |
 | `deadline_exceeded` | wall-clock lifetime over | **yes** | `Admissibility` |
 | `capability_unfit` | the scheduled winner has no live executor | no (task → READY) | `scheduler_execute.go:146/158` |
-| `crashed` | killed (panic / operator / chaos) | **yes** (death snapshot can revive) | `Kill` (`lifecycle.go:323`) |
+| `crashed` | killed (panic / operator / chaos) | **yes** (death snapshot can revive) | `Kill` (`lifecycle.go:453`) |
 | `recovery_exhausted` | revival budget spent, no more revivals | **yes** | `RestartAgent` refuses |
 | `retired` | graceful decommission | **yes** | `Retire` |
 
@@ -542,7 +570,7 @@ so **they cannot disagree** ("the two cannot disagree about who may run").
 
 **Before: budget-too-small looked like "no capability" (the `07-hil` silent hang). Now the two are separate.**
 
-**The `busy` bridge (R4, `agent.go:81/171`)**: resolves the "two state systems
+**The `busy` bridge (R4, `agent.go:235/171`)**: resolves the "two state systems
 say different things" problem between subAgent's `models.AgentStatus`
 (execution state) and fabric's `AgentState` (lifecycle state).
 
@@ -569,8 +597,8 @@ Now:    handleStaleWinner → immediate ReleaseReason(taskID, winner, epoch, "ca
 | `StopReason` full definition (8 codes) | `internal/fabric/agent/stopreason.go:43-70` |
 | `Admissibility` (single admission predicate) | `internal/fabric/agent/governance.go:113` |
 | `reserveExhausted` | `internal/fabric/agent/governance.go` (just below `Admissibility`) |
-| `busy` bridge (`SetBusy` / `IsIdle`) | `internal/fabric/agent/agent.go:81/171`, `fabric.go:187` |
-| `StopUnfit` reclaim (`handleStaleWinner`) | `internal/kernel/scheduler_execute.go:140-170` |
+| `busy` bridge (`SetBusy` / `IsIdle`) | `internal/fabric/agent/agent.go:81/171`, `fabric.go:205` |
+| `StopUnfit` reclaim (`handleStaleWinner`) | `internal/kernel/scheduler_execute.go:144-170` |
 | `filterBudgetAffordable` + `ErrNoAffordableCandidate` | `internal/kernel/scheduler_execute.go:205-217` |
 
 ---
@@ -772,12 +800,12 @@ version two-signal** scheme (F-21) to trigger a full `Reconcile`.
 |---|---|---|
 | Add node (cycle check + rollback) | `MutableDAG.AddNode` | `internal/fabric/task/workflow/engine/mutable_dag.go:77` |
 | Atomic node replace | `ReplaceNode` | `mutable_dag.go:784` |
-| Subscribe to graph events | `Subscribe` / `SubscribeWithID` | `mutable_dag.go:585` / `:593` |
+| Subscribe to graph events | `Subscribe` / `SubscribeWithID` | `mutable_dag.go:593` / `:593` |
 | Node->task mapping | `ProjectStep` | `internal/fabric/planprojection/projection.go:58` |
 | Incremental compile | `ApplyChange` | `internal/fabric/planprojection/coordinator.go:314` |
 | Full reconcile | `Reconcile` | `coordinator.go:384` |
 | Event subscription loop | `SubscribeGraphEvents` | `coordinator.go:695` |
-| Grow tool node | `L2Graph.AddToolNode` | `internal/fabric/agent/l2graph.go:280` |
+| Grow tool node | `L2Graph.AddToolNode` | `internal/fabric/agent/l2graph.go:282` |
 
 **Node ID = task ID**: the planner reads a predecessor's output by using the
 node ID to look up the task's fabric envelope (the "join key").
@@ -817,12 +845,12 @@ flowchart TB
 comment: "the L1 graph is NOT compiled into taskfabric — it is a capability
 catalog, not an execution plan (L1 != L2)"):
 
-- At boot, `injectToolClassDAG` (`serve_peer.go:511`) scans
+- At boot, `injectToolClassDAG` (`serve_peer.go:534`) scans
   `toolBinder.GetToolSchemas()` to build L1 and feeds it to the evolution system.
 - The planner checks L1 constraints before growing a tool node
   (`internal/fabric/agent/l2graph.go` `CountToolClass`).
 
-> Note: there is also a **LiveDAG** (`buildLiveAgentDAG`, `serve_peer.go:536`)
+> Note: there is also a **LiveDAG** (`buildLiveAgentDAG`, `serve_peer.go:574`)
 > = "one node per peer agent", the **agent-pool topology** that the
 > evolution structural patches act on (via `UpdateLiveDAG`). It is a
 > different thing from the L1 tool-class graph.
@@ -836,9 +864,9 @@ calls `web_search`:
 
 | Tool | What | Function | Source |
 |---|---|---|---|
-| `spawn_agent` | "hire a teammate" | `SpawnAgent` | `internal/agentsyscall/syscall.go:349` |
-| `create_task` | "split this into subtasks" | `CreateTask` | `syscall.go:455` |
-| `ask_agent` | "ask a teammate" | `AskAgent` | `syscall.go:615` |
+| `spawn_agent` | "hire a teammate" | `SpawnAgent` | `internal/agentsyscall/syscall.go:354` |
+| `create_task` | "split this into subtasks" | `CreateTask` | `syscall.go:485` |
+| `ask_agent` | "ask a teammate" | `AskAgent` | `syscall.go:730` |
 | `create_plan` | grow a whole DAG at once | `CreatePlan` | `internal/agentsyscall/plan.go` |
 
 **The subtle part: provenance comes from context, not the LLM (anti-forgery).**
@@ -1143,10 +1171,10 @@ never requeued by this sweep (see §4.1).
 | Stage | Function | Source |
 |---|---|---|
 | Recovery subsystem | `Recovery` | `internal/aresrecovery/recovery.go:21` |
-| Lease-expiry sweep | `RequeueExpiredLeases` | `recovery.go:171` |
-| In-place revive | `RestartAgent` (death snapshot) | `recovery.go:274` |
-| Full recovery chain | `RecoverFromAgentDeath` | `recovery.go:384` |
-| Kernel recovery loop | `runKernelRecoveryLoop` | `cmd/ares/kernel_loop.go:275` |
+| Lease-expiry sweep | `RequeueExpiredLeases` | `recovery.go:254` |
+| In-place revive | `RestartAgent` (death snapshot) | `recovery.go:370` |
+| Full recovery chain | `RecoverFromAgentDeath` | `recovery.go:555` |
+| Kernel recovery loop | `runKernelRecoveryLoop` | `cmd/ares/kernel_loop.go:389` |
 
 ### 12.1 Task-failure degradation (new in 0.3.3, sits right next to the agent layer)
 
@@ -1161,7 +1189,7 @@ replace each other: the agent half is untouched in 0.3.3 (`aresrecovery` /
 | **Agent layer** (§12 body) | the agent itself dies / goes quiet → replace or revive | lease expiry, chaos kill, agent crash | always present, 0.3.3 left it alone |
 | **Task layer** (this section) | the task fails → classify retryability + backoff + gap tolerance | task returns an error, deadline exceeded | **added in 0.3.3** |
 
-**The core decision point, `classifyFailure` (`failure.go:77`)** — the single
+**The core decision point, `classifyFailure` (`failure.go:132`)** — the single
 judge of "is this failure worth retrying?" with a three-rule precedence:
 
 ```
@@ -1179,7 +1207,7 @@ judge of "is this failure worth retrying?" with a three-rule precedence:
 | Field | Line | What |
 |---|---|---|
 | `Deadline` | `task.go:30` | absolute cut-off; `ExpireDeadlines` takes its own terminal path (no requeue), `Acquire` refuses expired |
-| `RetryPolicy` | `task.go:32` (struct at `:91`) | retry budget: `MaxRetries` total / `Attempts` used; `CanRetry` (`:104`) = `Attempts < MaxRetries` |
+| `RetryPolicy` | `task.go:139` (struct at `:91`) | retry budget: `MaxRetries` total / `Attempts` used; `CanRetry` (`:104`) = `Attempts < MaxRetries` |
 | `BackoffBase`/`BackoffMax` | `task.go:37/39` | retry delay doubles, capped; `0` = immediate retry (old behaviour) |
 | `NextAttemptAt` | `task.go:45` | `Acquire` refuses before this instant; **persisted**, so a restart cannot retry early |
 | `AllowPartial` | `task.go:68` | run with a gap even when a predecessor dies permanently (a creation-time policy) |
@@ -1242,8 +1270,8 @@ flowchart LR
 |---|---|---|
 | Dispatcher | `handleChaos` | `cmd/ares/agent_routes_chaos.go:27` |
 | Random kill | `chaosKillRandomFabric` | `agent_routes_chaos.go:188` |
-| Force recover sweep | `chaosRecoverSweep` | `agent_routes_chaos.go:236` |
-| List live agents | `liveFabricAgents` | `agent_routes_chaos.go:249` |
+| Force recover sweep | `chaosRecoverSweep` | `agent_routes_chaos.go:239` |
+| List live agents | `liveFabricAgents` | `agent_routes_chaos.go:254` |
 
 **GA quiet window**: while an evolution generation is mid-flight
 (`GenerationActive`), chaos pauses injections so a half-tested fault doesn't
@@ -1465,7 +1493,7 @@ evidence of "the Leader was removed."
 (`pool.go:172-238`). `true` = transaction scope, and the connection is
 defensively cleared before return to the pool (`pool.go:215` so no tenant
 leaks across requests). **SQL-injection guard**: every identifier passes
-`validateSQLIdentifier` (`security.go:23-40`: regex + length + quoting).
+`validateSQLIdentifier` (`security.go:29-40`: regex + length + quoting).
 
 **Plain-English "Scheme B" (why not RLS)**: Postgres has built-in row-level
 security (RLS) that can isolate tenants at the DB layer, but "letting the DB
@@ -1631,17 +1659,30 @@ flowchart TB
 
 | Concern | Mechanism | Source |
 |---|---|---|
-| MCP assembly | `ProvideMCP` (stdio / http transports) | `internal/ares_bootstrap/provide_mcp.go:57` |
+| MCP assembly | `ProvideMCP` (stdio / http transports) | `internal/ares_bootstrap/provide_mcp.go:203` |
 | MCP manager | `MCPManager` (transport_stdio / transport_server) | `internal/runtime/protocol/mcp/` |
-| **Progressive disclosure** | the server keeps the **full** tool set; each task is fed only the **relevant subset** (saves tokens) | `cmd/ares/serve_wiring.go:215` |
+| **Progressive disclosure** | the registry keeps the **full** tool set; each quantum advertises a **narrowed subset** | `internal/fabric/agent/planner_cognition.go` (`advertisedToolSchemas`) |
 | Capability searcher | `registerCapabilitySearch` (envcap): makes the skills catalog a searchable tool capability | `cmd/ares/agent_routes_tools.go:280` |
 | L1 tool-class graph | `buildToolClassDAG(toolBinder.GetToolSchemas())` | `cmd/ares/serve_peer.go:515` |
 
-**What makes "tool discovery" distinctive**: instead of dumping every tool
-schema into the LLM at once (token explosion), it **registers the full set but
-feeds only the relevant subset per task** — the envcap searcher turns the
-skills catalog into "LLM-searchable" capabilities, paired with progressive
-disclosure. This is how 0.3.x avoids the "hard-dump every tool" anti-pattern.
+**What makes "tool discovery" distinctive — and what it took to be true**: the registry holds the
+full set, but the planner no longer dumps it. Every quantum the advertisement is filtered by
+(a) L1 `enabled` (a tool the evolution disabled is **not shown at all**, rather than shown and
+silently skipped when chosen), (b) a static tag filter, and (c) the task's capability tags —
+read from the task payload when a submitter set them, otherwise derived from the request text by
+keyword. Capability matching is a **union**, because the tool tag map holds one value per key.
+
+Two properties keep this from becoming a silent capability loss: a filter that matches nothing
+**fails open** to the previous set, and every advertisement emits one log line with `caps` /
+`advertised` / `total`. When the keyword read misses a capability a task really needs, the model
+can call `need_tools`; the request is unioned into the task and reaches the next quantum, which
+works only because the kernel carries task-scoped payload keys across the checkpoint re-wrap
+(`carryTaskScopedPayload` in `internal/kernel/scheduler_quantum.go`).
+
+**Boundary worth knowing**: MCP tools are not on this path. They are registered into the SDK's
+own tool registry (`sdk/sdk.go`) and report planner capabilities through `Capabilities()`
+(derived from their advertised description) instead of `cap_*` tags, so kernel-side narrowing
+does not apply to them.
 
 ### 19.1 Active service discovery (the `internal/discovery` engine)
 
@@ -1688,7 +1729,7 @@ flowchart TB
 | Provider interface | `DiscoveryProvider.Discover` | `internal/discovery/discovery.go:87` |
 | Per-IDE config scanning | `NewClaudeProvider` / `NewCursorProvider` / `NewVSCodeProvider` / `NewARESProvider` | `internal/discovery/providers/filesystem.go` |
 | Auto-discovery loop (self-heal + backoff) | `StartAutoDiscovery` | `internal/discovery/engine.go` |
-| Assembly + event bridge | `ProvideDiscovery` / `forwardDiscoveryEvent` | `internal/ares_bootstrap/provide_discovery.go:51` |
+| Assembly + event bridge | `ProvideDiscovery` / `forwardDiscoveryEvent` | `internal/ares_bootstrap/provide_discovery.go:78` |
 
 ---
 
@@ -1744,7 +1785,7 @@ HITL / MCP / full-app — the living documentation of "how to use the system."
 | Wildcard bind requires auth | refuse to start unauthenticated | `cmd/ares/serve.go:292` |
 | Path-traversal guard | `SetAllowedConfigDir` confines config reads to a directory | `internal/ares_config/config.go` |
 | Read interfaces need permission | `PermRead` gates introspect / config reads | `agent_routes_task_read.go` |
-| SQL identifier validation | `validateSQLIdentifier` blocks injection | `internal/storage/postgres/security.go:23` |
+| SQL identifier validation | `validateSQLIdentifier` blocks injection | `internal/storage/postgres/security.go:29` |
 | Tenant kernel-enforced | `kctx.CallerID` / `tenantctx` override LLM args | `internal/agentsyscall/syscall.go` |
 
 **The one through-line**: fail closed wherever it can, never trust the LLM or
@@ -2095,7 +2136,7 @@ sequenceDiagram
 | load the brain | A's LLM context/tool history moves into B | `recovery.go:340` |
 | bind + resume (**caller side**) | *not* in `RestartAgent`: `runKernelRecoveryLoop` binds task-X, the scheduler resumes from `StepCheckpoint` | `kernel_loop.go:336` |
 
-> `RecoverTaskCheckpoint` (`recovery.go:193`) and `RecoverFromAgentDeath`
+> `RecoverTaskCheckpoint` (`recovery.go:305`) and `RecoverFromAgentDeath`
 > (`recovery.go:371`) are marked TEST/CHAOS-ONLY; `RestartAgent` is the
 > production path.
 
@@ -2318,7 +2359,7 @@ Generate / GenerateStream (walk the providers):
 | default cooldown | a rate-limited (429) provider is cooled for 60s; other errors get **1/3** of that (clamped 100ms..60s) | `failover.go:17`, `:180` |
 | primary-only limit | token bucket on primary only; fallbacks unlimited | `failover.go:81` |
 | retry off | underlying clients `MaxAttempts=1` **and circuit breaker disabled**; the failover layer owns switching | `failover.go:76-77` |
-| caller cancel | `callerAborted` -> `coolDown` returns 0: stop, record nothing, blame nothing | `failover.go:200-215` |
+| caller cancel | `callerAborted` -> `coolDown` returns 0: stop, record nothing, blame nothing | `failover.go:208-215` |
 | stream timeout | first-chunk timeout (also a first-chunk `Err`, also a pre-chunk channel close) = failure -> keep failing over | `failover.go:387-436` — **note: `GenerateStream` has no production caller yet** (`:302-304`) |
 
 **Difference from the agent wallet (§3 `agent_budget`)**:
@@ -2341,13 +2382,13 @@ disclosure); this is "how they are **organized** once in".
 | `Register(tool)` / `Unregister(name)` | tool in/out of the pool (id de-dupe, type check) | `:97` / `:126` |
 | `SetActiveTools(names)` | activate only these tools — the progressive-disclosure switch; **but serve keeps the full set active by default**, the live disclosure in §19 is envcap + the skills catalog | `:52` |
 | `Filter(*ToolFilter)` / `FilterByCategory` | pick tools by condition / category | `:201` / `:243` |
-| `GetSchemas()` / `GetLLMTools()` | emit schemas (this is what the LLM is fed) | `:250` / `:291` |
+| `GetSchemas()` / `GetLLMTools()` | emit schemas; the planner filters them per quantum (`advertisedToolSchemas`) before they reach the LLM | `:250` / `:291` |
 | `Execute(name, params)` | run one tool | `:177` |
 | `OnChange(fn)` | pool-change notification (MCP dynamic add/remove syncs here) | `:41` |
 
 **How it meshes with earlier modules**: the L1 ToolClass graph (§7/§23) is built
 at boot from **tool schemas** — `toolBinder.GetToolSchemas()` →
-`buildToolClassDAG` (`cmd/ares/serve_peer.go:511-515,622`), with node id =
+`buildToolClassDAG` (`cmd/ares/serve_peer.go:647-515,622`), with node id =
 `toolName#<argKeySet>` (`core/convert.go` `ToolClassID` / `ToolArgShape`).
 The capability tags in `core/capability.go` are a **different** mechanism: they
 drive §19's envcap capability search, not the L1 graph.
