@@ -111,6 +111,11 @@
 
 ## 修订记录
 
+**2026-10-19 · 收敛 C（§17–§20 全量，17 条）**
+
+全部准确，无修改：`DefaultNormalizer` 为规则式（`normalizer.go:18`，无 LLM）；`wireAKGLoop` 位于 `assembleExperience`（`bootstrap_builder.go:162-231`，调用在 :196）；`ShouldDistill` 成功与失败**都**可蒸馏、只有内容长度过滤（`distillation_service.go:93-97`）；`MemoryRetriever` 默认 `MinScore=0.4`/`TopK=5`；`EmbeddingEnqueuer` 为可选接口（未设置 = 同步）；渐进披露三层与 `need_tools`（本文档前轮已按实现改写）；`Discovery.Enabled` 默认 false。
+
+
 **2026-10-19 · 收敛 C（§13–§16 全量，18 条）**
 
 | 判定 | 数量 | 说明 |
