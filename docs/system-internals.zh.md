@@ -969,7 +969,7 @@ flowchart LR
 | 原语 | 语义 | 源码 |
 |---|---|---|
 | `Send` | 发不等回 | `internal/agentipc/primitives.go:57` |
-| `Request` | 问 + 等（带 30s 超时） | `primitives.go:146` |
+| `Request` | 问 + 等（带 30s 超时） | `internal/agentipc/primitives.go:146` |
 | `Reply` | 异步回信 | `primitives.go` |
 | `Delegate` | 转给能办的人 | `primitives.go` |
 | `Handoff` | 任务所有权点对点交接 | `primitives.go:454` |

@@ -111,6 +111,19 @@
 
 ## 修订记录
 
+**2026-10-19 · 收敛 C（散文断言，§6–§8）**
+
+| 断言 | 源码证据 | 判定 |
+|---|---|---|
+| `create_task` 的 `Origin` 取自 `kctx.CallerID(ctx)`，非 LLM 提供 | `internal/agentsyscall/plan.go:128` | ✅ |
+| 依赖不存在时**当场失败、不创建任务**（不会留下永远无法满足的依赖） | `internal/fabric/task/fabric_deps.go:86`（"nothing would ever satisfy it"） | ✅ |
+| 相同提问在 **30s** 内去重 | `internal/agentsyscall/syscall.go:624`（`defaultAskDedupeWindow`） | ✅ |
+| `Request` = ask + wait，**30s** 超时 | `internal/agentipc/primitives.go:20/146`（`defaultRequestTimeout`） | ✅ 但原引用只写 `primitives.go:146`，易被误认为 `agentsyscall/` 下的文件——已补全路径 |
+| spawn 额外过配额 | `internal/fabric/agent/fabric.go:27`（`resourceBudget`） | ✅ |
+
+§6–§8 无错误断言，仅一处**路径歧义**已修。
+
+
 **2026-10-19 · 收敛 C（散文断言，§1–§5）**
 
 | 断言 | 源码证据 | 判定 |

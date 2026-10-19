@@ -1094,7 +1094,7 @@ flowchart LR
 | Primitive | Semantics | Source |
 |---|---|---|
 | `Send` | fire-and-forget | `internal/agentipc/primitives.go:57` |
-| `Request` | ask + wait (30s timeout) | `primitives.go:146` |
+| `Request` | ask + wait (30s timeout) | `internal/agentipc/primitives.go:146` |
 | `Reply` | async reply | `primitives.go` |
 | `Delegate` | forward to whoever can | `primitives.go` |
 | `Handoff` | point-to-point task ownership | `primitives.go:454` |
