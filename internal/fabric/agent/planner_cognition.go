@@ -15,6 +15,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/fabric/task"
 	"github.com/Timwood0x10/ares/internal/fabric/task/workflow/engine"
 	llmcore "github.com/Timwood0x10/ares/internal/llmcore"
+	"github.com/Timwood0x10/ares/internal/tools/capability"
 	resources "github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
 
@@ -297,47 +298,10 @@ const toolCapTagPrefix = "cap_"
 // spellings cannot drift.
 const tagValueTrue = "true"
 
-// capabilityKeywords maps a capability to the terms that select it. Keep entries specific:
-// broad words (e.g. "task", "fix") would route most work into one bucket and make the
-// narrowing indistinguishable from no narrowing at all.
-var capabilityKeywords = map[string][]string{
-	// Capability names are the SAME vocabulary the tools use for their domain tag, so a task
-	// tag and a tool tag can be compared directly. "A weather request" is not a tool domain —
-	// what it needs is network access — and inventing a `weather` capability would have made
-	// the routing table describe tools that do not exist.
-	"network": {"天气", "气温", "下雨", "预报", "weather", "forecast", "http", "api", "curl", "fetch", "网页", "url", "搜索", "search"},
-	"file":    {"源码", "代码", "函数", "文件", "grep", "todo", "main.go", "code", "source"},
-	"math":    {"计算", "数学", "求和", "加减", "calculate"},
-	"data":    {"json", "校验", "validate", "转换", "format"},
-	"text":    {"文本", "摘要", "翻译", "text"},
-	"git":     {"git", "commit", "diff", "branch", "仓库"},
-	"shell":   {"shell", "bash", "命令", "终端"},
-}
-
-// capabilitiesFromText returns every capability whose keywords appear in text.
-//
-// Case-insensitive because the same request arrives in both cases; the CJK terms are matched
-// literally (no tokenizer here, and a substring match on a two-character term is precise
-// enough for this table).
-func capabilitiesFromText(text string) []string {
-	if text == "" {
-		return nil
-	}
-	lower := strings.ToLower(text)
-	var caps []string
-	for cap, terms := range capabilityKeywords {
-		for _, term := range terms {
-			if strings.Contains(lower, term) {
-				caps = append(caps, cap)
-				break
-			}
-		}
-	}
-	// Sorted so the same request always yields the same tag set (the advertisement is logged
-	// and compared between runs; map iteration order would make the log noisy for no reason).
-	sort.Strings(caps)
-	return caps
-}
+// capabilitiesFromText delegates to the shared table (internal/tools/capability) so the routing
+// keywords have exactly one home: the drift test that compares them with the capabilities tools
+// actually declare lives next to the table, not here.
+func capabilitiesFromText(text string) []string { return capability.FromText(text) }
 
 func explicitTaskCapabilities(task *models.Task) []string {
 	if task == nil {
