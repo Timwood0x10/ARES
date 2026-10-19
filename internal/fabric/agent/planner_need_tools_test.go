@@ -54,3 +54,26 @@ func TestNeedToolsToolSchema(t *testing.T) {
 	require.True(t, ok)
 	assert.Contains(t, props, needToolsArgKey)
 }
+
+// TestApplyNeedTools_KeepsCapsWrittenInAnotherShape is the asymmetry this used to have: the
+// router accepted []string, []any and a comma-separated string, while the hatch asserted
+// []string only. A task submitted by the SDK with []any therefore had its existing capabilities
+// silently replaced by whatever need_tools asked for.
+func TestApplyNeedTools_KeepsCapsWrittenInAnotherShape(t *testing.T) {
+	for name, existing := range map[string]any{
+		"[]any":        []any{"file"},
+		"comma string": "file",
+	} {
+		t.Run(name, func(t *testing.T) {
+			task := models.NewTask("t3", "coder", nil)
+			task.Payload[TaskToolCapabilityKey] = existing
+
+			call := llmcore.ToolCall{}
+			call.Function.Arguments = `{"extra_caps":["git"]}`
+			(&plannerCognition{}).applyNeedTools(context.Background(), task, call)
+
+			assert.Equal(t, []string{"file", "git"}, task.Payload[TaskToolCapabilityKey],
+				"the capability already on the task must survive whichever shape it was written in")
+		})
+	}
+}

@@ -152,14 +152,14 @@ func rationaleToolSchema() llmcore.Tool {
 				"It records context for whoever continues this work (including a different agent) and performs no work itself.",
 			Parameters: map[string]interface{}{
 				schemaKeyType: "object",
-				"properties": map[string]interface{}{
+				schemaKeyProperties: map[string]interface{}{
 					rationaleArgKey: map[string]interface{}{
 						schemaKeyType: "string",
 						"description": "The reason for the next step, in natural language (kept to " +
 							strconv.Itoa(rationaleMaxRunes) + " characters).",
 					},
 				},
-				"required": []string{rationaleArgKey},
+				schemaKeyRequired: []string{rationaleArgKey},
 			},
 		},
 	}

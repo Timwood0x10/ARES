@@ -26,8 +26,10 @@ const needToolsArgKey = "extra_caps"
 // goconst counts them per package, and one spelling is one place to change if the wire format
 // ever moves.
 const (
-	toolTypeFunction = "function"
-	schemaKeyType    = "type"
+	toolTypeFunction    = "function"
+	schemaKeyType       = "type"
+	schemaKeyProperties = "properties"
+	schemaKeyRequired   = "required"
 )
 
 // needToolsToolSchema advertises the hatch. Like the rationale tool it is injected into the
@@ -45,14 +47,14 @@ func needToolsToolSchema() llmcore.Tool {
 				"performs no work.",
 			Parameters: map[string]interface{}{
 				schemaKeyType: "object",
-				"properties": map[string]interface{}{
+				schemaKeyProperties: map[string]interface{}{
 					needToolsArgKey: map[string]interface{}{
-						"type":        "array",
+						schemaKeyType: "array",
 						"items":       map[string]interface{}{schemaKeyType: "string"},
 						"description": "Capability names to add, e.g. [\"network\", \"file\"].",
 					},
 				},
-				"required": []string{needToolsArgKey},
+				schemaKeyRequired: []string{needToolsArgKey},
 			},
 		},
 	}
@@ -72,8 +74,11 @@ func (c *plannerCognition) applyNeedTools(_ context.Context, task *models.Task, 
 	if task.Payload == nil {
 		task.Payload = make(map[string]any, 1)
 	}
-	current, _ := task.Payload[TaskToolCapabilityKey].([]string)
-	merged := unionCapabilities(current, extra)
+	// Read through the same parser the router uses rather than asserting []string here: the
+	// payload may hold []string, []any or a comma-separated string (SDK/CLI submitters write
+	// those), and a hard assertion would silently drop what was already there, leaving only the
+	// caps requested now. Read and write must share one parser or they drift.
+	merged := unionCapabilities(explicitTaskCapabilities(task), extra)
 	task.Payload[TaskToolCapabilityKey] = merged
 	if c.logger != nil {
 		c.logger.Info("planner: capabilities widened by request",
