@@ -102,6 +102,10 @@ LLM 每轮都会收到**全部工具 schema**（`planner_cognition.go` 里 `c.bi
 
 ### P3 · MCP 工具的能力来源（✅ 已完成，落点与计划不同）
 
+**已知边界（必须写清）**：MCP 工具不带 `cap_*` tag（`mcpToolAdapter` 只有 `caps` 字段），因此**游离于 kernel 的 cap 路由之外**——对"主要靠 MCP 工具"的部署，按需披露基本不生效，只能靠 L1 `enabled` 单独管。这是设计选择，不是遗漏。
+
+**降级说明**：分类只在**注册时**做一次（`sdk/sdk.go`），server 重连/描述更新后 caps 不刷新；计划原先写的"缓存 + 可刷新"未实现。
+
 **落点修正**：MCP 工具**不经 kernel 的 `core.Registry`**，而是经 `sdk/sdk.go` 注册进 SDK 的工具表；因此 P3 做在 `mcpToolAdapter.Capabilities()`（原恒为 nil），由 `classifyMCPToolCapabilities` 在**注册时**按 `tools/list` 的 name+description 分类一次，映射到 planner 的宽类目（`capdef.go`）。kernel 侧走 `core.ToolSchema.Tags` + `cap_*`，**两套词表不互通**。
 
 ### P3-旧 · 倒排索引 + MCP 按需发现（未做，已被上面的落点取代）
@@ -109,7 +113,7 @@ LLM 每轮都会收到**全部工具 schema**（`planner_cognition.go` 里 `c.bi
 - bootstrap 时用 `registry.GetSchemas()`（已带 `Tags`）建 `tag → toolNames`；
 - MCP server 连接时读一次 `tools/list` 的 description 做分类并缓存（新增工具可刷新，无需重启）。
 
-### P4 · 逃生口与质量反馈
+### P4 · 逃生口与质量反馈（✅ 逃生口已做；prior 改为"工具声明"）
 
 - `need_tools(tag)`：LLM 在子集不足时可**主动**申请扩面；没有它，错误路由不可恢复；
 - 之后再谈用 `l1.prior` 表达工具质量。**已核实的事实（2026-10-19）**：
@@ -148,3 +152,11 @@ LLM 每轮都会收到**全部工具 schema**（`planner_cognition.go` 里 `c.bi
 | 2026-10-19 | 曾考虑用"task 级改 L1 + 恢复"实现路由 | 共享图 + 并发任务 ⇒ 干扰与"忘恢复即全局退化"；改为 per-planner 的 `ToolTagFilter` |
 
 **教训（与仓库既有台账同一条）**：断言"不存在"之前，grep 必须覆盖 `internal/` 与 `cmd/`；断言"某字段在生效"之前，要找到**调用点**，而不是只找到字段定义。
+
+## 9. 补记（2026-10-19，review 后追加）
+
+**跨量子的另一半（容易漏）**：caps 写进 `task.Payload` **不等于**能活到下一个量子。checkpoint 重打包用的是**提交时**的 `meta.Payload`（`copyPayloadMap` 的防污染设计），executor 写入会被丢弃。真正让 caps 跨量子生效的是 `internal/kernel/scheduler_quantum.go` 的 **`carryTaskScopedPayload`**：它只把 task-scoped 白名单键（`taskScopedPayloadKeys`，目前只有 `tool_capabilities`）从 executor 侧覆盖回 envelope，quantum-scoped 键（如 `checkpoint`）仍然丢弃。测试在 `internal/kernel/scheduler_payload_test.go`，含**真实 encode/decode 往返**与反证。
+
+只读 `applyNeedTools` 会以为"写进 payload 就生效了"，漏掉这半环。
+
+**prior 的语义**：L1 的 `prior` 现在是**工具声明**（`tags["prior"]`）在建图时抄入，不是测量值；没有观测源不构成缺陷。

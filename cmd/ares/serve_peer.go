@@ -626,6 +626,8 @@ const (
 	l1MetaEnabled = "enabled"
 	l1MetaBudget  = "budget"
 	l1MetaPrior   = "prior"
+	// l1MetaPriorTag is the tool-side tag an author uses to declare that prior.
+	l1MetaPriorTag = "prior"
 )
 
 // buildToolClassDAG constructs the L1 capability graph: one node per
@@ -666,7 +668,12 @@ func buildToolClassDAG(schemas []core_tools.ToolSchema) (*engine.MutableDAG, err
 			Metadata: map[string]string{
 				l1MetaEnabled: "true",
 				l1MetaBudget:  "0", // 0 = unlimited
-				l1MetaPrior:   "",
+				// A DECLARED prior, copied from the tool's own tags: the author says "this tool
+				// is usually the right one for this class of work", and the planner surfaces it
+				// as a hint. It is deliberately not a measurement — nothing observes per-tool
+				// outcomes today, and a number we invented would be indistinguishable in the
+				// prompt from one we measured. A future writer can overwrite it.
+				l1MetaPrior: s.Tags[l1MetaPriorTag],
 			},
 		}
 		steps = append(steps, step)
