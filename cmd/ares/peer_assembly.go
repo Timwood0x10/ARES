@@ -332,6 +332,9 @@ func (a *peerAssembly) assembleExecution() error {
 		ReaperGrace:    resolveReaperGrace(cfg.Kernel.DAGExecution),
 		SessionIdleTTL: resolveSessionIdleTTL(cfg.Kernel.DAGExecution),
 		CompileStore:   store,
+		EventStore:     store,
+		ToolTagFilter:  cfg.Kernel.ToolTagFilter,
+		LLMToolTagging: cfg.Kernel.LLMToolTagging,
 		// Serve-side memory enrichment: fold conversation history into the
 		// submission prompt before admission, the way the SDK folds it in
 		// Agent.composePrompt. Nil when memory is disabled/unbuilt — the

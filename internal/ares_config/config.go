@@ -63,6 +63,15 @@ type KernelConfig struct {
 	// its policy flag were removed. Empty is reported as the effective default
 	// "taskfabric".
 	Policy string `yaml:"policy"`
+	// ToolTagFilter narrows which tools the planner ADVERTISES, by tool tags: every entry must
+	// match. Empty (the default) advertises everything.
+	//
+	// It is the deployment-level face of tool routing — "what may these agents ever see" —
+	// distinct from the per-task capability tags, which are derived per quantum.
+	ToolTagFilter map[string]string `yaml:"tool_tag_filter"`
+	// LLMToolTagging asks the model to derive a task's capability tags instead of relying on
+	// the keyword table alone. Off by default: one model call per quantum.
+	LLMToolTagging bool `yaml:"llm_tool_tagging"`
 	// PollInterval is the kernelScheduler drain interval (default 500ms).
 	PollInterval string `yaml:"poll_interval"`
 	// MaxConcurrent caps how many ready tasks the kernel scheduler runs in
