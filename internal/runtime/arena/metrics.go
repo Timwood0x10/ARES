@@ -14,12 +14,21 @@ type MetricsSnapshot struct {
 	LastRecoveryTime time.Duration `json:"last_recovery_time"`
 
 	// Counting metrics
-	FailoverCount    int `json:"failover_count"`
 	TotalRecoveries  int `json:"total_recoveries"`
 	FailedRecoveries int `json:"failed_recoveries"`
 
 	// Data consistency
 	DataConsistencyRate float64 `json:"data_consistency_rate"` // 0-100
+
+	// Unmeasured names the fields above that NO producer filled, so a zero in them means
+	// "never measured" rather than "measured as zero".
+	//
+	// This exists because the score reads these fields: recovery timing and data consistency
+	// are consumed by CalculateScore/calcConsistency, yet nothing in production calls
+	// RecordRecovery or RecordConsistency. Without this list an operator (and a reviewer)
+	// sees `data_consistency_rate: 0` and cannot tell a perfect-ish fallback from a real
+	// measurement — the silent-degradation shape this codebase keeps closing.
+	Unmeasured []string `json:"unmeasured,omitempty"`
 
 	// Per-action-type breakdown
 	ActionStats map[string]ActionMetric `json:"action_stats"`
@@ -38,7 +47,6 @@ type MetricsCollector struct {
 	mu                 sync.RWMutex
 	recoveries         []time.Duration
 	actionCounts       map[ActionType]*actionMetricInternal
-	failoverCount      int
 	consistencySamples []float64
 }
 
@@ -79,6 +87,13 @@ func (mc *MetricsCollector) RecordActionResult(actionType ActionType, success bo
 // Deprecated: Use RecordActionResult instead. No production caller remains
 // (the service records per-action results via RecordActionResult; recovery
 // timing derives from action events), so this is test-only surface.
+// CONSEQUENCE BEFORE ANYONE DELETES THIS: the snapshot fields it feeds
+// (TotalRecoveries, AvgRecoveryTime, MinRecoveryTime, MaxRecoveryTime, LastRecoveryTime) are
+// read by CalculateScore. Nothing in production calls this method, so in a real deployment
+// those fields are ALWAYS ZERO and the score's recovery component is permanently on its
+// fallback. Deleting the method without addressing the score would silently remove the
+// evidence that the component is unmeasured — fix the score first, then remove this.
+//
 // TODO(tech-debt): remove RecordRecovery together with its metrics_test.go
 // coverage once no test needs the raw recovery-timeseries path.
 func (mc *MetricsCollector) RecordRecovery(d time.Duration) {
@@ -88,25 +103,17 @@ func (mc *MetricsCollector) RecordRecovery(d time.Duration) {
 	mc.recoveries = append(mc.recoveries, d)
 }
 
-// RecordFailover records a failover event.
-//
-// Deprecated: Use RecordActionResult instead. No production caller remains
-// (per-action success/failure is recorded via RecordActionResult), so this is
-// test-only surface.
-// TODO(tech-debt): remove RecordFailover and the FailoverCount snapshot field
-// once no test needs the legacy failover counter.
-func (mc *MetricsCollector) RecordFailover() {
-	log.Warn("MetricsCollector.RecordFailover is deprecated, use RecordActionResult instead; no production caller remains (test-only)")
-	mc.mu.Lock()
-	defer mc.mu.Unlock()
-	mc.failoverCount++
-}
-
 // RecordConsistency records a data consistency rate sample (0-100).
 //
 // Deprecated: Use RecordActionResult instead. No production caller remains
 // (action results are recorded via RecordActionResult), so this is test-only
 // surface.
+// CONSEQUENCE BEFORE ANYONE DELETES THIS: DataConsistencyRate is read by
+// calcConsistency, which falls back to a heuristic whenever it is zero. Nothing in production
+// calls this method, so that field is ALWAYS ZERO and every deployment is scored by the
+// heuristic while the metrics snapshot still reports a "rate" field. Removing this method (and
+// the field) is only honest together with making the fallback explicit in the score.
+//
 // TODO(tech-debt): remove RecordConsistency and the DataConsistencyRate
 // snapshot field once no test needs the legacy consistency-timeseries path.
 func (mc *MetricsCollector) RecordConsistency(rate float64) {
@@ -122,7 +129,6 @@ func (mc *MetricsCollector) Snapshot() MetricsSnapshot {
 	defer mc.mu.RUnlock()
 
 	snap := MetricsSnapshot{
-		FailoverCount:   mc.failoverCount,
 		TotalRecoveries: len(mc.recoveries),
 	}
 
@@ -172,6 +178,14 @@ func (mc *MetricsCollector) Snapshot() MetricsSnapshot {
 		snap.DataConsistencyRate = sum / float64(len(mc.consistencySamples))
 	}
 
+	// Declare what was never measured (see Unmeasured for why this is part of the payload).
+	if len(mc.recoveries) == 0 {
+		snap.Unmeasured = append(snap.Unmeasured, "recovery_timing")
+	}
+	if len(mc.consistencySamples) == 0 {
+		snap.Unmeasured = append(snap.Unmeasured, "data_consistency")
+	}
+
 	return snap
 }
 
@@ -182,6 +196,5 @@ func (mc *MetricsCollector) Reset() {
 
 	mc.recoveries = make([]time.Duration, 0)
 	mc.actionCounts = make(map[ActionType]*actionMetricInternal)
-	mc.failoverCount = 0
 	mc.consistencySamples = make([]float64, 0)
 }

@@ -13,7 +13,6 @@ func TestNewMetricsCollector(t *testing.T) {
 	assert.NotNil(t, mc)
 	snap := mc.Snapshot()
 	assert.Equal(t, 0, snap.TotalRecoveries)
-	assert.Equal(t, 0, snap.FailoverCount)
 	assert.Nil(t, snap.ActionStats)
 	assert.Equal(t, time.Duration(0), snap.AvgRecoveryTime)
 }
@@ -53,16 +52,6 @@ func TestRecordRecovery_Multiple_AvgMinMax(t *testing.T) {
 	assert.Equal(t, 400*time.Millisecond, snap.LastRecoveryTime)
 }
 
-func TestRecordFailover(t *testing.T) {
-	mc := NewMetricsCollector()
-	mc.RecordFailover()
-	mc.RecordFailover()
-	mc.RecordFailover()
-
-	snap := mc.Snapshot()
-	assert.Equal(t, 3, snap.FailoverCount)
-}
-
 func TestRecordActionResult_PerTypeBreakdown(t *testing.T) {
 	mc := NewMetricsCollector()
 
@@ -96,8 +85,6 @@ func TestSnapshot_AllFieldsPopulated(t *testing.T) {
 	mc := NewMetricsCollector()
 	mc.RecordRecovery(300 * time.Millisecond)
 	mc.RecordRecovery(700 * time.Millisecond)
-	mc.RecordFailover()
-	mc.RecordFailover()
 	mc.RecordActionResult(ActionPauseAgent, true, 50*time.Millisecond)
 	mc.RecordConsistency(95.0)
 	mc.RecordConsistency(85.0)
@@ -107,9 +94,6 @@ func TestSnapshot_AllFieldsPopulated(t *testing.T) {
 	// Recovery timing.
 	assert.Equal(t, 2, snap.TotalRecoveries)
 	assert.Equal(t, 500*time.Millisecond, snap.AvgRecoveryTime) // (300+700)/2
-
-	// Failover count.
-	assert.Equal(t, 2, snap.FailoverCount)
 
 	// Action stats.
 	am, ok := snap.ActionStats["pause_agent"]
@@ -124,7 +108,6 @@ func TestSnapshot_AllFieldsPopulated(t *testing.T) {
 func TestReset_Cleared(t *testing.T) {
 	mc := NewMetricsCollector()
 	mc.RecordRecovery(1 * time.Second)
-	mc.RecordFailover()
 	mc.RecordActionResult(ActionKillAgent, true, 100*time.Millisecond)
 	mc.RecordConsistency(90.0)
 
@@ -137,7 +120,6 @@ func TestReset_Cleared(t *testing.T) {
 	snapAfter := mc.Snapshot()
 
 	assert.Equal(t, 0, snapAfter.TotalRecoveries)
-	assert.Equal(t, 0, snapAfter.FailoverCount)
 	assert.Nil(t, snapAfter.ActionStats)
 	assert.Equal(t, 0.0, snapAfter.DataConsistencyRate)
 	assert.Equal(t, time.Duration(0), snapAfter.AvgRecoveryTime)
@@ -159,7 +141,6 @@ func TestConcurrentAccess(t *testing.T) {
 				case 0:
 					mc.RecordRecovery(time.Duration(j+1) * time.Millisecond)
 				case 1:
-					mc.RecordFailover()
 				case 2:
 					mc.RecordActionResult(ActionKillAgent, j%3 != 0, time.Duration(j)*time.Millisecond)
 				case 3:
@@ -198,4 +179,21 @@ func TestRecordRecovery_EmptyCollector(t *testing.T) {
 	assert.Equal(t, time.Duration(0), snap.AvgRecoveryTime)
 	assert.Equal(t, time.Duration(0), snap.MinRecoveryTime)
 	assert.Equal(t, time.Duration(0), snap.MaxRecoveryTime)
+}
+
+// TestSnapshot_DeclaresUnmeasuredInputs is the fix for the silent fallback: two snapshot fields
+// are read by CalculateScore but have no production producer, so they are always zero. A zero
+// that means "never measured" must not be indistinguishable from a measured zero.
+func TestSnapshot_DeclaresUnmeasuredInputs(t *testing.T) {
+	mc := NewMetricsCollector()
+
+	snap := mc.Snapshot()
+	assert.ElementsMatch(t, []string{"recovery_timing", "data_consistency"}, snap.Unmeasured,
+		"a fresh collector has measured neither input")
+
+	// Once a producer runs, the field stops being reported as unmeasured.
+	mc.RecordRecovery(250 * time.Millisecond)
+	mc.RecordConsistency(90)
+	snap = mc.Snapshot()
+	assert.Empty(t, snap.Unmeasured, "measured inputs must not be listed as unmeasured")
 }
