@@ -2,7 +2,10 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # dev is where the work happens, so it must be gated too: with only main here, a freeze
+    # violation (a new top-level package) sat on dev for eight days and surfaced only when the
+    # release PR opened against main.
+    branches: [main, dev]
   pull_request:
     branches: [main]
 
