@@ -60,6 +60,24 @@ We welcome feature suggestions! Please:
 - Docker (for local development)
 - Git
 
+### Enable the local hooks (once per clone)
+
+Two CI checks compare *file shapes* rather than running code, and both are cheap enough to run on
+every push:
+
+- `scripts/check_convergence_freeze.sh` — no new top-level packages under `internal/` or new demo
+  dirs under `examples/` without a recorded reason in `docs/convergence/freeze-manifest.txt`;
+- `scripts/check_doc_anchors.sh` — no `file.go:NNN` reference pointing past the end of a file.
+
+```bash
+git config core.hooksPath .githooks
+```
+
+This installs `.githooks/pre-push`, which runs both and refuses the push on failure
+(`git push --no-verify` bypasses it — do that only when you know why the check is wrong).
+CI runs the same checks, now on `dev` as well as `main`: without that, a freeze violation lived on
+`dev` for eight days and only surfaced when the release PR opened.
+
 ### Local Development
 
 1. **Clone the repository**:

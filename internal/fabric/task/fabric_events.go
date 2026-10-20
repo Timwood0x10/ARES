@@ -47,6 +47,22 @@ func (f *Fabric) recordLocked(t *Task, typ EventType) *pendingAppend {
 	return f.recordWithExtrasLocked(t, typ, nil)
 }
 
+// stampAnswerQuality writes the answer-quality signals (answer_body_source and
+// truncated) into the terminal event payload when present.
+//
+// Split out of recordWithExtrasLocked because that function stamps several
+// independent contracts — capability, failure provenance, token usage, approvals
+// — and each reads better as its own named step. The values arrive already
+// decoded so the caller can extract them in the same decode as the token totals.
+func stampAnswerQuality(payload map[string]any, bodySource string, truncated bool) {
+	if bodySource != "" {
+		payload[restoreKeyAnswerBodySource] = bodySource
+	}
+	if truncated {
+		payload[restoreKeyAnswerTruncated] = true
+	}
+}
+
 // recordWithExtrasLocked is recordLocked plus event-payload annotations that
 // describe WHY a transition happened (e.g. whether a failure is retryable).
 // They are event-only: read from the durable event and never folded back into a
@@ -112,12 +128,12 @@ func (f *Fabric) recordWithExtrasLocked(t *Task, typ EventType, extras map[strin
 	// active at fold time". The value comes from the checkpoint envelope;
 	// decode is pure in-memory (safe under f.mu) and failure degrades to ""
 	// (no key — the observer's activeID fallback), never an error.
-	if sid := strategyIDFromCheckpoint(t.Checkpoint); sid != "" {
+	if sid := f.strategyIDFromCheckpoint(t.Checkpoint); sid != "" {
 		payload[restoreKeyStrategyID] = sid
 	}
 	// SessionID rides on every event too, same reasoning as StrategyID —
 	// the session scope must be visible without decoding checkpoints.
-	if sid := sessionIDFromCheckpoint(t.Checkpoint); sid != "" {
+	if sid := f.sessionIDFromCheckpoint(t.Checkpoint); sid != "" {
 		payload[restoreKeySessionID] = sid
 	}
 	// The task's capability rides on EVERY persisted event (not only the
@@ -142,11 +158,21 @@ func (f *Fabric) recordWithExtrasLocked(t *Task, typ EventType, extras map[strin
 	// events and pre-v4 envelopes — the observer then scores on outcome and
 	// latency alone, never inventing a cost.
 	if typ == EventTaskCompleted {
-		if in, out := tokenUsageFromCheckpoint(t.Checkpoint); in > 0 || out > 0 {
+		// ONE decode for every fact this terminal payload carries (see
+		// terminalCheckpointFacts): this runs under the fabric mutex, and the
+		// token totals and the answer-quality signals live in the same envelope.
+		in, out, bodySource, truncated := f.terminalCheckpointFacts(t.Checkpoint)
+		if in > 0 || out > 0 {
 			payload[restoreKeyInputTokens] = in
 			payload[restoreKeyOutputTokens] = out
 			payload[restoreKeyTotalTokens] = in + out
 		}
+		// Answer-quality signals (P0-1): answer_body_source and truncated
+		// ride the terminal event so the RuntimeObserver can downgrade a
+		// gap/forced answer from success to degraded — the same
+		// payload-stamping contract as token usage (terminal events, read
+		// by the observer without decoding the checkpoint envelope).
+		stampAnswerQuality(payload, bodySource, truncated)
 	}
 	if isMustPersistEvent(typ) {
 		payload[restoreKeyPriority] = t.Priority
@@ -212,7 +238,7 @@ func (f *Fabric) recordWithExtrasLocked(t *Task, typ EventType, extras map[strin
 		payload[restoreKeyRetryMax] = t.RetryPolicy.MaxRetries
 		payload[restoreKeyCreatedAt] = t.CreatedAt.Format(time.RFC3339)
 		if t.Checkpoint != nil {
-			if b, err := MarshalCheckpoint(t.Checkpoint); err == nil {
+			if b, err := f.marshalCheckpoint(t.Checkpoint); err == nil {
 				payload[restoreKeyCheckpointJSON] = string(b)
 			} else {
 				// The rebuilt task will resume without this checkpoint. Log

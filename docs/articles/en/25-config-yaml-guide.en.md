@@ -316,7 +316,7 @@ serve: `Config` struct → `setDefaults()` → YAML → programmatic Options. La
 
 sdk: `LoadConfigFile` reads YAML → `Validate` → `ToOptions` turns it into `sdk.Option`s; API keys come from the YAML only (the `resolveAPIKey` env fallback was removed in 0.3.1).
 
-> Honest note: the old article's "twelve sources / three-tier precedence" table described the pre-0.3.1 world (including the env layer); since 0.3.1 the precedence is simply YAML < programmatic Options, with CLI flags winning on the serve side.
+> Precedence since 0.3.1 is simply YAML < programmatic Options, with CLI flags winning on the serve side; the older "twelve sources / three-tier precedence" model (including the env layer) is gone.
 
 ## Related Docs
 

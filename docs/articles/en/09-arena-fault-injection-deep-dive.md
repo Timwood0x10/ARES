@@ -117,7 +117,7 @@ flowchart LR
 
 This is the old, production-isolated chaos-drill layer, launched by `ares arena serve`. It starts its own demo pool (`arena-worker-1..3`, type=coder) and a mutable DAG, specifically to demonstrate "inject a fault → watch the system react."
 
-Core files (real paths, which differ from the earlier article):
+Core files (real paths):
 
 | File | Purpose |
 |------|---------|
@@ -134,7 +134,7 @@ Core files (real paths, which differ from the earlier article):
 | `cmd/ares/arena.go` | `ares arena` CLI: run / validate / list / serve / survival / inspect |
 | `cmd/ares/serve_chaos.go` | production kernel chaos wiring (`wireChaos` above) |
 
-> The earlier article's paths `internal/arena/…`, `internal/dashboard/static/app.js`, and `cmd/arena/main.go` **do not exist in this repository**. The real paths are above; arena ships no bundled static frontend — the front-end-observable surface is the REST/SSE endpoints.
+> `internal/arena/…`, `internal/dashboard/static/app.js` and `cmd/arena/main.go` **do not exist in this repository**. The real paths are above; arena ships no bundled static frontend — the front-end-observable surface is the REST/SSE endpoints.
 
 ### 4.1 The injector: a thin layer that does not recover
 
@@ -212,7 +212,7 @@ actions:
 
 ### 4.4 Survival mode
 
-`survival.go` `Service.RunSurvival` picks a random action from the 13 and a random target (from listed agents or DAG nodes/edges) on each interval (default 30m / every 10s), recording a `Timeline`. `SurvivalReport` carries no hard-coded sample scores — the earlier article's running `Score: 100.0 (A+)` / `97.3` output lines are not something I found in this code, so they are not reproduced here.
+`survival.go` `Service.RunSurvival` picks a random action from the 13 and a random target (from listed agents or DAG nodes/edges) on each interval (default 30m / every 10s), recording a `Timeline`. `SurvivalReport` carries no hard-coded sample scores — no `Score: 100.0 (A+)` / `97.3` output lines exist in this code, so none are reproduced here.
 
 ---
 
@@ -230,18 +230,32 @@ flowchart TB
     A --> A1["base = (total - failed) / total × 100"]
     R --> R1["recovery rate ×70% + recovery speed ×30%"]
     R1 --> R2["speed: avg ≤1s→100, ≥10s→0, linear"]
-    C --> C1["use metrics.DataConsistencyRate, else heuristic"]
+    C --> C1["rate with ≥20 samples, else heuristic"]
     A1 -.weighted sum.-> FIN["Final = A×0.4 + R×0.3 + C×0.3"]
     R2 -.-> FIN
     C1 -.-> FIN
     FIN --> G["grade: ≥95 A+ / ≥90 A / ≥80 B / ≥70 C / ≥60 D / else F"]
 ```
 
-An honest note on the Consistency dimension: `MetricsSnapshot.DataConsistencyRate` in `metrics.go` defaults to 0, because `RecordConsistency` is marked **Deprecated** (`RecordActionResult` is the current entry point) and no steady stream of real data feeds it. So `calcConsistency`:
-- uses `metrics.DataConsistencyRate` when it is `> 0`;
-- otherwise falls back to a **heuristic**: treats about half the failures as data-related (`dataRelated = max(1, failed/2)`) and deducts 5 points per unit.
+An honest note on the Consistency dimension (updated 2026-10-20): `RecordConsistency` is **no longer a
+dead entry point**. In the serve process,
+`taskfabric.Fabric.WithConsistencyObserver(arena.NewConsistencyAdapter(kernel.arenaMetrics))` records one
+`ok bool` per `Fabric.DecodeCheckpoint` read-back. The window is FIFO-capped at 1000, and
+`DataConsistencyRate` is published only once `ConsistencySamples >= 20`; below that the rate is 0 and
+`Unmeasured` contains `data_consistency`. `calcConsistency` therefore checks
+`metrics.ConsistencySamples >= 20`:
+- with enough samples it uses `DataConsistencyRate`, **including a real 0%** (a window of all-failed
+  decodes is no longer mistaken for "no data");
+- below the threshold it falls back to the **heuristic**: about half the failures are treated as
+  data-related (`dataRelated = max(1, failed/2)`), deducting 5 points per unit.
 
-In other words, the third dimension — unless someone wires real consistency metrics in — is a **documented estimate**, not a measured value. And the recovery-speed thresholds (≤1s → 100, ≥10s → 0) are this score's own rubric, not a measured SLA.
+Mind the process boundary: `CalculateScore` is called only inside `arena.Service` (`ares arena serve`),
+which has no task-fabric checkpoint stream, so that process's own `data_consistency` remains honestly
+unmeasured. The rate measured by the serve process is exposed on the chaos panel through
+`recovery_metrics` (`data_consistency_rate` / `consistency_samples` / `consistency_measured`), not
+cross-process into the arena scorer. The panel must render `consistency_measured=false` as
+"not measured" (or hide the number), never as a 0% consistency rate. The recovery-speed thresholds (≤1s → 100, ≥10s → 0) are likewise this
+score's own rubric, not a measured SLA.
 
 ---
 
@@ -251,7 +265,7 @@ In other words, the third dimension — unless someone wires real consistency me
 
 Arena exposes only destructive endpoints (kill leader, remove nodes, corrupt memory), so authentication defaults to **deny**:
 - If an API key is set (`--api-key` or `security.arena_api_key` in ares.yaml), every request must carry the `X-API-Key` header (constant-time compare).
-- With no key and no explicit `--allow-anonymous`, `APIKeyAuthMiddleware` returns 401 for every request — the earlier article's "open the dashboard and click" no-auth flow is, in the real code, rejected by default. `--allow-anonymous` is for local development only, and the comment warns it must never be enabled for a network-reachable deployment.
+- With no key and no explicit `--allow-anonymous`, `APIKeyAuthMiddleware` returns 401 for every request — a "just open the dashboard and click" no-auth flow is rejected by default. `--allow-anonymous` is for local development only, and the comment warns it must never be enabled for a network-reachable deployment.
 
 ---
 
@@ -309,6 +323,6 @@ After walking through all of this, I want you to remember not a score but the **
 1. In `internal/aresrecovery`: **"Chaos breaks, Recovery fixes."** Breaking and fixing are two independent responsibilities, welded together by an explicit `VerifyRecovery()` call. In production, live chaos is locked behind six guardrails, and the default posture never touches production agents (shadow sandbox).
 2. In `internal/runtime/arena`: **"It does NOT implement recovery."** It only injects faults; recovery belongs to ares_runtime's existing mechanisms, and this is an isolated drill field.
 
-I found no evidence in this repository for the earlier article's numbers such as "Score 100.0 (A+)", "revived in 1.4s", or "97.3% recovery rate", so none of them appear above. The Consistency dimension defaults to a heuristic, `parallel_actions` / `depends_on` are not yet implemented, and the EvolutionBridge back-fill effect is marked TBD.
+No evidence in this repository supports numbers such as "Score 100.0 (A+)", "revived in 1.4s", or "97.3% recovery rate", so none of them appear above. The Consistency dimension defaults to a heuristic, `parallel_actions` / `depends_on` are not yet implemented, and the EvolutionBridge back-fill effect is marked TBD.
 
 > Making "deliberately break it, then watch it rise again" repeatable, verifiable, and — by default — isolated from production is the genuinely hard part of this.

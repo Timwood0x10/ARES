@@ -10,6 +10,7 @@ import (
 	knowledgeruntime "github.com/Timwood0x10/ares/internal/knowledge/runtime"
 	"github.com/Timwood0x10/ares/internal/scoreutil"
 	"github.com/Timwood0x10/ares/internal/tenantctx"
+	"github.com/Timwood0x10/ares/internal/userctx"
 )
 
 // ContextSnippet matches context.ContextSnippet in internal/runtime/memory/context.
@@ -38,6 +39,15 @@ type ContextRetriever interface {
 // the store's hybrid ranking. For the runtime path, collectSnippets now
 // filters on Relevance (see DefaultMinRelevance) and Confidence reliability
 // floor (see minReliabilityFloor), NOT on Confidence as a relevance score.
+//
+// What 0.4 means here (defect P2-10, "语义偏弱"): on the hybrid FinalScore — a weighted
+// mix of a 1024-dim cosine and a lexical term — 0.4 is a WEAK floor, so it mostly drops
+// near-orthogonal hits rather than mediocre ones. Raising it sharpens the snippet block at
+// the cost of recall; that is a product decision, not a defect to fix by default.
+//
+// `runtime/memory/context` has its own DefaultMinScore (also 0.4) for experience recall.
+// Same number, DIFFERENT score behind it (experience confidence, not this FinalScore) —
+// unify them only together with the ranking, not by copying one constant over the other.
 const DefaultMinScore = 0.4
 
 // DefaultMinRelevance is the minimum Relevance score for a KnowledgeObject to
@@ -283,12 +293,15 @@ func (r *KnowledgeRetriever) Retrieve(
 	// caller's topK so the FinalK ranking has a richer candidate pool.
 	if r.store != nil {
 		// Resolve the namespace per-request: an explicit r.namespace always
-		// wins; otherwise fall back to the request-scoped tenant. When both
-		// are empty the store's global scan is the DESIRED single-tenant
-		// behaviour — do not invent a default namespace here.
+		// wins; otherwise resolve the request-scoped user (M5, stamped by the
+		// scheduler) together with the tenant, so recall hits the same user
+		// graph the write side distilled into. ResolveUserNamespace falls back
+		// to the tenant when no user is known, and to "" when neither is
+		// present — the store's global scan is the DESIRED single-tenant
+		// behaviour, so no default namespace is invented here.
 		ns := r.namespace
 		if ns == "" {
-			ns = tenantctx.From(ctx)
+			ns = knowledge.ResolveUserNamespace(tenantctx.From(ctx), userctx.From(ctx), "")
 		}
 		req := knowledge.HybridSearchRequest{
 			Query:        input,

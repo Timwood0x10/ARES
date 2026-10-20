@@ -9,10 +9,13 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"errors"
+	"fmt"
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/ares_config"
 	"github.com/Timwood0x10/ares/internal/ares_events"
+	"github.com/Timwood0x10/ares/internal/knowledge"
 	"github.com/Timwood0x10/ares/internal/logger"
 	"github.com/Timwood0x10/ares/internal/storage/postgres"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/repositories"
@@ -25,8 +28,10 @@ var logMaintenance = logger.Module("ares_bootstrap.maintenance")
 // defined here so repositories do not need to know about the bootstrap
 // maintenance worker.
 type ExpiryCleaner interface {
-	// CleanupExpired deletes expired/decayed rows and reports how many were
-	// removed. Implementations must be idempotent and safe to call repeatedly.
+	// CleanupExpired retires expired/decayed rows and reports how many were
+	// retired — "retired" because most implementations delete, while the AKG
+	// decay pass archives instead (status change, never a delete).
+	// Implementations must be idempotent and safe to call repeatedly.
 	CleanupExpired(ctx context.Context) (int64, error)
 }
 
@@ -37,6 +42,11 @@ type NamedExpiryCleaner struct {
 	Name string
 	// Cleaner performs the purge.
 	Cleaner ExpiryCleaner
+	// Action is the verb the pass log uses for the count, as the log KEY, so it
+	// reads "deleted=12" or "archived=12" without a hardcoded claim. Empty
+	// means "deleted" — what every purge cleaner does; a cleaner that archives
+	// instead sets it, so the log never reports a deletion that did not happen.
+	Action string
 }
 
 // knowledgeRetention is the age threshold for pruning low-value knowledge
@@ -221,16 +231,95 @@ func runExpiredCleanup(ctx context.Context, cleaners []NamedExpiryCleaner) {
 						"table", nc.Name, "panic", r)
 				}
 			}()
-			deleted, err := nc.Cleaner.CleanupExpired(ctx)
+			retired, err := nc.Cleaner.CleanupExpired(ctx)
 			if err != nil {
 				logMaintenance.WarnContext(ctx, "bootstrap: expiry cleanup failed",
 					"table", nc.Name, "error", err)
 				return
 			}
-			if deleted > 0 {
+			if retired > 0 {
+				counter := nc.Action
+				if counter == "" {
+					counter = "deleted"
+				}
 				logMaintenance.InfoContext(ctx, "bootstrap: expiry cleanup pass",
-					"table", nc.Name, "deleted", deleted)
+					"table", nc.Name, counter, retired)
 			}
 		}()
 	}
+}
+
+// akgDecayCleaner archives stale AKG knowledge objects (M4) on the maintenance
+// sweep, closing the "write-only retention" loop for the AKG store.
+//
+// The pass is namespace-scoped by construction: ApplyDecay refuses an empty
+// namespace, because an unscoped ListByStatus would drop its predicate and scan
+// every tenant's objects — and, under M5, every user's. So the pass enumerates
+// the namespaces the store holds and archives within each.
+//
+// Staleness downweighting is deliberately NOT part of this pass: the quality
+// gate computes freshness at query time, so an old object already ranks lower.
+// Only archival happens here, and archival is a status change, never a delete.
+type akgDecayCleaner struct {
+	store knowledge.KnowledgeStore
+	cfg   knowledge.DecayConfig
+}
+
+// CleanupExpired runs one decay pass over every namespace the store holds and
+// reports how many objects it archived. Satisfies ExpiryCleaner.
+//
+// A store that cannot enumerate its namespaces is skipped rather than guessed
+// at: the capability is optional (knowledge.NamespaceLister), and inventing a
+// namespace would either miss objects or scan across tenants.
+func (c akgDecayCleaner) CleanupExpired(ctx context.Context) (int64, error) {
+	namespaces, err := knowledge.ListNamespaces(ctx, c.store)
+	if err != nil {
+		if errors.Is(err, knowledge.ErrNamespaceListingNotSupported) {
+			logMaintenance.WarnContext(ctx,
+				"bootstrap: AKG decay skipped; store cannot list namespaces")
+			return 0, nil
+		}
+		return 0, fmt.Errorf("akg decay: list namespaces: %w", err)
+	}
+
+	now := time.Now()
+	var archived int64
+	for _, ns := range namespaces {
+		report, decayErr := knowledge.ApplyDecay(ctx, c.store, ns, c.cfg, now)
+		if decayErr != nil {
+			// One failing namespace must not abandon the rest of the sweep, but
+			// it must stay visible: a silent partial sweep reads as "nothing
+			// was stale".
+			logMaintenance.WarnContext(ctx, "bootstrap: AKG decay failed for namespace",
+				"namespace", ns, "error", decayErr)
+			continue
+		}
+		archived += int64(report.Archived)
+	}
+	return archived, nil
+}
+
+// wireAKGDecay registers the M4 decay pass on the maintenance sweep when the
+// operator has opted in (knowledge.decay_archive_after > 0). Off by default, so
+// an existing deployment's knowledge keeps its lifecycle untouched; and a store
+// that cannot enumerate namespaces is skipped at run time with a warning rather
+// than scanned blind.
+func wireAKGDecay(comp *Components, cfg *ares_config.Config) {
+	if comp == nil || comp.KnowledgeStore == nil || cfg == nil {
+		return
+	}
+	archiveAfter := cfg.Knowledge.DecayArchiveAfter
+	if archiveAfter <= 0 {
+		return
+	}
+	comp.ExpiryCleaners = append(comp.ExpiryCleaners, NamedExpiryCleaner{
+		Name: "akf_decay",
+		Cleaner: akgDecayCleaner{
+			store: comp.KnowledgeStore,
+			cfg:   knowledge.DecayConfig{ArchiveAfter: archiveAfter},
+		},
+		Action: "archived",
+	})
+	logMaintenance.Info("bootstrap: AKG decay pass wired",
+		"archive_after", archiveAfter.String())
 }

@@ -35,8 +35,20 @@ type Population struct {
 	// Generation is the current generation number (0 = initial).
 	Generation int
 
-	// mu protects concurrent access to Agents and Generation fields.
+	// mu protects concurrent access to Agents, Generation and multiScorer.
 	mu sync.RWMutex
+
+	// multiScorer, when installed, fills DimensionScores after the scalar pass so NSGA-II
+	// selection ranks by Pareto dominance instead of the scalar score.
+	//
+	// It lives on the Population rather than on each loop because there are TWO evolution
+	// loops (EvolveAfterScoring in this package, and the public service). A dimension pass
+	// wired into one of them is how "nsga2 is multi-objective" becomes true on one path and
+	// a lie on the other (code_rules §5.1: one execution path per semantic).
+	//
+	// Nil is the zero value and means "do not fill dimensions" — the behaviour every caller
+	// had before this field existed. Guarded by mu.
+	multiScorer MultiObjectiveScorerFunc
 
 	// cfg holds the evolution configuration parameters.
 	cfg PopulationConfig
@@ -701,11 +713,14 @@ func (p *Population) ParetoFrontStrategy() []*mutation.Strategy {
 // ScoreAgentsMulti scores all agents using a multi-objective scorer.
 // Sets both DimensionScores and Score (aggregate) on each agent.
 //
-// Deprecated: this entry API has ZERO production callers. The
-// multi-objective engine (NSGA-II selection) is functional and used
-// internally by the selection path, but this top-level scoring entry
-// point is not wired into any production loop. Experimental: wire it or
-// remove it.
+// Wired as of 0.3.5 (M9): the evolution service calls it after the scalar pass whenever a
+// dimension source is configured (`SystemConfig.DimensionWindow`), so DimensionScores is
+// populated from real execution evidence and NSGA-II selection ranks by Pareto dominance
+// instead of degenerating to the scalar score.
+//
+// It runs AFTER the scalar pass on purpose. A candidate with no evidence must keep the score
+// it already earned; zeroing it here would read as "measured and failed" and drop it out of
+// selection.
 //
 // The scorer runs OUTSIDE the lock, mirroring ScoreAgents: a multi-objective
 // scorer may be an LLM/network call that blocks for seconds, and running it
@@ -989,6 +1004,34 @@ func (p *Population) computeStatsLocked() (bestScore, avgScore, worstScore float
 // appendHistoryLocked appends a generation snapshot to the history.
 // Caller must hold p.mu write lock. Handles HistoryMaxSize truncation.
 
+// SetMultiObjectiveScorer installs the scorer that fills DimensionScores; nil clears it.
+//
+// Installing it here rather than in each loop is what keeps the two evolution loops honest:
+// a deployment cannot end up with multi-objective selection in the service and scalar-only
+// selection in the in-process loop.
+func (p *Population) SetMultiObjectiveScorer(f MultiObjectiveScorerFunc) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.multiScorer = f
+}
+
+// ScoreAgentsWithDimensions runs the scalar pass and, when a multi-objective scorer is
+// installed, the dimension pass on top of it.
+//
+// The ORDER is load-bearing: the dimension scorer preserves agent.Score for candidates with
+// no evidence, so it has to run after the scalar pass produced that value. Running it first
+// would preserve a stale score from the previous generation.
+func (p *Population) ScoreAgentsWithDimensions(scalar func(*mutation.Strategy) float64) {
+	p.ScoreAgents(scalar)
+
+	p.mu.RLock()
+	multi := p.multiScorer
+	p.mu.RUnlock()
+	if multi != nil {
+		p.ScoreAgentsMulti(multi)
+	}
+}
+
 func (p *Population) EvolveAfterScoring(ctx context.Context, scorer ScorerFunc, mutator MutatorInterface, crosser CrossoverInterface) error {
 	if scorer == nil {
 		return errors.New("scorer must not be nil; use NoopScorer to skip scoring")
@@ -997,7 +1040,11 @@ func (p *Population) EvolveAfterScoring(ctx context.Context, scorer ScorerFunc, 
 	if err := p.EvolveOnIdle(ctx, mutator, crosser); err != nil {
 		return fmt.Errorf("evolution: %w", err)
 	}
-	p.ScoreAgents(scorer)
+	// Final pass fills dimensions too: these are the scores selection and history see. The
+	// first pass stays scalar-only on purpose — it exists to score the parents that
+	// EvolveOnIdle selects from, and dimensions on a population about to be replaced would
+	// describe the wrong generation.
+	p.ScoreAgentsWithDimensions(scorer)
 	p.mu.Lock()
 	p.appendHistoryLocked()
 	p.mu.Unlock()

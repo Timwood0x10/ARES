@@ -8,6 +8,7 @@ import (
 	"strings"
 	"text/template"
 
+	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/truncate"
 )
 
@@ -77,6 +78,29 @@ Output strictly in JSON format with no additional text:
 // dimensionMaxScores holds the maximum possible score for each dimension.
 var dimensionMaxScores = [4]float64{3, 3, 2, 2}
 
+// normalizedDimensionMean returns the mean of the four rubric scores, each
+// clamped into [0,1] against its own maximum, rounded to three decimals.
+//
+// It is the ONE rule for that number on purpose: the averaged metric handed back
+// to the eval gate and the scalar written into the evidence payload
+// (Evidence.Value) that the fitness aggregator reads must be the same number. Two
+// copies of this arithmetic would drift, and a drifted accuracy signal is worse
+// than an absent one — it is silently wrong.
+func normalizedDimensionMean(scores [4]float64) float64 {
+	var sum float64
+	for i, s := range scores {
+		normalized := s / dimensionMaxScores[i]
+		if normalized > 1.0 {
+			normalized = 1.0
+		}
+		if normalized < 0.0 {
+			normalized = 0.0
+		}
+		sum += normalized
+	}
+	return math.Round((sum/4.0)*1000) / 1000
+}
+
 // evaluateWithDimensions evaluates using per-dimension scoring and returns the average.
 func (e *LLMJudgeEvaluator) evaluateWithDimensions(ctx context.Context, tc TestCase, result TestResult) ([]EvalScore, error) {
 	prompt, err := e.renderDimensionPrompt(tc, result)
@@ -94,26 +118,73 @@ func (e *LLMJudgeEvaluator) evaluateWithDimensions(ctx context.Context, tc TestC
 		return nil, fmt.Errorf("parse dimension response: %w", err)
 	}
 
-	// Average the four normalized dimension scores.
-	var sum float64
-	for i, s := range dimResp.Scores {
-		normalized := s / dimensionMaxScores[i]
-		if normalized > 1.0 {
-			normalized = 1.0
-		}
-		if normalized < 0.0 {
-			normalized = 0.0
-		}
-		sum += normalized
+	// What the judge actually said about correctness, captured BEFORE the two
+	// deterministic floors below rewrite that dimension. The agreement counts
+	// measure the judge's opinion; reading the score back after a floor would
+	// report perfect agreement by construction, which is exactly the number the
+	// counts exist to not be.
+	judgeCorrectness := dimResp.Scores[0]
+
+	// Layer 0 — the deterministic floor, applied BEFORE any use of the judge's
+	// numbers and needing no LLM: the runtime already knows whether the answer
+	// was a gap body or was forced by the growth-depth guard (defect P0-3), and
+	// no amount of well-written gap text may lift that. Without it a gap answer
+	// judges as a merely terse response, and the accuracy signal would reward
+	// exactly the "did less and lied about finishing" behaviour G1 exists to
+	// stop.
+	//
+	// The clamps are ares_events.AnswerQualityPenalty — the same rule and the
+	// same numbers the runtime observer's fitness factor applies. A judge that
+	// scores a gap body well is overruled, not averaged with.
+	factor, degraded := ares_events.AnswerQualityPenalty(result.AnswerBodySource, result.Truncated)
+	if degraded && result.AnswerBodySource == ares_events.AnswerBodySourceGap {
+		// Correctness, specifically: a gap body is not partially correct. Zeroing
+		// the dimension as well as clamping the mean keeps the structured
+		// diagnosis (and the evidence written below) consistent with the score.
+		dimResp.Scores[0] = 0
 	}
-	avgScore := sum / 4.0
-	avgScore = math.Round(avgScore*1000) / 1000
+
+	// Layer 0 — the GROUND-TRUTH anchor, the other half of the same layer and the
+	// stronger half: the provenance above says what KIND of ending the answer was,
+	// this says whether the answer was RIGHT, using the checks the case declared
+	// (Check* in ground_truth.go) and no LLM. A declared check that FAILED is not
+	// partially correct, and no well-written answer may lift it — the judge is
+	// overruled, not averaged with.
+	//
+	// It is applied after the provenance floor and wins over it, because the two
+	// mistakes are not equal: "produced the wrong thing while cut short" must not
+	// score above "produced nothing". Without this arm the accuracy signal the GA
+	// selects on is pure judge opinion for every case — including a fluent,
+	// confident WRONG answer, which is what makes it reward hacking.
+	gt := evaluateGroundTruth(tc, result, e.role)
+	if gt.Verdict == VerdictFail {
+		dimResp.Scores[0] = 0
+	}
+
+	// Average the four normalized dimension scores.
+	avgScore := normalizedDimensionMean(dimResp.Scores)
+	if degraded && avgScore > factor {
+		avgScore = factor
+	}
+	if gt.Verdict == VerdictFail {
+		// Clamp the scalar as well as the dimension: zeroing correctness alone
+		// would leave a failed case at 0.75 (the other three rubrics), handing an
+		// answer deterministic evidence says is WRONG a better score than a gap
+		// body — and giving the gate and the evidence two numbers for one
+		// judgment, the defect the provenance clamp's comment describes.
+		avgScore = 0
+	}
+
+	// Record the agreement BEFORE the caller can read a floored number, and pass
+	// the outcome on so the persisted diagnosis carries the deterministic verdict
+	// that produced this scalar instead of reading as pure judge opinion.
+	e.recordGroundTruth(gt, judgeCorrectness)
 
 	// Production bridge: persist the structured dimension diagnosis into the
 	// universal evidence store when wired, so the evolution Diagnoser can
 	// consume real failure evidence (not just test-seeded records). Emit is
 	// best-effort: a persistence failure must not fail the evaluation.
-	e.emitDimensionEvidence(ctx, tc.ID, dimResp)
+	e.emitDimensionEvidence(ctx, tc.ID, dimResp, avgScore, gt)
 
 	return []EvalScore{
 		{
@@ -128,7 +199,7 @@ func (e *LLMJudgeEvaluator) evaluateWithDimensions(ctx context.Context, tc TestC
 // KindDimensionEval evidence and persists it through the bridge when a store is
 // wired. Persistence failures are logged, never returned, to keep the scalar
 // scoring path robust.
-func (e *LLMJudgeEvaluator) emitDimensionEvidence(ctx context.Context, taskID string, dimResp *dimensionAwareJudgeResponse) {
+func (e *LLMJudgeEvaluator) emitDimensionEvidence(ctx context.Context, taskID string, dimResp *dimensionAwareJudgeResponse, value float64, gt groundTruthOutcome) {
 	if e.dimensionBridge == nil {
 		return
 	}
@@ -139,7 +210,7 @@ func (e *LLMJudgeEvaluator) emitDimensionEvidence(ctx context.Context, taskID st
 		Safety:       dimResp.Scores[3],
 		Reason:       dimResp.Reason,
 	}
-	if err := e.dimensionBridge.Emit(ctx, taskID, e.role, judgeResp); err != nil {
+	if err := e.dimensionBridge.emitWithGroundTruth(ctx, taskID, e.role, judgeResp, value, gt); err != nil {
 		log.Error("dimension judge bridge emit failed",
 			"task_id", taskID,
 			"role", e.role,

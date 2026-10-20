@@ -62,6 +62,9 @@ func buildStrategyStore(ctx context.Context, cfg *ares_config.Config, cleanups *
 
 func assembleGAConfig(ctx context.Context, cfg *ares_config.Config, comp *Components, memStore evolution.StrategyStore, guidanceProvider evolution.GuidanceProvider) evolution.SystemConfig {
 	gaCfg := evolution.DefaultSystemConfig()
+	// M10: forward the configured experiment-log path. Empty stays empty, so a deployment that
+	// never sets it seals nothing and behaves exactly as before.
+	gaCfg.ExperimentLogPath = cfg.Evolution.ExperimentLogPath
 	gaCfg.EnableDreamCycle = false
 	// EnableScheduler is now always true so the ticker path goes
 	// through scheduler.Tick (which applies shouldEvolve + guardrails).
@@ -251,18 +254,46 @@ func wireLifecycleGates(ctx context.Context, cfg *ares_config.Config, comp *Comp
 		if wiredLifecycleCfg := gaCfg.Lifecycle; wiredLifecycleCfg != nil {
 			minScore = wiredLifecycleCfg.Gates.EvalMinScore
 		}
-		suitePath := ""
-		strict := false
+		// Resolve the suite ONCE and hand the same answer to BOTH gates: the G3 gate and
+		// the arena regression gate must evaluate the same corpus, or "passed G3 but
+		// regressed on the arena" would be comparing two different things. When nothing is
+		// configured the built-in default is used if it is present (resolveEvalSuite), and
+		// a DEFAULTED suite degrades instead of failing startup where its infrastructure
+		// is missing — an operator who never armed G3 must not lose the deployment to a
+		// repository file.
+		gates := cfg.Evolution.Gates
+		gateCfg := evalGateConfig{MinScore: minScore}
 		if gaCfg.Lifecycle != nil {
-			suitePath = cfg.Evolution.Gates.EvalSuite
-			strict = cfg.Evolution.Gates.EvalStrict
+			gateCfg.SuitePath, gateCfg.SuiteDefaulted = resolveEvalSuite(gates.EvalSuite)
+			gateCfg.Strict = gates.EvalStrict
+			gates.EvalSuite = gateCfg.SuitePath
+		}
+		// P0-1's定时触发, the half that costs nothing: watch the corpus over time.
+		//
+		// The corpus is a repository file with no version stamp, so "it changed" and "it
+		// lost its anchors" are both silent today. This probe reports them; it does NOT
+		// run the corpus (that is a model call per case, which is why timed re-scoring is
+		// not on by default and is not what this is).
+		if armProbe := cfg.Evolution.Gates.EvalProbeInterval; armProbe != "" {
+			if d, perr := time.ParseDuration(armProbe); perr == nil && d > 0 {
+				path := gateCfg.SuitePath
+				comp.GoBackground(ctx, "eval-corpus-probe", func(ctx context.Context) error {
+					runCorpusProbe(ctx, path, d, nil)
+					return nil
+				})
+				log.Info("bootstrap: eval corpus probe armed",
+					"path", path, "interval", d.String(),
+					"cost", "no model calls: it reads and hashes the suite file only",
+					"reports", "fingerprint changes and the loss of deterministic anchors")
+			} else {
+				log.Warn("bootstrap: evolution.gates.eval_probe_interval is not a positive duration; corpus probe not armed",
+					"value", armProbe)
+			}
 		}
 		evalGate, gerr := buildEvalGate(
 			comp.Evolution.EvaluatorRegistry,
 			comp.Evolution.EvalLLMClient,
-			suitePath,
-			minScore,
-			strict,
+			gateCfg,
 		)
 		if gerr != nil && !errors.Is(gerr, errEvalGateNotConfigured) {
 			// An ARMED but broken/incomplete gate fails bootstrap (fail
@@ -272,10 +303,10 @@ func wireLifecycleGates(ctx context.Context, cfg *ares_config.Config, comp *Comp
 		if evalGate != nil {
 			evolution.WithLifecycleGates(evalGate)(wired.Lifecycle)
 			log.InfoContext(ctx, "bootstrap: G3 eval gate wired",
-				"suite", suitePath, "min_score", minScore, "strict_mode", evalGate.StrictModeEnabled(),
-				"skipped_count", evalGate.SkippedCount())
+				"suite", gateCfg.SuitePath, "min_score", minScore, "strict_mode", evalGate.StrictModeEnabled(),
+				"skipped_count", evalGate.SkippedCount(), "from_default", gateCfg.SuiteDefaulted)
 		} else {
-			log.WarnContext(ctx, "bootstrap: no eval_suite configured — promote gate chain degrades to G1+G2 (set evolution.gates.eval_suite to arm G3; evolution.gates.eval_strict makes absence fatal)")
+			log.WarnContext(ctx, "bootstrap: no eval_suite configured or resolvable — promote gate chain degrades to G1+G2 (set evolution.gates.eval_suite to arm G3; evolution.gates.eval_strict makes absence fatal)")
 		}
 
 		// Arena regression gate (M4 wiring; AUTO-ARMED by default from M-G2): the
@@ -284,11 +315,15 @@ func wireLifecycleGates(ctx context.Context, cfg *ares_config.Config, comp *Comp
 		// only a statistically significant drop. Defaults to armed whenever
 		// the infrastructure (eval_suite + LLM client) exists;
 		// regression_enabled=false is the documented opt-out (Warn below).
-		regGate, rgerr := buildRegressionGate(
-			cfg.Evolution.Gates.RegressionEnabled,
-			comp.Evolution.EvalLLMClient,
-			cfg.Evolution.Gates,
-		)
+		regGate, rgerr := buildRegressionGate(regressionGateConfig{
+			Enabled: gates.RegressionEnabled,
+			Client:  comp.Evolution.EvalLLMClient,
+			Gates:   gates,
+			// Optional: only a process that wired a candidate-runtime factory provider
+			// (cmd/ares has the tool binder, and wires it after this point) can honour
+			// regression_runtime_replay; the wiring refuses an enabled flag without it.
+			ReplayProvider: comp.Evolution.CandidateReplayProvider,
+		})
 		if rgerr != nil && !errors.Is(rgerr, errRegressionGateNotConfigured) {
 			// An ARMED but broken gate fails bootstrap (fail closed); an
 			// intentionally absent gate just skips the wiring.
@@ -297,17 +332,23 @@ func wireLifecycleGates(ctx context.Context, cfg *ares_config.Config, comp *Comp
 		if regGate != nil {
 			evolution.WithLifecycleGates(regGate)(wired.Lifecycle)
 			mode := "auto"
-			if cfg.Evolution.Gates.RegressionEnabled != nil {
+			if gates.RegressionEnabled != nil {
 				mode = "explicit"
 			}
+			// Report the COST where it is incurred. This gate is auto-armed by decision
+			// (nil = auto, regression_enabled=false is the documented opt-out), and each
+			// check scores BOTH strategies so arming it multiplies LLM calls — an
+			// operator should be able to read that from startup instead of from a bill.
+			effective := regGate.Config()
 			log.InfoContext(ctx, "bootstrap: arena regression gate armed",
 				"mode", mode,
-				"suite", cfg.Evolution.Gates.EvalSuite,
-				"runs", cfg.Evolution.Gates.RegressionRuns,
+				"suite", gates.EvalSuite,
+				"runs", effective.Runs,
+				"llm_scoring_rounds_per_check", 2*effective.Runs,
 			)
-		} else if cfg.Evolution.Gates.RegressionEnabled != nil && !*cfg.Evolution.Gates.RegressionEnabled {
+		} else if gates.RegressionEnabled != nil && !*gates.RegressionEnabled {
 			log.WarnContext(ctx, "bootstrap: arena regression gate DISABLED via evolution.gates.regression_enabled=false — promote gate chain runs without the preserved-case regression check",
-				"suite_available", strings.TrimSpace(cfg.Evolution.Gates.EvalSuite) != "")
+				"suite_available", strings.TrimSpace(gates.EvalSuite) != "")
 		}
 	}
 
@@ -332,6 +373,22 @@ func startLifecycleWatch(ctx context.Context, comp *Components, newEvol *NewEvol
 		// Expose the lifecycle for the introspect control plane
 		// so /api/evolution/lifecycle returns a state snapshot.
 		newEvol.Lifecycle = wired.Lifecycle
+
+		// M8b: the patch path now consults the same trust root as the strategy path.
+		//
+		// Installed HERE because this is the first point where both sides exist — the
+		// coordinator is built long before the lifecycle (provide_new_evolution.go), so the
+		// gate cannot be set where the coordinator is constructed. Without it, a candidate
+		// held for manual approval could still be promoted by a patch that belongs to it.
+		//
+		// Behaviour is unchanged unless approvals are configured: with nothing held
+		// (RequireManualApproval default false) every patch passes, and unattributed
+		// component patches are not this gate's subject (the deployment adapter already
+		// refuses them as unmeasurable).
+		newEvol.Coordinator.SetApplyGate(newStrategyApprovalGate(wired.Lifecycle))
+		log.Info("bootstrap: GA apply gate installed (lifecycle-backed)",
+			"refuses", "patches whose strategy is held for manual approval",
+			"passes", "unattributed patches (not comparable) and every patch when nothing is held")
 		// Closure-assertion surfaces: the ASM (Previous/RollbackPolicy)
 		// and the G2 shadow evaluator (the comparison feeder).
 		newEvol.ActiveStrategyManager = wired.ActiveStrategyManager

@@ -165,7 +165,16 @@ fmt:
 # The standalone lint-vet / lint-staticcheck targets remain for explicit use.
 # lint mirrors the CI `lint` job. The anchor check is a hard gate (exit 1) and
 # docs/archive + the local plan/ tree are pruned inside the script.
-lint: lint-doc-anchors lint-golangci
+# ci-fmt and ci-freeze are here because golangci-lint covers NEITHER: a formatting drift and a new
+# top-level package both passed `make check` and failed CI, which is what a gate weaker than the
+# pipeline does — it only moves the discovery to the push.
+#
+# lint-vet / lint-staticcheck stay OUT on purpose (see the measurement above): golangci-lint already
+# runs both, and the SA1012 incident that prompted this edit was not a coverage gap but a
+# suppression-syntax mismatch — a `//nolint:staticcheck` on a call that the standalone binary also
+# flagged. The standalone tool only reads `//lint:ignore`; the call site now carries both directives
+# so neither tool is silenced by guesswork.
+lint: ci-fmt ci-freeze lint-doc-anchors lint-golangci
 	@echo ""
 	@echo "All lint checks: PASSED"
 

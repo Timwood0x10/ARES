@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Timwood0x10/ares/internal/fabric/agent"
-	"github.com/Timwood0x10/ares/internal/fabric/task"
+	agentfabric "github.com/Timwood0x10/ares/internal/fabric/agent"
+	taskfabric "github.com/Timwood0x10/ares/internal/fabric/task"
 )
 
 // newRecoveryHarness wires a fresh Task Fabric + Agent Fabric + Recovery +
@@ -644,5 +644,178 @@ func TestRestartAgent_FailedSpawnDoesNotConsumeBudget(t *testing.T) {
 	}
 	if got := rec.RestartCount("dead-agent"); got != 0 {
 		t.Errorf("failed spawns consumed the budget: count=%d, want 0", got)
+	}
+}
+
+// mockRecoveryObserver records every OnRecovery call for test assertions.
+type mockRecoveryObserver struct {
+	mu    sync.Mutex
+	calls []time.Duration
+}
+
+func (o *mockRecoveryObserver) OnRecovery(d time.Duration) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.calls = append(o.calls, d)
+}
+
+func (o *mockRecoveryObserver) count() int {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return len(o.calls)
+}
+
+// panickingObserver panics on every call — the recovery loop must recover
+// and continue, never crashing through the observer path.
+type panickingObserver struct{}
+
+func (panickingObserver) OnRecovery(_ time.Duration) { panic("observer bug") }
+
+// TestRecoveryObserver_CalledOnSuccess verifies that a successful recovery
+// calls OnRecovery with a positive duration: the timing is now observable
+// in the arena metrics path via the adapter, rather than silently zero.
+func TestRecoveryObserver_CalledOnSuccess(t *testing.T) {
+	tasks := taskfabric.NewFabric()
+	agents := agentfabric.NewFabric()
+	ctx := context.Background()
+
+	// Use a self-advancing clock so the duration between sweepStart and
+	// notifyObserver is measurable: each r.now() call advances the clock by
+	// 10ms, so the observer receives duration >= 10ms.
+	var nowMu sync.Mutex
+	base := time.Now()
+	advancingClock := func() time.Time {
+		nowMu.Lock()
+		defer nowMu.Unlock()
+		base = base.Add(10 * time.Millisecond)
+		return base
+	}
+	tasks.WithClock(advancingClock)
+
+	obs := &mockRecoveryObserver{}
+	rec := New(tasks, agents, DefaultRestartPolicy()).
+		WithClock(advancingClock).
+		WithSleeper(func(context.Context, time.Duration) error { return nil }).
+		WithRecoveryObserver(obs)
+
+	// Set up a task with an agent that will die.
+	if err := tasks.Create(&taskfabric.Task{ID: "t1", Capability: "rust"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	epoch, err := tasks.Acquire("t1", "a", time.Minute)
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	if err := tasks.Start("t1", "a", epoch); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	// Stash a checkpoint by yielding: task becomes SUSPENDED with the
+	// preserved checkpoint (the recoverable state RecoverTaskCheckpoint resumes).
+	ckpt := taskfabric.EncodeCheckpoint(taskfabric.DecodedCheckpoint{
+		StepCheckpoint: map[string]any{"step": 1},
+	})
+	if err := tasks.Yield("t1", "a", epoch, ckpt); err != nil {
+		t.Fatalf("Yield: %v", err)
+	}
+
+	// Agent a dies, then advance the clock far enough past the lease TTL
+	// that the sweep requeues the task. The advancing clock handles the
+	// duration measurement — no manual *now bump needed.
+	_ = agents.Kill(ctx, "a")
+	// Bump the base far enough: each r.now() call adds 10ms, but we need the
+	// lease (1 minute) to have expired. Push the base forward by 2 minutes.
+	nowMu.Lock()
+	base = base.Add(2 * time.Minute)
+	nowMu.Unlock()
+
+	recovered := rec.RecoverFromAgentDeath(ctx)
+	if recovered != 1 {
+		t.Fatalf("expected 1 recovered, got %d", recovered)
+	}
+
+	// The observer was called once with a positive duration.
+	if got := obs.count(); got != 1 {
+		t.Fatalf("observer called %d times, want 1", got)
+	}
+	obs.mu.Lock()
+	d := obs.calls[0]
+	obs.mu.Unlock()
+	if d <= 0 {
+		t.Fatalf("recovery duration = %v, want > 0", d)
+	}
+}
+
+// TestRecoveryObserver_NilNoOp verifies that a nil observer (the default)
+// leaves the recovery path unchanged — no panic, no side effect.
+func TestRecoveryObserver_NilNoOp(t *testing.T) {
+	tasks, agents, _, _, now := newRecoveryHarness(t)
+	ctx := context.Background()
+
+	// No WithRecoveryObserver call — observer is nil.
+	rec := New(tasks, agents, DefaultRestartPolicy()).
+		WithClock(func() time.Time { return *now }).
+		WithSleeper(func(context.Context, time.Duration) error { return nil })
+
+	if err := tasks.Create(&taskfabric.Task{ID: "t1", Capability: "rust"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	epoch, err := tasks.Acquire("t1", "a", time.Minute)
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	if err := tasks.Start("t1", "a", epoch); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	ckpt := taskfabric.EncodeCheckpoint(taskfabric.DecodedCheckpoint{
+		StepCheckpoint: map[string]any{"step": 1},
+	})
+	if err := tasks.Yield("t1", "a", epoch, ckpt); err != nil {
+		t.Fatalf("Yield: %v", err)
+	}
+	_ = agents.Kill(ctx, "a")
+	*now = now.Add(2 * time.Minute)
+
+	// Must not panic.
+	recovered := rec.RecoverFromAgentDeath(ctx)
+	if recovered != 1 {
+		t.Fatalf("expected 1 recovered with nil observer, got %d", recovered)
+	}
+}
+
+// TestRecoveryObserver_PanicSafe verifies that a panicking observer does not
+// crash the recovery loop — the panic is recovered and the recovery count
+// is still correct.
+func TestRecoveryObserver_PanicSafe(t *testing.T) {
+	tasks, agents, _, _, now := newRecoveryHarness(t)
+	ctx := context.Background()
+
+	rec := New(tasks, agents, DefaultRestartPolicy()).
+		WithClock(func() time.Time { return *now }).
+		WithSleeper(func(context.Context, time.Duration) error { return nil }).
+		WithRecoveryObserver(panickingObserver{})
+
+	if err := tasks.Create(&taskfabric.Task{ID: "t1", Capability: "rust"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	epoch, err := tasks.Acquire("t1", "a", time.Minute)
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	if err := tasks.Start("t1", "a", epoch); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	ckpt := taskfabric.EncodeCheckpoint(taskfabric.DecodedCheckpoint{
+		StepCheckpoint: map[string]any{"step": 1},
+	})
+	if err := tasks.Yield("t1", "a", epoch, ckpt); err != nil {
+		t.Fatalf("Yield: %v", err)
+	}
+	_ = agents.Kill(ctx, "a")
+	*now = now.Add(2 * time.Minute)
+
+	// Must not panic despite the panicking observer.
+	recovered := rec.RecoverFromAgentDeath(ctx)
+	if recovered != 1 {
+		t.Fatalf("expected 1 recovered despite observer panic, got %d", recovered)
 	}
 }

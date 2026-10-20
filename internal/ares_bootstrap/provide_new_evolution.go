@@ -28,6 +28,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/runtime/evolution/patch"
 	aresmemory "github.com/Timwood0x10/ares/internal/runtime/memory"
 	"github.com/Timwood0x10/ares/internal/storage"
+	"github.com/Timwood0x10/ares/internal/storage/postgres"
 )
 
 // NewEvolutionComponents holds the new evolution system components.
@@ -300,11 +301,11 @@ func ProvideNewEvolution(dag *engine.MutableDAG, rt *knowledgeruntime.KnowledgeR
 	}
 
 	// 5. Coordinator — decision engine for all patches.
-	// TODO(tech-debt): this wiring installs no ApplyGate, so the patch path
-	// bypasses the StrategyLifecycle trust root (A1). Short term the boundary
-	// is named and declared (UngatedPatcher, A1-c); mid term wire a
-	// lifecycle-backed ApplyGate here (A1-a) — see
-	// internal/runtime/ares_evolution/doc.go (UNGATED PATCH PATH).
+	//
+	// The ApplyGate is NOT installed here, and cannot be: it needs the StrategyLifecycle,
+	// which is assembled after these components. It is installed by
+	// `wireEvolutionLifecycle` (bootstrap_evolution.go) at the first point where both sides
+	// exist — a stage of the same assembly that already had to sequence them.
 	coord := coordinator.NewUngatedPatcher(coordinator.DefaultPolicy(), patchReg)
 
 	return &NewEvolutionComponents{
@@ -583,12 +584,16 @@ func BuildKnowledgeRuntime(
 	// either there is no corpus to search and no query embedding to produce.
 	if vecStore != nil && emb != nil {
 		vp, err := vector.NewVectorProvider(vecStore, vector.Config{
-			Name:            "knowledge-vectors",
-			Namespace:       fitnessSourceKnowledge,
-			Collection:      tableKnowledgeChunks,
-			TenantID:        defaultDistillTenant,
-			IntentTags:      []string{fitnessSourceKnowledge, "doc", "guide"},
-			VectorDimension: 1024,
+			Name:       "knowledge-vectors",
+			Namespace:  fitnessSourceKnowledge,
+			Collection: tableKnowledgeChunks,
+			TenantID:   defaultDistillTenant,
+			IntentTags: []string{fitnessSourceKnowledge, "doc", "guide"},
+			// The same number the vector column bakes in (VECTOR(1024) in the
+			// migrations): importing it instead of repeating the literal is what keeps a
+			// future dimension change from landing on one side only — the exact shape of
+			// the historical 1536-vs-1024 insert failures.
+			VectorDimension: postgres.DefaultVectorDimension,
 			Embedder:        emb,
 		})
 		if err != nil {

@@ -12,6 +12,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/knowledge/compiler"
 	"github.com/Timwood0x10/ares/internal/knowledge/runtime"
 	memctx "github.com/Timwood0x10/ares/internal/tenantctx"
+	"github.com/Timwood0x10/ares/internal/userctx"
 )
 
 // Tools returns the AKF MCP tool definitions that can be registered
@@ -246,6 +247,8 @@ func (s *AKFService) handleCompileContext(ctx context.Context, input string) (st
 		"input_nodes":   compiled.Metrics.InputNodes,
 		"input_edges":   compiled.Metrics.InputEdges,
 		"output_tokens": compiled.Metrics.OutputTokens,
+		"raw_tokens":    compiled.Metrics.RawTokens,
+		"tokens_saved":  compiled.Metrics.TokensSaved,
 	}
 	data, _ := json.Marshal(result)
 	return string(data), nil
@@ -307,6 +310,7 @@ func (s *AKFService) handleDistillMemory(ctx context.Context, input string) (str
 	// promoted to active. Promotion is best-effort — a failure leaves the
 	// object persisted as a candidate rather than failing the whole call.
 	if s.store != nil {
+		knowledge.StampWriteSchema(obj)
 		if err := s.store.Save(ctx, obj); err != nil {
 			return "", fmt.Errorf("distill memory: save object %s: %w", obj.ID, err)
 		}
@@ -432,12 +436,19 @@ func queryKnowledgeConfig(p queryKnowledgeParams) *runtime.Config {
 }
 
 // knowledgeNamespace resolves the namespace a distill_memory write must land
-// under: the request-scoped tenant when present, otherwise "default". It
-// mirrors StoreProvider.namespaceFor's fallback so writes and reads agree on
-// which namespace holds the object.
+// under, using the same precedence as every other AKG path: the request-scoped
+// user first (M5: one user one graph), then the request-scoped tenant, then
+// "default" — matching both the AKG distill write side (adapter/distill.go)
+// and the StoreProvider read side (provider/store/provider.go).
+//
+// Before M5 this resolved the tenant only, so a memory written through this
+// tool landed in the tenant namespace while a user-scoped recall looked in the
+// user namespace: the object was persisted but never read back.
 func knowledgeNamespace(ctx context.Context) string {
-	if ns := memctx.From(ctx); ns != "" {
-		return ns
-	}
-	return "default"
+	return knowledge.ResolveUserNamespace(memctx.From(ctx), userctx.From(ctx), defaultKnowledgeNamespace)
 }
+
+// defaultKnowledgeNamespace is the documented tenant-less fallback. It matches
+// StoreProvider's constructor default so the MCP write side and the provider
+// read side agree on where an unscoped object lives.
+const defaultKnowledgeNamespace = "default"

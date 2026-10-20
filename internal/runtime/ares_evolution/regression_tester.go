@@ -13,6 +13,28 @@ import (
 	"github.com/Timwood0x10/ares/internal/runtime/ares_evolution/mutation"
 )
 
+// tieBreakJitter is the width of the random band added to each trial's scores in a
+// MULTI-trial regression test.
+//
+// It exists for one reason: the trial loop scores the SAME two strategies every
+// iteration and the scorer is deterministic, so without a perturbation the win rate
+// could only ever be 0 or 1 — an exact tie would be reported as a unanimous loss and
+// a strategy that is merely equivalent to the incumbent would look strictly worse.
+// With the band, a tie produces a win rate around chance, which any threshold above
+// chance rejects: "no evidence of improvement" rather than "proven regression".
+//
+// It is EXPRESSED AS A FRACTION of JudgeScaleCeiling rather than as a bare constant,
+// so the two can only be edited together: an independent 0.02 would be a tie-breaker on
+// a 0-100 judge and a decision-maker on a 0-1 one, with nothing in the type system to
+// say so.
+//
+// That is single-sourcing, NOT self-adaptation: JudgeScaleCeiling is itself a constant
+// a human maintains, and today the fraction works out to the same 0.02 it always was.
+// A reader must not read "derived" as "it will follow a scale change on its own" — a
+// judge that moves to [0,1] needs JudgeScaleCeiling updated by hand, and the blend in
+// genome_wiring_run.go lifted by the same fact.
+const tieBreakJitter = JudgeScaleCeiling / 5000.0
+
 // RegressionTester implements TesterInterface by scoring candidate and baseline
 // strategies using a provided scorer function.
 type RegressionTester struct {
@@ -90,11 +112,13 @@ func (t *RegressionTester) Run(ctx context.Context, cfg RegressionConfig) (*Regr
 		candScore := t.scorer(&candidateMS)
 		baseScore := t.scorer(&baselineMS)
 
-		// Add slight noise for stochastic comparison when sampleSize > 1.
+		// Break exact ties between trials (see tieBreakJitter). Only meaningful for a
+		// multi-trial run: with one trial there is nothing to distinguish, and adding
+		// noise would make a single deterministic comparison random.
 		if sampleSize > 1 {
 			t.rngMu.Lock()
-			candScore += (t.rng.Float64() - 0.5) * 0.02
-			baseScore += (t.rng.Float64() - 0.5) * 0.02
+			candScore += (t.rng.Float64() - 0.5) * tieBreakJitter
+			baseScore += (t.rng.Float64() - 0.5) * tieBreakJitter
 			t.rngMu.Unlock()
 		}
 

@@ -167,8 +167,6 @@ flowchart LR
 
 ## 六、单轨分发：双轨机制已退役（v0.3.3）
 
-> **订正**：本节原描述的 `ExecutionPolicy` / `PolicyFlag`（`atomic.Int64`）/ shadow 模式 / `Mismatches()` **全部已删除**——它们随 legacy leader 轨道一起移除，生产只有一条分发路径。
-
 `agentipc` 里与"任务怎么派"相关的那层（`policy.go`）已在 v0.3.3 **整体删除**：`Dispatcher` / `KernelDispatcher` / `NewPath` / `SetNewPath` 与只被测试调用的 kernel-bridge（`wireKernelDispatcher` / `enableKernelExecution` / `submitFabricTask`）全部移除。没有策略枚举、没有运行时开关、没有双轨对比，也没有多余的路径持有者——HTTP 提交（`submitPeerTask` / POST `/api/graphs`）是唯一入口，`kernelScheduler` 是唯一执行者。
 
 > 注意：策略枚举与开关**已整体删除**——不是"只保留 `PolicyLegacy` 常量"，而是 `ExecutionPolicy` / `PolicyFlag` 都已不存在。另：AHP 的协议机器（protocol / queue / dlq / heartbeat / codec）也已在 v0.3.3 退役，`internal/runtime/protocol/ahp` 现仅剩消息词汇 `message.go`，原文档提到的"DLQ 自动重试"同样不存在。

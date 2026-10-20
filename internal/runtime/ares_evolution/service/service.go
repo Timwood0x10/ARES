@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"golang.org/x/sync/errgroup"
@@ -522,18 +523,17 @@ func (s *Service) Evolve(ctx context.Context, generations int) (*EvolutionResult
 		result.BestStrategy = best
 	}
 
-	// Count raw improvements vs significant improvements for reporting.
+	// Count raw improvements vs significant improvements for reporting. Both use the ONE
+	// threshold interpretation (see lineageImprovementThreshold): a delta in scorer
+	// points, not a [0,1] ratio.
 	rawCount := 0
 	sigCount := 0
-	threshold := s.config.MinLineageImprovement
-	if threshold <= 0 {
-		threshold = 0.01
-	}
+	threshold := s.lineageImprovementThreshold()
 	for _, l := range result.Lineages {
 		if l.ScoreDelta > 0 {
 			rawCount++
 		}
-		if l.ScoreDelta >= threshold {
+		if improvementIsSignificant(l.ScoreDelta, threshold) {
 			sigCount++
 		}
 	}
@@ -726,19 +726,84 @@ func collectStatsFromPopulation(pop *genome.Population) Stats {
 	return s
 }
 
+// defaultMinLineageImprovement is "1% of the judge scale", expressed on the scale the
+// delta actually lives on: the deltas compared against it are differences of scorer
+// scores, and every scorer wired in production produces 0-JudgeScaleCeiling (100). So 1%
+// is ONE POINT, not 0.01 points — the two readings differ by 100x, and the smaller one
+// turned "significant improvement" into "any improvement at all".
+const defaultMinLineageImprovement = 0.01 * evolution.JudgeScaleCeiling
+
+// lineageImprovementThreshold is the ONE interpretation of the configured
+// MinLineageImprovement: an absolute score delta, in the same unit as the deltas it is
+// compared against (scorer points on the GA/judge scale). Zero or negative means "unset"
+// and falls back to the derived default rather than to a literal — that literal is what
+// made this threshold 100x too small.
+func (s *Service) lineageImprovementThreshold() float64 {
+	threshold := s.config.MinLineageImprovement
+	if threshold <= 0 {
+		threshold = defaultMinLineageImprovement
+	} else {
+		warnSuspiciousLegacyThreshold(threshold)
+	}
+	return threshold
+}
+
+// suspiciouslySmallLineageImprovement is the ceiling below which a CONFIGURED threshold
+// cannot be a real noise floor: on a 0-100 scale it is under a tenth of a point, which no
+// scorer can even resolve. A value in (0, that) is therefore almost certainly a
+// pre-upgrade setting written under the old [0,1] ratio reading (typically 0.01), and it
+// would otherwise flip meaning in silence — the flag would light up on everything and
+// nobody could tell why.
+const suspiciouslySmallLineageImprovement = 0.1
+
+// isSuspiciousLegacyThreshold reports whether a configured value looks like it was written
+// for the old [0,1] reading. Pure, so the rule is testable without the logger.
+func isSuspiciousLegacyThreshold(configured float64) bool {
+	return configured > 0 && configured < suspiciouslySmallLineageImprovement
+}
+
+var (
+	legacyThresholdWarnMu    sync.Mutex
+	legacyThresholdWarnFired bool
+)
+
+// warnSuspiciousLegacyThreshold reports, once per process, a configured threshold that
+// looks like a pre-upgrade ratio, naming both readings so the operator can act. It returns
+// whether it logged this time (tests assert the once-only property; the module logger is
+// bound to slog's default at package init, so tests cannot intercept it).
+func warnSuspiciousLegacyThreshold(configured float64) bool {
+	if !isSuspiciousLegacyThreshold(configured) {
+		return false
+	}
+	legacyThresholdWarnMu.Lock()
+	if legacyThresholdWarnFired {
+		legacyThresholdWarnMu.Unlock()
+		return false
+	}
+	legacyThresholdWarnFired = true
+	legacyThresholdWarnMu.Unlock()
+
+	log.Warn("evolution: configured MinLineageImprovement looks like a pre-upgrade ratio",
+		"configured", configured,
+		"unit_now", "scorer points on the 0-100 judge scale",
+		"suggested", configured*evolution.JudgeScaleCeiling,
+		"note", "min_lineage_improvement used to be read as a [0,1] ratio; re-check it on the 0-100 scale")
+	return true
+}
+
+// improvementIsSignificant is the one rule behind every "significant improvement" flag
+// this service reports: an absolute delta in scorer points, at or above the threshold.
+func improvementIsSignificant(delta, threshold float64) bool { return delta >= threshold }
+
 // collectLineages gathers all recorded lineages from the genealogy recorder.
 func (s *Service) collectLineages() []StrategyLineage {
 	if s.wiredSystem != nil && s.wiredSystem.Genealogy != nil {
 		internal := s.wiredSystem.Genealogy.Lineages()
 		result := make([]StrategyLineage, 0, len(internal))
-		threshold := s.config.MinLineageImprovement
-		if threshold <= 0 {
-			threshold = 0.01
-		}
+		threshold := s.lineageImprovementThreshold()
 		for _, l := range internal {
 			apiLineage := toAPILineage(l)
-			// Set significance flag: absolute delta must meet or exceed threshold.
-			apiLineage.ImprovementSignificant = l.ScoreImprovement >= threshold
+			apiLineage.ImprovementSignificant = improvementIsSignificant(l.ScoreImprovement, threshold)
 			result = append(result, apiLineage)
 		}
 		return result
@@ -753,9 +818,45 @@ func (s *Service) collectLineages() []StrategyLineage {
 //   - top_k near 30 balances focus vs breadth (penalty dist²/10)
 //   - "precise" prompt template earns a bonus (+15)
 func (s *Service) scoreAgents(ctx context.Context, pop *genome.Population) {
+	// Install the dimension scorer on the POPULATION, then score through its combined entry
+	// point. Keeping the pass there (rather than in this function) is what stops the service
+	// and the in-process loop from diverging: both call Population.ScoreAgentsWithDimensions.
+	s.installDimensionScorer(pop)
+	s.scoreScalars(ctx, pop)
+}
+
+// installDimensionScorer gives the population the scorer that fills DimensionScores from real
+// execution evidence (M9).
+//
+// The scorer preserves agent.Score for a candidate with no evidence: writing 0 would be a
+// measurement ("everything failed") where the truth is "not measured yet", and it would drop
+// that candidate out of selection entirely. The aggregate is derived from the dimensions, so a
+// candidate's Score and its vector describe one body of evidence.
+//
+// A nil window installs nil, which is the previous behaviour: scalar-only selection.
+func (s *Service) installDimensionScorer(pop *genome.Population) {
+	if pop == nil {
+		return
+	}
+	if s.config == nil || s.config.DimensionWindow == nil {
+		pop.SetMultiObjectiveScorer(nil)
+		return
+	}
+	pop.SetMultiObjectiveScorer(func(agent *mutation.Strategy) (map[string]float64, float64) {
+		dims := evolution.MapCandidateDimensions(s.config.DimensionWindow(agent.ID))
+		if len(dims) == 0 {
+			return nil, agent.Score
+		}
+		return dims, genome.AggregateDimensions(dims, genome.DefaultDimensionWeights)
+	})
+}
+
+// scoreScalars is the single-objective pass; scoreAgents installs the dimension scorer and
+// then runs it through the population's combined entry point.
+func (s *Service) scoreScalars(ctx context.Context, pop *genome.Population) {
 	// Fast path: deterministic scorer — no clone/concurrency overhead.
 	if s.config.Scorer == nil {
-		pop.ScoreAgents(func(agent *mutation.Strategy) float64 {
+		pop.ScoreAgentsWithDimensions(func(agent *mutation.Strategy) float64 {
 			return DeterministicScore(toAPIStrategy(agent))
 		})
 		return
@@ -776,7 +877,7 @@ func (s *Service) scoreAgents(ctx context.Context, pop *genome.Population) {
 				scoreMap[a.ID] = scores[i]
 			}
 		}
-		pop.ScoreAgents(func(agent *mutation.Strategy) float64 {
+		pop.ScoreAgentsWithDimensions(func(agent *mutation.Strategy) float64 {
 			if sc, ok := scoreMap[agent.ID]; ok {
 				return sc
 			}
@@ -807,7 +908,7 @@ func (s *Service) scoreAgents(ctx context.Context, pop *genome.Population) {
 		scoreMap[a.ID] = scores[i]
 	}
 
-	pop.ScoreAgents(func(agent *mutation.Strategy) float64 {
+	pop.ScoreAgentsWithDimensions(func(agent *mutation.Strategy) float64 {
 		if sc, ok := scoreMap[agent.ID]; ok {
 			return sc
 		}

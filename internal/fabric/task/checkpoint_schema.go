@@ -3,6 +3,8 @@ package taskfabric
 import (
 	"encoding/json"
 	"errors"
+
+	"github.com/Timwood0x10/ares/internal/ares_events"
 )
 
 // CurrentCheckpointSchemaVersion is the version of the checkpoint envelope
@@ -296,11 +298,11 @@ func EncodeCheckpoint(dc DecodedCheckpoint) *CheckpointEnvelope {
 // cause returns the checkpoint unchanged (failures with no recorded error,
 // e.g. operator Fail calls); an undecodable checkpoint degrades to a fresh
 // envelope holding only the cause rather than losing the failure text.
-func checkpointWithCause(cp any, cause error) any {
+func (f *Fabric) checkpointWithCause(cp any, cause error) any {
 	if cause == nil {
 		return cp
 	}
-	dc, err := DecodeCheckpoint(cp)
+	dc, err := f.DecodeCheckpoint(cp)
 	if err != nil {
 		return EncodeCheckpoint(DecodedCheckpoint{LastError: cause.Error()})
 	}
@@ -314,8 +316,8 @@ func checkpointWithCause(cp any, cause error) any {
 // best-effort: a missing StrategyID degrades to the caller's active-strategy
 // fallback and must never break the state machine. DecodeCheckpoint is a pure
 // in-memory operation, so this is safe to call under the fabric mutex.
-func strategyIDFromCheckpoint(cp any) string {
-	dc, err := DecodeCheckpoint(cp)
+func (f *Fabric) strategyIDFromCheckpoint(cp any) string {
+	dc, err := f.DecodeCheckpoint(cp)
 	if err != nil {
 		return ""
 	}
@@ -326,8 +328,8 @@ func strategyIDFromCheckpoint(cp any) string {
 // through the single shared decode path. A decode failure or a session-less
 // checkpoint returns "". Best-effort like strategyIDFromCheckpoint: a missing
 // SessionID degrades to "" and never breaks the state machine.
-func sessionIDFromCheckpoint(cp any) string {
-	dc, err := DecodeCheckpoint(cp)
+func (f *Fabric) sessionIDFromCheckpoint(cp any) string {
+	dc, err := f.DecodeCheckpoint(cp)
 	if err != nil {
 		return ""
 	}
@@ -335,11 +337,10 @@ func sessionIDFromCheckpoint(cp any) string {
 }
 
 // tokenUsageFromCheckpoint extracts the cumulative LLM token spend from a
-// checkpoint value through the single shared decode path. Decode failure or
-// a pre-v4 envelope yields 0,0 — best-effort like strategyIDFromCheckpoint:
-// missing accounting must never break the state machine, and callers
-// (recordLocked's terminal-event payload) treat 0,0 as "emit nothing".
-// Pure in-memory decode, safe under the fabric mutex.
+// checkpoint value for envelope round-trip tests. It deliberately bypasses
+// Fabric.DecodeCheckpoint: tests should not need observer wiring, and the
+// production terminal-event path uses terminalCheckpointFacts (which is
+// observed). Decode failure or a pre-v4 envelope yields 0,0.
 func tokenUsageFromCheckpoint(cp any) (input, output int) {
 	dc, err := DecodeCheckpoint(cp)
 	if err != nil {
@@ -347,6 +348,67 @@ func tokenUsageFromCheckpoint(cp any) (input, output int) {
 	}
 	return dc.InputTokens, dc.OutputTokens
 }
+
+// terminalCheckpointFacts extracts, in ONE decode, everything the terminal event
+// payload needs from a checkpoint: the cumulative token spend (the observer's
+// cost channel) and the answer-quality signals (its degraded-answer channel).
+//
+// One decode rather than one per fact: the terminal stamping path runs under the
+// fabric mutex, and both facts live in the same envelope — the envelope's totals
+// plus the StepCheckpoint's "metadata" sub-map, which the scheduler's done
+// branch builds as outMap["metadata"] = res.Metadata.
+//
+// Best-effort by contract: a nil/undecodable checkpoint, a non-map
+// StepCheckpoint, or absent keys yield zero values, never an error — the
+// observer then scores on outcome and latency alone instead of inventing facts.
+func (f *Fabric) terminalCheckpointFacts(cp any) (inTokens, outTokens int, bodySource string, truncated bool) {
+	inTokens, outTokens, meta := f.stepCheckpointMetadata(cp)
+	bs, _ := meta[ares_events.EventKeyAnswerBodySource].(string)
+	tr, _ := meta[ares_events.EventKeyAnswerTruncated].(bool)
+	return inTokens, outTokens, bs, tr
+}
+
+// AnswerQualityFromCheckpoint reports the terminal answer provenance recorded in
+// a task checkpoint: the body source (one of the ares_events.AnswerBodySource*
+// values; "" when the envelope predates the key or the task is not an answer) and
+// whether the answer was forced by the planner's growth-depth guard.
+//
+// It is the exported form of terminalCheckpointFacts for consumers OUTSIDE the
+// fabric — the eval executor reads it so a judge is handed a runtime-derived fact
+// instead of having to guess from the answer's text. One extraction rule (this
+// delegation), not a second one: the two halves of P0-3 must agree on what "gap"
+// means.
+func (f *Fabric) AnswerQualityFromCheckpoint(cp any) (bodySource string, truncated bool) {
+	_, _, bodySource, truncated = f.terminalCheckpointFacts(cp)
+	return bodySource, truncated
+}
+
+// stepCheckpointMetadata decodes a checkpoint ONCE and returns the cumulative
+// token spend plus the result-metadata sub-map. Several consumers under the
+// fabric mutex need several facts from the same envelope (token totals for the
+// cost channel, answer quality for the degraded channel, rationale for the next
+// quantum), and one walk keeps that a single decode.
+//
+// Callers must not mutate the returned map: it belongs to the decoded envelope.
+func (f *Fabric) stepCheckpointMetadata(cp any) (inTokens, outTokens int, meta map[string]any) {
+	dc, err := f.DecodeCheckpoint(cp)
+	if err != nil {
+		return 0, 0, nil
+	}
+	inTokens, outTokens = dc.InputTokens, dc.OutputTokens
+	sc, ok := dc.StepCheckpoint.(map[string]any)
+	if !ok {
+		return inTokens, outTokens, nil
+	}
+	meta, _ = sc[stepCheckpointMetadataKey].(map[string]any)
+	return inTokens, outTokens, meta
+}
+
+// stepCheckpointMetadataKey is the sub-map the scheduler's done branch puts the
+// quantum's result metadata under (outMap["metadata"] = res.Metadata) inside the
+// StepCheckpoint. It is the layout half of the answer-quality contract: the keys
+// INSIDE it are the ares_events ones, this is only the box they arrive in.
+const stepCheckpointMetadataKey = "metadata"
 
 // MarshalCheckpoint JSON-encodes a checkpoint value. When the value is a
 // *CheckpointEnvelope, it marshals directly. When it is any other type, it
@@ -361,6 +423,17 @@ func tokenUsageFromCheckpoint(cp any) (input, output int) {
 //   - []byte: the JSON encoding.
 //   - error: json.Marshal error.
 func MarshalCheckpoint(cp any) ([]byte, error) {
+	return marshalCheckpointWith(DecodeCheckpoint, cp)
+}
+
+// marshalCheckpoint is the observed form used inside the fabric: a non-envelope
+// checkpoint goes through Fabric.DecodeCheckpoint, so its read-back failure is
+// counted by the consistency observer.
+func (f *Fabric) marshalCheckpoint(cp any) ([]byte, error) {
+	return marshalCheckpointWith(f.DecodeCheckpoint, cp)
+}
+
+func marshalCheckpointWith(decode func(any) (DecodedCheckpoint, error), cp any) ([]byte, error) {
 	if cp == nil {
 		return []byte("null"), nil
 	}
@@ -368,7 +441,7 @@ func MarshalCheckpoint(cp any) ([]byte, error) {
 		return json.Marshal(env)
 	}
 	// Wrap non-envelope values so the serialized form is always versioned.
-	dc, err := DecodeCheckpoint(cp)
+	dc, err := decode(cp)
 	if err != nil {
 		return nil, err
 	}

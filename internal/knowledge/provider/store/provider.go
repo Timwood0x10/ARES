@@ -11,6 +11,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/knowledge"
 	"github.com/Timwood0x10/ares/internal/knowledge/provider"
 	"github.com/Timwood0x10/ares/internal/tenantctx"
+	"github.com/Timwood0x10/ares/internal/userctx"
 )
 
 // StoreProvider adapts a KnowledgeStore into a GraphProvider. It is the read
@@ -61,11 +62,14 @@ func New(name string, st knowledge.KnowledgeStore, emb embedding.EmbeddingServic
 //
 //  1. the intent's declared scope — a caller explicitly asking for one wins
 //     over everything (an explicit override is never second-guessed);
-//  2. the request-scoped tenant in ctx (tenantctx) — the scheduler stamps the
+//  2. the request-scoped user in ctx (userctx, M5) combined
+//     with the tenant in ctx (tenantctx) — resolves the user-level namespace
+//     so recall hits the same graph the write side distilled into;
+//  3. the request-scoped tenant in ctx (tenantctx) — the scheduler stamps the
 //     executing task's tenant onto the quantum's context, so recall resolves
 //     the same tenant the DistillBridge write side attributes facts to, per
 //     request instead of per process;
-//  3. the constructor's static namespace — the documented default for
+//  4. the constructor's static namespace — the documented default for
 //     tenant-less requests, matching the write side's fallback.
 //
 // Only the FIRST declared scope namespace is honoured: the schema allows a
@@ -76,7 +80,13 @@ func (p *StoreProvider) namespaceFor(ctx context.Context, intent knowledge.Inten
 	if len(intent.Scope.Namespaces) > 0 && intent.Scope.Namespaces[0] != "" {
 		return intent.Scope.Namespaces[0]
 	}
-	if ns := tenantctx.From(ctx); ns != "" {
+	// M5: resolve the request-scoped user (userctx, stamped by the scheduler
+	// from the task payload) together with the tenant, so recall hits the same
+	// user graph the write side distilled into. ResolveUserNamespace already
+	// falls back to tenantID, so the tenant-only case needs no extra branch.
+	tenantID := tenantctx.From(ctx)
+	userID := userctx.From(ctx)
+	if ns := knowledge.ResolveUserNamespace(tenantID, userID, ""); ns != "" {
 		return ns
 	}
 	return p.ns

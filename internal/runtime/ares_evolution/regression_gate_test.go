@@ -20,12 +20,31 @@ import (
 // better"), and fails CLOSED on scorer errors (an unverifiable candidate
 // must not ride the promote path).
 
-// scriptedScorer scores by strategy string: a fixed score per "strategy"
-// (the gate passes the prompt template as the strategy input).
+// scriptedScorer scores by the strategy's instructions: a fixed score per template.
+//
+// It reads the instructions the way the real scorers do — from either a bare string or a
+// whole strategy value — because the gate now hands over the candidate itself so that its
+// Params survive (see the gate's comment). Keeping the stub string-only is how a test
+// ends up locking a lossy contract.
 type scriptedScorer struct {
 	scores map[string]float64
 	// err, when set, fails every score call.
 	err error
+}
+
+// scriptedInstructions mirrors the real scorers' extraction, including the typed shape.
+func scriptedInstructions(strategy any) string {
+	switch v := strategy.(type) {
+	case string:
+		return v
+	case *mutation.Strategy:
+		if v != nil {
+			return v.PromptTemplate
+		}
+	case mutation.Strategy:
+		return v.PromptTemplate
+	}
+	return ""
 }
 
 func (s scriptedScorer) Score(_ context.Context, input any) (float64, error) {
@@ -36,11 +55,73 @@ func (s scriptedScorer) Score(_ context.Context, input any) (float64, error) {
 	if !ok {
 		return 0, errors.New("scriptedScorer: expected TestCaseInput")
 	}
-	strategy, _ := tci.Strategy.(string)
+	strategy := scriptedInstructions(tci.Strategy)
 	if v, ok := s.scores[strategy]; ok {
 		return v, nil
 	}
 	return 0.5, nil
+}
+
+// capturingScorer records every strategy value the gate hands it.
+//
+// The mutex is not decoration: the arena runs candidates CONCURRENTLY (errgroup inside
+// RegressionTester.runStrategy), so Score is called from several goroutines at once. Without
+// it the capture is a data race — found by `go test -race`, which is why the quality gate
+// requires it (code_rules §4.6).
+type capturingScorer struct {
+	mu   sync.Mutex // guards seen
+	seen []any
+}
+
+func (c *capturingScorer) Score(_ context.Context, input any) (float64, error) {
+	tci, ok := input.(ares_arena.TestCaseInput)
+	if !ok {
+		return 0, errors.New("capturingScorer: expected TestCaseInput")
+	}
+	c.mu.Lock()
+	c.seen = append(c.seen, tci.Strategy)
+	c.mu.Unlock()
+	return 0.5, nil
+}
+
+// captured returns a copy of what the scorer saw, safe to read after the gate returns.
+func (c *capturingScorer) captured() []any {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]any, len(c.seen))
+	copy(out, c.seen)
+	return out
+}
+
+// TestArenaRegressionGate_PassesTheWholeStrategy is the P0-1 replay contract: the gate
+// hands the candidate ITSELF to the scorer, not just its prompt template.
+//
+// A template alone carries no Params, and Params is where a candidate declares its tool
+// whitelist (agents.ParamKeyTools). A gate that scores a candidate by RUNNING it must run
+// the candidate as declared — otherwise the evaluation grades a strategy no deployment
+// would execute, and nothing in the score says so. The LLM scorer reads the template out
+// of either shape, so carrying the whole value costs nothing.
+func TestArenaRegressionGate_PassesTheWholeStrategy(t *testing.T) {
+	active := &mutation.Strategy{ID: "active", PromptTemplate: "old-instructions",
+		Params: map[string]any{"tools": "calculator"}}
+	cand := &mutation.Strategy{ID: "cand", PromptTemplate: "new-instructions",
+		Params: map[string]any{"tools": "calculator,hash_tool"}}
+	captured := &capturingScorer{}
+
+	g, err := NewArenaRegressionGate(captured, gateCases(), ArenaRegressionGateConfig{})
+	require.NoError(t, err)
+	_, _, _ = g.Check(context.Background(), cand, active)
+
+	require.NotEmpty(t, captured.captured(), "the gate must actually score something")
+	seenIDs := map[string]bool{}
+	for _, s := range captured.seen {
+		st, ok := s.(*mutation.Strategy)
+		require.Truef(t, ok, "the strategy must travel as itself (got %T) — a template alone loses Params", s)
+		assert.NotEmptyf(t, st.Params["tools"], "candidate %q reached the scorer without its tool whitelist", st.ID)
+		seenIDs[st.ID] = true
+	}
+	assert.True(t, seenIDs["active"] && seenIDs["cand"],
+		"both sides of the comparison must arrive as strategies, got %v", seenIDs)
 }
 
 func gateStrategies(old, new float64) (*mutation.Strategy, *mutation.Strategy, *scriptedScorer) {

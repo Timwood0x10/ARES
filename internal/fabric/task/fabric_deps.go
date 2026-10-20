@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"slices"
 	"sort"
+
+	apperrors "github.com/Timwood0x10/ares/internal/errors"
 )
 
 // SetDependencies replaces a task's dependency list in place. It is the
@@ -22,13 +24,20 @@ import (
 // The rewrite is recorded as an observability-only event (EventTaskUpdated);
 // see that constant for why it is deliberately not persisted.
 //
+// The new list is VALIDATED before it is applied, and a rejected call leaves the task's
+// existing dependencies untouched: the three rejections below are exactly the ways a
+// dependency list can strand a task with no owner and no error, and applying a broken
+// list "then reporting the problem" would create the stranding it just detected.
+//
 // Args:
 //   - id: the task to rewire.
 //   - deps: the new dependency IDs; copied, so the caller's slice stays its
 //     own (same isolation contract as Create).
 //
 // Returns:
-//   - error: ErrTaskNotFound, or ErrTaskNotMutable when the state forbids it.
+//   - error: ErrTaskNotFound, ErrTaskNotMutable when the state forbids it, and for a
+//     rejected list either apperrors.ErrNotFound (a dependency that does not exist) or
+//     apperrors.ErrDependencyCycle (a self-edge, or a cycle through the live graph).
 func (f *Fabric) SetDependencies(id string, deps []string) error {
 	pending := make([]*pendingAppend, 0, 1)
 	f.mu.Lock()
@@ -41,9 +50,75 @@ func (f *Fabric) SetDependencies(id string, deps []string) error {
 	if t.State != StateReady {
 		return fmt.Errorf("%w: task %q is %s", ErrTaskNotMutable, id, t.State)
 	}
+	if err := f.validateDependenciesLocked(id, deps); err != nil {
+		return err
+	}
 	t.Dependencies = append([]string(nil), deps...)
 	pending = append(pending, f.recordLocked(t, EventTaskUpdated))
 	return nil
+}
+
+// validateDependenciesLocked rejects a dependency list that could strand the task
+// SILENTLY: an unknown id, a self-edge, or a cycle through the live graph.
+//
+// All three share one failure mode — the task stays READY forever, with no owner and no
+// error anywhere — which is the "stranded silently" family P0-2 closed on the
+// create_task path. SetDependencies is the OTHER way the runtime graph grows, so the
+// same invariant has to hold here: the runtime graph stays a DAG, and every edge points
+// at something that exists.
+//
+// The two sentinels are chosen to compose with the task fabric's permanent-cause table
+// (failure.go): neither a missing dependency nor a cycle can be fixed by running the
+// same step again, so a caller that reacts to one of these by retrying would be burning
+// its budget on a graph edit that is wrong by construction.
+//
+// Caller must hold f.mu — it walks the live task map.
+func (f *Fabric) validateDependenciesLocked(id string, deps []string) error {
+	for _, dep := range deps {
+		if dep == id {
+			return fmt.Errorf("%w: task %q cannot depend on itself", apperrors.ErrDependencyCycle, id)
+		}
+		if _, ok := f.tasks[dep]; !ok {
+			// ErrDependencyUnresolved is the fabric's own vocabulary for a dependency id
+			// that names no live task — the strict create path already answers this way
+			// (WithResolvedDependencies), and two names for one condition is how the two
+			// halves of a graph writer stop agreeing.
+			return fmt.Errorf("%w: dependency %q of task %q does not exist — nothing would ever satisfy it",
+				ErrDependencyUnresolved, dep, id)
+		}
+	}
+	if f.wouldCycleLocked(id, deps) {
+		return fmt.Errorf("%w: task %q would depend, directly or transitively, on itself", apperrors.ErrDependencyCycle, id)
+	}
+	return nil
+}
+
+// wouldCycleLocked reports whether making id depend on deps closes a cycle, i.e. whether
+// id is reachable from deps along the live dependency edges.
+//
+// Iterative with a visited set rather than recursive: a cycle that is ALREADY in the
+// graph (written before this validation existed, or restored from an older store) must
+// make this walk terminate, not spin. It walks the existing edges only — dep's own list
+// is not what is being validated here; each rewrite is checked against the graph as it
+// stands, which is sufficient because every accepted rewrite kept it acyclic.
+func (f *Fabric) wouldCycleLocked(id string, deps []string) bool {
+	visited := make(map[string]bool, len(deps))
+	stack := append([]string(nil), deps...)
+	for len(stack) > 0 {
+		current := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if current == id {
+			return true
+		}
+		if visited[current] {
+			continue
+		}
+		visited[current] = true
+		if t, ok := f.tasks[current]; ok {
+			stack = append(stack, t.Dependencies...)
+		}
+	}
+	return false
 }
 
 // PayloadKeyDegradedInputs is the output-contract key carrying the ids of the
@@ -53,6 +128,14 @@ func (f *Fabric) SetDependencies(id string, deps []string) error {
 // (internal/fabric/agent) can read the same key it injects into the LLM
 // context — a single source of truth across the producer and consumer.
 const PayloadKeyDegradedInputs = "degraded_inputs"
+
+// PayloadKeyRequeued is the task-payload key carrying Task.Requeued to the
+// executing quantum. The scheduler stamps it at dispatch (ToModelTask) and the
+// finisher reports it on the terminal result, so a caller can tell "this run
+// continued earlier work" from "this is the task's first run" without reading
+// fabric internals (defect A6). Exported so both sides — the scheduler that
+// writes it and the cognition that reads it — share one wire name.
+const PayloadKeyRequeued = "requeued"
 
 // recordDegradedInputLocked marks missing as an input the dependent is
 // proceeding without. It is the AllowPartial branch's whole action: the task
@@ -94,7 +177,7 @@ func (f *Fabric) recordDegradedInputLocked(t *Task, missing string, pending *[]*
 // authoritative record, so an undecodable envelope is logged rather than
 // failing the cascade.
 func (f *Fabric) mirrorDegradedInputsLocked(t *Task) {
-	dc, err := DecodeCheckpoint(t.Checkpoint)
+	dc, err := f.DecodeCheckpoint(t.Checkpoint)
 	if err != nil {
 		log.Warn(context.Background(), "mirrorDegradedInputsLocked",
 			"taskfabric: cannot mirror degraded_inputs into payload",
@@ -153,7 +236,7 @@ func (f *Fabric) UpdatePayload(id string, payload map[string]any) error {
 	// Decode → replace → re-encode keeps every field the envelope already
 	// carried (notably StrategyID, the submission-time attribution) intact
 	// and keeps this the single decode path for checkpoints.
-	dc, err := DecodeCheckpoint(t.Checkpoint)
+	dc, err := f.DecodeCheckpoint(t.Checkpoint)
 	if err != nil {
 		return err
 	}

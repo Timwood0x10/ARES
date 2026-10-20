@@ -11,6 +11,7 @@ import (
 	memctx "github.com/Timwood0x10/ares/internal/runtime/memory/context"
 	"github.com/Timwood0x10/ares/internal/runtime/memory/distillation"
 	memembed "github.com/Timwood0x10/ares/internal/runtime/memory/embedding"
+	"github.com/Timwood0x10/ares/internal/tenantctx"
 )
 
 // tenantRecordingDistiller records the tenant each DistillConversation call
@@ -132,4 +133,59 @@ func TestSearchSimilarTasks_UsesDefaultTenant(t *testing.T) {
 	require.NotEmpty(t, searchedBy, "SearchByVector must be called")
 	require.Equal(t, "tenant-x", searchedBy[0],
 		"search must use the configured default tenant")
+}
+
+// TestSearchSimilarTasks_PrefersRequestTenant pins the M5 scoping fix: when the
+// executing request carries a tenant, recall must use THAT tenant instead of
+// the process-level default. Reading defaultTenantID unconditionally made every
+// request recall whichever tenant SetDefaultTenantID last pinned — the same
+// defect class the AKG recall path fixed by resolving tenantctx per request.
+func TestSearchSimilarTasks_PrefersRequestTenant(t *testing.T) {
+	mgr, _, r := newTenantTestManager(t)
+	mgr.SetDefaultTenantID("tenant-default")
+
+	ctx := tenantctx.With(context.Background(), "tenant-request")
+	_, err := mgr.SearchSimilarTasks(ctx, "query", 5)
+	require.NoError(t, err)
+
+	r.mu.Lock()
+	searchedBy := append([]string(nil), r.searchedBy...)
+	r.mu.Unlock()
+	require.NotEmpty(t, searchedBy, "SearchByVector must be called")
+	require.Equal(t, "tenant-request", searchedBy[0],
+		"recall must resolve the request's tenant, not the process-level default")
+
+	// The configured default remains the fallback for unscoped callers.
+	_, err = mgr.SearchSimilarTasks(context.Background(), "query", 5)
+	require.NoError(t, err)
+
+	r.mu.Lock()
+	searchedBy = append([]string(nil), r.searchedBy...)
+	r.mu.Unlock()
+	require.Equal(t, "tenant-default", searchedBy[len(searchedBy)-1],
+		"an unscoped request must still fall back to the configured default")
+}
+
+// TestSessionOwner_RecordsCreator pins the ownership lookup user_profile relies
+// on: the user recorded at CreateSession time is read back, so a caller handed
+// a session id can tell whose session it is.
+func TestSessionOwner_RecordsCreator(t *testing.T) {
+	mgr, _, _ := newTenantTestManager(t)
+
+	sessionID, err := mgr.CreateSession(context.Background(), "user-1")
+	require.NoError(t, err)
+
+	owner, err := mgr.SessionOwner(context.Background(), sessionID)
+	require.NoError(t, err)
+	require.Equal(t, "user-1", owner)
+
+	// An unknown (or expired) session reports no owner rather than erroring —
+	// the same "no such session" convention as GetLatestSessionForAgent.
+	owner, err = mgr.SessionOwner(context.Background(), "session_nobody_1")
+	require.NoError(t, err)
+	require.Empty(t, owner)
+
+	owner, err = mgr.SessionOwner(context.Background(), "")
+	require.NoError(t, err)
+	require.Empty(t, owner)
 }

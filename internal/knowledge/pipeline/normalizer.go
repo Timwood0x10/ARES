@@ -155,6 +155,11 @@ func (m *DefaultEntityMatcher) Match(_ context.Context, obj *knowledge.Knowledge
 // token bags come from the pipeline's per-Process cache, so the O(n²) pair
 // loop allocates nothing. A nil candTokens (direct Match calls) falls back to
 // tokenizing each candidate here, preserving the legacy interface contract.
+//
+// Resolution follows a risk-ascending order (M2.5): cheap, high-precision
+// checks run first; expensive, low-precision similarity runs last; and when
+// nothing reaches threshold, the object stays a new entity rather than being
+// silently merged.
 func (m *DefaultEntityMatcher) MatchTokens(_ context.Context, obj *knowledge.KnowledgeObject, objTokens map[string]int, candidates []*knowledge.KnowledgeObject, candTokens map[string]map[string]int) (*knowledge.ResolveResult, error) {
 	if obj == nil || len(candidates) == 0 {
 		return &knowledge.ResolveResult{IsNew: true}, nil
@@ -165,11 +170,57 @@ func (m *DefaultEntityMatcher) MatchTokens(_ context.Context, obj *knowledge.Kno
 		threshold = 0.7
 	}
 
-	var bestMatch string
-	var bestScore float64
-
+	// Step 1: identifier exact match (highest precision, lowest risk).
+	// If the object's ID exactly matches a candidate's ID, it is the same
+	// object — but callers already skip self-matches (candidate.ID == obj.ID),
+	// so this only fires when two different-normalized objects share an ID
+	// (e.g. an upsert path re-processing an existing object).
 	for _, candidate := range candidates {
 		if candidate.ID == obj.ID {
+			continue
+		}
+		// Exact ID match is not a merge — it means the same logical entity
+		// was re-ingested. Return a match so the pipeline can update it.
+		if obj.ID != "" && sameSummaryAndType(obj, candidate) {
+			return &knowledge.ResolveResult{
+				MatchedObjectID: candidate.ID,
+				Confidence:      1.0,
+				IsNew:           false,
+			}, nil
+		}
+	}
+
+	// Step 2: data-source unique ID (Ref in Evidence matches).
+	if obj.ID != "" {
+		for _, candidate := range candidates {
+			if candidate.ID == obj.ID {
+				continue
+			}
+			if sourceIDMatch(obj, candidate) {
+				return &knowledge.ResolveResult{
+					MatchedObjectID: candidate.ID,
+					Confidence:      0.95,
+					IsNew:           false,
+				}, nil
+			}
+		}
+	}
+
+	// Step 3: explicit alias mapping is not configured by default (no alias
+	// dict in DefaultEntityMatcher). Callers who need it wrap this matcher
+	// with an AliasMatcher. Fall through to similarity.
+
+	// Step 4: type+context-constrained similarity (lowest precision).
+	var bestMatch string
+	var bestScore float64
+	for _, candidate := range candidates {
+		if candidate.ID == obj.ID {
+			continue
+		}
+		// Type constraint: only match within the same object type. Different
+		// types (e.g. a "user" and a "project" with similar names) should not
+		// be merged — that would silently corrupt the knowledge graph.
+		if obj.Type != "" && candidate.Type != "" && obj.Type != candidate.Type {
 			continue
 		}
 		candWords, cached := candTokens[candidate.ID]
@@ -195,6 +246,7 @@ func (m *DefaultEntityMatcher) MatchTokens(_ context.Context, obj *knowledge.Kno
 		}, nil
 	}
 
+	// Step 5: no confident match — keep as a new, independent entity.
 	return &knowledge.ResolveResult{IsNew: true}, nil
 }
 
@@ -247,6 +299,73 @@ func (v *DefaultValidator) Validate(_ context.Context, merged *knowledge.Knowled
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
+
+// sameSummaryAndType reports whether two objects share BOTH their Summary text
+// and their Type. It is the step-1 "highest precision" signal in the M2.5
+// risk-ascending order: a re-ingested record that got a new ID (e.g. because
+// its namespace changed) is recognised as the same entity.
+//
+// It is NOT an identifier comparison despite the step's name: the caller skips
+// identical object IDs, so this is a text-equality heuristic.
+//
+// TODO(tech-debt): the caller merges on this at Confidence 1.0, which is
+// unjustified for a text-equality heuristic — two different entities can share
+// a summary string. Lower the confidence (or require corroborating evidence)
+// once the resolver's thresholds are calibrated.
+func sameSummaryAndType(a, b *knowledge.KnowledgeObject) bool {
+	if a == nil || b == nil {
+		return false
+	}
+	if a.Type != "" && b.Type != "" && a.Type != b.Type {
+		return false
+	}
+	return a.Summary == b.Summary && a.Summary != ""
+}
+
+// sourceIDMatch checks whether two objects share the same data-source unique
+// ID by comparing their Evidence Ref fields. Two objects extracted from the
+// same row/document/commit with the same Ref are the same entity. This is
+// step 2 in the risk-ascending resolution order (M2.5), and applies only to
+// record-scoped evidence (see isRecordScopedEvidence) — conversation-scoped
+// evidence is deliberately excluded.
+func sourceIDMatch(a, b *knowledge.KnowledgeObject) bool {
+	if a == nil || b == nil {
+		return false
+	}
+	if len(a.Evidence) == 0 || len(b.Evidence) == 0 {
+		return false
+	}
+	// A shared (Source, Ref) only proves identity when the source is a single
+	// RECORD (a DB row, a document, a commit). Conversation-scoped evidence
+	// spans many distinct facts, so matching on it would collapse every fact of
+	// a session into one object — exclude it.
+	for _, ea := range a.Evidence {
+		if !isRecordScopedEvidence(ea) {
+			continue
+		}
+		for _, eb := range b.Evidence {
+			if !isRecordScopedEvidence(eb) {
+				continue
+			}
+			if ea.Source == eb.Source && ea.Ref == eb.Ref {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// conversationEvidenceSourcePrefix marks evidence whose Source is a whole
+// conversation rather than a single source record (see
+// DistillBridge.attachEvidence, which stamps "conversation:<id>").
+const conversationEvidenceSourcePrefix = "conversation:"
+
+// isRecordScopedEvidence reports whether e points at a single source record
+// rather than a container of many facts. Only record-scoped evidence may be
+// used as an entity-identity signal in the M2.5 "data-source unique ID" step.
+func isRecordScopedEvidence(e knowledge.Evidence) bool {
+	return e.Ref != "" && !strings.HasPrefix(e.Source, conversationEvidenceSourcePrefix)
+}
 
 // tokenize splits text into lowercase word tokens.
 func tokenize(text string) map[string]int {

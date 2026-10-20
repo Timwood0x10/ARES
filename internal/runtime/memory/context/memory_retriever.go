@@ -45,6 +45,21 @@ const (
 	// when the caller passes minScore <= 0. Experiences below this confidence
 	// are unlikely to be worth surfacing in the prompt, so we drop them rather
 	// than waste context tokens.
+	//
+	// What 0.4 DOES and does NOT filter (defect P2-10, "语义偏弱"): on a 1024-dim
+	// cosine similarity it is a WEAK floor. Two unrelated texts commonly land around
+	// 0.5-0.6 and a merely topical one higher, so 0.4 mostly drops near-orthogonal
+	// results — it does not keep mediocre-but-on-topic snippets out of the prompt. The
+	// value is a recall/precision dial, not a correctness gate: raising it to 0.5-0.6 is
+	// a legitimate choice that trades recall for a shorter, sharper context block, and
+	// that trade is a product decision, not a bug fix. What this constant must not do is
+	// pretend to be a relevance guarantee.
+	//
+	// `internal/knowledge/adapter` has its own DefaultMinScore (0.4) for the knowledge
+	// store path: same number, DIFFERENT score (that one filters the store's
+	// FinalScore). They are deliberately not unified — the two paths rank differently —
+	// but a change to one is a change to one path only, and that is the point of naming
+	// them separately here.
 	DefaultMinScore = 0.4
 	// DefaultTopK is the maximum number of snippets returned when the caller
 	// passes topK <= 0.

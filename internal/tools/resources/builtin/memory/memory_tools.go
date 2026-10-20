@@ -6,9 +6,12 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/Timwood0x10/ares/internal/ares_events"
 	memory "github.com/Timwood0x10/ares/internal/runtime/memory"
+	"github.com/Timwood0x10/ares/internal/tenantctx"
 	"github.com/Timwood0x10/ares/internal/tools/resources/base"
 	"github.com/Timwood0x10/ares/internal/tools/resources/core"
+	"github.com/Timwood0x10/ares/internal/userctx"
 )
 
 // MemorySearch searches distilled memories and user preferences.
@@ -133,19 +136,20 @@ func NewUserProfile(memoryMgr memory.MemoryManager) *UserProfile {
 		Type: "object",
 		Properties: map[string]*core.Parameter{
 			"user_id": {
-				Type:        "string",
-				Description: "User identifier",
-			},
-			"tenant_id": {
-				Type:        "string",
-				Description: "Tenant identifier for multi-tenant isolation",
+				Type: "string",
+				Description: "User identifier. Ignored when the request carries a user " +
+					"(the request-scoped user always wins); only a fallback for callers " +
+					"that do not thread a user through the request context.",
 			},
 			"session_id": {
 				Type:        "string",
 				Description: "Session identifier (optional, for current session context)",
 			},
 		},
-		Required: []string{"user_id", "tenant_id"},
+		// Nothing is required: both the user and the tenant are resolved from the
+		// request context (#63). A model-supplied tenant_id is not accepted at
+		// all — it used to be a required parameter, which let a hallucinated (or
+		// hostile) value read another tenant's profile.
 	}
 
 	up := &UserProfile{
@@ -158,18 +162,29 @@ func NewUserProfile(memoryMgr memory.MemoryManager) *UserProfile {
 
 // Execute retrieves user profile.
 //
+// Scope is resolved from the request context (#63): the tenant always comes
+// from tenantctx and the user from userctx (M5), so neither can be steered by
+// a tool parameter. The profile is user-scoped — user_id is only a fallback
+// for callers that do not thread a user through the request context, and when
+// both are absent the call fails closed rather than guessing whose profile was
+// meant.
+//
 //nolint:gocyclo // Complex user profile retrieval with multiple field types
 //nolint:gocyclo
 func (t *UserProfile) Execute(ctx context.Context, params map[string]interface{}) (core.Result, error) {
-	// Get required parameters
-	userID, ok := params["user_id"].(string)
-	if !ok || userID == "" {
-		return core.NewErrorResult("user_id is required"), nil
+	// The request-scoped user wins; the parameter is a legacy fallback for
+	// unscoped callers and can never override a user the request declared.
+	userID := userctx.From(ctx)
+	if userID == "" {
+		userID, _ = params["user_id"].(string)
+	}
+	if userID == "" {
+		return core.NewErrorResult("user_id is required: the request carries no user and none was supplied"), nil
 	}
 
-	tenantID, ok := params["tenant_id"].(string)
-	if !ok || tenantID == "" {
-		return core.NewErrorResult("tenant_id is required"), nil
+	tenantID := tenantctx.From(ctx)
+	if tenantID == "" {
+		tenantID = ares_events.DefaultTenantID
 	}
 
 	profile := map[string]interface{}{
@@ -231,8 +246,18 @@ func (t *UserProfile) Execute(ctx context.Context, params map[string]interface{}
 		}
 	}
 
-	// Get current session context if provided
+	// Get current session context if provided — but only for a session this
+	// request's user owns. session_id is a model-supplied parameter, so without
+	// the ownership check the tool would read any session the model named.
 	if sessID, ok := params["session_id"].(string); ok && sessID != "" && t.memoryMgr != nil {
+		owner, oerr := t.memoryMgr.SessionOwner(ctx, sessID)
+		if oerr != nil {
+			// Cannot verify ownership: fail closed rather than read blind.
+			return core.NewErrorResult(fmt.Sprintf("session ownership unavailable: %v", oerr)), nil
+		}
+		if owner != "" && owner != userID {
+			return core.NewErrorResult("session_id does not belong to the request's user"), nil
+		}
 		messages, err := t.memoryMgr.GetMessages(ctx, sessID)
 		if err == nil && len(messages) > 0 {
 			profile["current_session_messages"] = len(messages)

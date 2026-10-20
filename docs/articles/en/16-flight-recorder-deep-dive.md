@@ -96,7 +96,7 @@ type FlightRecorderConfig struct {
 
 ### The most important design: genealogy "auto-build"
 
-The old draft said "Genealogy is optional, injected by the caller." That is only *half* right. Look at the constructor:
+Genealogy is not simply "optional, injected by the caller" — look at the constructor:
 
 ```go
 func NewFlightRecorder(cfg FlightRecorderConfig) *FlightRecorder {
@@ -149,7 +149,7 @@ Public surface: `Timeline()`, `Graph()`, `Decisions()`, `Diagnostics()`, `EventS
 
 ## 三、Collector — the event router
 
-The Collector is the engine. Its real structure is **much richer than the old draft implied** — there's an evidence pipeline the old draft never mentioned:
+The Collector is the engine, and its structure is richer than the obvious fields suggest — there is an evidence pipeline alongside them:
 
 ```go
 type Collector struct {
@@ -248,7 +248,7 @@ Each GA genome filters on its own Source, so workflow / scheduler / recovery sig
 | handleToolEvent | `EventToolCall` | `NodeTool` | - | - |
 | handleDecisionEvent | - | - | - | - |
 
-One correction vs any naive reading: the failure auto-diagnosis reads the **event payload's `error` field**, not a function parameter:
+One clarification against a naive reading: the failure auto-diagnosis reads the **event payload's `error` field**, not a function parameter:
 
 ```go
 case ares_events.EventTaskFailed:
@@ -272,7 +272,7 @@ func isDecisionEvent(evt *ares_events.Event) bool { ... s[:9] == "decision." }
 func payloadInt(payload map[string]any, key string) int { /* int / int64 / float64 / string */}
 ```
 
-`payloadInt` is more capable than the old draft's "float64 only" claim — it handles `int`, `int64`, `float64`, and even `string` (via `fmt.Sscanf`). It's the full patch for the "JSON numbers default to float64" problem.
+`payloadInt` is not a float64-only helper: it handles `int`, `int64`, `float64`, and even `string` (via `fmt.Sscanf`). It's the full patch for the "JSON numbers default to float64" problem.
 
 The `agentStartIDs` map is another unmentioned highlight: `handleAgentStart` remembers each agent's latest start-event ID; `handleAgentEnd` uses it to do precise start→end pairing on the Timeline, **robust to out-of-order arrival and overlapping calls within one agent** (flagged B8 in code).
 
@@ -300,7 +300,6 @@ const (
 )
 ```
 
-(There is also `EventTaskEnd` — the old draft omitted it.)
 
 ```go
 type TimelineEvent struct {
@@ -352,7 +351,7 @@ func (t *Timeline) Events() []TimelineEvent {
 }
 ```
 
-But the most production-critical truth the old draft missed: **the Timeline is a bounded ring buffer.**
+But the most production-critical truth: **the Timeline is a bounded ring buffer.**
 
 ```go
 const maxTimelineEvents = 300
@@ -362,7 +361,7 @@ if t.cap > 0 && len(t.events) > t.cap {
 }
 ```
 
-It **keeps only the most recent 300 events.** The old draft spent pages worrying about "a 100k-event Timeline bottleneck," but the code kills that scenario at the source. This reshapes the whole philosophy: **not an everything-recording infinite log, but a bounded, rolling black box focused on "what just happened."** The `introspect` panel defaults align to 300 as well.
+It **keeps only the most recent 300 events**, which kills the "100k-event Timeline bottleneck" scenario at the source. This reshapes the whole philosophy: **not an everything-recording infinite log, but a bounded, rolling black box focused on "what just happened."** The `introspect` panel defaults align to 300 as well.
 
 | Container | Ring cap |
 |-----------|----------|
@@ -398,7 +397,7 @@ type DiagnosticRecord struct {
     Suggestion          string
     Timestamp           time.Time
     Duration            time.Duration
-    Context             map[string]any   // not in the old draft
+    Context             map[string]any
 }
 ```
 
@@ -500,7 +499,7 @@ func (s *ReplaySession) Step() (*ReplayStep, error) {
 
 The -1 means `Current()` right after creation returns nil — you must `Step()` first. Like file reading or a DB cursor.
 
-The navigation surface is larger than the old draft showed:
+The navigation surface is larger than it first appears:
 
 ```go
 func (s *ReplaySession) StepTo(n int) (*ReplayStep, error) // bounded jump
@@ -574,7 +573,7 @@ graph LR
 
 ## 九、Genealogy — the family tree (the real implementation differs a lot)
 
-This is where the old draft was wrong most. There is **no** `GenealogyStatus` enum, no `edges []GenealogyEdge`, no `GenealogyEdge{Parent,Child,Relation}`. The real implementation is:
+There is **no** `GenealogyStatus` enum, no `edges []GenealogyEdge`, no `GenealogyEdge{Parent,Child,Relation}`. The real implementation is:
 
 ```go
 type AgentRelation string
@@ -665,13 +664,13 @@ graph LR
     worker_2["🤖 worker-2 (worker) alive"]
 ```
 
-And here I'll correct the old draft's rendered example: it drew `worker-1 -->|resurrected| worker-2`, which **is** consistent with the real `RecordResurrection` semantics — after a resurrection the parent-child edge runs from the old node to the new one (the new node is re-parented under the old node's parent, and Mermaid prints each child edge with the child's `Relation`).
+The rendered example `worker-1 -->|resurrected| worker-2` **is** consistent with the real `RecordResurrection` semantics — after a resurrection the parent-child edge runs from the old node to the new one (the new node is re-parented under the old node's parent, and Mermaid prints each child edge with the child's `Relation`).
 
 ***
 
 ## 十、GenealogyCollector — a separate spectator
 
-The old draft's claim that "the main Collector and GenealogyCollector are two independent subscribers" — **that part is right**, and there's a dedicated file `genealogy_collector.go`. But the details deserve a correction:
+The main Collector and GenealogyCollector **are** two independent subscribers, with a dedicated file `genealogy_collector.go`; the details deserve care:
 
 ```go
 type GenealogyCollector struct {
@@ -694,7 +693,7 @@ case ares_events.EventFailoverCompleted:  c.handleFailoverCompleted(evt)
 - `handleAgentStarted`: reads `type` and `parent_id` from payload — `parent_id` present → `RecordSpawn`, else `RecordRoot`
 - `handleAgentStopped`: `RecordDeath`
 - `handleFailoverTriggered`: marks dead via payload `agent_id`, falling back to `StreamID`
-- `handleFailoverCompleted` (the crux, unlike the fabricated version in the old draft):
+- `handleFailoverCompleted` (the crux):
 
 ```go
 func (c *GenealogyCollector) handleFailoverCompleted(evt *ares_events.Event) {
@@ -716,11 +715,11 @@ Why separate? As discussed, the main Collector owns "execution-time" data (Timel
 
 ## 十一、The consumption paths — three ways flight data leaves
 
-Recorded data that's never consumed is just "a bigger, prettier log." There are three real consumption paths plus a control-plane panel — and, honestly, I must correct the old draft: **the `internal/dashboard` package it cited has been deleted.**
+Recorded data that's never consumed is just "a bigger, prettier log." There are three real consumption paths plus a control-plane panel — and note that **the `internal/dashboard` package is gone.**
 
 ### 11.1 The control plane: `/api/flight/*` (replacing the deleted dashboard)
 
-The old draft said the 6 endpoints lived in `internal/dashboard/api.go` on `mux.HandleFunc("/flight/...")`. **That package no longer exists.** The header of `internal/introspect/flight.go` is explicit:
+**There is no `internal/dashboard` package.** The header of `internal/introspect/flight.go` is explicit:
 
 > After the old `internal/dashboard` package was deleted (monitoring.md Phase 4), the `/flight/*` read endpoints were dropped with it even though the flight data … is still recorded …
 
@@ -743,7 +742,7 @@ Six endpoints, strictly read-only (nothing here mutates the recorder). They sit 
 
 ### 11.2 FlightBridge — Arena's probe
 
-Real code is in `internal/runtime/arena/integration.go`; the signature differs from the old draft (takes `Action, Result`, not pointers):
+Real code is in `internal/runtime/arena/integration.go`; the signature takes `Action, Result` values, not pointers:
 
 ```go
 type FlightBridge struct { recorder *flight.FlightRecorder }
@@ -771,7 +770,7 @@ te := flight.TimelineEvent{
 
 Failed actions also produce a diagnostic. The `source="arena"`, `action_type`, `success` fields are exactly the "escape hatch in Metadata" example from earlier.
 
-The **real `arenaActionToCategory` mapping** (again, unlike the fabricated table in the old draft):
+The `arenaActionToCategory` mapping:
 
 | Arena ActionType | DiagnosticCategory |
 |------------------|-------------------|
@@ -785,11 +784,11 @@ The **real `arenaActionToCategory` mapping** (again, unlike the fabricated table
 | LLMFailure | llm_error |
 | default | unknown |
 
-(The old draft classified `KillLeader` etc. as `tool_timeout`; the real mapping is `concurrency_error`.)
+(`KillLeader` and friends map to `concurrency_error`.)
 
 ### 11.3 FlightToExperienceAdapter — failure is the best teacher
 
-Real code in `internal/runtime/ares_evolution/adapter.go`; the old draft's high-level story (learn only from final failures) holds:
+Real code in `internal/runtime/ares_evolution/adapter.go` — it learns only from final failures:
 
 ```go
 ch, err := subscriber.Subscribe(ctx, ares_events.EventFilter{
@@ -838,7 +837,7 @@ severity 10 → 0.1 ("never do this again"), severity 1 → 1.0 ("occasionally t
 | ConfigError | 3 |
 | Unknown (default) | **5** |
 
-One correction to the old draft: it said `Unknown → 3`. The actual `default` case is **5**. ConcurrencyError tops the list (8) — hardest to reproduce, hardest to localize; LLMError (7) follows — the Agent does nothing without the LLM; ConfigError is last (3) — usually affects one agent and fixes fastest.
+The `default` case is **5**. ConcurrencyError tops the list (8) — hardest to reproduce, hardest to localize; LLMError (7) follows — the Agent does nothing without the LLM; ConfigError is last (3) — usually affects one agent and fixes fastest.
 
 `severity` is set by `diagnosticsAccessorWrapper`, and `FlightToExperienceAdapter.buildExperience` consumes it for the `< 3` filter and `severityToScore`. The three chains close the loop here.
 
@@ -848,7 +847,7 @@ One correction to the old draft: it said `Unknown → 3`. The actual `default` c
 
 ### 12.1 The ring caps are the real story
 
-The old draft spent effort on "what about a 100k-event Timeline." Let me close it realistically: **the code kills that scenario at the source.** Every container has a hard cap (see the table in section 四); overflow silently evicts the oldest. This is the correct boundary for a black box — a bounded, rolling view of "what just happened" is more useful and more honest than an infinitely-growing everything-bucket.
+**The code kills the "100k-event Timeline" scenario at the source.** Every container has a hard cap (see the table in section 四); overflow silently evicts the oldest. This is the correct boundary for a black box — a bounded, rolling view of "what just happened" is more useful and more honest than an infinitely-growing everything-bucket.
 
 ### 12.2 String matching is not fault classification
 
@@ -864,7 +863,7 @@ The main Collector and GenealogyCollector are two independent subscribers — **
 
 ### 12.5 Genealogy auto-build
 
-The old draft framed Genealogy as "optional injection." The real semantics: **you don't supply one, I build my own.** This auto-build is what keeps production (bootstrap passes only EventStore) on a living family tree — without it, the genealogy endpoints would print "No agents" forever. It's a real 0.3.x improvement: turning "writeable but unread" dead code into a live feature.
+The semantics are: **you don't supply one, I build my own.** This auto-build is what keeps production (bootstrap passes only EventStore) on a living family tree — without it, the genealogy endpoints would print "No agents" forever. It's a real 0.3.x improvement: turning "writeable but unread" dead code into a live feature.
 
 ### 12.6 What to record, what not
 

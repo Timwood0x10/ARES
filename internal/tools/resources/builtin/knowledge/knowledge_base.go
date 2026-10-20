@@ -6,22 +6,34 @@ import (
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/ares_events"
+	"github.com/Timwood0x10/ares/internal/knowledge"
+	"github.com/Timwood0x10/ares/internal/tenantctx"
 	"github.com/Timwood0x10/ares/internal/tools/resources/base"
 	"github.com/Timwood0x10/ares/internal/tools/resources/core"
+	"github.com/Timwood0x10/ares/internal/userctx"
 )
 
-// serverTenantID is the tenant every knowledge tool operates on (#63).
+// scopeNamespace resolves the namespace a knowledge tool operates on.
 //
-// Multi-tenant isolation MUST NOT depend on LLM honesty: these tools are
-// invoked with model-generated parameters, and the previous contract took
-// tenant_id from those parameters — a hallucinated (or hostile) tenant_id
-// read and wrote another tenant's knowledge. v1 is single-tenant, so the
-// server side pins the tenant to ares_events.DefaultTenantID — the same
-// constant the distillation and GA guidance paths use, keeping the whole
-// pipeline on one tenant scope. TODO(tech-debt): when real multi-tenancy
-// arrives, thread the authenticated caller's tenant through the server
-// request context instead of ever accepting it as a tool parameter.
-const serverTenantID = ares_events.DefaultTenantID
+// It is read from the EXECUTING REQUEST's context, never from tool parameters
+// (#63). These tools are invoked with model-generated parameters, so a
+// hallucinated (or hostile) tenant_id must not be able to steer which scope is
+// read or written. The context is populated server-side — the scheduler stamps
+// the executing task's tenant (tenantctx) and user (userctx, M5) — so deriving
+// the scope from it keeps the isolation property without pinning every
+// deployment to one hardcoded tenant.
+//
+// Precedence mirrors every other AKG path (knowledge.ResolveUserNamespace):
+// the request-scoped user wins (M5: one user one graph), then the
+// request-scoped tenant, then ares_events.DefaultTenantID for unscoped
+// execution — the pre-M5 single-tenant behaviour.
+func scopeNamespace(ctx context.Context) string {
+	return knowledge.ResolveUserNamespace(
+		tenantctx.From(ctx),
+		userctx.From(ctx),
+		ares_events.DefaultTenantID,
+	)
+}
 
 // Parameter key constants for knowledge tools
 const (
@@ -58,14 +70,20 @@ type RetrievalResult struct {
 type Metadata map[string]interface{}
 
 // KnowledgeSearcher defines the interface for searching knowledge base.
+//
+// The namespace argument is the caller's already-authorised scope, resolved by
+// the tool from the request context (scopeNamespace); implementations must
+// never widen it.
 type KnowledgeSearcher interface {
-	Search(ctx context.Context, tenantID, query string) ([]*RetrievalResult, error)
+	Search(ctx context.Context, namespace, query string) ([]*RetrievalResult, error)
 }
 
 // KnowledgeItem represents a knowledge base item.
 type KnowledgeItem struct {
-	ID        string
-	TenantID  string
+	ID string
+	// Namespace is the item's isolation scope, resolved from the request
+	// context (the tenant, or tenant+user under M5) — never a tool parameter.
+	Namespace string
 	Content   string
 	Source    string
 	Category  string
@@ -77,11 +95,14 @@ type KnowledgeItem struct {
 }
 
 // KnowledgeService defines the interface for knowledge CRUD operations.
+//
+// The namespace argument is the caller's already-authorised scope, resolved by
+// the tool from the request context (scopeNamespace).
 type KnowledgeService interface {
-	GetKnowledge(ctx context.Context, tenantID, itemID string) (*KnowledgeItem, error)
-	UpdateKnowledge(ctx context.Context, tenantID string, item *KnowledgeItem) (*KnowledgeItem, error)
+	GetKnowledge(ctx context.Context, namespace, itemID string) (*KnowledgeItem, error)
+	UpdateKnowledge(ctx context.Context, namespace string, item *KnowledgeItem) (*KnowledgeItem, error)
 	AddKnowledge(ctx context.Context, item *KnowledgeItem) (*KnowledgeItem, error)
-	DeleteKnowledge(ctx context.Context, tenantID, itemID string) error
+	DeleteKnowledge(ctx context.Context, namespace, itemID string) error
 }
 
 // KnowledgeSearch searches the knowledge base for relevant information.
@@ -121,9 +142,9 @@ func NewKnowledgeSearch(searcher KnowledgeSearcher) *KnowledgeSearch {
 	return ks
 }
 
-// Execute performs the knowledge base search. The tenant is server-side
-// (serverTenantID, #63): it is never taken from the tool parameters, so the
-// model cannot steer cross-tenant access.
+// Execute performs the knowledge base search. The scope is resolved from the
+// request context (#63): it is never taken from the tool parameters, so the
+// model cannot steer cross-tenant or cross-user access.
 func (t *KnowledgeSearch) Execute(ctx context.Context, params map[string]interface{}) (core.Result, error) {
 	if t.searcher == nil {
 		return core.NewErrorResult("knowledge search unavailable: searcher not configured"), nil
@@ -136,7 +157,7 @@ func (t *KnowledgeSearch) Execute(ctx context.Context, params map[string]interfa
 
 	// Note: For now, we use the simple search. Advanced filtering (top_k, min_score)
 	// can be implemented if the searcher supports it.
-	results, err := t.searcher.Search(ctx, serverTenantID, query)
+	results, err := t.searcher.Search(ctx, scopeNamespace(ctx), query)
 	if err != nil {
 		return core.NewErrorResult(fmt.Sprintf("search failed: %v", err)), nil
 	}
@@ -207,14 +228,14 @@ func NewKnowledgeUpdate(service KnowledgeService) *KnowledgeUpdate {
 	return ku
 }
 
-// Execute updates a knowledge item. The tenant is server-side
-// (serverTenantID, #63): tenant_id is not a tool parameter.
+// Execute updates a knowledge item. The scope is resolved from the request
+// context (#63): tenant_id is not a tool parameter.
 func (t *KnowledgeUpdate) Execute(ctx context.Context, params map[string]interface{}) (core.Result, error) {
 	if t.service == nil {
 		return core.NewErrorResult("knowledge update unavailable: service not configured"), nil
 	}
 
-	tenantID := serverTenantID
+	namespace := scopeNamespace(ctx)
 
 	itemID, ok := params["item_id"].(string)
 	if !ok || itemID == "" {
@@ -227,7 +248,7 @@ func (t *KnowledgeUpdate) Execute(ctx context.Context, params map[string]interfa
 	}
 
 	// First, retrieve the existing item to preserve other fields
-	existing, err := t.service.GetKnowledge(ctx, tenantID, itemID)
+	existing, err := t.service.GetKnowledge(ctx, namespace, itemID)
 	if err != nil {
 		return core.NewErrorResult(fmt.Sprintf("failed to get existing item: %v", err)), nil
 	}
@@ -263,7 +284,7 @@ func (t *KnowledgeUpdate) Execute(ctx context.Context, params map[string]interfa
 	}
 
 	// Perform update
-	updated, err := t.service.UpdateKnowledge(ctx, tenantID, existing)
+	updated, err := t.service.UpdateKnowledge(ctx, namespace, existing)
 	if err != nil {
 		return core.NewErrorResult(fmt.Sprintf("update failed: %v", err)), nil
 	}
@@ -315,8 +336,8 @@ func NewKnowledgeAdd(service KnowledgeService) *KnowledgeAdd {
 	return ka
 }
 
-// Execute adds a new knowledge item. The tenant is server-side
-// (serverTenantID, #63): tenant_id is not a tool parameter.
+// Execute adds a new knowledge item. The scope is resolved from the request
+// context (#63): tenant_id is not a tool parameter.
 func (t *KnowledgeAdd) Execute(ctx context.Context, params map[string]interface{}) (core.Result, error) {
 	if t.service == nil {
 		return core.NewErrorResult("knowledge add unavailable: service not configured"), nil
@@ -328,8 +349,8 @@ func (t *KnowledgeAdd) Execute(ctx context.Context, params map[string]interface{
 	}
 
 	item := &KnowledgeItem{
-		TenantID: serverTenantID,
-		Content:  content,
+		Namespace: scopeNamespace(ctx),
+		Content:   content,
 	}
 
 	if source, ok := params["source"].(string); ok {
@@ -392,8 +413,8 @@ func NewKnowledgeDelete(service KnowledgeService) *KnowledgeDelete {
 	return kd
 }
 
-// Execute deletes a knowledge item. The tenant is server-side
-// (serverTenantID, #63): tenant_id is not a tool parameter.
+// Execute deletes a knowledge item. The scope is resolved from the request
+// context (#63): tenant_id is not a tool parameter.
 func (t *KnowledgeDelete) Execute(ctx context.Context, params map[string]interface{}) (core.Result, error) {
 	if t.service == nil {
 		return core.NewErrorResult("knowledge delete unavailable: service not configured"), nil
@@ -406,7 +427,7 @@ func (t *KnowledgeDelete) Execute(ctx context.Context, params map[string]interfa
 
 	reason := getString(params, "reason")
 
-	err := t.service.DeleteKnowledge(ctx, serverTenantID, itemID)
+	err := t.service.DeleteKnowledge(ctx, scopeNamespace(ctx), itemID)
 	if err != nil {
 		return core.NewErrorResult(fmt.Sprintf("delete failed: %v", err)), nil
 	}

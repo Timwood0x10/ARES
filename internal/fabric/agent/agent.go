@@ -52,9 +52,20 @@ type Agent struct {
 	Load float64
 	// Confidence is the experience-derived prior (ares_skills source).
 	Confidence float64
-	// Parent is the spawning agent's identity ("" for a root agent). This
-	// is PROVENANCE ONLY — parent/child does NOT form a permission
-	// hierarchy (invariant #1: A ≡ B ≡ C).
+	// Parent is the spawning agent's identity ("" for a root agent).
+	//
+	// It is a LIFECYCLE relation as of 0.3.4 (contract change, approved): retiring an agent
+	// retires the agents it spawned, depth-first, so a spawn/retire loop cannot leave live
+	// agents nothing owns. Each cascaded agent gets its own `agent.retired` event carrying
+	// `cascade_root`, so the cause is attributable rather than implied.
+	//
+	// It is NOT a PERMISSION relation, and that distinction is load-bearing: parent/child
+	// still implies no authority (invariant #1: A ≡ B ≡ C). A child can do exactly what it
+	// could do before; what changed is who gets cleaned up with whom.
+	//
+	// A fabric can opt out (`WithCascadeRetire(false)`) for callers that manage their own
+	// subtree — and a restored fabric whose parent RECORD is missing is handled by the
+	// orphan audit, not by this relation (there is no edge to walk).
 	Parent string
 	// Priority is the scheduling priority (>= 0; 0 = normal). It mirrors
 	// OS-thread priority: the taskfabric scheduler boosts higher-priority
@@ -69,7 +80,7 @@ type Agent struct {
 	// the fabric lock during spawn/kill/retire.
 	resources map[string]float64
 
-	mu             sync.RWMutex // guards cognitive, privateContext, taskContext, state, load, cognition, busy
+	mu             sync.RWMutex // guards cognitive, privateContext, taskContext, state, load, cognition, busy, revived, clock, lastActiveAt, retiredAt
 	cognitive      CognitiveState
 	privateContext map[string]any
 	taskContext    map[string]any // shared task state (read-only view for the agent)
@@ -78,6 +89,27 @@ type Agent struct {
 	// (spawn/kill/recover) but cannot run a quantum until injected via
 	// SpawnSpec.CognitionFactory. Guarded by mu.
 	cognition Cognition
+	// revived reports that this agent's cognitive state was installed from a DEAD
+	// agent's preserved snapshot (Fabric.Recover) instead of being accumulated by
+	// living through its own quanta. It is the one bit that makes the two
+	// continuation paths distinguishable from the outside (defect A6): work
+	// finished by a revived agent continued WITH the dead agent's brain, while the
+	// same work finished by a fresh agent continued on a blank slate. Set only by
+	// Recover; never cleared, because a revived agent stays revived for its whole
+	// life. Guarded by mu.
+	revived bool
+	// clock is the fabric's clock captured at spawn, so every timestamp this
+	// agent derives agrees with the ones the fabric reasons about (a WithClock
+	// fabric in tests, the wall clock in production). Nil on an agent built
+	// outside Spawn — see now(). Guarded by mu.
+	clock func() time.Time
+	// lastActiveAt is when this agent last started a quantum. Idle reclamation
+	// uses it: an agent may be retired only when it is IDLE, not busy, and
+	// inactive longer than the policy window. SpawnedAt deliberately does NOT
+	// serve here — being spawned long ago says nothing about being idle now, and
+	// retiring a working agent is the one outcome the sweep must never produce.
+	// Guarded by mu.
+	lastActiveAt time.Time
 	// busy is the R4 bridge between subAgent execution state and fabric
 	// scheduling state. When true the agent is executing a quantum and must
 	// NOT be offered as a scheduling candidate, even though its lifecycle
@@ -85,6 +117,11 @@ type Agent struct {
 	// value — it was removed as unused). The scheduler's IsIdle check
 	// therefore also reads this flag. Guarded by mu.
 	busy bool
+	// retiredAt is when Retire decommissioned this agent; zero on a live agent.
+	// It is the age basis for reaping the tombstone (Fabric.ReapRetired): a
+	// retired record is kept queryable on purpose, and without an age on the
+	// record that retention could not be bounded at all. Guarded by mu.
+	retiredAt time.Time
 	// governance is the budget state (see governance.go). Nil when the
 	// agent was spawned without budgets.
 	governance *governanceState
@@ -97,6 +134,23 @@ type Agent struct {
 // CognitiveStateSchemaVersion is the current CognitiveState schema version.
 // Bump when CognitiveState fields change; DecodeCognitiveState handles
 // migration from prior versions. (A versioned structure.)
+//
+// ROLLING-UPGRADE RULE (defect P2-6③ / A4) — bumping this is not a local change:
+// DecodeCognitiveState REFUSES a version newer than this build's, which is correct (a future
+// format cannot be interpreted) but has a deployment consequence. During a rolling upgrade
+// the NEW nodes write v(N+1) death snapshots, and the OLD nodes still running reject them —
+// so for that agent the in-place revival path degrades to "spawn a replacement", i.e. the
+// cognition is lost exactly where the in-place path exists to keep it.
+//
+// A bump therefore ships WITH one of these, chosen deliberately:
+//   - a BACKWARD-COMPATIBLE read (the old build reads the subset it understands), which
+//     means the new field must be additive and its absence must be a valid state; or
+//   - an upgrade-time drain/migration of the revival snapshots (clear them before rolling),
+//     trading "no in-place revival during the rollout" for "no silent degradation".
+//
+// Doing neither does not fail loudly — the refusal is logged at the revival site and the
+// replacement path proceeds — which is why the rule lives here, next to the number it
+// governs, rather than in a runbook somewhere.
 const CognitiveStateSchemaVersion = 1
 
 // CognitiveState is the agent's independent cognitive content (Context / Observation / Working Memory / Decision / Tool State / Checkpoint).
@@ -174,10 +228,40 @@ func (a *Agent) Executable() bool {
 // while it is executing a quantum. The lifecycle state stays StateIdle
 // (there is no RUNNING lifecycle state); busy is the execution-layer signal
 // that complements it. Thread-safe; writes under the agent lock.
+//
+// The dispatch path uses TryBeginQuantum instead — it needs the claim, not a
+// bare write. SetBusy remains for clearing the flag and for callers that hold
+// the flag by construction (tests, and the deferred release).
 func (a *Agent) SetBusy(busy bool) {
 	a.mu.Lock()
 	a.busy = busy
 	a.mu.Unlock()
+}
+
+// TryBeginQuantum claims this agent for one quantum, setting the busy flag and
+// reporting true ONLY IF the agent is IDLE and not already busy. It is the
+// guarded form of SetBusy(true) and the dispatch path must use it.
+//
+// Why the guard rather than IsIdle followed by SetBusy: those two are not atomic
+// together, so the agent can leave IDLE in between — in production idle
+// reclamation retires it. The quantum would then run against an agent whose
+// execution body Retire has already released, failing a task for a reason that
+// has nothing to do with the task. Contending for this lock is what makes the
+// decision single-winner: the sweep's retire and this claim cannot both succeed,
+// and the loser acts on the truth (the sweep skips a busy agent; this reports
+// false for one that just retired).
+//
+// A caller that gets false must release the task lease and let the next drain
+// re-schedule — never fall back to SetBusy, which is exactly the unguarded write
+// this replaces.
+func (a *Agent) TryBeginQuantum() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.State != StateIdle || a.busy {
+		return false
+	}
+	a.busy = true
+	return true
 }
 
 // IsBusy reports whether the agent is currently executing a quantum (R4

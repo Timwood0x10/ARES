@@ -2,8 +2,105 @@
 
 All notable changes to this project will be documented in this file.
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+## [0.3.4] — AKG out of beta; evolution becomes observable and safe
+
+AKG is frozen and stable, the GA loop records what it proposed and what the gates did with it,
+and the planner stops advertising every tool on every turn. Defaults keep existing deployments
+unchanged: the token budget, the tool filter and the experiment log are all opt-in.
+
+> **Upgrade notes**
+> - `evolution.experiment_log_path` (empty = off) turns on durable experiment records.
+> - `memory.model_context_window` derives a prompt budget of 45% of the window; an explicit
+>   `memory.context_token_budget` still wins, and setting neither keeps the old behaviour.
+> - `memory.session_max_tokens` bounds one session's stored size; the count cap is unchanged.
+> - `kernel.tool_tag_filter` and `kernel.llm_tool_tagging` are new and both default to off.
+> - `Registry.SetActiveTools`/`ActiveTools`/`ClearActiveTools` were **removed** (no callers).
+
+### Added
+
+**Knowledge (AKG 0.3.4, API frozen)**
+- KnowledgeObject gains a schema version and temporal validity, so facts can expire instead of
+  being true forever by accident.
+- User namespace scoping (M5) end to end, plus a migration command for existing objects.
+- Tiered recall (L1 exact over the store, then L2 semantic + graph) behind
+  `knowledge.tiered_retrieval`, keeping the single-shot confidence bar and a `top_k` cap.
+- Relation gate and import-side schema guard: contradictions are **marked, never dropped**.
+
+**Evolution**
+- NSGA-II dimensions are filled from per-candidate execution evidence; scoring lives once on
+  `genome.Population` and both loops use it.
+- `latency` and `cost` collected as Minimize objectives on a separate metrics channel, so they
+  never enter the fitness mean or the staging sample count.
+- Durable experiment records: append-only JSONL (`FileExperimentLog`, fsync per record), a
+  tri-state `Outcome`, and a decision record joined to its proposal by `ProposalKey`.
+- GA patches are gated on the approval the lifecycle is holding, and a promotion keeps the
+  strategy attribution it was submitted with.
+- Timed eval-corpus probe with anchor/fingerprint health, plus arena regression candidates run
+  through a real runtime.
+- Recovery timing is measured: the recovery path notifies an observer on each successful revival
+  and `cmd/ares` binds it to the arena metrics collector, so the chaos panel reports real
+  durations instead of a permanent zero.
+- Data consistency is measured as the checkpoint decode success rate: every task-lifecycle
+  read-back notifies an observer, and a rate is published only after **20 samples** — a genuine
+  0% is reported as 0%, while a deployment that never decodes a checkpoint keeps the field
+  listed as unmeasured instead of looking healthy.
+
+**Tools and routing**
+- Per-task toolbelt narrowing: L1 `enabled` → static `kernel.tool_tag_filter` → task capability
+  tags (union), failing open at every step.
+- Capability tags come from the task payload, else a shared keyword table
+  (`internal/tools/capability`), else an optional model call (`kernel.llm_tool_tagging`).
+- `need_tools` escape hatch for the case the keyword read misses a capability the task needs.
+- MCP tools report planner capabilities from their advertised description at registration, and
+  now also declare `cap_*` tags so the kernel's capability routing can select them.
+- A tool that declares no capability at all is no longer dropped by capability narrowing: a
+  filter must not hide a tool it cannot judge.
+
+**Memory**
+- Prompt budget by tokens on **both** paths (`BuildContext` and `BuildPromptMessages`), estimated
+  with the vendor rates (0.6 per CJK character, 0.3 per other).
+- Per-session token cap independent of the message count: one large tool result is one message.
+
+**Fabric**
+- `Parent` is a lifecycle relation with cascade retirement; cognition L0 persists across restarts
+  and rationales get their own container.
+- Idle reclamation scan enabled by default; retired-agent tombstones and the dispatch window are
+  closed (P1-6).
+
+### Changed
+
+- `Strategy.Score` standardised to the GA 0–100 scale; lineage improvement is judged on the score
+  scale rather than a ratio.
+- Retrieval: IVFFlat probes actually take effect; rerank recency and HTTP status are scored
+  consistently; the CLI and the service sort weights the same way.
+- `MetricsSnapshot.Unmeasured` names the score inputs no producer fills, instead of letting a
+  zero look like a measurement.
+
+### Removed
+
+- `Registry.SetActiveTools`/`ActiveTools`/`ClearActiveTools` and the `activeTools` field: no
+  production caller, duplicate semantics, and a global switch that cannot be task-scoped.
+- Two helpers that only their own tests called (`parseArgs`, one `cosineSimilarity`).
+- `RecordFailover`/`FailoverCount`: no producer and not read by the score.
+
+### Fixed
+
+- `need_tools` widened the toolbelt for exactly one quantum — the checkpoint re-wrap rebuilt the
+  envelope from submission-time metadata (`carryTaskScopedPayload` now carries task-scoped keys).
+- `applyNeedTools` read the payload as `[]string` while writers used three shapes, silently
+  dropping the capabilities a task already had.
+- Five capability domains (`system`, `embedding`, `crypto`, `execution`, `pdf`) had no keyword
+  that could select them.
+- Agent quota leak, a reclamation race with retired agents, dangling dependencies and premature
+  completion visibility.
+- 74 stale `file.go:NNN` anchors in `system-internals` (both languages), and six claims that
+  described behaviour the code does not have.
+
+### Known gaps
+
+- **L1 metadata has no production writer**: `enabled`/`budget`/`prior` come from tool
+  declarations, not from the GA loop — a GA-to-L1 patch executor does not exist yet.
+- `internal/evoapi` still has no importers; removal is scheduled for 0.5.0.
 
 ## [0.3.3]
 

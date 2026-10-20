@@ -643,9 +643,24 @@ func newStrategyScoreAdapter(store evolution.StrategyStore) aresrecovery.Strateg
 //   - error: non-nil if no active strategy exists, the score is out of
 //     range, or the store write fails.
 func (a *strategyScoreAdapter) WriteActiveScore(ctx context.Context, score float64) error {
+	// The INPUT is the recovery loop's deterministic aggregate: a [0,1] quality
+	// ratio (aresrecovery.DeterministicScorer aggregates per-agent scores into
+	// [0,1], neutral prior 0.5). The FIELD it lands in is not on that scale:
+	// evolution.Strategy.Score is written by every GA scorer on
+	// [0, evolution.JudgeScaleCeiling] — DeterministicScore starts at 50 and clamps
+	// to [5,100], the LLM tier is prompted for "0 to 100", the no-scorer fallback is
+	// ConstantScorer(50) — and it is COMPARED numerically there (elitism and best-ever
+	// take the maximum, multi-objective sorting compares it). Storing the ratio
+	// unchanged therefore made a 0.9-quality strategy look 100x worse than a mutant
+	// the constant scorer had just given 50, and the API published the same mismatch
+	// to the dashboard.
+	//
+	// So the conversion happens HERE, at the one boundary that knows both sides, and
+	// uses the scale constant the evolution package exports for exactly this purpose.
 	if score < 0.0 || score > 1.0 {
-		return fmt.Errorf("strategy score adapter: score %.4f out of range [0,1]", score)
+		return fmt.Errorf("strategy score adapter: input score %.4f out of range [0,1]", score)
 	}
+	score *= evolution.JudgeScaleCeiling
 	st, err := a.store.GetActive(ctx)
 	if err != nil {
 		return fmt.Errorf("strategy score adapter: get active: %w", err)

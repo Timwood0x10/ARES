@@ -114,6 +114,15 @@ type Evidence struct {
 	// CreatedAt records when the evaluation was performed.
 	CreatedAt time.Time
 
+	// Value is the scalar form of this diagnosis in [0,1] — for the dimension
+	// judge, the normalized mean of its four rubric scores.
+	//
+	// It exists because the fitness aggregator reads a scalar out of the evidence
+	// PAYLOAD (`{"value": ...}`) and this struct IS that payload: a rich diagnosis
+	// that the consumer cannot read a number from is how the accuracy stream
+	// stayed at zero samples while the feature looked wired (defect G1 / P0-1).
+	Value float64 `json:"value"`
+
 	// Meta carries additional diagnostic information.
 	Meta map[string]any
 }

@@ -5,7 +5,7 @@
 > In this article I review `tools/toolsource`, `tools/resources`, `tools/planner`, `tools/discovery`, `tools/envcap`, and the executors that really run tools in `agentfabric`: `ToolBinder`, `chatCognition`, and `toolCognition`.
 > I only cover symbols and logic I actually saw in the code. If I didn't see it, I don't hype it.
 >
-> One important correction up front: **an agent does not call `Registry.Execute` directly.** There is always a `ToolBinder` in between. And behind that binder sit two "discovery" paths doing different jobs (the `discover_tools` runtime expansion and the capability-planner fallback).
+> One important clarification up front: **an agent does not call `Registry.Execute` directly.** There is always a `ToolBinder` in between. And behind that binder sit two "discovery" paths doing different jobs (the `discover_tools` runtime expansion and the capability-planner fallback).
 
 ## 0. Let me first define the scope
 

@@ -9,7 +9,7 @@
 
 ```
 
-**⚠️ 警告：AKG（自适应知识图谱）处于 BETA 实验阶段**
+**AKG（自适应知识图谱）在 0.3.4 冻结 API、schema 已版本化，不再是 BETA**
 
 这是**首次尝试在不依赖 LLM 的前提下构建知识图谱**。当前实现使用：
 - 基于规则的关系抽取（正则模式，无生成式 AI）
@@ -21,13 +21,19 @@
 | 区域 | 状态 |
 |---|---|
 | Kernel / task fabric / SDK | 端到端可用、有回归锁定；**尚不是加固过的 runtime** |
-| GA 进化 + patch 管线 | 端到端可跑；**apply gate 与多目标入口未接线** |
-| **AKG**（自适应知识图谱） | **BETA / 实验性 —— API 可能变化，非生产就绪** |
+| GA 进化 + patch 管线 | 端到端可跑；apply gate **已安装**（`bootstrap_evolution.go`），两条进化路径共用 NSGA-II 维度打分 |
+| **AKG**（自适应知识图谱） | **API 已冻结（0.3.4）、schema 已版本化、tiered retrieval 可选** |
 
 下面「已知不足」一节列出这份 README 明知不能宣称的内容；在相信任何数字或能力之前请先读它。
 
 ---
-**ARES** — 智能体操作系统（Agent Operating System）。
+## 为什么叫 "ARES"？
+
+**ARES — 智能体操作系统（Agent Operating System, AgentOS）：运行时、内核与 GA 进化。**
+
+- **名字由来** —— Ares，希腊战神：`ares arena` 混沌场景正是让候选体与故障、生存测试正面交锋。
+- **字母最初的含义** —— 原为 **A**gent **R**untime & **E**volution **S**ystem：一个运行时内核 + 一套让系统自我进化的遗传算法（genomes、交叉、变异；`ares evolution`）。
+- **现在的定位** —— 自 v0.3.0 起，内核升级为**智能体操作系统（AgentOS）**：调度、同步、IPC、资源强制、生命周期与恢复。进化并没有消失，而是成为 OS 的一等子系统（证据驱动 GA，在生产环境持续进化、无需重启）。
 
 Agent 不是被编排器调用的函数，而是由内核管理的独立认知计算实体。它们自主产生工作、彼此平等通信（IPC）、持有独立的认知状态，并可以 spawn 其他 Agent。ARES Kernel 负责调度、同步、IPC、资源强制、生命周期与恢复。
 
@@ -98,7 +104,7 @@ make examples          # 构建全部示例
 | **混沌韧性** | 故障注入、自动切换、生存测试、自愈恢复 |
 | **记忆系统** | 会话上下文、任务蒸馏、向量相似度检索 |
 | **持久归档与保留** | 按流隔离的事件轮次归档（并发流互不覆盖对方的 round 文件）+ 定时 TTL 清理，覆盖会话 / 知识 / 对话 / 密钥四类表 |
-| **AKG（实验性）** | 无 LLM 知识图谱 —— 规则抽取 + 混合检索 + 质量门 |
+| **AKG** | 无 LLM 知识图谱 —— 规则抽取 + 混合检索 + 质量门 |
 | **候选发布闭环（0.3.0）** | `CandidatePipeline`：候选 → 三层验证（静态/证据/回归）→ Release 发布门禁 → SetStable；门3 用 `LLMArenaScorer` + `BatchScorer`（批量合并请求）做 LLM 驱动的保留案例回归，支持 FailoverClient 多 provider 链路（openai / openrouter / anthropic / ollama）自动切换 |
 | **MCP 就绪** | 连接任意 MCP 服务器扩展工具和数据 |
 | **多 Agent** | 基于能力的 Agent 注册（`RegisterAgent`）+ 任务分发（`Submit`），支持 Peer IPC 与恢复 |

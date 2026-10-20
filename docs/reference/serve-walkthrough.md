@@ -42,7 +42,7 @@ SUSPENDED → LEASED (re-acquire with preserved checkpoint), READY (release)
 ```go
 var rootCmd = &cobra.Command{
 	Use: "ares",
-	Short: "ARES — Agent Runtime & Evolution System",
+	Short: "ARES — Agent Operating System (AgentOS): runtime, kernel & GA evolution",
 	...
 }
 ```
@@ -2081,7 +2081,7 @@ return &StepOutcome{Done: true, Result: result}, nil
 
 `activeStrategy` 的注释说明错误被吞掉：策略 store 缺失不破坏生长，降级为无引导。
 
-### 18.4 `growToolNodes` — `planner_cognition.go:626`
+### 18.4 `growToolNodes` — `planner_cognition.go:402`
 
 ```go
 round := stableRound(g, task.TaskID)
@@ -2119,9 +2119,9 @@ if planExists := g.HasNode(newPlanID); !planExists && grown > 0 {
 
 `tenant_id` 的**无条件覆盖**是防伪造：LLM 传的 `tenant_id` 工具参数绝不能活进长出的节点信封——条件盖戳下，无租户任务会让模型自己选择其工作执行和知识召回所用的租户。
 
-`stableRound`（`:616`）从 `taskID` 派生轮次而不是用 `PlanDepth`——后者会随后续轮次增长，重执行的量子会拿到不同的 answer ID，产生重复分支。
+`stableRound`（`:392`）从 `taskID` 派生轮次而不是用 `PlanDepth`——后者会随后续轮次增长，重执行的量子会拿到不同的 answer ID，产生重复分支。
 
-### 18.5 `growAnswerNode` — `planner_cognition.go:819`
+### 18.5 `growAnswerNode` — `planner_cognition.go:675`
 
 ```go
 answerID := SessionNodeID(task.SessionID, stableRound(g, task.TaskID), "answer", 0)

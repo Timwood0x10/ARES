@@ -6,6 +6,10 @@ package evolution
 import (
 	"context"
 	"time"
+
+	// The parent package carries the same name as this one, so it needs an alias here;
+	// service.go aliases it as `evolution` because that file refers to it constantly.
+	aresevolution "github.com/Timwood0x10/ares/internal/runtime/ares_evolution"
 )
 
 // ──────────────────────────────────────────────
@@ -288,6 +292,16 @@ type SystemConfig struct {
 	// BaseStrategy is the root strategy to evolve from.
 	BaseStrategy *Strategy
 
+	// DimensionWindow, when set, supplies each candidate's per-strategy fitness window
+	// from REAL execution evidence, so scoring can fill DimensionScores and NSGA-II
+	// selection stops degenerating to single-objective (M9).
+	//
+	// A nil window leaves DimensionScores empty, which is the previous behaviour: the
+	// scalar score still drives selection. It is a function rather than a snapshot because
+	// the window is time-bounded and must be read at scoring time, per candidate, not once
+	// at construction — a snapshot would score every generation against the same evidence.
+	DimensionWindow func(strategyID string) aresevolution.WindowResult
+
 	// PopulationSize is the number of agents per generation (default 20).
 	PopulationSize int
 
@@ -429,9 +443,22 @@ type SystemConfig struct {
 	// Example: "var/evolution/report.txt"
 	ReportPath string
 
-	// MinLineageImprovement is the minimum absolute score delta required
-	// for a lineage improvement to be considered significant (default 0.01).
-	// Deltas below this threshold are treated as noise (scorer variance).
+	// MinLineageImprovement is the minimum absolute score delta required for a lineage
+	// improvement to count as significant.
+	//
+	// The unit is SCORER POINTS on the GA/judge scale, because that is what the delta
+	// IS: a lineage's improvement is CandidateScore - BaselineScore from the regression
+	// test, i.e. the difference of two scores on [0, evolve.JudgeScaleCeiling]. The
+	// default is 1% of that scale (see defaultMinLineageImprovement). The historical
+	// value 0.01 assumed the delta was a [0,1] ratio — on a 0-100 scale that is a
+	// hundredth of a point, so "significant" fired on scorer noise, which is the exact
+	// opposite of what this field documents itself to be for.
+	//
+	// MIGRATION: a config that explicitly set min_lineage_improvement BEFORE this change
+	// (typically 0.01, meaning "1% of the scale" under the old ratio reading) now means
+	// 0.01 POINTS, i.e. nothing. Re-check any explicit value on the 0-100 scale: the old
+	// 0.01 becomes 1. A value that looks like a pre-upgrade ratio (below 0.1) is reported
+	// once at the point of use rather than being reinterpreted silently.
 	MinLineageImprovement float64
 }
 
@@ -455,7 +482,7 @@ func DefaultConfig() *SystemConfig {
 		Seed:                   0,
 		PromptPool:             []string{},
 		EnableWiredMode:        true,
-		MinLineageImprovement:  0.01,
+		MinLineageImprovement:  defaultMinLineageImprovement,
 	}
 }
 

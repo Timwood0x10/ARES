@@ -19,7 +19,6 @@ import (
 	"github.com/Timwood0x10/ares/internal/storage/postgres/embedding"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/models"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/repositories"
-	"github.com/Timwood0x10/ares/internal/storage/postgres/services"
 )
 
 // IngestStats summarises the result of an ingestion run.
@@ -39,11 +38,13 @@ type DocSummary struct {
 // All external clients are held via their concrete example types; the fields
 // are private so callers go through the exported methods.
 type KnowledgeBase struct {
-	cfg       *Config
-	pool      *postgres.Pool
-	repo      *repositories.KnowledgeRepository
-	embedder  *embedding.EmbeddingClient
-	retrieval *services.SimpleRetrievalService
+	cfg      *Config
+	pool     *postgres.Pool
+	repo     *repositories.KnowledgeRepository
+	embedder *embedding.EmbeddingClient
+	// No retrieval service: queries go through repo.SearchByVector, the same method the
+	// server uses. The example used to build its own retrieval service with its own
+	// scoring, which meant it demonstrated a ranking that production never ran.
 	llmClient *llm.Client
 }
 
@@ -85,11 +86,6 @@ func NewKnowledgeBase(ctx context.Context, cfg *Config) (*KnowledgeBase, error) 
 	}
 
 	repo := repositories.NewKnowledgeRepository(pool.GetDB(), pool.GetDB())
-	retrieval := services.NewSimpleRetrievalService(repo, embedder, &services.SimpleRetrievalConfig{
-		TopK:        cfg.Knowledge.TopK,
-		MinScore:    cfg.Knowledge.MinScore,
-		QueryPrefix: cfg.Knowledge.QueryPrefix,
-	})
 
 	var llmClient *llm.Client
 	if cfg.llmEnabled() {
@@ -105,7 +101,6 @@ func NewKnowledgeBase(ctx context.Context, cfg *Config) (*KnowledgeBase, error) 
 		pool:      pool,
 		repo:      repo,
 		embedder:  embedder,
-		retrieval: retrieval,
 		llmClient: llmClient,
 	}, nil
 }

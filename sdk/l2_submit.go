@@ -155,7 +155,7 @@ func l2PlanTokenUsage(f *taskfabric.Fabric, planTaskID string) TokenUsage {
 	if err != nil {
 		return TokenUsage{}
 	}
-	dc, err := taskfabric.DecodeCheckpoint(tk.Checkpoint)
+	dc, err := f.DecodeCheckpoint(tk.Checkpoint)
 	if err != nil {
 		return TokenUsage{}
 	}

@@ -1,5 +1,7 @@
 package ares_config
 
+import "time"
+
 // StorageConfig holds storage configuration.
 type StorageConfig struct {
 	Enabled  bool   `yaml:"enabled"` // Enable storage
@@ -63,7 +65,24 @@ type MemoryConfig struct {
 	// ContextTokenBudget is an optional estimated-token ceiling applied to the
 	// windowed history before cleaning. 0 (default) disables it. It only
 	// trims (plain history before tool-causal, never system); it never widens.
+	//
+	// Leave it 0 and set ModelContextWindow instead to get the default share: the budget is
+	// then 45% of the window (see memory.DefaultContextBudgetRatio). An explicit value here
+	// always wins, which is how a deployment pins a number after measuring its own prompts.
 	ContextTokenBudget int `yaml:"context_token_budget"`
+
+	// ModelContextWindow is the model's total context window in tokens (e.g. 131072).
+	//
+	// It exists so the prompt budget can be expressed as a SHARE of the window rather than a
+	// number someone has to remember to tune: at 0 nothing is derived and the previous
+	// behaviour stands. 45% is the default share — the prompt is not the only thing that has
+	// to fit (the answer, the skills block and RAG snippets are added around it).
+	ModelContextWindow int `yaml:"model_context_window"`
+
+	// SessionMaxTokens bounds how much memory one session may store (0 = no cap). It is the
+	// storage counterpart of ContextTokenBudget: max_history bounds how many messages are
+	// kept, which says nothing about size — one large tool result is a single message.
+	SessionMaxTokens int `yaml:"session_max_tokens"`
 
 	// RAGTopK is the maximum number of retrieved snippets to inject.
 	// Defaults to 5 when zero (only applied when EnableRAG is true).
@@ -116,10 +135,50 @@ type KnowledgeConfig struct {
 	// Defaults to 5 when zero (only applied when RetrievalEnabled is true).
 	TopK int `yaml:"top_k"`
 
+	// TieredRetrieval makes AKG recall go through the TIERED path (M6) instead of the
+	// single-shot knowledge retriever: L1 exact-keyword over the store first, L2
+	// semantic+graph only when L1 cannot satisfy TopK, L3 reserved.
+	//
+	// OFF by default, and that is the point: it REPLACES how recall happens, so it changes
+	// what every agent sees in its prompt. The tiered implementation is exercised by tests
+	// but has no production history here, and switching a recall path on faith is how a
+	// deployment ends up recalling less while looking unchanged. Enable it to compare, and
+	// watch the startup line for the tier mix (it reports both the path and its bounds).
+	//
+	// Requires RetrievalEnabled: with recall off there is nothing to tier.
+	TieredRetrieval bool `yaml:"tiered_retrieval"`
+
 	// MinScore is the minimum similarity score for a retrieved snippet to
 	// be included. Snippets below this threshold are filtered out.
 	// Defaults to 0.4 when zero (only applied when RetrievalEnabled is true).
 	MinScore float64 `yaml:"min_score"`
+
+	// RecencyWeight is how much the knowledge store's hybrid ranking weighs an
+	// object's freshness, relative to the vector (0.7) and lexical (0.3) terms.
+	//
+	// ZERO — the default — keeps the pre-existing ranking exactly (relevance only).
+	// It is zero rather than "some sensible small number" because the store's recall
+	// query already reads `ORDER BY updated_at DESC LIMIT k`, so the candidate window
+	// is recency-biased before scoring and this term counts the same signal twice.
+	// Whether the second helping helps is a per-corpus measurement, so a deployment
+	// that has made it opts in here (e.g. 0.1) instead of every deployment getting an
+	// unmeasured re-rank. Values are relative: 0.7/0.3/0.1 and 7/3/1 score identically.
+	RecencyWeight float64 `yaml:"recency_weight"`
+
+	// DecayArchiveAfter archives AKG objects older than this duration by moving
+	// them to StatusSuperseded (M4). Objects are never deleted — the pass
+	// changes lifecycle status only, so history stays traceable.
+	//
+	// Zero (the default) disables the pass entirely, preserving pre-0.3.4
+	// behaviour. When set, the pass runs on the maintenance worker's periodic
+	// sweep and is namespace-scoped: it enumerates the store's namespaces and
+	// archives within each, because an unscoped sweep would cross tenants (and,
+	// under M5, users). A store that cannot enumerate namespaces is skipped
+	// with a warning rather than scanned blind.
+	//
+	// Staleness downweighting needs no schedule: freshness is computed at query
+	// time by the quality gate, so an old object already ranks lower.
+	DecayArchiveAfter time.Duration `yaml:"decay_archive_after"`
 }
 
 // SessionConfig holds session memory configuration. The store is gated by the

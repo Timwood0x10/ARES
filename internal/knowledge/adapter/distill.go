@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/Timwood0x10/ares/internal/embedding"
 	"github.com/Timwood0x10/ares/internal/knowledge"
@@ -171,20 +172,46 @@ func (b *DistillBridge) DistillConversation(
 	tenantID string,
 	userID string,
 ) ([]*knowledge.KnowledgeObject, error) {
+	objects, _, err := b.DistillConversationWithReport(ctx, conversationID, messages, tenantID, userID)
+	return objects, err
+}
+
+// DistillConversationWithReport runs the same ingest as DistillConversation and also returns
+// the BuildReport for it (M4 observability).
+//
+// The report is produced HERE rather than reconstructed by the caller because most of its
+// counters exist only mid-pipeline (read count, deduped, rejected, conflicts); a caller
+// holding just the returned objects could infer a few of them and would silently get the
+// rest wrong — which is exactly what the previous acceptance test did, by constructing the
+// struct it asserted on.
+//
+// Rejected counts objects that scored below the promotion bar and were therefore kept as
+// CANDIDATES instead of being promoted. Nothing is deleted on a low score: AKG adjusts
+// weight and validity, it does not decide that a fact is untrue. The counter reports "not
+// promoted", not "discarded".
+func (b *DistillBridge) DistillConversationWithReport(
+	ctx context.Context,
+	conversationID string,
+	messages []distillation.Message,
+	tenantID string,
+	userID string,
+) ([]*knowledge.KnowledgeObject, knowledge.BuildReport, error) {
+	start := time.Now()
+	report := knowledge.BuildReport{}
 	if b.distiller == nil {
-		return nil, errors.New("distill bridge: distiller is nil")
+		return nil, report, errors.New("distill bridge: distiller is nil")
 	}
 	if len(messages) == 0 {
-		return nil, errors.New("distill bridge: no messages to distill")
+		return nil, report, errors.New("distill bridge: no messages to distill")
 	}
 
 	// Step 1: run the existing Memory Distiller.
 	memories, err := b.distiller.DistillConversation(ctx, conversationID, messages, tenantID, userID)
 	if err != nil {
-		return nil, fmt.Errorf("distill bridge: distill conversation %q: %w", conversationID, err)
+		return nil, report, fmt.Errorf("distill bridge: distill conversation %q: %w", conversationID, err)
 	}
 	if len(memories) == 0 {
-		return nil, nil
+		return nil, report, nil
 	}
 
 	// Step 2: convert Memory → KnowledgeObject.
@@ -198,17 +225,19 @@ func (b *DistillBridge) DistillConversation(
 	// tenant had stored something similar (silent fact loss on top of the
 	// leak). An empty tenantID keeps the bridge namespace so callers that
 	// genuinely have no tenant behave exactly as before.
-	ns := b.namespace
-	if tenantID != "" {
-		ns = tenantID
-	}
+	//
+	// M5: when userID is present, resolve the user-level namespace
+	// (UserNamespace) so all of a user's sessions accumulate into the same
+	// knowledge graph. When userID is absent, fall back to the tenant
+	// namespace (pre-M5 behaviour).
+	ns := knowledge.ResolveUserNamespace(tenantID, userID, b.namespace)
 	pointers := make([]*distillation.Memory, len(memories))
 	for i := range memories {
 		pointers[i] = &memories[i]
 	}
 	objects := b.memoryAdapter.FromMemories(pointers, ns)
 	if len(objects) == 0 {
-		return nil, nil
+		return nil, report, nil
 	}
 
 	// Step 3: run through AKF KnowledgePipeline.
@@ -217,7 +246,7 @@ func (b *DistillBridge) DistillConversation(
 		for _, obj := range objects {
 			result, pErr := b.pipeline.Process(ctx, obj)
 			if pErr != nil {
-				return nil, fmt.Errorf("distill bridge: pipeline process %q: %w", obj.ID, pErr)
+				return nil, report, fmt.Errorf("distill bridge: pipeline process %q: %w", obj.ID, pErr)
 			}
 			if result != nil {
 				processed = append(processed, result)
@@ -234,7 +263,14 @@ func (b *DistillBridge) DistillConversation(
 	// extract rule-based Relations from each object's text.
 	// Relations feed the quality gate (ExtractionScore boost) and downstream
 	// graph construction.
-	b.extractRelations(objects)
+	report.Conflicts = b.extractRelations(objects)
+
+	// Ensure every object carries at least one Evidence pointing back to the
+	// source conversation. The quality gate (when RequireEvidence is on)
+	// rejects objects with no evidence; even when the gate is off (default),
+	// attaching evidence makes every fact traceable to its origin — the core
+	// promise of the AKG evidence chain (M2).
+	b.attachEvidence(objects, conversationID, tenantID)
 
 	// embedding + dedup. Requires both emb and store; dedup
 	// additionally requires gate.EnableDedup. Superseded objects skip the
@@ -248,22 +284,110 @@ func (b *DistillBridge) DistillConversation(
 	b.scoreQuality(objects)
 
 	// persist to KnowledgeStore and promote qualifying candidates.
-	if err := b.persistAndPromote(ctx, objects); err != nil {
-		return objects, err
+	var saved, unchanged int
+	saved, unchanged, err = b.persistAndPromote(ctx, objects)
+	if err != nil {
+		return objects, report, err
 	}
+	report.NewEntities = saved
+	report.Unchanged = unchanged
 
 	// Objects now exist in the store; representations can reference them.
 	b.saveRepresentations(ctx, reps)
-	return objects, nil
+
+	// Counters, from what this run actually did.
+	//
+	// ReadCount is the distiller's output (source records), not the message count: a
+	// conversation can yield zero memories, and "read 0 records" is the honest number.
+	// Rejected counts candidates that stayed candidates — scored below the promotion bar —
+	// because this pipeline never deletes on a low score.
+	report.ReadCount = len(memories)
+	// report.NewEntities was set from the save count above.
+	for _, obj := range objects {
+		report.NewRelations += len(obj.Relations)
+		switch obj.Status {
+		case knowledge.StatusSuperseded:
+			report.Deduped++
+		case knowledge.StatusCandidate:
+			report.Rejected++
+		}
+	}
+	report.Duration = time.Since(start)
+	return objects, report, nil
 }
 
 // extractRelations populates obj.Relations for each object
 // using the rule-based RelationExtractor. Relations feed the quality gate
 // (ExtractionScore boost) and downstream graph construction.
-func (b *DistillBridge) extractRelations(objects []*knowledge.KnowledgeObject) {
+func (b *DistillBridge) extractRelations(objects []*knowledge.KnowledgeObject) int {
+	cfg := knowledge.DefaultRelationGateConfig()
+	conflicts := 0
 	for _, obj := range objects {
-		obj.Relations = b.extractor.Extract(obj)
+		extracted := b.extractor.Extract(obj)
+		// M2.5 writes through the gate. Before this call the extractor's output went
+		// straight onto the object: a relation the gate would reject (unknown predicate,
+		// subject type incompatible, evidence missing in the strict phase) still fed the
+		// extraction score and the graph. The gate existed with no production caller.
+		kept := knowledge.FilterRelations(extracted, obj.Type, cfg)
+		// Disagreements are FLAGGED, never dropped. The object may already carry relations
+		// (a provider can set them), and a new source contradicting an older one is exactly
+		// what a conflict strategy exists to arbitrate; dropping the candidate here would
+		// erase the disagreement and leave the graph looking unanimous.
+		for _, c := range knowledge.FindRelationConflicts(kept, obj.Relations) {
+			conflicts++
+			slog.Warn("distill bridge: candidate relation conflicts with existing knowledge",
+				"object", obj.ID,
+				"candidate_predicate", c.Candidate.Predicate,
+				"existing_predicate", c.Existing.Predicate,
+				"reason", c.Reason)
+		}
+		obj.Relations = kept
 	}
+	return conflicts
+}
+
+// attachEvidence ensures every object has at least one Evidence entry
+// pointing back to the source conversation. Objects that already carry
+// evidence (e.g. from a provider that sets it) are left untouched. The
+// evidence records the conversation ID, tenant, and a timestamp so every
+// fact is traceable to its origin — the core promise of the AKG evidence
+// chain (M2).
+func (b *DistillBridge) attachEvidence(objects []*knowledge.KnowledgeObject, conversationID, tenantID string) {
+	now := time.Now()
+	for _, obj := range objects {
+		if len(obj.Evidence) > 0 {
+			continue
+		}
+		obj.Evidence = []knowledge.Evidence{{
+			Source: "conversation:" + conversationID,
+			// Ref points at the SOURCE the fact came from, per the Evidence
+			// contract ("row ID, commit hash, ..."). It previously held obj.ID,
+			// which is a self-reference, not a source location: it told a
+			// reader nothing and silently disabled the M2.5 "data-source unique
+			// ID" step (two different objects can never share a Ref if each Ref
+			// is its own ID). Note the source here is a whole conversation —
+			// the resolver must not treat a shared conversation as entity
+			// identity, which is why isRecordScopedEvidence excludes
+			// "conversation:" evidence.
+			Ref:       conversationID,
+			Weight:    1.0,
+			Timestamp: now,
+			Span: &knowledge.EvidenceRef{
+				Text: truncateForEvidence(obj.Summary, 200),
+			},
+		}}
+	}
+	_ = tenantID // reserved for future per-tenant evidence scoping
+}
+
+// truncateForEvidence returns at most n characters of s, with a "..."
+// sentinel when truncated. Used to keep the evidence span excerpt short
+// enough for human review without bloating the stored object.
+func truncateForEvidence(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
 }
 
 // embedAndDedup embeds each object and marks superseded duplicates.
@@ -359,13 +483,31 @@ func (b *DistillBridge) scoreQuality(objects []*knowledge.KnowledgeObject) {
 // promotes candidates whose Confidence >= MinFinalScore to StatusActive
 // (best-effort; promotion failures are logged but do not roll back the Save).
 // Returns a wrapped error if Save fails. Does nothing when store is nil.
-func (b *DistillBridge) persistAndPromote(ctx context.Context, objects []*knowledge.KnowledgeObject) error {
+func (b *DistillBridge) persistAndPromote(ctx context.Context, objects []*knowledge.KnowledgeObject) (saved, unchanged int, err error) {
 	if b.store == nil {
-		return nil
+		return 0, 0, nil
 	}
-	if err := b.store.Save(ctx, objects...); err != nil {
-		return fmt.Errorf("distill bridge: save to store: %w", err)
+	knowledge.StampWriteSchema(objects...)
+
+	// M4 incremental: skip the objects the store already holds unchanged — same id (derived
+	// from the source record, so it is stable across runs) and same content fingerprint (the
+	// fields that determine what the object says). Re-writing identical rows on every ingest
+	// makes the write the expensive half of a refresh that changed nothing.
+	toSave := make([]*knowledge.KnowledgeObject, 0, len(objects))
+	for _, obj := range objects {
+		if existing, gerr := b.store.Get(ctx, obj.Namespace, obj.ID); gerr == nil && existing != nil &&
+			knowledge.ContentFingerprint(existing) == knowledge.ContentFingerprint(obj) {
+			unchanged++
+			continue
+		}
+		toSave = append(toSave, obj)
 	}
+	if len(toSave) > 0 {
+		if err := b.store.Save(ctx, toSave...); err != nil {
+			return 0, unchanged, fmt.Errorf("distill bridge: save to store: %w", err)
+		}
+	}
+	saved = len(toSave)
 	for _, obj := range objects {
 		if obj.Status != knowledge.StatusCandidate {
 			continue
@@ -381,7 +523,7 @@ func (b *DistillBridge) persistAndPromote(ctx context.Context, objects []*knowle
 			obj.Status = knowledge.StatusActive
 		}
 	}
-	return nil
+	return saved, unchanged, nil
 }
 
 // toFloat32 converts a []float64 embedding vector to []float32, the format

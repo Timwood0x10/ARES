@@ -3,6 +3,7 @@ package evolution
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/runtime/ares_evolution/mutation"
@@ -139,6 +140,14 @@ func (l *StrategyLifecycle) Submit(ctx context.Context, candidate *mutation.Stra
 				"reason", reason,
 			)
 			l.recordGateReject(gate.Name(), reason)
+			// The verdict is recorded against the proposal that introduced this candidate, so
+			// "we tried X and gate Y refused it" survives as one experiment rather than two
+			// unrelated lines.
+			l.sealDecision(ctx, candidate, ExperimentOutcomeRejected, []GateVerdict{{
+				Gate:   gate.Name(),
+				Passed: false,
+				Reason: reason,
+			}})
 			l.mu.Lock()
 			l.state = StateActive
 			l.currentCandidate = nil
@@ -217,6 +226,61 @@ func (l *StrategyLifecycle) heldCandidateIDLocked() string {
 // pre-check stays purely as a friendlier early error, not a correctness
 // device. Approve carries no request context, so the promote runs under a
 // bounded background context.
+// SetExperimentLog installs the decision log (M10). proposalKey resolves a candidate to the
+// ReplayKey of the proposal that introduced it; nil logs decisions without that link rather
+// than guessing one.
+func (l *StrategyLifecycle) SetExperimentLog(log ExperimentLog, proposalKey func(candidateID string) string) {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.experimentLog = log
+	l.proposalKey = proposalKey
+}
+
+// sealDecision appends the verdict for a candidate (M10).
+//
+// It is the SECOND record of an experiment: the GA cycle already sealed the proposal, and this
+// one says what the gates did with it, joined by ProposalKey. Writing it as a new record rather
+// than editing the proposal is what makes the log show that the proposal preceded the verdict.
+//
+// Best-effort: a log write must not fail a lifecycle transition — the state has already moved.
+func (l *StrategyLifecycle) sealDecision(ctx context.Context, candidate *mutation.Strategy, outcome ExperimentOutcome, verdict []GateVerdict) {
+	if l == nil || candidate == nil {
+		return
+	}
+	l.mu.Lock()
+	logSink := l.experimentLog
+	resolve := l.proposalKey
+	l.mu.Unlock()
+	if logSink == nil {
+		return
+	}
+
+	rec := ExperimentRecord{
+		SchemaVersion:  ExperimentRecordSchemaVersion,
+		CandidateID:    candidate.ID,
+		ParentID:       candidate.ParentID,
+		PromptTemplate: candidate.PromptTemplate,
+		Params:         candidate.Params,
+		Dimensions:     candidate.DimensionScores,
+		Score:          candidate.Score,
+		Verification:   verdict,
+		Outcome:        outcome,
+		At:             time.Now(),
+	}
+	// MutationType is an int enum with no String(); its numeric id keeps the identity stable.
+	rec.MutationType = strconv.Itoa(int(candidate.StrategyMutationType))
+	if resolve != nil {
+		rec.ProposalKey = resolve(candidate.ID)
+	}
+	if err := logSink.Append(ctx, rec); err != nil {
+		log.WarnContext(ctx, "lifecycle: seal decision record", "method", "sealDecision",
+			"candidate", candidate.ID, "outcome", outcome, "error", err)
+	}
+}
+
 func (l *StrategyLifecycle) Approve() {
 	if l == nil {
 		return
@@ -289,6 +353,13 @@ func (l *StrategyLifecycle) promote(ctx context.Context, candidate *mutation.Str
 		l.metrics.RecordEvolutionDeploy("promoted")
 	}
 	l.writeDecisionEvidence(ctx, "promote", candidate.ID, candidate.Score, "")
+	// Acceptance is the other half of the verdict: same proposal key, outcome accepted. A log
+	// that only recorded refusals would read as "nothing was ever released".
+	l.sealDecision(ctx, candidate, ExperimentOutcomeAccepted, []GateVerdict{{
+		Gate:   "lifecycle",
+		Passed: true,
+		Reason: "promoted to active",
+	}})
 	log.InfoContext(ctx, "strategy promoted to active", "method", "lifecycle.promote",
 		"strategy_id", candidate.ID,
 		"score", candidate.Score,

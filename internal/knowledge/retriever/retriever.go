@@ -19,6 +19,13 @@ type Query struct {
 	// Types restricts retrieval to specific object types (empty = all types).
 	Types []knowledge.ObjectType `json:"types,omitempty"`
 
+	// Namespace scopes retrieval to a single knowledge namespace (M5/M6).
+	// Empty means "no namespace declared": the tiered L1 lexicon path refuses
+	// to search unscoped, because a store drops its namespace predicate when it
+	// is empty, which would read across tenants. Supply the caller's namespace
+	// (e.g. the M5 user namespace) or L1 returns nothing.
+	Namespace string `json:"namespace,omitempty"`
+
 	// MaxResults caps the number of nodes in the result graph (0 = default 50).
 	MaxResults int `json:"max_results,omitempty"`
 

@@ -4,18 +4,7 @@
 
 Every framework hits the moment when the user's first question shifts from "how do I call an LLM?" to "how do I wire all this together?" That's the moment you need a bootstrap.
 
-Older docs described starting ares as creating a handful of objects by hand and passing references around. The snippet below is **illustrative, not real repo code** (historical narrative, unverified):
-
-```go
-// ⚠️ Illustrative only — NOT actual repo code (historical narrative, unverified)
-eventStore := events.NewMemoryEventStore()
-memMgr, _ := memory.NewMemoryManager(memory.DefaultMemoryConfig())
-llmClient, _ := llm.NewClient(llm.Config{...})
-rt := runtime.New(runtime.Config{...}, eventStore, memMgr)
-rt.Start(ctx)
-```
-
-The *idea* of manual wiring still holds — miss one dependency and every call site follows. But the real solution is not a container with magic. It's **one function that explicitly turns config into a component graph**.
+Wiring by hand is the obvious alternative, and it fails the same way every time: miss one dependency and every call site follows. But the real solution is not a container with magic. It's **one function that explicitly turns config into a component graph**.
 
 In today's `internal/ares_bootstrap`:
 
@@ -164,7 +153,7 @@ Step 4b in `bootstrap.go` — `wireSkills(ctx, comp.Memory, mcp)` — is a piece
 - The skill outcome recorder that used to subscribe to `EventSubTaskResult` here was removed as dead code (starved from the start — no emitter ever carried its expected payload shape, W8 / RUNTIME.md breakage #8); a TODO(tech-debt) marks the spot.
 - Entirely best-effort: memory disabled / memory not exposing `SetSkillsRegistry` / index-build failure all log-and-skip rather than blocking startup.
 
-> Note: earlier drafts of this article referenced `CatalogTools(skill_search/skill_load/...)`, `SetToolChangeHandler`, and `wireSkillCatalog` in `serve.go`. I could not verify those in `internal/ares_bootstrap` this time, so they're marked (unverified). The real skill-wiring entry is `wireSkills` above.
+> `CatalogTools(skill_search/skill_load/...)`, `SetToolChangeHandler` and `wireSkillCatalog` could not be verified in `internal/ares_bootstrap`, so they are marked (unverified). The real skill-wiring entry is `wireSkills` above.
 
 ---
 

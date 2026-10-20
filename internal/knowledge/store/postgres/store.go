@@ -24,14 +24,40 @@ var (
 // Store is a PostgreSQL-backed KnowledgeStore.
 type Store struct {
 	db *sql.DB
+	// defaultWeights, when set, is the scoring configuration for requests that do not
+	// carry their own. It is deployment configuration (see WithDefaultWeights) rather
+	// than a package default, because whether the recency term belongs in the score
+	// depends on the corpus — the SQL recall window is already recency-ordered, so the
+	// term double-counts and only measurement can say whether that helps.
+	defaultWeights *knowledge.HybridWeights
+}
+
+// StoreOption configures a Store at construction.
+type StoreOption func(*Store)
+
+// WithDefaultWeights sets the scoring weights used by requests that pass none.
+//
+// This is the single wiring point for the whole retrieval surface: every path that
+// searches through this store (the knowledge tool's adapter, the AKG provider, the
+// context retriever) inherits it, so enabling recency is one decision in one place
+// instead of a field every caller has to remember. A request that sets its own
+// Weights still wins.
+func WithDefaultWeights(weights knowledge.HybridWeights) StoreOption {
+	return func(s *Store) {
+		w := weights
+		s.defaultWeights = &w
+	}
 }
 
 // New creates a new PostgreSQL KnowledgeStore with the given connection.
-func New(db *sql.DB) (*Store, error) {
+func New(db *sql.DB, opts ...StoreOption) (*Store, error) {
 	if db == nil {
 		return nil, errors.New("db is nil")
 	}
 	s := &Store{db: db}
+	for _, opt := range opts {
+		opt(s)
+	}
 	if err := s.initTables(context.Background()); err != nil {
 		return nil, fmt.Errorf("init tables: %w", err)
 	}
@@ -57,7 +83,12 @@ func (s *Store) initTables(ctx context.Context) error {
 			status TEXT NOT NULL DEFAULT '',
 			quality JSONB DEFAULT '{}',
 			relations JSONB DEFAULT '[]',
-			embedding_model TEXT NOT NULL DEFAULT ''
+			embedding_model TEXT NOT NULL DEFAULT '',
+			schema_version INT NOT NULL DEFAULT 0,
+			valid_from TIMESTAMPTZ,
+			valid_until TIMESTAMPTZ,
+			observed_at TIMESTAMPTZ,
+			source_version TEXT NOT NULL DEFAULT ''
 		)`,
 		`CREATE TABLE IF NOT EXISTS akf_representations (
 			id TEXT PRIMARY KEY,
@@ -78,6 +109,14 @@ func (s *Store) initTables(ctx context.Context) error {
 		`ALTER TABLE akf_objects ADD COLUMN IF NOT EXISTS quality JSONB DEFAULT '{}'`,
 		`ALTER TABLE akf_objects ADD COLUMN IF NOT EXISTS relations JSONB DEFAULT '[]'`,
 		`ALTER TABLE akf_objects ADD COLUMN IF NOT EXISTS embedding_model TEXT NOT NULL DEFAULT ''`,
+		// 0.3.4: schema versioning + temporal fields. Additive; the defaults
+		// (version 0, NULL times, empty source) reproduce pre-0.3.4 behaviour
+		// for rows written before this migration.
+		`ALTER TABLE akf_objects ADD COLUMN IF NOT EXISTS schema_version INT NOT NULL DEFAULT 0`,
+		`ALTER TABLE akf_objects ADD COLUMN IF NOT EXISTS valid_from TIMESTAMPTZ`,
+		`ALTER TABLE akf_objects ADD COLUMN IF NOT EXISTS valid_until TIMESTAMPTZ`,
+		`ALTER TABLE akf_objects ADD COLUMN IF NOT EXISTS observed_at TIMESTAMPTZ`,
+		`ALTER TABLE akf_objects ADD COLUMN IF NOT EXISTS source_version TEXT NOT NULL DEFAULT ''`,
 	}
 
 	for _, q := range queries {
@@ -88,6 +127,28 @@ func (s *Store) initTables(ctx context.Context) error {
 	return nil
 }
 
+// nullTime maps an optional Go time to a nullable SQL parameter: a nil pointer
+// (or a zero time, meaning "no bound / unknown") is written as NULL so the
+// temporal columns stay empty rather than storing a sentinel epoch,
+// round-tripping back to nil via nullableTimePtr on read.
+func nullTime(t *time.Time) sql.NullTime {
+	if t == nil || t.IsZero() {
+		return sql.NullTime{}
+	}
+	return sql.NullTime{Time: *t, Valid: true}
+}
+
+// nullableTimePtr maps a scanned NULL to nil and a present value to a pointer,
+// so an unset temporal column stays distinguishable from the zero time on the
+// wire (the KnowledgeObject temporal fields are *time.Time).
+func nullableTimePtr(t sql.NullTime) *time.Time {
+	if !t.Valid {
+		return nil
+	}
+	v := t.Time
+	return &v
+}
+
 // saveUpsertSQL is the tenant-guarded object upsert. The WHERE on DO UPDATE
 // restricts the update branch to a row owned by the caller's namespace: a
 // conflicting id under another namespace matches no update row, so the
@@ -95,8 +156,8 @@ func (s *Store) initTables(ctx context.Context) error {
 // RowsAffected check). Extracted as a constant so the guard's presence is
 // asserted by TestSaveUpsertSQLGuardsNamespace without a live database.
 const saveUpsertSQL = `
-			INSERT INTO akf_objects (id, type, namespace, raw, normalized, summary, metadata, tags, confidence, version, created_at, updated_at, status, quality, relations, embedding_model)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+			INSERT INTO akf_objects (id, type, namespace, raw, normalized, summary, metadata, tags, confidence, version, created_at, updated_at, status, quality, relations, embedding_model, schema_version, valid_from, valid_until, observed_at, source_version)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
 			ON CONFLICT (id) DO UPDATE SET
 				type = EXCLUDED.type,
 				namespace = EXCLUDED.namespace,
@@ -111,7 +172,12 @@ const saveUpsertSQL = `
 				status = EXCLUDED.status,
 				quality = EXCLUDED.quality,
 				relations = EXCLUDED.relations,
-				embedding_model = EXCLUDED.embedding_model
+				embedding_model = EXCLUDED.embedding_model,
+				schema_version = EXCLUDED.schema_version,
+				valid_from = EXCLUDED.valid_from,
+				valid_until = EXCLUDED.valid_until,
+				observed_at = EXCLUDED.observed_at,
+				source_version = EXCLUDED.source_version
 			WHERE akf_objects.namespace = EXCLUDED.namespace
 		`
 
@@ -136,7 +202,9 @@ func (s *Store) Save(ctx context.Context, objects ...*knowledge.KnowledgeObject)
 			obj.ID, string(obj.Type), obj.Namespace, obj.Raw, obj.Normalized, obj.Summary,
 			string(metaJSON), pqStringArray(tags), obj.Confidence, obj.Version,
 			obj.CreatedAt, obj.UpdatedAt,
-			string(obj.Status), qualityJSON, relationsJSON, obj.EmbeddingModel)
+			string(obj.Status), qualityJSON, relationsJSON, obj.EmbeddingModel,
+			obj.SchemaVersion, nullTime(obj.ValidFrom), nullTime(obj.ValidUntil),
+			nullTime(obj.ObservedAt), obj.SourceVersion)
 		if err != nil {
 			return fmt.Errorf("save %q: %w", obj.ID, err)
 		}
@@ -187,7 +255,7 @@ func marshalRelations(rels []knowledge.Relation) string {
 
 func (s *Store) Get(ctx context.Context, tenantID, id string) (*knowledge.KnowledgeObject, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, type, namespace, raw, normalized, summary, metadata, tags, confidence, version, created_at, updated_at, status, quality, relations, embedding_model
+		SELECT id, type, namespace, raw, normalized, summary, metadata, tags, confidence, version, created_at, updated_at, status, quality, relations, embedding_model, schema_version, valid_from, valid_until, observed_at, source_version
 		FROM akf_objects WHERE id = $1 AND namespace = $2`, id, tenantID)
 
 	obj, err := scanObject(row)
@@ -225,7 +293,7 @@ func (s *Store) Query(ctx context.Context, q knowledge.Query) ([]*knowledge.Know
 		argIdx++
 	}
 
-	query := "SELECT id, type, namespace, raw, normalized, summary, metadata, tags, confidence, version, created_at, updated_at, status, quality, relations, embedding_model FROM akf_objects"
+	query := "SELECT id, type, namespace, raw, normalized, summary, metadata, tags, confidence, version, created_at, updated_at, status, quality, relations, embedding_model, schema_version, valid_from, valid_until, observed_at, source_version FROM akf_objects"
 	if len(conditions) > 0 {
 		query += " WHERE " + strings.Join(conditions, " AND ")
 	}
@@ -251,6 +319,13 @@ func (s *Store) Query(ctx context.Context, q knowledge.Query) ([]*knowledge.Know
 	for rows.Next() {
 		obj, err := scanObject(rows)
 		if err != nil {
+			// A row written by a newer build is unreadable here, but it must not
+			// take down the whole query: skip just that row and keep serving the
+			// rest. (Get stays fail-closed for single-record reads.)
+			if errors.Is(err, knowledge.ErrSchemaVersionTooNew) {
+				slog.Warn("postgres store: skipping object with newer schema version", "error", err)
+				continue
+			}
 			return nil, err
 		}
 		results = append(results, obj)
@@ -279,7 +354,7 @@ func (s *Store) Search(ctx context.Context, tenantID, text string, _ string, lim
 		limit = 20
 	}
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, type, namespace, raw, normalized, summary, metadata, tags, confidence, version, created_at, updated_at, status, quality, relations, embedding_model
+		SELECT id, type, namespace, raw, normalized, summary, metadata, tags, confidence, version, created_at, updated_at, status, quality, relations, embedding_model, schema_version, valid_from, valid_until, observed_at, source_version
 		FROM akf_objects
 		WHERE (normalized ILIKE $1 OR summary ILIKE $1) AND namespace = $2
 		ORDER BY created_at DESC
@@ -293,6 +368,13 @@ func (s *Store) Search(ctx context.Context, tenantID, text string, _ string, lim
 	for rows.Next() {
 		obj, err := scanObject(rows)
 		if err != nil {
+			// A row written by a newer build is unreadable here, but it must not
+			// take down the whole query: skip just that row and keep serving the
+			// rest. (Get stays fail-closed for single-record reads.)
+			if errors.Is(err, knowledge.ErrSchemaVersionTooNew) {
+				slog.Warn("postgres store: skipping object with newer schema version", "error", err)
+				continue
+			}
 			return nil, err
 		}
 		results = append(results, obj)
@@ -306,9 +388,11 @@ type scanner interface {
 	Scan(dest ...interface{}) error
 }
 
-// scanObject scans one row (16 columns) into a KnowledgeObject. It unmarshals
+// scanObject scans one row (21 columns) into a KnowledgeObject. It unmarshals
 // metadata/quality/relations JSON best-effort. Quality/relations JSON that is
-// empty or the column default is ignored.
+// empty or the column default is ignored. The nullable temporal columns
+// (valid_from/valid_until/observed_at) map NULL to a nil pointer, which the
+// knowledge layer reads as "no bound / unknown".
 func scanObject(row scanner) (*knowledge.KnowledgeObject, error) {
 	var obj knowledge.KnowledgeObject
 	var typeStr, ns, norm, summary string
@@ -317,10 +401,12 @@ func scanObject(row scanner) (*knowledge.KnowledgeObject, error) {
 	var tags []string
 	var createdAt, updatedAt time.Time
 	var statusStr, embeddingModel string
+	var validFrom, validUntil, observedAt sql.NullTime
 
 	if err := row.Scan(&obj.ID, &typeStr, &ns, &raw, &norm, &summary, &metaJSON, (*pqStringArray)(&tags),
 		&obj.Confidence, &obj.Version, &createdAt, &updatedAt,
-		&statusStr, &qualityJSON, &relationsJSON, &embeddingModel); err != nil {
+		&statusStr, &qualityJSON, &relationsJSON, &embeddingModel,
+		&obj.SchemaVersion, &validFrom, &validUntil, &observedAt, &obj.SourceVersion); err != nil {
 		return nil, err
 	}
 
@@ -332,6 +418,9 @@ func scanObject(row scanner) (*knowledge.KnowledgeObject, error) {
 	obj.Tags = tags
 	obj.CreatedAt = createdAt
 	obj.UpdatedAt = updatedAt
+	obj.ValidFrom = nullableTimePtr(validFrom)
+	obj.ValidUntil = nullableTimePtr(validUntil)
+	obj.ObservedAt = nullableTimePtr(observedAt)
 	obj.Status = knowledge.ObjectStatus(statusStr)
 	obj.EmbeddingModel = embeddingModel
 	if qualityJSON != "" && qualityJSON != "{}" {
@@ -344,6 +433,13 @@ func scanObject(row scanner) (*knowledge.KnowledgeObject, error) {
 		_ = json.Unmarshal([]byte(relationsJSON), &obj.Relations)
 	}
 	_ = json.Unmarshal([]byte(metaJSON), &obj.Metadata)
+
+	// Normalise a stored record to the current schema on read: a pre-0.3.4
+	// row scans with schema_version 0 and gets stamped to the current version;
+	// a row written by a newer build is refused loudly rather than misread.
+	if err := knowledge.MigrateObject(&obj); err != nil {
+		return nil, err
+	}
 
 	return &obj, nil
 }
@@ -379,6 +475,40 @@ func (s *Store) SaveRepresentation(ctx context.Context, rep *knowledge.Represent
 	return err
 }
 
+// ListRepresentations returns every representation whose owning object lives in
+// namespace, ordered by ID so a snapshot is reproducible. It satisfies
+// knowledge.RepresentationLister.
+func (s *Store) ListRepresentations(ctx context.Context, namespace string) ([]*knowledge.Representation, error) {
+	if namespace == "" {
+		// Fail closed: a vector is reachable only through its owning object, so
+		// an unscoped listing would cross tenants (F-05).
+		return nil, errors.New("list representations: namespace is required")
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT r.id, r.object_id, r.model, r.dimension, r.vector, r.metadata, r.created_at
+		FROM akf_representations r
+		JOIN akf_objects o ON o.id = r.object_id
+		WHERE o.namespace = $1
+		ORDER BY r.id`, namespace)
+	if err != nil {
+		return nil, fmt.Errorf("list representations: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var reps []*knowledge.Representation
+	for rows.Next() {
+		rep, scanErr := scanRepresentation(rows)
+		if scanErr != nil {
+			return nil, fmt.Errorf("list representations: scan: %w", scanErr)
+		}
+		reps = append(reps, rep)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list representations: rows: %w", err)
+	}
+	return reps, nil
+}
+
 func (s *Store) GetRepresentation(ctx context.Context, tenantID, objectID, model string) (*knowledge.Representation, error) {
 	// Tenant scope via the owning object (F-05): same join rationale as the
 	// sqlite backend — no namespace column on representations.
@@ -411,6 +541,21 @@ const hybridRecallCap = 512
 // hybridRecallLimit returns the SQL-side candidate LIMIT for a hybrid search
 // request: at least the recall cap, but never smaller than the caller's own
 // recall caps (TopK/FinalK) so an explicit wide request is honored.
+// hybridWeights resolves the request's scoring weights, defaulting when unset.
+//
+// The resolution lives here rather than in the knowledge package so a nil request
+// field cannot be dereferenced anywhere else, and so the default is applied at the
+// one place that actually scores.
+func (s *Store) hybridWeights(req knowledge.HybridSearchRequest) knowledge.HybridWeights {
+	if req.Weights != nil {
+		return *req.Weights
+	}
+	if s.defaultWeights != nil {
+		return *s.defaultWeights
+	}
+	return knowledge.DefaultHybridWeights()
+}
+
 func hybridRecallLimit(req knowledge.HybridSearchRequest) int {
 	limit := hybridRecallCap
 	if req.TopK > limit {
@@ -433,7 +578,7 @@ func (s *Store) HybridSearch(ctx context.Context, req knowledge.HybridSearchRequ
 	conditions, args := hybridConditions(req)
 	args = append(args, hybridRecallLimit(req))
 	//nolint:gosec // conditions are static WHERE fragments; the LIMIT value is a parameterized placeholder.
-	query := `SELECT id, type, namespace, NULL AS raw, normalized, summary, metadata, tags, confidence, version, created_at, updated_at, status, quality, relations, embedding_model
+	query := `SELECT id, type, namespace, NULL AS raw, normalized, summary, metadata, tags, confidence, version, created_at, updated_at, status, quality, relations, embedding_model, schema_version, valid_from, valid_until, observed_at, source_version
 		FROM akf_objects` + conditions + ` ORDER BY updated_at DESC LIMIT $` + strconv.Itoa(len(args))
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -446,6 +591,10 @@ func (s *Store) HybridSearch(ctx context.Context, req knowledge.HybridSearchRequ
 	for rows.Next() {
 		obj, err := scanObject(rows)
 		if err != nil {
+			if errors.Is(err, knowledge.ErrSchemaVersionTooNew) {
+				slog.Warn("postgres store: skipping object with newer schema version", "error", err)
+				continue
+			}
 			return nil, err
 		}
 		candidates = append(candidates, obj)
@@ -483,7 +632,7 @@ func (s *Store) HybridSearch(ctx context.Context, req knowledge.HybridSearchRequ
 		}
 	}
 
-	scored := knowledge.ScoreHybrid(candidates, reps, req.QueryVector, req.Query)
+	scored := knowledge.ScoreHybridWithWeights(candidates, reps, req.QueryVector, req.Query, s.hybridWeights(req))
 
 	// Filter by MinScore.
 	if req.MinScore > 0 {
@@ -594,6 +743,31 @@ func hybridConditions(req knowledge.HybridSearchRequest) (string, []interface{})
 	return " WHERE " + strings.Join(conditions, " AND "), args
 }
 
+// ListNamespaces returns the distinct non-empty namespaces currently held,
+// ordered by namespace so a sweep over them is reproducible. It satisfies
+// knowledge.NamespaceLister.
+func (s *Store) ListNamespaces(ctx context.Context) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT DISTINCT namespace FROM akf_objects WHERE namespace <> '' ORDER BY namespace`)
+	if err != nil {
+		return nil, fmt.Errorf("list namespaces: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var namespaces []string
+	for rows.Next() {
+		var ns string
+		if err := rows.Scan(&ns); err != nil {
+			return nil, fmt.Errorf("list namespaces: scan: %w", err)
+		}
+		namespaces = append(namespaces, ns)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list namespaces: rows: %w", err)
+	}
+	return namespaces, nil
+}
+
 // ListByStatus returns objects in ns matching the given status.
 // Empty status matches objects with no status (backward compatibility).
 func (s *Store) ListByStatus(ctx context.Context, ns string, status knowledge.ObjectStatus, limit int) ([]*knowledge.KnowledgeObject, error) {
@@ -616,7 +790,7 @@ func (s *Store) ListByStatus(ctx context.Context, ns string, status knowledge.Ob
 		argIdx++
 	}
 	//nolint:gosec // conditions are static WHERE fragments; values use $N placeholders.
-	query := `SELECT id, type, namespace, raw, normalized, summary, metadata, tags, confidence, version, created_at, updated_at, status, quality, relations, embedding_model
+	query := `SELECT id, type, namespace, raw, normalized, summary, metadata, tags, confidence, version, created_at, updated_at, status, quality, relations, embedding_model, schema_version, valid_from, valid_until, observed_at, source_version
 		FROM akf_objects WHERE ` + strings.Join(conditions, " AND ") + " ORDER BY created_at DESC"
 	if limit > 0 {
 		query += fmt.Sprintf(" LIMIT $%d", argIdx)
@@ -632,6 +806,13 @@ func (s *Store) ListByStatus(ctx context.Context, ns string, status knowledge.Ob
 	for rows.Next() {
 		obj, err := scanObject(rows)
 		if err != nil {
+			// A row written by a newer build is unreadable here, but it must not
+			// take down the whole query: skip just that row and keep serving the
+			// rest. (Get stays fail-closed for single-record reads.)
+			if errors.Is(err, knowledge.ErrSchemaVersionTooNew) {
+				slog.Warn("postgres store: skipping object with newer schema version", "error", err)
+				continue
+			}
 			return nil, err
 		}
 		results = append(results, obj)

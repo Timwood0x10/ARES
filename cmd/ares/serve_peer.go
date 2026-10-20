@@ -432,6 +432,12 @@ func setupPeerRegistry(
 		// written back to the asker. The LLM receives Status="pending".
 		if kernel != nil && kernel.syscalls != nil {
 			ipc := bridge.ipc.Bus()
+			// Single source for the two windows that must agree: the Kernel's duplicate
+			// suppression now uses the SAME value this wiring uses as the collaboration
+			// timeout, instead of a second hand-copied 30s in the syscall package. A
+			// window shorter than the timeout releases a re-ask while the first is still
+			// in flight; a longer one swallows a legitimate second ask — both silent.
+			kernel.syscalls.SetAskDedupeWindow(askAgentTimeout)
 			kernel.syscalls.SetAskAgent(func(ctx context.Context, from, to, topic string, payload any) (any, error) {
 				// Derive a context detached from the quantum's lifecycle so the
 				// background request survives the quantum completing. NOTE: on
@@ -451,6 +457,17 @@ func setupPeerRegistry(
 					if reply == nil {
 						log.WarnContext(context.Background(), "ask_agent: background request returned no reply", "from", from, "to", to, "topic", topic)
 						return nil
+					}
+					// C-1-a writeback (defect I1): the asking quantum is gone by
+					// now, so the reply is delivered to the asker as a TASK — the
+					// channel this system already has — and the asker's next drain
+					// reads it from the payload. Without this the answer was
+					// logged and dropped, and "collaboration" could only ever
+					// trigger work, never receive its result.
+					if err := kernel.syscalls.DeliverAgentReply(ctx, from, to, topic, reply); err != nil {
+						// Loud: a reply that cannot be delivered must be visible,
+						// not indistinguishable from a target that never answered.
+						log.WarnContext(context.Background(), "ask_agent: reply could not be delivered to the asker", "from", from, "to", to, "topic", topic, "error", err)
 					}
 					log.InfoContext(context.Background(), "ask_agent: background reply received", "from", from, "to", to, "topic", topic)
 					return nil
@@ -609,6 +626,12 @@ const (
 	l1MetaEnabled = "enabled"
 	l1MetaBudget  = "budget"
 	l1MetaPrior   = "prior"
+	// Tool-side declaration tags for the other two metadata fields. They exist so all three
+	// have a value today; none of them is a measurement.
+	l1MetaEnabledTag = "enabled"
+	l1MetaBudgetTag  = "budget"
+	// l1MetaPriorTag is the tool-side tag an author uses to declare that prior.
+	l1MetaPriorTag = "prior"
 )
 
 // buildToolClassDAG constructs the L1 capability graph: one node per
@@ -625,6 +648,15 @@ const (
 // taskfabric — it is a capability catalog, not an execution plan.
 //
 // Returns (nil, errNoToolSchemas) when the binder exposes no tools.
+// declaredOrDefault returns the tool's declared value for a metadata field, or the permissive
+// default when it declares nothing. Empty is "undeclared", never "false"/"0 by accident".
+func declaredOrDefault(declared, fallback string) string {
+	if declared == "" {
+		return fallback
+	}
+	return declared
+}
+
 func buildToolClassDAG(schemas []core_tools.ToolSchema) (*engine.MutableDAG, error) {
 	if len(schemas) == 0 {
 		return nil, errNoToolSchemas
@@ -647,9 +679,22 @@ func buildToolClassDAG(schemas []core_tools.ToolSchema) (*engine.MutableDAG, err
 			AgentType: "tool/" + s.Name,
 			Input:     s.Description,
 			Metadata: map[string]string{
-				l1MetaEnabled: "true",
-				l1MetaBudget:  "0", // 0 = unlimited
-				l1MetaPrior:   "",
+				// Declared, like prior, with the permissive default when nothing is declared.
+				//
+				// Why a declaration and not a feedback loop: this graph is REBUILT at every
+				// boot from the tool schemas (injectToolClassDAG -> buildToolClassDAG), so a
+				// writer that mutated it in memory would have its decisions discarded on the
+				// next restart — the fake-loop shape this repository keeps closing. Opening
+				// the "GA writes enabled/budget/prior into L1" loop requires the decisions to
+				// live in durable storage that this builder reads, which is a separate design.
+				l1MetaEnabled: declaredOrDefault(s.Tags[l1MetaEnabledTag], "true"),
+				l1MetaBudget:  declaredOrDefault(s.Tags[l1MetaBudgetTag], "0"), // 0 = unlimited
+				// A DECLARED prior, copied from the tool's own tags: the author says "this tool
+				// is usually the right one for this class of work", and the planner surfaces it
+				// as a hint. It is deliberately not a measurement — nothing observes per-tool
+				// outcomes today, and a number we invented would be indistinguishable in the
+				// prompt from one we measured. A future writer can overwrite it.
+				l1MetaPrior: s.Tags[l1MetaPriorTag],
 			},
 		}
 		steps = append(steps, step)

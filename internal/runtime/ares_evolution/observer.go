@@ -33,11 +33,41 @@ type StrategySample struct {
 	// StrategyID is the ID of the active strategy when the sample was taken.
 	StrategyID string
 
-	// Success indicates whether the task completed successfully.
+	// Success indicates whether the task delivered a real answer: true for a
+	// normal completion, false for a terminal failure AND for a DEGRADED
+	// completion the answer path reported (a gap body, or an answer the depth
+	// guard forced) even though the task itself reached COMPLETED.
+	//
+	// Precedence when it appears to disagree with Score: Score is the graded
+	// value the fitness evidence carries — degradation is expressed there as a
+	// multiplier, the same way the cost and latency penalties are — so a consumer
+	// must not read Success=false as "ignore Score". A truncated answer is
+	// deliberately worth 0.5: more than a failure's 0, less than a real answer's 1.
 	Success bool
 
 	// Score is the normalized fitness score in [0,1].
 	Score float64
+
+	// LatencyCost is the task's normalised wall-time cost in [0,1]: 0 = instant, 1 = at or
+	// beyond the latency scale.
+	//
+	// It is the INVERSE of the multiplicative latency penalty that Score already carries, so
+	// it reads as a Minimize objective — lower is better — which is exactly what
+	// DefaultDimensionDirections declares for "latency". Reporting the penalty itself here
+	// would put "efficiency" under a Minimize name and make the direction table lie.
+	LatencyCost float64
+
+	// SpendCost is the task's normalised token-spend cost in [0,1], same convention as
+	// LatencyCost (0 = cheapest, 1 = at or beyond the spend scale).
+	SpendCost float64
+
+	// Completed reports whether the sample came from a task that reached COMPLETED (including
+	// a degraded completion).
+	//
+	// The cost metrics are only written for those samples: a task with no terminal completed
+	// event has no comparable wall time or spend, and writing 0 for it would read as
+	// "instant and free" — the best possible score on a Minimize objective.
+	Completed bool
 
 	// TaskType categorizes the observed task (e.g. "chat", "workflow").
 	TaskType string
@@ -116,6 +146,34 @@ func (o *RuntimeObserver) costPenalty(evt *ares_events.Event) float64 {
 		return 1
 	}
 	return 1.0 / (1.0 + float64(tokens)/float64(defaultTokenScale))
+}
+
+// degradedAnswerPenalty is the P0-1 signal: a completed task whose answer was a
+// gap body (no real answer produced) or was forced by the depth guard is
+// degraded, so the GA cannot reward "did less and lied about finishing".
+//
+// The signals ride the task.completed event payload; the fabric mirrors them out
+// of the checkpoint envelope's StepCheckpoint (see terminalCheckpointFacts).
+//
+// Contract: a gap answer scores 0 (indistinguishable from failure — it produced
+// nothing); a truncated answer scores 0.5 (something real came out under duress:
+// better than gap, worse than any genuine answer). Absent signals (non-answer
+// tasks, pre-fix envelopes) keep 1 — no penalty.
+//
+// What this factor is NOT: the mechanism by which the GA stops rewarding a
+// degraded ending. The Score is (the fitness evidence carries it, and the caller
+// multiplies it in the same way cost and latency penalties multiply in); the
+// Success flip that accompanies it is an annotation — see StrategySample.Success.
+func (o *RuntimeObserver) degradedAnswerPenalty(evt *ares_events.Event) (factor float64, degraded bool) {
+	if evt == nil || evt.Payload == nil {
+		return 1, false
+	}
+	bs, _ := evt.Payload[ares_events.EventKeyAnswerBodySource].(string)
+	tr, _ := evt.Payload[ares_events.EventKeyAnswerTruncated].(bool)
+	// The numbers come from the shared rule (ares_events.AnswerQualityPenalty),
+	// which the eval judge's deterministic floor also applies — see its doc for
+	// why a second copy of "gap=0, truncated=0.5" is not acceptable.
+	return ares_events.AnswerQualityPenalty(bs, tr)
 }
 
 // latencyPenalty computes the multiplicative latency factor for a completed
@@ -320,21 +378,43 @@ var agentStoppedGracefulReasons = map[string]bool{
 func (o *RuntimeObserver) eventToSample(evt *ares_events.Event) (StrategySample, bool) {
 	score := 0.0
 	success := false
+	// Metrics for the optimisation-target channels (M9③): 0 = fastest/cheapest, 1 = worst.
+	// Computed from the same factors the score is multiplied by, so the two views can never
+	// describe different tasks.
+	var latencyCost, spendCost float64
+	completed := false
 	switch evt.Type {
 	case ares_events.EventTaskCompleted:
 		score = 1.0
 		success = true
+		completed = true
 		// Latency penalty: must-persist task events carry created_at, so the
 		// observer can compute the task's wall time without any new producer.
 		// The penalty is multiplicative and bounded so correctness always
 		// dominates: a failure keeps 0.0, a success keeps (0,1].
-		score *= o.latencyPenalty(evt)
+		latencyFactor := o.latencyPenalty(evt)
+		score *= latencyFactor
+		latencyCost = 1 - latencyFactor
 		// Cost penalty (M4 cost channel): terminal completed events carry the
 		// envelope's cumulative token total (recordLocked stamps
 		// input/output/total_tokens). Same multiplicative-bounded contract as
 		// latency — spend discounts success, never rescues failure, and an
 		// unaccounted task (no keys, pre-v4 envelope) keeps 1.
-		score *= o.costPenalty(evt)
+		costFactor := o.costPenalty(evt)
+		score *= costFactor
+		spendCost = 1 - costFactor
+		// Degraded answer penalty (P0-1): a gap body or a depth-guard-forced
+		// answer is not a success. The factor is 0 for gap (nothing produced)
+		// and 0.5 for truncated (something real came out under duress). Score is
+		// the channel the fitness evidence carries, so the FACTOR is what stops
+		// the reward — multiplying in exactly as the cost/latency penalties do.
+		// Success is flipped alongside it so the sample also annotates the ending
+		// truthfully for readers that key on the flag; the two are not in
+		// conflict, see StrategySample.Success.
+		if factor, degraded := o.degradedAnswerPenalty(evt); degraded {
+			score *= factor
+			success = false
+		}
 	case ares_events.EventTaskFailed:
 		// 0.0 (already initialized). Failure is never penalty-rescued.
 	case ares_events.EventAgentStopped:
@@ -368,6 +448,9 @@ func (o *RuntimeObserver) eventToSample(evt *ares_events.Event) (StrategySample,
 		StrategyID:  strategyID,
 		Success:     success,
 		Score:       score,
+		LatencyCost: latencyCost,
+		SpendCost:   spendCost,
+		Completed:   completed,
 		TaskType:    taskType,
 		TotalTokens: sampleTokenTotal(evt),
 		At:          time.Now(),
@@ -420,6 +503,37 @@ func (o *RuntimeObserver) writeEvidence(ctx context.Context, sample StrategySamp
 		// days colliding on the same clock reading.
 		ID:        "strategy_" + sample.StrategyID + "_" + sample.At.Format("20060102150405.000000"),
 		Source:    observerEvidenceSource,
+		Kind:      evidence.KindFitness,
+		Payload:   payload,
+		Timestamp: sample.At,
+	})
+
+	// The optimisation-target metrics, as their OWN records (M9③). They cannot ride in the
+	// fitness record above: that payload's scalar is the fitness value, and the aggregator
+	// reads exactly one value per record. Written only for completed tasks — see
+	// StrategySample.Completed for why a missing terminal event must not become "0 = best".
+	if sample.Completed {
+		o.writeMetric(ctx, latencyMetricSource, sample, sample.LatencyCost)
+		o.writeMetric(ctx, costMetricSource, sample, sample.SpendCost)
+	}
+}
+
+// writeMetric appends one optimisation-target record (a Minimize objective: lower is better).
+//
+// Best-effort like the fitness write above: an observer that failed the task because it could
+// not record a metric would be worse than one that lost a sample.
+func (o *RuntimeObserver) writeMetric(ctx context.Context, source string, sample StrategySample, value float64) {
+	payload, err := json.Marshal(map[string]any{
+		"value":               value,
+		evidenceKeyStrategyID: sample.StrategyID,
+		"task_type":           sample.TaskType,
+	})
+	if err != nil {
+		return
+	}
+	_ = o.evStore.Append(ctx, evidence.Evidence{
+		ID:        source + "_" + sample.StrategyID + "_" + sample.At.Format("20060102150405.000000"),
+		Source:    source,
 		Kind:      evidence.KindFitness,
 		Payload:   payload,
 		Timestamp: sample.At,

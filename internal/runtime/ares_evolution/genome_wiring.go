@@ -59,6 +59,25 @@ type GenomePopulationAdapter struct {
 	// per-agent LLM calls into ceil(N/batchSize) batched calls.
 	batchScorer BatchScorer
 
+	// experimentLog, when set, receives one ExperimentRecord per generation (M10). Nil means
+	// "do not seal" — the zero value stays silent, so a deployment that has not configured a
+	// log path keeps its previous behaviour exactly.
+	//
+	// Guarded by runMu: records are sealed inside Run, which already serialises cycles.
+	experimentLog ExperimentLog
+
+	// proposalKeys maps a candidate id to the ReplayKey of the proposal that introduced it,
+	// so the lifecycle can seal its verdict against the right experiment (M10).
+	//
+	// The map exists because the two halves are sealed by different components at different
+	// times: the cycle knows the key, the lifecycle decides later.
+	//
+	// It has its OWN mutex rather than runMu: the lifecycle may promote synchronously from
+	// inside Run (which holds runMu) and call back through proposalKeyFor — re-taking runMu
+	// there would deadlock on a non-reentrant mutex.
+	proposalMu   sync.Mutex
+	proposalKeys map[string]string
+
 	// Guardrails for pre/post evolution safety checks (optional).
 	// When set via WithAdapterGuardrails, Run() runs safety checks before
 	// and after each evolution cycle.
@@ -99,6 +118,17 @@ type GenomePopulationAdapter struct {
 	// submits the best strategy to the lifecycle instead of deploying
 	// directly. The lifecycle runs verify gates before promoting.
 	lifecycle *StrategyLifecycle
+
+	// evidence, when set, is the runtime's measured fitness reader: the SAME
+	// aggregator the lifecycle gates deployments with (wired in genome_wiring_system
+	// alongside it, never a second aggregator). It is what makes selection consume
+	// the production signal instead of only the judge's opinion — see
+	// buildRunScorer/withMeasuredEvidence for the rule and P0-1(ii) for why the hop
+	// was missing.
+	evidence StrategyFitnessReader
+	// evidencePrior is the judge's weight in that blend, in samples of measured
+	// evidence (0 = defaultEvidencePriorSamples).
+	evidencePrior float64
 
 	// Coordinator bridge — when set, Run() submits evolution results
 	// to the new system's coordinator for decision and deployment.

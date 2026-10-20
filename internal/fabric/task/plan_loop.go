@@ -431,7 +431,7 @@ func (l *PlanLoop) collectOutput(o *RoundOutcome, stepID string, checkpoint any)
 	if checkpoint == nil {
 		return
 	}
-	decoded, err := DecodeCheckpoint(checkpoint)
+	decoded, err := l.f.DecodeCheckpoint(checkpoint)
 	if err != nil {
 		// A future-schema envelope cannot be interpreted by this build. The
 		// task's terminal state is already recorded and is what drives the

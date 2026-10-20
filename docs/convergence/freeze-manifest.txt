@@ -6,7 +6,8 @@
 #   R3  internal/fabric/* 已完成迁移（Phase 2b），生产代码可正常 import。
 #
 # 计划内删除只告警、不失败；新增一律 exit 1。
-# 收敛期内需要新增顶层条目时，先在 ARCHITECTURE.md 记录理由，再更新本清单。
+# 收敛期内需要新增顶层条目时，先在本文件该条目上方写明理由（日期 + 提交 + 为什么必须新增），
+# 再更新本清单。原先要求记录在 ARCHITECTURE.md，但该文件已不在仓库中，指令已改为就地记录。
 
 [examples]
 README.md
@@ -54,3 +55,14 @@ storage
 tenantctx
 tools
 truncate
+# userctx — added 2026-10-12 by bba562a6 ("Integrate M5 user scope"): the request-scoped USER
+# carrier, deliberately mirroring tenantctx (tenant is the outer isolation axis, user the inner
+# one, and the knowledge read/write paths must scope on both). It is imported by cmd/ares and by
+# the builtin memory/knowledge tools, so it is load-bearing rather than speculative.
+#
+# Recorded here rather than in ARCHITECTURE.md, which the header names but which is no longer in
+# the repository; the reason has to live somewhere a reader of this list will find it.
+#
+# Follow-up worth doing outside the freeze: the two packages are near-identical (private key
+# type + With/From), so they could become one carrier for request identity.
+userctx

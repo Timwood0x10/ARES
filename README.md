@@ -19,8 +19,8 @@
 | Area | State |
 |---|---|
 | Kernel / task fabric / SDK | exercised end-to-end and regression-locked; **not a hardened runtime** |
-| GA evolution + patch pipeline | runs end-to-end; the apply gate and the multi-objective entry points are **not wired** |
-| **AKG** (Adaptive Knowledge Graph) | **BETA / experimental — API may change, not production-ready** |
+| GA evolution + patch pipeline | runs end-to-end; the apply gate is **installed** (`bootstrap_evolution.go`) and both evolution loops share the NSGA-II dimension scoring |
+| **AKG** (Adaptive Knowledge Graph) | **API frozen (0.3.4), schema versioned, tiered retrieval opt-in** |
 
 AKG is the **first attempt to build a knowledge graph without relying on LLMs**
 (rule-based relation extraction, BM25-style lexical + vector hybrid search,
@@ -30,7 +30,20 @@ this README knows it cannot yet claim; read it before trusting any number or
 capability here.
 
 ---
-**ARES** — Agent Operating System (AgentOS).
+## Why "ARES"?
+
+**ARES — Agent Operating System (AgentOS): runtime, kernel & GA evolution.**
+
+- **Name origin** — Ares, the Greek god of war: the `ares arena` chaos
+  scenarios literally pit candidates against faults and survival tests.
+- **What the letters stood for** — originally **A**gent **R**untime &
+  **E**volution **S**ystem: a runtime kernel plus a GA that evolves it
+  (genomes, crossover, mutation; `ares evolution`).
+- **What it is now** — since v0.3.0 the kernel was promoted to an
+  **Agent Operating System (AgentOS)**: scheduling, synchronization,
+  IPC, resource enforcement, lifecycle management and recovery.
+  Evolution didn't disappear — it became a first-class subsystem of
+  the OS (evidence-driven GA, evolving in production without restarts).
 
 Agents are autonomous cognitive processes, not functions invoked by an orchestrator. They independently create work, communicate as peers, maintain private cognitive state, and may spawn other agents. The ARES Kernel provides scheduling, synchronization, IPC, resource enforcement, lifecycle management, and recovery.
 
@@ -134,7 +147,7 @@ make examples          # build all examples
 | **Chaos Resilient** | Fault injection, failover, survival testing, self-healing |
 | **Memory** | Session context, task distillation, vector similarity search |
 | **Durable archive & retention** | Per-stream event-round archive (concurrent streams never overwrite each other's rounds) + scheduled TTL purge across sessions / knowledge / conversations / secrets |
-| **AKG (Experimental)** | LLM-free knowledge graph — rule-based extraction + hybrid retrieval + quality gate |
+| **AKG** | LLM-free knowledge graph — rule-based extraction + hybrid retrieval + quality gate |
 | **Candidate release pipeline (0.3.0)** | `CandidatePipeline`: candidate → 3-gate validation (static / evidence / regression) → release gate → `SetStable`; gate 3 uses `LLMArenaScorer` + `BatchScorer` (batched/merged requests) for LLM-driven retained-case regression, with `FailoverClient` multi-provider chains (openai / openrouter / anthropic / ollama) auto-switching |
 | **MCP Ready** | Connect any Model Context Protocol server for tools and data |
 | **Multi-Agent** | Capability-based agent registration (`RegisterAgent`) + task dispatch (`Submit`) with peer IPC and recovery |
@@ -157,8 +170,8 @@ How it holds together:
 **Actual isolation boundaries** (stated honestly — do not read this as end-to-end column-level tenancy):
 
 - **Experience/distillation store**: every query in `internal/storage/postgres/repositories/experience_repository.go` carries a `tenant_id = $N` predicate — column-level isolation. Distillation writes take the tenant through a context seam (`distillation.WithTenant`), so a runtime override reaches the write side.
-- **Knowledge isolates by namespace, not by a tenant column**: `KnowledgeStore` objects have a `namespace` column and no `tenant_id` column. `StoreProvider` maps tenant → namespace via `namespaceFor` (explicit `Scope.Namespaces` → `tenantctx` → provider default), so isolation depends on the caller always supplying one; the underlying `Get`/`Delete`/`Search` carry no tenant or namespace predicate of their own.
-- **AKG-distilled facts are not tenant-split today**: `akgNamespace` in `internal/ares_bootstrap/knowledge_akg.go` is the constant `"default"`, so every AKG fact lands in the same namespace.
+- **Knowledge isolates by namespace, not by a tenant column**: `KnowledgeStore` objects have a `namespace` column and no `tenant_id` column. `StoreProvider` maps tenant → namespace via `namespaceFor` (explicit `Scope.Namespaces` → `tenantctx` → provider default), so isolation depends on the caller always supplying one. The underlying `Get`/`Delete`/`Search` all carry `AND namespace = ?` predicates (`store/postgres/store.go`, `store/sqlite/store.go`), so cross-tenant access returns `ErrObjectNotFound` rather than leaking data.
+- **AKG-distilled facts are not split per tenant**: `akgNamespace` in `internal/ares_bootstrap/knowledge_akg.go` is the constant `"default"`, passed straight into the distillation bridge (`adapter/distill.go` stores a fixed namespace), so every AKG fact lands in `"default"` regardless of the caller's tenant. Splitting them is a real design task, not a configuration flag.
 
 - **Multi-tenant deployments**: the tenant is currently *caller-declared* at the HTTP boundary. A genuine multi-tenant deployment must bind the tenant at the auth layer (e.g. derive it from the JWT principal server-side) rather than trust the request body — and the two knowledge-side gaps above must be closed first before the isolation is end to end. See `SECURITY.md` → Tenancy.
 
@@ -170,8 +183,9 @@ a bug in the README.
 
 - **Tenancy is not end-to-end.** The experience/distillation store isolates per
   tenant *column*, but the knowledge side isolates by **namespace** and depends on the
-  caller supplying one; AKG-distilled facts all land in the `"default"` namespace. A
-  real multi-tenant deployment must bind the tenant at the auth layer rather than
+  caller supplying one; AKG-distilled facts default to the `"default"` namespace when no
+  tenant context is present, and land in the caller's namespace when one is supplied.
+  A real multi-tenant deployment must bind the tenant at the auth layer rather than
   trust the request body — see *Tenancy Model* above and `SECURITY.md` → Tenancy.
 - **`WithMaxTokens` is a peer-lifetime budget, not a per-run cap.** Since 0.3.1 it is
   enforced (no longer a silent no-op): it bridges into the runtime governance budget
@@ -184,21 +198,116 @@ a bug in the README.
 - **`ask_agent` is fire-and-forget.** The target's answer is logged, not written back
   to the asker (`internal/agentsyscall/syscall.go`: *"the reply is currently
   FIRE-AND-FORGET"*); `Status: "delivered"` is unreachable through the serve wiring.
-- **Multi-objective GA is not wired.** Nothing populates `DimensionScores`, so
-  `"nsga2"` / `"nondominated"` silently fall back to single-objective tournament
-  selection, and `ScoreAgentsMulti` / `ParetoFrontStrategy()` are deprecated with zero
-  production callers.
-- **The GA apply gate is not installed in production**, so the patch path decides by
-  its own fitness threshold — that is precisely why the type is named
-  `UngatedPatcher`.
+- **Tiered AKG recall is opt-in and still bounded by the same quality bar.** With
+  `knowledge.tiered_retrieval`, recall goes L1 (exact keywords over the store) then L2
+  (semantic + graph) instead of the single-shot path. It is off by default because it REPLACES
+  how recall happens. Two properties are worth knowing before enabling it: L1 keeps the same
+  minimum-confidence bar (0.4) the single-shot path enforces, and the merged result is capped
+  at `top_k` — the tiered merge itself is not bounded, so the adapter caps by score. L1 is
+  scoped to the resolved namespace (explicit > tenant > user > default tenant); an empty
+  namespace would skip L1 entirely rather than recall across tenants.
+- **Tool advertising is narrowed per task, and the narrowing fails open.** The planner used to
+  advertise the whole registry; each quantum now filters by ① L1 `enabled` (a ToolClass the
+  evolution disabled is never shown), ② a static `kernel.tool_tag_filter` (all tags must match),
+  ③ the task's capability tags (union). Tags come from the task payload when a submitter set
+  them, otherwise from a keyword table in `internal/tools/capability`, otherwise from the model
+  when `kernel.llm_tool_tagging` is on (one call per quantum). A filter matching nothing falls
+  back to the previous set with a warning: an empty toolbelt is indistinguishable from "that tool
+  does not exist". `need_tools` is the escape hatch for the partial-miss case, and it reaches the
+  next quantum only because the kernel carries task-scoped payload keys across the checkpoint
+  re-wrap. **MCP tools are outside this path** — they register into the SDK's own registry and
+  report planner capabilities instead of `cap_*` tags, so kernel-side narrowing does not apply.
+- **The resilience score's measured inputs need samples before they mean anything.** Recovery
+  timing and data consistency are now both produced: the recovery path notifies an observer on
+  each successful revival, and every task-lifecycle checkpoint decode notifies one too (both
+  wired in `cmd/ares`). Two limits remain. A rate is published only after enough samples, so a
+  fresh process reports the input as unmeasured until then; and a deployment that never resumes a
+  task never decodes a checkpoint, so its consistency input stays unmeasured indefinitely.
+  `MetricsSnapshot.Unmeasured` names whichever input lacks samples rather than letting a zero
+  look like a measurement.
+- **The GA proposes; the kernel disposes.** Nothing the evolution loop produces reaches a
+  running strategy without passing the kernel: a candidate is a proposal plus its evidence, the
+  apply path is gated on manual approval when the lifecycle is holding one, and knowledge is
+  never allowed to grade a candidate. Concretely, GA may tune parameters, choose and combine
+  strategies, and bias candidate generation — it may not bypass permissions, exceed a budget or
+  blast-radius, change running state behind the kernel's back, or apply its own patch. The
+  intended rollout order is one production objective at a time (agent policy parameters first),
+  proving the full six-step loop before widening: running several evolving subsystems at once
+  makes every regression ambiguous.
+- **Experiment records are durable, and a verdict is a second record.** `ExperimentRecord`
+  captures what makes a run replayable (genome, the evidence that narrowed it, the fitness
+  configuration in force — copied, not referenced — the gate verdicts, and the outcome once
+  observed). `FileExperimentLog` appends JSONL and fsyncs every record; it is armed by
+  `evolution.experiment_log_path` (empty = off, which seals nothing). A generation seals
+  `outcome: pending`; the lifecycle seals a **second** record with the verdict and a
+  `ProposalKey` pointing at the proposal, because the two are decided at different times by
+  different components — rewriting the first would erase the fact that the proposal preceded the
+  verdict. Knowledge narrows candidates only: recording an outcome deliberately writes nothing
+  back to the graph, which is what keeps the GA from reinforcing its own opinion.
+- **Multi-objective GA is wired on both evolution paths, from one implementation.** The
+  dimension pass lives on `genome.Population` (`ScoreAgentsWithDimensions`), so the public
+  service and the in-process `EvolveAfterScoring` loop fill `DimensionScores` from
+  per-candidate execution evidence (`strategy` → success_rate, `dimension_eval` → quality) and
+  `"nsga2"` ranks by Pareto dominance. Without a dimension scorer, or for a candidate with no
+  evidence, selection uses the scalar score. `cost` and `latency` are filled from a **separate
+  metrics channel** (the observer records the inverse of its own penalties, so 0 = fastest or
+  cheapest) and are ranked as Minimize objectives. They are kept out of the fitness mean and out
+  of the staging sample count on purpose: folding a spending target into "fitness" would make a
+  slow-but-correct candidate score worse than a fast-and-wrong one.
+- **The GA apply gate is installed but narrow.** It refuses a patch whose strategy
+  the lifecycle is holding for manual approval; unattributed component patches pass (the
+  deployment adapter already refuses those as unmeasurable), and with nothing held — the
+  default — every patch passes. It does not grade quality: that stays the coordinator's own
+  fitness threshold, which is why the type is still named `UngatedPatcher`.
 - **Scheduling is cooperative, not preemptive at the token level.** An agent yields
   only at a ReAct-round boundary; a runaway LLM call is bounded by a timeout, not
   sliced.
 - **The default fabric is in-memory and single-process.** Task durability across a
   restart requires the Postgres-backed event store; this is not a distributed
   scheduler.
-- **AKG is BETA** (see the Status table at the top): its API may change, and it is the
-  least finished subsystem.
+- **AKG API is frozen (0.3.4)**: the core types (`KnowledgeObject`, `GraphProvider`,
+  `KnowledgeStore`) and the 4 MCP tools are stable. Schema versioning (`SchemaVersion`)
+  and temporal fields (`valid_from`/`valid_until`/`observed_at`/`source_version`) are
+  additive — zero values preserve pre-0.3.4 behaviour.
+- **Most 0.3.4 AKG features are not wired into production yet** — the API surface is
+  frozen, the features behind it are not live. Verified by repo-wide grep for non-test
+  callers: the M2.5 relation validation gate (`ValidateRelation` / `FilterRelations`),
+  M4 build observability (`BuildReport` / `ContentFingerprint`), and M6 tiered retrieval +
+  eval (`TieredRetriever` / `EvalHarness`) all have **zero production callers**, and each
+  carries a `TODO(tech-debt)` at its definition. Two exceptions, both operator surfaces
+  (never MCP tools — a knowledge dump is not a capability to hand a model):
+  M4 archival (`ApplyDecay`) runs on the maintenance sweep when
+  `knowledge.decay_archive_after` is set (off by default), visiting each namespace the
+  store lists; and M3's snapshot + migration surface (`ExportStore` / `ImportStore` /
+  `MigrateNamespace`) is driven by `ares knowledge export|import|migrate`, which requires
+  the persistent Postgres store. A snapshot carries embedding vectors, not only objects —
+  without them a restore silently degraded recall to lexical. Do not read "API frozen" as
+  "the features shipped".
+- **M5 "one user one graph" is wired, but only takes effect when a submission declares a
+  user.** The user is caller-declared (submit `user_id`), carried in the task payload —
+  which the checkpoint envelope already persists, so no envelope schema change was
+  needed — stamped onto the execution context as `userctx` (mirroring `tenantctx`) and
+  resolved to `tu:<hash(tenant)>:<hash(user)>` on both the write (`DistillBridge`) and
+  read (`StoreProvider`) sides. With no `user_id` the behaviour is unchanged (the tenant
+  namespace). Three caveats: facts written before a user is declared live under the
+  tenant/`default` namespace, so enabling `user_id` makes them invisible to user-scoped
+  recall until migrated — `ares knowledge migrate --from <ns> --tenant T --user U` re-homes
+  them, and it is a **move**, not a copy: the store keys objects by ID alone and refuses to
+  re-home an ID under a different namespace, so a copy would need new IDs while leaving the
+  facts visible to exactly the tenant-scoped recall the move exists to scope down. Vectors
+  travel with their objects, a failed save is rolled back rather than dropping the fact, and
+  a re-run resumes with whatever is left in the source. The user, like the tenant,
+  is caller-declared rather than derived from the authenticated principal (see *Tenancy
+  Model* / `SECURITY.md`); and the AKG store defaults to **in-memory** —
+  `buildBootstrapKnowledgeStore` returns the in-memory store unless `storage.enabled:
+  true` plus a Postgres host is configured — so a distilled user graph does not survive a
+  restart out of the box.
+- **The whole loop needs three switches, and all three default off.** Declare `user_id` on
+  the submission, run a persistent store (`storage.enabled: true` + Postgres), and opt into
+  recall injection (`memory.enable_rag: true` — retrieval fires only when that gate is on
+  *and* retrievers are wired). With any switch missing the AKG pipeline still runs, but
+  in-process only and only through the explicit MCP tools; "the longer you use it, the
+  better it knows you" is not the default behaviour.
 - **Benchmarks are single-run and single-machine** (Apple M3 Max, `-benchtime=500ms`):
   a smoke baseline for before/after comparison, not an SLA.
 - **Coverage is uneven.** `cmd/ares` (the HTTP/serve surface) and the
@@ -235,7 +344,7 @@ stay green on every change.
 
 ## AKG — Knowledge Graph Without LLMs (Experimental)
 
-*AKG is BETA (see the Status table at the top and *Honest limits*): the API may change.*
+*AKG API is frozen as of 0.3.4 (see the Status table at the top). Schema versioning and temporal fields are additive.*
 
 ### Exploration goal
 

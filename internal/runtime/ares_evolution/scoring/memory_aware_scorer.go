@@ -371,17 +371,17 @@ func (ms *MemoryAwareScorer) scoreWithEvidence(ctx context.Context, s *mutation.
 	detail.MemoryEvidenceBonus = bonus
 
 	// Compute cost penalty (from strategy params or default).
-	cost := strategyCost(s)
+	cost := strategyCostUnits(s)
 	costPenalty := cost * ms.cfg.CostWeight
 	detail.CostPenalty = costPenalty
 
 	// Compute latency penalty (from strategy params or default).
-	latency := strategyLatency(s)
+	latency := strategyLatencySeconds(s)
 	latencyPenalty := latency * ms.cfg.LatencyWeight
 	detail.LatencyPenalty = latencyPenalty
 
 	// Compute regression penalty (from strategy params or default).
-	regression := strategyRegression(s)
+	regression := strategyRegressionUnits(s)
 	regressionPenalty := regression * ms.cfg.RegressionWeight
 	detail.RegressionPenalty = regressionPenalty
 
@@ -454,17 +454,17 @@ func (ms *MemoryAwareScorer) scoreWithLegacyExperience(ctx context.Context, s *m
 	detail.Confidence = confidence
 
 	// Compute cost penalty (from strategy params or default).
-	cost := strategyCost(s)
+	cost := strategyCostUnits(s)
 	costPenalty := cost * ms.cfg.CostWeight
 	detail.CostPenalty = costPenalty
 
 	// Compute latency penalty (from strategy params or default).
-	latency := strategyLatency(s)
+	latency := strategyLatencySeconds(s)
 	latencyPenalty := latency * ms.cfg.LatencyWeight
 	detail.LatencyPenalty = latencyPenalty
 
 	// Compute regression penalty (from strategy params or default).
-	regression := strategyRegression(s)
+	regression := strategyRegressionUnits(s)
 	regressionPenalty := regression * ms.cfg.RegressionWeight
 	detail.RegressionPenalty = regressionPenalty
 
@@ -660,38 +660,53 @@ func taskTypeFromStrategy(s *mutation.Strategy) string {
 	return DefaultTaskType
 }
 
-// strategyCost extracts the cost value from a strategy's params.
-// Returns 0 if no cost data is available.
-func strategyCost(s *mutation.Strategy) float64 {
+// The param keys the penalty path reads. They are UNIT-EXPLICIT on purpose.
+//
+// They must NOT be the bare "cost"/"latency" keys: those are multi-objective
+// DIMENSION names in this package (genome.MetricCost / genome.MetricLatency), and
+// those dimensions are normalized against genome.DefaultDimensionBounds — {0,100}.
+// One key would then mean "a normalized 0-100 dimension value" to one reader and
+// "seconds" (or "cost units") to another, and this path multiplies whatever it finds
+// by a small weight: reading a 0-100 dimension as seconds subtracts ~9 points from a
+// perfectly ordinary strategy, while reading seconds as a dimension looks like a
+// negligible penalty. Either way the misread is silent — a plain number that is
+// simply wrong.
+//
+// No producer in this repository writes either key (the penalty path is producer-fed
+// from outside the evolution package), so the readers can be explicit with no
+// migration: a producer must set THESE names.
+const (
+	paramCostUnits       = "cost_units"
+	paramLatencySeconds  = "latency_seconds"
+	paramRegressionUnits = "regression_units"
+)
+
+// paramValue reads a strictly positive float64 param, or 0 when it is absent, of
+// the wrong type, or non-positive (a negative cost is not a discount, it is a bug).
+func paramValue(s *mutation.Strategy, key string) float64 {
 	if s == nil || s.Params == nil {
 		return 0
 	}
-	if c, ok := s.Params["cost"].(float64); ok && c > 0 {
-		return c
+	if v, ok := s.Params[key].(float64); ok && v > 0 {
+		return v
 	}
 	return 0
 }
 
-// strategyLatency extracts the latency value (in seconds) from a strategy's
-// params. Returns 0 if no latency data is available.
-func strategyLatency(s *mutation.Strategy) float64 {
-	if s == nil || s.Params == nil {
-		return 0
-	}
-	if l, ok := s.Params["latency"].(float64); ok && l > 0 {
-		return l
-	}
-	return 0
+// strategyCostUnits extracts the strategy's cost, in whatever unit the producer
+// chose, from paramCostUnits. Returns 0 when absent.
+func strategyCostUnits(s *mutation.Strategy) float64 {
+	return paramValue(s, paramCostUnits)
 }
 
-// strategyRegression extracts the regression value from a strategy's params.
-// Returns 0 if no regression data is available.
-func strategyRegression(s *mutation.Strategy) float64 {
-	if s == nil || s.Params == nil {
-		return 0
-	}
-	if r, ok := s.Params["regression"].(float64); ok && r > 0 {
-		return r
-	}
-	return 0
+// strategyLatencySeconds extracts the strategy's latency in SECONDS from
+// paramLatencySeconds. Returns 0 when absent.
+func strategyLatencySeconds(s *mutation.Strategy) float64 {
+	return paramValue(s, paramLatencySeconds)
+}
+
+// strategyRegressionUnits extracts the strategy's regression measure from
+// paramRegressionUnits. Returns 0 when absent.
+func strategyRegressionUnits(s *mutation.Strategy) float64 {
+	return paramValue(s, paramRegressionUnits)
 }

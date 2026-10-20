@@ -105,6 +105,10 @@ const (
 	EventKeyResult = "result"
 	// EventKeyTenantID scopes the distilled experience to a tenant.
 	EventKeyTenantID = "tenant_id"
+	// EventKeyUserID scopes the distilled knowledge to a user (M5: one user
+	// one graph). The user namespace is derived from this ID combined with
+	// the tenant ID via a collision-safe encoding (see UserNamespace).
+	EventKeyUserID = "user_id"
 	// EventKeyUsedExperienceID carries the experience ID the task consumed
 	// (bandit feedback linkage), if any.
 	EventKeyUsedExperienceID = "used_experience_id"

@@ -813,8 +813,12 @@ func TestDefaultConfigValues(t *testing.T) {
 	if !cfg.EnableWiredMode {
 		t.Error("EnableWiredMode should be true by default")
 	}
-	if cfg.MinLineageImprovement != 0.01 {
-		t.Errorf("MinLineageImprovement = %v, want 0.01", cfg.MinLineageImprovement)
+	// The unit is scorer points on the judge scale, so 1% is ONE point, not 0.01 points
+	// (see defaultMinLineageImprovement): the old value made "significant improvement"
+	// fire on a hundredth of a point, i.e. on scorer noise.
+	if want := 0.01 * evolutionPkg.JudgeScaleCeiling; cfg.MinLineageImprovement != want {
+		t.Errorf("MinLineageImprovement = %v, want %v (1%% of the judge scale, in points)",
+			cfg.MinLineageImprovement, want)
 	}
 }
 

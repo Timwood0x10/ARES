@@ -1,7 +1,5 @@
 # ares Architecture Deep Dive (XII): Security Hardening — The Tool-Trust Gate and Identity Provenance (0.3.x)
 
-> 0.3.x note: This article is a complete rewrite grounded in the current code. Old paths from earlier versions (`internal/ares_ratelimit`, `internal/storage/postgres/security.go`, `internal/ares_security/sanitizer.go`) are no longer where hardening lives. This article describes only what actually exists today: the **tool-trust gate in `ares_skills`**, the **unforgeable identity provenance in `agentsyscall` (Kernel-enforced)**, and the **`Sanitizer` backstop on the LLM call chain**.
-
 > An Agent's actual authority is not determined by how big you *think* it is — it is determined by **whether the tool it receives has passed a trust decision at the moment of binding**. And that decision starts from a four-tier trust level and one plain principle: source determines trust.
 
 ---

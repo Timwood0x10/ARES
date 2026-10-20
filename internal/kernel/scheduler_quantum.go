@@ -8,10 +8,13 @@ import (
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/agents/sub"
+	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/core/models"
 	apperrors "github.com/Timwood0x10/ares/internal/errors"
+	fabricagent "github.com/Timwood0x10/ares/internal/fabric/agent"
 	taskfabric "github.com/Timwood0x10/ares/internal/fabric/task"
 	"github.com/Timwood0x10/ares/internal/tenantctx"
+	"github.com/Timwood0x10/ares/internal/userctx"
 )
 
 // quantumUsage is the side-channel ledger for one quantum: the LLM tokens it
@@ -80,6 +83,14 @@ func (s *Scheduler) buildQuantumStep(
 			out *sub.StepOutcome
 			err error
 		}
+		// executorPayload is what the executor left in the model task's payload. The re-wrap
+		// below rebuilds the envelope from submission-time metadata, so without this capture
+		// every write the executor makes (need_tools widening the toolbelt, and the derived
+		// capability tags) is discarded before the next quantum reads it.
+		//
+		// Written before the send on `done` and read only after the receive, so the channel
+		// provides the happens-before edge; no additional lock is needed.
+		var executorPayload map[string]any
 		done := make(chan stepResult, 1)
 		go func() {
 			defer func() {
@@ -94,7 +105,15 @@ func (s *Scheduler) buildQuantumStep(
 			// scoped per request (the fix for the AKG read/write coherence
 			// gap that akgActiveNamespace used to paper over).
 			mt := s.ToModelTask(tk)
-			out, stepErr := executor.ExecuteStep(tenantctx.With(ctx, mt.TenantID), mt)
+			// The task's user rides alongside its tenant: userctx mirrors
+			// tenantctx so knowledge recall — and every other user-scoped
+			// consumer — resolves the same user graph the write path distilled
+			// into (M5). The user is carried in the task payload, which the
+			// checkpoint envelope already persists across yield→resume, so no
+			// envelope field or schema bump is needed.
+			stepCtx := userctx.With(tenantctx.With(ctx, mt.TenantID), userIDFromPayload(mt.Payload))
+			out, stepErr := executor.ExecuteStep(stepCtx, mt)
+			executorPayload = mt.Payload
 			done <- stepResult{out: out, err: stepErr}
 		}()
 		var out *sub.StepOutcome
@@ -139,7 +158,7 @@ func (s *Scheduler) buildQuantumStep(
 			// it and the next quantum resumes from this PCB.
 			return taskfabric.EncodeCheckpoint(taskfabric.DecodedCheckpoint{
 				UserProfile:      meta.UserProfile,
-				Payload:          meta.Payload,
+				Payload:          carryTaskScopedPayload(meta.Payload, executorPayload),
 				UsedExperienceID: meta.UsedExperienceID,
 				StrategyID:       meta.StrategyID,
 				SessionID:        meta.SessionID,
@@ -176,7 +195,7 @@ func (s *Scheduler) buildQuantumStep(
 		// scope from the checkpoint it is about to persist).
 		return taskfabric.EncodeCheckpoint(taskfabric.DecodedCheckpoint{
 			UserProfile:      meta.UserProfile,
-			Payload:          meta.Payload,
+			Payload:          carryTaskScopedPayload(meta.Payload, executorPayload),
 			UsedExperienceID: meta.UsedExperienceID,
 			StrategyID:       meta.StrategyID,
 			SessionID:        meta.SessionID,
@@ -301,12 +320,64 @@ func (s *Scheduler) endQuantumOutcome(winner, capability, taskID string, err err
 // a resumed quantum can observe where the previous step left off. Decode goes
 // through the single shared protocol (taskfabric.DecodeCheckpoint) — the same
 // path recovery and every other consumer use.
+// userIDFromPayload reads the caller-declared user scope from a task payload
+// (M5: one user one graph). The payload is the durable carrier —
+// CheckpointEnvelope.Payload rides the scheduler's yield→resume cycles — so
+// this needs no envelope field. An absent or non-string value means "no user
+// known"; consumers then fall back to the tenant namespace, preserving pre-M5
+// behaviour.
+func userIDFromPayload(payload map[string]any) string {
+	if id, ok := payload[ares_events.EventKeyUserID].(string); ok {
+		return id
+	}
+	return ""
+}
+
+// taskScopedPayloadKeys are payload keys that describe the TASK rather than one quantum. They
+// must survive a yield/done re-wrap even though the executor wrote them, because the re-wrap
+// otherwise rebuilds the envelope from submission-time metadata (see copyPayloadMap for why the
+// executor's map is a copy in the first place).
+//
+// The whitelist IS the point: carrying every key would undo the anti-pollution design that keeps
+// quantum-scoped keys ("checkpoint", per-step scratch) out of the durable envelope. A key
+// belongs here only when losing it changes what the next quantum does and the task cannot
+// recover on its own — tool capabilities are exactly that: without this, need_tools widens the
+// toolbelt for one quantum and the next one re-derives the narrow set again.
+var taskScopedPayloadKeys = []string{
+	fabricagent.TaskToolCapabilityKey,
+}
+
+// carryTaskScopedPayload overlays the whitelisted keys from the executor's task onto the
+// envelope payload. It copies on write so the caller's map is never mutated in place.
+func carryTaskScopedPayload(base, from map[string]any) map[string]any {
+	overlay := false
+	for _, key := range taskScopedPayloadKeys {
+		if _, ok := from[key]; ok {
+			overlay = true
+			break
+		}
+	}
+	if !overlay {
+		return base
+	}
+	out := make(map[string]any, len(base)+len(taskScopedPayloadKeys))
+	for k, v := range base {
+		out[k] = v
+	}
+	for _, key := range taskScopedPayloadKeys {
+		if v, ok := from[key]; ok {
+			out[key] = v
+		}
+	}
+	return out
+}
+
 func (s *Scheduler) ToModelTask(tk *taskfabric.Task) *models.Task {
 	t := models.NewTask(tk.ID, models.AgentType(tk.Capability), nil)
 	if tk.Checkpoint == nil {
 		return t
 	}
-	dc, err := taskfabric.DecodeCheckpoint(tk.Checkpoint)
+	dc, err := s.decodeCheckpoint(tk.Checkpoint)
 	if err != nil {
 		log.Warn(context.Background(), "ToModelTask",
 			"kernel scheduler: toModelTask decode checkpoint failed", "task_id", tk.ID, "error", err)
@@ -340,6 +411,19 @@ func (s *Scheduler) ToModelTask(tk *taskfabric.Task) *models.Task {
 			t.Payload = make(map[string]any)
 		}
 		t.Payload["checkpoint"] = dc.StepCheckpoint
+	}
+	// Whether this task is a first run or a continuation rides to the executor so
+	// the quantum that FINISHES it can report it (defect A6) — the task side of
+	// "was this work continued, and by whom". Stamped from the task rather than
+	// mirrored into the envelope payload: the payload is shared with the durable
+	// envelope (see copyPayloadMap), while this is task state the scheduler
+	// already owns at dispatch. Absent means "first run": the key is only written
+	// when true, and every dispatched quantum passes through here.
+	if tk.Requeued {
+		if t.Payload == nil {
+			t.Payload = make(map[string]any, 1)
+		}
+		t.Payload[taskfabric.PayloadKeyRequeued] = true
 	}
 	return t
 }

@@ -16,6 +16,7 @@ import (
 	agentfabric "github.com/Timwood0x10/ares/internal/fabric/agent"
 	taskfabric "github.com/Timwood0x10/ares/internal/fabric/task"
 	"github.com/Timwood0x10/ares/internal/introspect"
+	"github.com/Timwood0x10/ares/internal/runtime/arena"
 )
 
 // chaosStopControl is the process-level kill switch for the live chaos loop
@@ -217,7 +218,7 @@ func wireChaos(ctx context.Context, comp *ares_bootstrap.Components, cfg *ares_c
 			chaos := aresrecovery.NewChaos(peerKernel.agents, peerKernel.recovery)
 			interval := parseChaosInterval(cfg.Kernel.Chaos.Interval, 5*time.Minute)
 			runBackground(ctx, comp, "chaos-live", func(loopCtx context.Context) error {
-				liveChaosLoop(loopCtx, chaos, peerKernel.agents, interval, cfg.Kernel.Chaos, gaActive, status)
+				liveChaosLoop(loopCtx, chaos, peerKernel.agents, interval, cfg.Kernel.Chaos, gaActive, status, peerKernel.arenaMetrics)
 				return nil
 			})
 			log.WarnContext(context.Background(), "serve: LIVE chaos mode enabled — agents WILL be killed", "interval", interval.String(), "rate_per_min", cfg.Kernel.Chaos.RatePerMin, "eligible_capabilities", cfg.Kernel.Chaos.EligibleCapabilities)
@@ -337,7 +338,7 @@ func (g *liveChaosGuard) isStopped() bool {
 //
 // status surfaces the loop's operational state to the panel
 // (active / injections / fail-safe / GA pause); it may be nil.
-func liveChaosLoop(ctx context.Context, chaos *aresrecovery.Chaos, fabric *agentfabric.Fabric, interval time.Duration, cfg ares_config.ChaosConfig, gaActive func() bool, status *introspect.ChaosReporter) {
+func liveChaosLoop(ctx context.Context, chaos *aresrecovery.Chaos, fabric *agentfabric.Fabric, interval time.Duration, cfg ares_config.ChaosConfig, gaActive func() bool, status *introspect.ChaosReporter, arenaMetrics *arena.MetricsCollector) {
 	if interval <= 0 {
 		interval = 5 * time.Minute
 	}
@@ -410,7 +411,7 @@ func liveChaosLoop(ctx context.Context, chaos *aresrecovery.Chaos, fabric *agent
 					status.SetLive(introspect.LiveChaosState{Active: true, PausedForGA: false})
 				}
 			}
-			runLiveChaosInjection(ctx, chaos, fabric, guard, cfg.EligibleCapabilities, status)
+			runLiveChaosInjection(ctx, chaos, fabric, guard, cfg.EligibleCapabilities, status, arenaMetrics)
 		}
 	}
 }
@@ -423,7 +424,7 @@ func liveChaosLoop(ctx context.Context, chaos *aresrecovery.Chaos, fabric *agent
 //
 // status records the injection count and fail-safe state; it may be
 // nil.
-func runLiveChaosInjection(ctx context.Context, chaos *aresrecovery.Chaos, fabric *agentfabric.Fabric, guard *liveChaosGuard, eligible []string, status *introspect.ChaosReporter) {
+func runLiveChaosInjection(ctx context.Context, chaos *aresrecovery.Chaos, fabric *agentfabric.Fabric, guard *liveChaosGuard, eligible []string, status *introspect.ChaosReporter, arenaMetrics *arena.MetricsCollector) {
 	defer func() {
 		if r := recover(); r != nil {
 			log.Error(ctx, "runLiveChaosInjection",
@@ -494,6 +495,36 @@ func runLiveChaosInjection(ctx context.Context, chaos *aresrecovery.Chaos, fabri
 		return
 	}
 	log.InfoContext(context.Background(), "serve: live chaos — agent killed and recovered (agents recovered)", "target", target, "recovered", recovered)
+
+	// Read recovery timing and the checkpoint consistency window from the
+	// arena metrics collector and surface them to the chaos panel. This is the
+	// CONSUMER side of the P3/P4 observers: both write into arenaMetrics, and
+	// this is where they are read — so the metrics are not a black hole.
+	// SetRecoveryMetrics (not SetLive) is used on purpose: SetLive replaces the
+	// whole live-flag struct, so a metric sent through it would be wiped by the
+	// next flag-only frame (GA-pause / fail-safe / loop stop).
+	if status != nil && arenaMetrics != nil {
+		snap := arenaMetrics.Snapshot()
+		if snap.TotalRecoveries > 0 || snap.ConsistencySamples > 0 {
+			status.SetRecoveryMetrics(recoveryMetricsFromSnapshot(snap))
+		}
+	}
+}
+
+// recoveryMetricsFromSnapshot maps the single arena collector snapshot onto the
+// chaos panel's payload. Keeping the mapping in one function makes the
+// "producer → panel" seam testable without spinning up a live chaos loop.
+func recoveryMetricsFromSnapshot(snap arena.MetricsSnapshot) *introspect.RecoveryMetrics {
+	return &introspect.RecoveryMetrics{
+		TotalRecoveries:     snap.TotalRecoveries,
+		AvgRecoveryTime:     snap.AvgRecoveryTime,
+		MinRecoveryTime:     snap.MinRecoveryTime,
+		MaxRecoveryTime:     snap.MaxRecoveryTime,
+		LastRecoveryTime:    snap.LastRecoveryTime,
+		DataConsistencyRate: snap.DataConsistencyRate,
+		ConsistencySamples:  snap.ConsistencySamples,
+		ConsistencyMeasured: snap.ConsistencyMeasured(),
+	}
 }
 
 // parseChaosInterval parses the chaos interval string, returning the default

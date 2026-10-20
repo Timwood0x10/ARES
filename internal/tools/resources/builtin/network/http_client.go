@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 	"time"
+
+	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
 
 // HTTPClient defines the interface for making HTTP requests.
@@ -118,4 +120,15 @@ type HTTPError struct {
 // Error returns the error message.
 func (e *HTTPError) Error() string {
 	return e.Message
+}
+
+// Unwrap exposes the status code as the shared sentinel for that class, so a caller
+// (or the task fabric's failure classification) can ask `errors.Is(err,
+// apperrors.ErrNotFound)` instead of reading the message text.
+//
+// It returns nil for a status this package has no confident class for; errors.Is
+// treats a nil unwrap as the end of the chain, which is exactly the intended
+// "unclassified, therefore retryable" behaviour.
+func (e *HTTPError) Unwrap() error {
+	return core.HTTPStatusError(e.StatusCode)
 }

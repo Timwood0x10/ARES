@@ -9,15 +9,65 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_events"
 )
 
+// CreateOption configures a single Create call. No options keeps the
+// permissive default documented on Create.
+type CreateOption func(*createOptions)
+
+// createOptions holds the resolved CreateOptions of one Create call.
+type createOptions struct {
+	// resolveDependencies requires every dependency id to name a task that is
+	// already in the fabric. Off by default: a graph submitted in one call may
+	// carry a forward reference (runCollabGraph creates a graph's nodes in
+	// submission order, so an edge may name a node created later in the same
+	// loop), and Create cannot tell that from an id that will never exist.
+	resolveDependencies bool
+}
+
+// WithResolvedDependencies makes Create reject a task whose dependency ids do
+// not all name live tasks — plus an empty id and a self-reference. It is the
+// option for runtime graph growth: one node installed against nodes that
+// already exist, with no batch closure to validate against (unlike
+// CompilePlan, whose resolveDependencies checks the batch first and then the
+// live index).
+//
+// The check runs in the SAME critical section as the insertion, so a
+// concurrent Delete of a dependency cannot slip between validation and create
+// and leave the edge dangling.
+//
+// Why it matters: depsSatisfiedLocked treats a missing dependency as
+// unsatisfied forever (see ReferencedDependencies), so an accepted dangling
+// edge does not fail its task — it parks the task, and every task behind it, in
+// READY-forever limbo with nothing reported.
+func WithResolvedDependencies() CreateOption {
+	return func(o *createOptions) { o.resolveDependencies = true }
+}
+
 // Create registers a new READY task. The task is unowned and available for
 // acquire. Idempotency: an existing id returns ErrTaskExists.
 //
+// Dependencies are copied and, by default, NOT validated: an id that never
+// resolves leaves the task permanently unready and unreported. Callers that
+// install a node against already-existing nodes must pass
+// WithResolvedDependencies instead of relying on this default.
+//
 // Args:
 //   - t: the task to register (ID must be non-empty).
+//   - opts: optional CreateOptions (see WithResolvedDependencies).
 //
 // Returns:
-//   - error: ErrTaskExists, or an error for an empty id.
-func (f *Fabric) Create(t *Task) error {
+//   - error: ErrTaskExists, an error for an empty id, or
+//     ErrDependencyUnresolved (only under WithResolvedDependencies).
+func (f *Fabric) Create(t *Task, opts ...CreateOption) error {
+	var cfg createOptions
+	for _, opt := range opts {
+		// A nil option is skipped rather than invoked: this runs on the
+		// scheduler's create path, and a panic there is exactly what
+		// "panic is for unrecoverable initialisation only" forbids.
+		if opt == nil {
+			continue
+		}
+		opt(&cfg)
+	}
 	// Sample the attribution source BEFORE taking f.mu: the stamp fn talks to
 	// the strategy control plane and must never run while the fabric state
 	// machine is locked (deadlock avoidance), and it must be cheap.
@@ -26,7 +76,66 @@ func (f *Fabric) Create(t *Task) error {
 	f.mu.Lock()
 	defer f.flushAppends(&pending)
 	defer f.mu.Unlock()
+	if cfg.resolveDependencies {
+		if err := resolvedDependenciesLocked(f.tasks, t); err != nil {
+			return err
+		}
+	}
 	return f.createLocked(t, strategyID, &pending)
+}
+
+// DependencyResolutionError reports the dependency ids of a task that could not
+// be resolved: an id that names no task in the fabric, an empty id, or a
+// self-reference.
+//
+// It carries ALL of them, not just the first, because the usual caller turns
+// this into a message for a model that will retry with corrected ids — naming
+// one id per attempt costs that model a full quantum each time. It satisfies
+// errors.Is(ErrDependencyUnresolved), so a caller that only cares about the
+// class keeps using the sentinel and never needs this type.
+type DependencyResolutionError struct {
+	// TaskID is the task whose dependency list was rejected.
+	TaskID string
+	// Missing lists the offending ids in the caller's order.
+	Missing []string
+}
+
+// Error implements error.
+func (e *DependencyResolutionError) Error() string {
+	return fmt.Sprintf("%s: task %q has %d unresolvable dependency id(s): %v",
+		ErrDependencyUnresolved.Error(), e.TaskID, len(e.Missing), e.Missing)
+}
+
+// Is reports the class of every instance: ErrDependencyUnresolved.
+func (e *DependencyResolutionError) Is(target error) bool {
+	return target == ErrDependencyUnresolved
+}
+
+// resolvedDependenciesLocked is resolveDependencies' single-task form: every
+// dependency id must name a task already in the fabric. It reports ALL of the
+// ids that fail, an empty id, or a self-reference.
+//
+// A self-reference is checked explicitly because it is the one cycle shape this
+// path can still be handed: every other edge must point at a task that already
+// exists, which makes creation order itself a topological order, so no cycle
+// through a freshly created node can close.
+//
+// Callers must hold f.mu.
+func resolvedDependenciesLocked(existing map[string]*Task, t *Task) error {
+	var missing []string
+	for _, dep := range t.Dependencies {
+		if dep == "" || dep == t.ID {
+			missing = append(missing, dep)
+			continue
+		}
+		if _, ok := existing[dep]; !ok {
+			missing = append(missing, dep)
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	return &DependencyResolutionError{TaskID: t.ID, Missing: missing}
 }
 
 // createLocked is Create's body for callers that already hold f.mu (the
@@ -311,6 +420,11 @@ func (f *Fabric) Fail(id, agentID string, epoch uint64, cause error) error {
 		// A zero delay leaves NextAttemptAt zero: immediately runnable, exactly
 		// as before backoff existed.
 		t.NextAttemptAt = nextAttemptAt(f.now(), t.RetryPolicy.Attempts, t.BackoffBase, t.BackoffMax)
+		// A retry is a continuation too (defect A6): the next attempt may land on
+		// another agent, with only the checkpoint carried over. Durable via the
+		// task.failed event recorded just below (its retryable flag is the fold
+		// signal), unlike the observability-only task.ready that follows.
+		t.Requeued = true
 		// Record the failure while the failing agent is still attached —
 		// the terminal/requeue event must not lose the actor. Ownership is
 		// cleared only after the event is captured, so the following
@@ -329,9 +443,38 @@ func (f *Fabric) Fail(id, agentID string, epoch uint64, cause error) error {
 			}
 		}
 		pending = append(pending, f.recordWithExtrasLocked(t, EventTaskReady, readyExtras))
+		// Not terminal: a retry is scheduled, so nothing is lost yet.
+		f.logFailureVisibilityLocked(t, cause, retryable, false)
 		return nil
 	}
 	return f.failTerminalLocked(t, cause, retryable, &pending)
+}
+
+// logFailureVisibilityLocked writes the escalation line when an attempt ended in a
+// way an operator should know about (see failureVisibilityReason).
+//
+// Caller must hold f.mu, matching the other *_locked log sites in this package: the
+// line names the attempt count and the classification that produced it, so it has to
+// be read from the same state the transition just used.
+func (f *Fabric) logFailureVisibilityLocked(t *Task, cause error, retryable, terminal bool) {
+	reason := failureVisibilityReason(failureContext{
+		Attempts:   t.RetryPolicy.Attempts,
+		MaxRetries: t.RetryPolicy.MaxRetries,
+		Retryable:  retryable,
+		Terminal:   terminal,
+		ReplyTask:  f.carriesCollaborationReply(t),
+	})
+	if reason == "" {
+		return
+	}
+	log.Warn(context.Background(), "logFailureVisibilityLocked",
+		"taskfabric: "+reason,
+		"task", t.ID,
+		"attempts", t.RetryPolicy.Attempts,
+		"max_retries", t.RetryPolicy.MaxRetries,
+		"retryable", retryable,
+		"terminal", terminal,
+		"cause", failureCauseText(cause))
 }
 
 // failedEventLocked records task.failed carrying the retry classification that
@@ -359,8 +502,12 @@ func (f *Fabric) failTerminalLocked(t *Task, cause error, retryable bool, pendin
 	// Replace (never mutate) the checkpoint pointer so off-lock snapshot
 	// readers of the previous envelope stay race-free — the fabric's
 	// documented checkpoint ownership rule.
-	t.Checkpoint = checkpointWithCause(t.Checkpoint, cause)
+	t.Checkpoint = f.checkpointWithCause(t.Checkpoint, cause)
 	*pending = append(*pending, f.failedEventLocked(t, retryable))
+	// Terminal failures are shared by Fail and ExpireDeadlines, so the escalation
+	// belongs here rather than at either call site: a budget that ran out on an
+	// unclassified cause must be visible whichever sweep ended the task.
+	f.logFailureVisibilityLocked(t, cause, retryable, true)
 	// Terminal failure propagates: every transitive READY dependent can never
 	// become schedulable again, so fail it here instead of stranding the
 	// subgraph (see cascadeFailureLocked).
@@ -483,6 +630,11 @@ func (f *Fabric) CheckExpiredLeases() []string {
 		if err := t.transition(StateReady); err != nil {
 			continue
 		}
+		// The work is now continued rather than started (defect A6): the task
+		// keeps its checkpoint but lost its owner, so whoever acquires it next
+		// resumes someone else's progress. The task.expired event below is what
+		// makes this durable — restore folds the flag straight back from it.
+		t.Requeued = true
 		// Record the expiry while the dead agent is still attached — the
 		// terminal event must identify whose lease expired. Ownership is
 		// cleared only after the event is captured.

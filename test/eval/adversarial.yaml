@@ -1,0 +1,80 @@
+name: Adversarial Answer-Quality Contract
+description: |
+  Cases engineered so that a REAL run produces a degraded ending the runtime
+  records (defect P0-3), which the deterministic floor must then score low and the
+  accuracy evidence must carry (defect P0-1 / G1).
+
+  Each case declares what the runtime is expected to record in its METADATA
+  (expected_body_source / expected_truncated), so the contract travels with the
+  case instead of living as a hardcoded list of ids inside the test. The
+  requirements on the runtime that make each ending happen are stated there too,
+  because a case cannot engineer anything by itself — the wiring does.
+tags:
+  - gap-contract
+  - adversarial
+
+test_cases:
+  # Gap: the planner asks for tools, every one of them is skipped by an L1
+  # constraint, and the forced answer has no body at all.
+  - id: adv-gap-001
+    name: Tool-dependent question with every tool blocked at L1
+    input: "Look up today's exchange rate with the search tool, then compute 100 * rate."
+    timeout: 120s
+    tags:
+      - gap-contract
+      - gap
+    metadata:
+      expected_body_source: gap
+      runtime_requirement: |
+        No body may exist for the terminal answer -> body source gap. The
+        end-to-end replay reproduces that with an EMPTY MODEL: every turn comes
+        back with no content and no tool call, so the planner's answer node is
+        grown bodyless and synthesis has no history to reconstruct one from.
+        In production the same ending is any turn that ends with nothing to say —
+        L1 constraints skipping every requested tool is the common instance —
+        and the condition that actually decides it is the missing CONTENT, not
+        the skipped tool: an L1-blocked turn whose model DID produce content ends
+        as a supplied body with answer_cause=l1_blocked, a different (and
+        higher-scoring) ending than the one this case pins.
+
+  # Truncated: the planner never stops requesting tools, so the growth-depth
+  # guard forces the answer. Synthesis must be wired, or the forced answer would
+  # land as a gap instead and the cheaper tier would be lost.
+  #
+  # Verified end-to-end (2026-10-13) by
+  # TestAdversarialE2E_TruncatedEndingTakesTheCheaperTier: the replay reaches the
+  # bound for real and lands in the middle tier. Two things make that work and
+  # both are measured rather than assumed — the tool must be registered before the
+  # L2 core is assembled (or the session answers on its first turn), and the
+  # scripted calls are exactly two (planner round 1 asking for the tool, then the
+  # answer's synthesis): an empty response at the synthesis call lands the ending
+  # in the GAP tier, whose penalty outranks the truncation marker.
+  - id: adv-trunc-001
+    name: Depth-capped answer (the planner never stops asking for tools)
+    input: "Keep calling tools until you are certain, then answer."
+    timeout: 180s
+    tags:
+      - gap-contract
+      - truncated
+    metadata:
+      expected_truncated: true
+      runtime_requirement: |
+        Chat client that always requests another tool call, MaxPlanDepth bounded,
+        and synthesis enabled so the forced answer still carries a body.
+
+  # Control: a genuine answer from the SAME runtime. Without it every assertion
+  # above could pass by scoring everything low, which is exactly the false green
+  # this suite exists to prevent.
+  - id: adv-control-001
+    name: Control - a genuine answer from the same runtime
+    input: "Reply with the single word: ready."
+    expected_output: "ready"
+    timeout: 60s
+    tags:
+      - gap-contract
+      - control
+    metadata:
+      expected_body_source: supplied
+      runtime_requirement: |
+        The same wiring as adv-gap-001: the model answers without calling a tool,
+        so the planner grows a supplied answer node.

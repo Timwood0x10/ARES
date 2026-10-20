@@ -138,6 +138,18 @@ func TestL1DisabledToolNotGrown(t *testing.T) {
 	answerID := SessionNodeID(sessionID, 1, "answer", 0)
 	assert.True(t, g.HasNode(answerID),
 		"answer node must be grown when tool call is skipped by L1 constraint")
+
+	// D2: that forced answer is labelled. Before this the session terminated as a
+	// success-looking COMPLETED result with no tool ever run, and the only trace
+	// was a per-tool log line — external callers could not tell it from a normal
+	// completion.
+	waitForTaskExists(t, fabric, answerID, 2*time.Second)
+	ansTask, taskErr := fabric.Task(answerID)
+	require.NoError(t, taskErr)
+	dc, decErr := taskfabric.DecodeCheckpoint(ansTask.Checkpoint)
+	require.NoError(t, decErr)
+	assert.Equal(t, answerCauseL1Blocked, dc.Payload[argMetadataPrefix+answerCauseKey],
+		"an answer forced by L1 skipping every tool call must carry its cause")
 }
 
 // TestL1BudgetCapsInstances pins the budget: budget=1 means at most 1

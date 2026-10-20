@@ -5,7 +5,6 @@ import (
 	"context"
 	stderrors "errors"
 	"fmt"
-	"math"
 	"strconv"
 	"strings"
 	"sync"
@@ -24,6 +23,7 @@ import (
 	memctx "github.com/Timwood0x10/ares/internal/runtime/memory/context"
 	"github.com/Timwood0x10/ares/internal/runtime/memory/distillation"
 	memembed "github.com/Timwood0x10/ares/internal/runtime/memory/embedding"
+	"github.com/Timwood0x10/ares/internal/tenantctx"
 	truncpkg "github.com/Timwood0x10/ares/internal/truncate"
 )
 
@@ -146,6 +146,9 @@ func NewMemoryManager(config *MemoryConfig) (MemoryManager, error) {
 	if cap := effectiveSessionMaxHistory(config); cap > 0 {
 		sessionMemory.WithMaxMessages(cap)
 	}
+	// Independent of the count cap: "keep N messages" says nothing about their size, and a
+	// deployment may well bound bytes while leaving the count at its default.
+	sessionMemory.WithMaxTokens(config.SessionMaxTokens)
 
 	taskMemory := memctx.NewTaskMemory(
 		config.MaxTasks,
@@ -191,6 +194,9 @@ func NewMemoryManagerWithDistiller(config *MemoryConfig, embedder apiembed.Embed
 	if cap := effectiveSessionMaxHistory(config); cap > 0 {
 		sessionMemory.WithMaxMessages(cap)
 	}
+	// Independent of the count cap: "keep N messages" says nothing about their size, and a
+	// deployment may well bound bytes while leaving the count at its default.
+	sessionMemory.WithMaxTokens(config.SessionMaxTokens)
 
 	taskMemory := memctx.NewTaskMemory(
 		config.MaxTasks,
@@ -362,7 +368,7 @@ func (m *memoryManager) ApplyLiveConfig(cfg *MemoryConfig) {
 	// clamps up to the read window, and a zero config value pushes 0, which
 	// WithMaxMessages translates back to the component default. Skipping the
 	// push when the knob is zero would leave a previously tightened cap live.
-	m.sessionMemory.WithMaxMessages(effectiveSessionMaxHistory(cfg))
+	m.sessionMemory.WithMaxMessages(effectiveSessionMaxHistory(cfg)).WithMaxTokens(cfg.SessionMaxTokens)
 	if m.distiller != nil && m.distillConfig != nil && cfg.DistillationThreshold >= 0 {
 		if updater, ok := m.distiller.(interface {
 			UpdateConfig(*distillation.DistillationConfig)
@@ -458,6 +464,23 @@ func (m *memoryManager) GetMessages(ctx context.Context, sessionID string) ([]Me
 	return sessionMemMessages, nil
 }
 
+// SessionOwner returns the user a session belongs to, or ("", nil) when the
+// session is unknown (never created, or expired).
+//
+// The owner is recorded at CreateSession time, which makes this the check a
+// caller needs before trusting a session id from an untrusted source: a tool
+// parameter naming someone else's session must not be readable.
+func (m *memoryManager) SessionOwner(ctx context.Context, sessionID string) (string, error) {
+	if sessionID == "" {
+		return "", nil
+	}
+	session, ok := m.sessionMemory.Get(ctx, sessionID)
+	if !ok || session == nil {
+		return "", nil
+	}
+	return session.UserID, nil
+}
+
 // AddStructuredMessage adds a structured message with full metadata (TurnID, ToolCallID, ToolCalls)
 // to the session. The underlying SessionMemory stores all Message fields faithfully.
 func (m *memoryManager) AddStructuredMessage(ctx context.Context, sessionID string, msg Message) error {
@@ -494,6 +517,7 @@ func (m *memoryManager) BuildPromptMessages(ctx context.Context, sessionID strin
 	// with these reads (runRetrieval does the same for its fields).
 	m.mu.RLock()
 	maxHistory := m.config.MaxHistory
+	tokenBudget := m.config.EffectiveContextTokenBudget()
 	var cleanOpts *memctx.CleanOptions
 	if m.config.CleanOptions != nil {
 		snap := *m.config.CleanOptions
@@ -504,6 +528,19 @@ func (m *memoryManager) BuildPromptMessages(ctx context.Context, sessionID strin
 	// Apply max-history limit
 	if len(messages) > maxHistory {
 		messages = messages[len(messages)-maxHistory:]
+	}
+
+	// Token budget, same order as BuildContext (budget first, clean second).
+	//
+	// This path had none: a message-count window says nothing about how many TOKENS the
+	// prompt costs, and this is the slice that actually reaches the model. Ten long tool
+	// results pass a MaxHistory of 10 and still overflow the window — the count limit bounds
+	// how many turns are considered, not how big the request is.
+	//
+	// 0 = disabled, which keeps the previous behaviour for every deployment that has not
+	// configured a budget.
+	if tokenBudget > 0 {
+		messages, _ = trimToTokenBudget(messages, tokenBudget)
 	}
 
 	// Apply intelligent context cleaning with configured options
@@ -559,7 +596,7 @@ func (m *memoryManager) BuildContext(ctx context.Context, input string, sessionI
 	m.mu.RLock()
 	maxHistory := m.config.MaxHistory
 	turnAware := m.config.TurnAwareCleaning
-	tokenBudget := m.config.ContextTokenBudget
+	tokenBudget := m.config.EffectiveContextTokenBudget()
 	m.mu.RUnlock()
 	if len(messages) > maxHistory {
 		messages = messages[len(messages)-maxHistory:]
@@ -880,12 +917,25 @@ func (m *memoryManager) SearchSimilarTasks(ctx context.Context, query string, li
 		return nil, errors.Wrap(err, "generate query embedding")
 	}
 
-	// Snapshot the tenant under RLock: SetDefaultTenantID writes it under the
-	// full lock, and an unlocked read here is a -race (same contract as the
-	// config snapshots in BuildContext).
-	m.mu.RLock()
-	tenant := m.defaultTenantID
-	m.mu.RUnlock()
+	// Resolve the tenant per REQUEST rather than from the process-level
+	// default: the scheduler stamps the executing task's tenant onto the
+	// quantum's context, so this resolves the same tenant StoreDistilledTask
+	// wrote under (it reads tenant_id from the task payload, falling back to
+	// the same default). Reading defaultTenantID unconditionally made every
+	// request recall whichever tenant SetDefaultTenantID last pinned — the
+	// same defect class the AKG recall path fixed by resolving tenantctx per
+	// request instead of a process-global namespace.
+	//
+	// defaultTenantID remains the fallback for callers outside a task scope.
+	// Snapshot it under RLock: SetDefaultTenantID writes it under the full
+	// lock, and an unlocked read here is a -race (same contract as the config
+	// snapshots in BuildContext).
+	tenant := tenantctx.From(ctx)
+	if tenant == "" {
+		m.mu.RLock()
+		tenant = m.defaultTenantID
+		m.mu.RUnlock()
+	}
 	experiences, err := expRepo.SearchByVector(ctx, queryVector, tenant, limit)
 	if err != nil {
 		return nil, errors.Wrap(err, "search experiences")
@@ -952,35 +1002,6 @@ func (m *memoryManager) SetDefaultTenantID(tenantID string) {
 	m.mu.Lock()
 	m.defaultTenantID = tenantID
 	m.mu.Unlock()
-}
-
-// cosineSimilarity calculates cosine similarity between two vectors.
-func cosineSimilarity(v1, v2 []float64) float64 {
-	if len(v1) != len(v2) {
-		return 0.0
-	}
-
-	dotProduct := 0.0
-	norm1 := 0.0
-	norm2 := 0.0
-
-	for i := range v1 {
-		dotProduct += v1[i] * v2[i]
-		norm1 += v1[i] * v1[i]
-		norm2 += v2[i] * v2[i]
-	}
-
-	if norm1 == 0 || norm2 == 0 {
-		return 0.0
-	}
-
-	result := dotProduct / math.Sqrt(norm1*norm2)
-
-	if math.IsNaN(result) || math.IsInf(result, 0) {
-		return 0.0
-	}
-
-	return result
 }
 
 // buildCleanedDistillationMessages constructs a cleaned distillation message list.

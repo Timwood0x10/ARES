@@ -11,6 +11,17 @@ type Result struct {
 	Data     interface{}            `json:"data,omitempty"`
 	Error    string                 `json:"error,omitempty"`
 	Metadata map[string]interface{} `json:"metadata,omitempty"`
+
+	// Err is the CLASSIFIABLE cause behind Error, when the tool knows one. It is
+	// deliberately not serialized (json:"-"): the wire format and every protocol
+	// handler stay exactly as they were, and the field exists only so a failure can
+	// carry "this was a 404" up to the task layer instead of a string the caller can
+	// only pattern-match on.
+	//
+	// Without it, a tool's structured failure reached the scheduler as
+	// `errors.New(result.Error)` (see tools/planner/bridge.go), which discarded the
+	// class and made every permanent error look retryable.
+	Err error `json:"-"`
 }
 
 // NewResult creates a new Result.
@@ -26,6 +37,20 @@ func NewErrorResult(err string) Result {
 	return Result{
 		Success: false,
 		Error:   err,
+	}
+}
+
+// NewErrorResultWithCause creates a failed Result that also carries the classifiable
+// cause (typically core.HTTPStatusError's output), so downstream failure handling can
+// tell a permanent error from a transient one.
+//
+// A nil cause is not an error: the Result then behaves exactly like NewErrorResult,
+// which is what a caller with no confident classification should produce.
+func NewErrorResultWithCause(message string, cause error) Result {
+	return Result{
+		Success: false,
+		Error:   message,
+		Err:     cause,
 	}
 }
 

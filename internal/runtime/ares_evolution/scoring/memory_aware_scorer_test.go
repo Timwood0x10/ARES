@@ -11,9 +11,12 @@ import (
 )
 
 const (
-	testParamCost       = "cost"
-	testParamLatency    = "latency"
-	testParamRegression = "regression"
+	// The penalty path reads UNIT-EXPLICIT keys (paramCostUnits and friends),
+	// never the bare multi-objective dimension names: see the const block in
+	// memory_aware_scorer.go for why the two must not share a key.
+	testParamCost       = paramCostUnits
+	testParamLatency    = paramLatencySeconds
+	testParamRegression = paramRegressionUnits
 	testPromptTest      = "test"
 	testTaskTypeTest    = "test"
 	testNameNilStrategy = "nil strategy"
@@ -105,6 +108,72 @@ func mustCreateTieredScorer(t *testing.T, budget int) *TieredScorer {
 	}
 	return ts
 }
+
+// TestMemoryAwareScorer_DimensionParamsAreNotPenalisedAsSeconds is the unit-collision
+// regression. genome.MetricLatency/MetricCost are multi-objective DIMENSION names whose
+// values are normalized to {0,100}; the penalty path wants seconds and cost units. When
+// both readers used the same key, a strategy carrying a perfectly ordinary dimension
+// value of 90 lost ~9 points as if it were 90 seconds — a silent, plausible-looking
+// penalty. The unit-explicit keys make the two impossible to confuse.
+func TestMemoryAwareScorer_DimensionParamsAreNotPenalisedAsSeconds(t *testing.T) {
+	ts := mustCreateTieredScorer(t, 50)
+	ms, err := NewMemoryAwareScorer(ts, &mockExperienceProvider{count: 5, confidence: 0.8},
+		modifyMASConfig(func(c *MemoryAwareScoringConfig) {}))
+	if err != nil {
+		t.Fatalf("NewMemoryAwareScorer: %v", err)
+	}
+	ctx := context.Background()
+
+	base, _, err := ms.Score(ctx, &mutation.Strategy{ID: "base"})
+	if err != nil {
+		t.Fatalf("Score(base): %v", err)
+	}
+
+	// The multi-objective dimension names: NOT read by the penalty path.
+	dimensions, _, err := ms.Score(ctx, &mutation.Strategy{
+		ID:     "dimensions",
+		Params: map[string]any{"cost": 90.0, "latency": 90.0},
+	})
+	if err != nil {
+		t.Fatalf("Score(dimensions): %v", err)
+	}
+	if diff := base - dimensions; diff > 1e-9 || diff < -1e-9 {
+		t.Fatalf("a 0-100 dimension value changed the score by %v: the penalty path "+
+			"must not read the dimension names as its own units", diff)
+	}
+
+	// The unit-explicit keys ARE read, each scaled by its own weight (taken from the
+	// config rather than written here: a weight change must not need this test edited).
+	const amount = 90.0
+	explicit, detail, err := ms.Score(ctx, &mutation.Strategy{
+		ID:     "explicit",
+		Params: map[string]any{paramCostUnits: amount, paramLatencySeconds: amount},
+	})
+	if err != nil {
+		t.Fatalf("Score(explicit): %v", err)
+	}
+	if detail == nil {
+		t.Fatal("expected score detail")
+	}
+	cfg := DefaultMemoryAwareScoringConfig()
+	wantCost := amount * cfg.CostWeight
+	wantLatency := amount * cfg.LatencyWeight
+	if !closeTo(detail.CostPenalty, wantCost) {
+		t.Fatalf("cost penalty = %v, want %v (%v x weight %v)",
+			detail.CostPenalty, wantCost, amount, cfg.CostWeight)
+	}
+	if !closeTo(detail.LatencyPenalty, wantLatency) {
+		t.Fatalf("latency penalty = %v, want %v (%v x weight %v)",
+			detail.LatencyPenalty, wantLatency, amount, cfg.LatencyWeight)
+	}
+	if want := base - (wantCost + wantLatency); !closeTo(explicit, want) {
+		t.Fatalf("score with explicit units = %v, want %v", explicit, want)
+	}
+}
+
+// closeTo is a local float comparison so the assertions above read as the numbers
+// they are about.
+func closeTo(got, want float64) bool { return got > want-1e-9 && got < want+1e-9 }
 
 // TestMemoryAwareScorer_Disabled_NoAdjustment verifies that when disabled,
 // the scorer delegates directly to the tiered scorer with no adjustments.
@@ -478,7 +547,7 @@ func TestStrategyCostExtraction(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := strategyCost(tt.strategy)
+			got := strategyCostUnits(tt.strategy)
 			if got != tt.expected {
 				t.Errorf("expected %f, got %f", tt.expected, got)
 			}
@@ -500,7 +569,7 @@ func TestStrategyLatencyExtraction(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := strategyLatency(tt.strategy)
+			got := strategyLatencySeconds(tt.strategy)
 			if got != tt.expected {
 				t.Errorf("expected %f, got %f", tt.expected, got)
 			}
@@ -523,7 +592,7 @@ func TestStrategyRegressionExtraction(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := strategyRegression(tt.strategy)
+			got := strategyRegressionUnits(tt.strategy)
 			if got != tt.expected {
 				t.Errorf("expected %f, got %f", tt.expected, got)
 			}

@@ -138,6 +138,12 @@ type DependencyConfig struct {
 // SystemConfig holds configuration for creating a wired evolution system.
 // Sub-configs are anonymous-embedded so all fields are accessible directly.
 type SystemConfig struct {
+	// ExperimentLogPath, when set, makes the wired system seal one ExperimentRecord per
+	// generation into an append-only JSONL file (M10).
+	//
+	// Empty disables sealing: the zero value of this field keeps every existing deployment's
+	// behaviour, which is why it lives here rather than being derived from another setting.
+	ExperimentLogPath string
 	GenomeConfig
 	ScoringConfig
 	MutationConfig
@@ -242,6 +248,27 @@ func NewWiredEvolutionSystem(base *mutation.Strategy, cfg SystemConfig) (*WiredE
 	// driver).
 	popAdapter.genealogy = system.Genealogy
 	system.PopAdapter = popAdapter
+
+	// M10: seal one experiment record per generation when a path is configured.
+	//
+	// An unwritable path is reported and then ignored: evolution must not fail because its
+	// bookkeeping could not be written, but a SILENT skip would be indistinguishable from
+	// "no experiments ran", which is the confusion this log exists to prevent.
+	//
+	// The handle lives for the process lifetime (one file, fsynced per record); no explicit
+	// Close is needed for durability, and nothing else opens this path.
+	if cfg.ExperimentLogPath != "" {
+		expLog, expErr := OpenFileExperimentLog(cfg.ExperimentLogPath)
+		if expErr != nil {
+			log.WarnContext(ctx, "wired evolution system: experiment log unavailable; records will NOT be sealed",
+				"path", cfg.ExperimentLogPath, "error", expErr)
+		} else {
+			popAdapter.SetExperimentLog(expLog)
+			log.InfoContext(ctx, "wired evolution system: experiment log armed",
+				"path", cfg.ExperimentLogPath,
+				"records", "one per generation, outcome=pending until the gates decide")
+		}
+	}
 
 	needDreamCycle := cfg.EnableDreamCycle || cfg.EnableScheduler
 	var dreamCycle *DreamCycle
@@ -395,6 +422,19 @@ func attachSchedulerAndLifecycle(
 		lc := NewStrategyLifecycle(system.ActiveStrategyManager, agg, lcCfg, lcOpts...)
 		system.Lifecycle = lc
 		popAdapter.lifecycle = lc
+		if popAdapter.experimentLog != nil {
+			// The verdict half of M10: the lifecycle seals its decision against the proposal the
+			// cycle recorded (same ReplayKey, carried explicitly because the key covers fitness
+			// weights this layer does not have).
+			lc.SetExperimentLog(popAdapter.experimentLog, popAdapter.proposalKeyFor)
+		}
+		// The SAME aggregator that gates deployment also feeds SELECTION (defect
+		// P0-1(ii), the hop that was missing): until this line the measured
+		// accuracy/outcome/cost of a strategy could stop it from being deployed
+		// while carrying no weight in whether it was selected and bred. Wired here,
+		// beside the lifecycle, because one signal with two consumers is the point —
+		// a second aggregator would drift from this one by construction.
+		popAdapter.evidence = agg
 	}
 }
 

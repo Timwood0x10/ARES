@@ -37,6 +37,33 @@ func newTestStore(t *testing.T) *Store {
 	return s
 }
 
+// TestListNamespaces verifies the namespace enumeration the maintenance sweep
+// relies on: the SQL store reports the distinct non-empty namespaces it holds,
+// in a deterministic order, and the package helper resolves the same capability.
+func TestListNamespaces(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	objs := []*knowledge.KnowledgeObject{
+		{ID: "ns:1", Namespace: "tenant-b", Type: knowledge.ObjectDecision},
+		{ID: "ns:2", Namespace: "tenant-a", Type: knowledge.ObjectDecision},
+		{ID: "ns:3", Namespace: "tenant-b", Type: knowledge.ObjectDecision},
+	}
+	knowledge.StampWriteSchema(objs...)
+	if err := s.Save(ctx, objs...); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	got, err := knowledge.ListNamespaces(ctx, s)
+	if err != nil {
+		t.Fatalf("knowledge.ListNamespaces: %v", err)
+	}
+	want := []string{"tenant-a", "tenant-b"}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("ListNamespaces = %v, want %v", got, want)
+	}
+}
+
 func TestSaveAndGet(t *testing.T) {
 	s := newTestStore(t)
 

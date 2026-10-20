@@ -214,9 +214,11 @@ func wiringServeToolchain(ctx context.Context, cfg *ares_config.Config, comp *ar
 	// Primitive 7 wiring: probe host commands from the ARES_NATIVE_TOOLS
 	// allowlist and register them into the internal registry (command -v +
 	// --help; security boundary = allowlist only). Registered tools flow into
-	// GetLLMTools naturally; SetActiveTools lets the runtime narrow the active
-	// subset per task (progressive disclosure), and serve keeps the full set
-	// active by default (zero-value behavior, no change to LLM tool injection).
+	// GetLLMTools naturally, and the PLANNER narrows what the model actually sees
+	// per quantum (advertisedToolSchemas: L1 enabled, static tag filter, per-task
+	// capabilities) — the registry itself no longer carries a global active-tool
+	// switch, which would be second path for the same semantics and would leak
+	// across concurrently running tasks.
 	if err := registerNativeTools(ctx, internalReg, cfg); err != nil {
 		return nil, nil, nil, fmt.Errorf("register native tools: %w", err)
 	}
@@ -264,6 +266,37 @@ func wiringServeToolchain(ctx context.Context, cfg *ares_config.Config, comp *ar
 		toolBinder = sub.ObserveToolCalls(toolBinder, comp.NewEvolution.ChannelFeedback)
 		log.Info(ctx, "wiringServeToolchain",
 			"serve: tool-call feedback channel armed (evolution reads tool outcomes)")
+	}
+
+	// P2-14②: report how many tools the model will choose from.
+	//
+	// The registered set is fixed at startup (discovery is opt-in — see
+	// DiscoveryConfig "the single security boundary") and grows with every MCP server and
+	// every native registration, and NOTHING reported the total: an operator could read
+	// "tools enabled" in a config and still not know how wide the selection surface was.
+	// The count is a fact, so it is logged on every boot.
+	//
+	// There is deliberately NO cap and no invented threshold here. What a cap should be
+	// (per server? per capability domain? a token budget for the tool block?) is a product
+	// decision this wiring cannot make, and a silently-enforced limit would be worse than a
+	// loud number: it would drop tools without saying which. The number plus the options is
+	// what an operator can act on.
+	nativeTools := internalReg.Count()
+	log.Info(ctx, "wiringServeToolchain",
+		"serve: agent tool surface registered",
+		"tools", nativeTools,
+		"capped", false,
+		"note", "fixed at startup (discovery is opt-in); this is the surface the model chooses from",
+		"if_too_wide", "narrow the MCP servers, or enable discovery + let the agent use capability search instead of registering everything")
+	// P2-14②: the WARNING threshold reuses evolution.guardrails.max_tools_enabled rather
+	// than inventing a second number for the same concern ("how many tools should an agent
+	// choose among"). When it is unset (the default) nothing warns — the count above is
+	// still logged, so the surface is never invisible, only unjudged.
+	if limit := cfg.Evolution.Guardrails.MaxToolsEnabled; limit > 0 && nativeTools > limit {
+		log.Warn(ctx, "wiringServeToolchain",
+			"serve: the agent tool surface is wider than evolution.guardrails.max_tools_enabled — tool choice gets harder as this grows",
+			"tools", nativeTools, "max_tools_enabled", limit,
+			"note", "this is a report, not a cap: nothing is dropped silently")
 	}
 
 	return toolBinder, registry, internalReg, nil

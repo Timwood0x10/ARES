@@ -56,6 +56,13 @@ type snapshotStore struct {
 // have used.
 const maxDeathSnapshots = 1024
 
+// defaultDeathSnapshotRetention bounds how long a death snapshot is kept. It
+// complements the count cap, which bounds entries but not bytes: a snapshot
+// carries the dead agent's cognitive state, and a full store of them is real
+// memory. An hour is far longer than the revival window (the recovery loop
+// reacts to a death within seconds) and far shorter than a process lifetime.
+const defaultDeathSnapshotRetention = time.Hour
+
 func newSnapshotStore() *snapshotStore {
 	return &snapshotStore{byID: make(map[string]AgentSnapshot)}
 }
@@ -84,6 +91,22 @@ func (s *snapshotStore) save(id string, snap AgentSnapshot) {
 		}
 	}
 	s.byID[id] = snap
+	// Age is bounded as well as count. The cap above limits ENTRIES, and each
+	// entry carries a dead agent's cognitive state, so 1024 of them is not a
+	// memory bound — it is only a growth bound. The reference clock is the
+	// freshest death in the store (the store has no clock of its own, and this is
+	// the only "now" it can observe); when nothing new dies, nothing accumulates
+	// either, so the pruning is not time-sensitive.
+	//
+	// Dropping old snapshots is safe by construction: revival consumes one within
+	// seconds of the death it reacts to, and findByCapability prefers the freshest
+	// death anyway, so an entry past the window could never have been revived.
+	cutoff := snap.DiedAt.Add(-defaultDeathSnapshotRetention)
+	for k, v := range s.byID {
+		if v.DiedAt.Before(cutoff) {
+			delete(s.byID, k)
+		}
+	}
 }
 
 // load returns the stored snapshot for agentID.

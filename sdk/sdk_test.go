@@ -123,19 +123,6 @@ func TestToolConversion(t *testing.T) {
 	}
 }
 
-func TestParseArgs(t *testing.T) {
-	m := parseArgs(`{"x":"1"}`)
-	if m == nil || m["x"] != "1" {
-		t.Fatal("parseArgs failed")
-	}
-	if got := parseArgs(""); got != nil {
-		t.Fatal("expected nil for empty")
-	}
-	if got := parseArgs("bad"); got != nil {
-		t.Fatal("expected nil for invalid")
-	}
-}
-
 func TestComposePrompt(t *testing.T) {
 	rt := NewRuntime(WithOllama("llama3.2"), WithTrace(false))
 	defer rt.Close()

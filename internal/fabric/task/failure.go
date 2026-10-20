@@ -1,6 +1,10 @@
 package taskfabric
 
-import "errors"
+import (
+	"errors"
+
+	apperrors "github.com/Timwood0x10/ares/internal/errors"
+)
 
 // payloadKeyRetryable is the task.failed payload key carrying the retry
 // classification that produced the transition. It is an event-only annotation:
@@ -62,6 +66,54 @@ func MarkRetryable(err error) error {
 	return &retryableError{err: err}
 }
 
+// permanentCauses are the sentinel errors that provably cannot be fixed by
+// running the same step again: the input or the referenced entity is wrong, and
+// waiting cannot make it right.
+//
+// They are the SECOND net behind MarkPermanent (defect T-F1). The marker
+// contract puts the whole burden on the producing layer, so one forgotten wrap
+// used to mean a permanent error burning the entire retry budget, backoff
+// included, before failing the way it would have failed immediately.
+//
+// The list is deliberately NARROW. Everything a retry could plausibly outlast —
+// timeouts, unavailability, rate limits, quota, an open circuit breaker,
+// connection failures, queue pressure, an invalid STATE (which the next attempt
+// may find changed) and an expired secret (which may be rotated) — stays
+// retryable, and TestClassifyFailure pins that half as hard as this one.
+// Over-classifying here would trade a wasted retry for a task killed while it
+// could still have succeeded, which is the more expensive mistake.
+//
+// Matching goes through errors.Is against the shared sentinels, never string
+// matching: ErrToolNotFound, ErrRecordNotFound, ErrAgentNotFound and
+// ErrWorkflowNotFound all wrap ErrNotFound, so one entry covers the whole
+// "referenced something that does not exist" family the defect names.
+var permanentCauses = []error{
+	apperrors.ErrNotFound,           // a tool, entity or workflow the task references does not exist
+	apperrors.ErrInvalidArgument,    // the request itself is malformed (an over-long LLM prompt included)
+	apperrors.ErrInvalidInput,       // validation rejected the input
+	apperrors.ErrInvalidConfig,      // the configuration is broken, not slow
+	apperrors.ErrAccessDenied,       // waiting does not grant permission
+	apperrors.ErrAlreadyExists,      // a create that already exists fails identically next time
+	apperrors.ErrDependencyCycle,    // a cycle is a property of the graph, not a race to retry
+	apperrors.ErrWorkflowCyclicDAG,  // same, for the workflow compiler
+	apperrors.ErrMaxRetriesExceeded, // retrying is precisely what this sentinel forbids
+	// A dependency id that names no live task (both graph writers — Create's strict path
+	// and SetDependencies — answer with this sentinel). Retrying the step cannot invent
+	// the task, so the second attempt fails identically; without this entry the fabric
+	// would spend the whole budget to reach the same refusal (defect T-F1's pattern).
+	ErrDependencyUnresolved,
+}
+
+// isKnownPermanent reports whether cause is one of the provably permanent causes.
+func isKnownPermanent(cause error) bool {
+	for _, sentinel := range permanentCauses {
+		if errors.Is(cause, sentinel) {
+			return true
+		}
+	}
+	return false
+}
+
 // classifyFailure reports whether a failed execution is worth retrying. It is
 // the single decision point behind Fail's requeue and behind the retryable bit
 // on the task.failed event.
@@ -71,7 +123,10 @@ func MarkRetryable(err error) error {
 //     than any table here (MarkPermanent / MarkRetryable).
 //  2. ErrTaskDeadlineExceeded is terminal — a task past its absolute deadline
 //     must not burn the remaining retry budget.
-//  3. Everything else is retryable, which is exactly 0.3.2's behaviour: no
+//  3. A KNOWN permanent cause is terminal (T-F1): an error whose class cannot be
+//     fixed by waiting must not spend the budget just because its producer
+//     forgot to mark it.
+//  4. Everything else is retryable, which is exactly 0.3.2's behaviour: no
 //     cause that used to be retried becomes terminal merely because it is
 //     unclassified, and a bare context.DeadlineExceeded stays retryable.
 func classifyFailure(cause error) bool {
@@ -91,5 +146,95 @@ func classifyFailure(cause error) bool {
 	if errors.Is(cause, ErrTaskDeadlineExceeded) {
 		return false
 	}
+	if isKnownPermanent(cause) {
+		return false
+	}
 	return true
+}
+
+// retryEscalationAttempts is the attempt count at which an unclassified cause
+// stops being "one of those things" and earns a log line (see
+// failureVisibilityReason). Two, because it is the first count that proves the
+// retry did not help: attempt 1 is the only attempt that has not yet been shown
+// to be useless.
+const retryEscalationAttempts = 2
+
+// PayloadKeyCollaborationReply marks a task that carries a collaborator's answer
+// back to the agent that asked for it (defect I1).
+//
+// The key lives in the fabric rather than in the syscall layer that writes it for
+// two reasons: the fabric has to RECOGNISE such a task when it fails — a lost answer
+// is the whole defect — and the syscall layer already imports this package, so a
+// constant here is the only direction that does not cycle. One vocabulary for one
+// fact; the alternative is two string literals that drift apart.
+const PayloadKeyCollaborationReply = "ask_reply"
+
+// failureContext is what the visibility rule needs to know about one ended attempt.
+type failureContext struct {
+	// Attempts is the attempt count after this failure.
+	Attempts int
+	// MaxRetries is the task's total attempt budget.
+	MaxRetries int
+	// Retryable is classifyFailure's verdict for this cause.
+	Retryable bool
+	// Terminal is true when this attempt ended the task.
+	Terminal bool
+	// ReplyTask is true when the task carries a collaboration reply.
+	ReplyTask bool
+}
+
+// failureVisibilityReason turns "how this attempt ended" into the sentence an
+// operator needs, or "" when nothing needs saying.
+//
+// It exists because T-F1 was SILENT: a permanent error nobody marked simply burned
+// the budget, and the only trace was that the task eventually failed in the way it
+// could have failed at once. Saying it while the budget is being spent is the
+// difference between a defect and a mystery. retryable=false is intentionally quiet —
+// the fabric already knows the cause is terminal, no budget was spent, and there is
+// nothing to escalate.
+//
+// The collaboration-reply arm is the exception that must speak even then: a reply
+// task that dies takes its answer with it, and the asker waits forever for something
+// nothing else in the system knows is gone.
+func failureVisibilityReason(fc failureContext) string {
+	if fc.ReplyTask && fc.Terminal {
+		return "a collaboration reply task failed terminally: the answer will never reach the asker"
+	}
+	switch {
+	case !fc.Retryable:
+		return ""
+	case fc.Attempts >= fc.MaxRetries:
+		return "retry budget exhausted on an unclassified cause: if this cause can never succeed, the producing layer must wrap it in MarkPermanent"
+	case fc.Attempts >= retryEscalationAttempts:
+		return "unclassified cause still failing after repeated attempts: check whether retrying this cause can ever help"
+	default:
+		return ""
+	}
+}
+
+// carriesCollaborationReply reports whether the task is delivering a collaborator's
+// answer, which is what makes its failure worth a line of its own.
+//
+// It decodes through the shared helper rather than reaching into the checkpoint:
+// Task.Checkpoint is an opaque `any` (an envelope, a map, or a restored shape), and
+// one decode path for every reader is what keeps those shapes from diverging.
+func (f *Fabric) carriesCollaborationReply(t *Task) bool {
+	if t == nil {
+		return false
+	}
+	decoded, err := f.DecodeCheckpoint(t.Checkpoint)
+	if err != nil || decoded.Payload == nil {
+		return false
+	}
+	_, ok := decoded.Payload[PayloadKeyCollaborationReply]
+	return ok
+}
+
+// failureCauseText renders a failure cause for a log line, naming the absent
+// case rather than leaving an empty field that reads like a lost error.
+func failureCauseText(cause error) string {
+	if cause == nil {
+		return "none"
+	}
+	return cause.Error()
 }

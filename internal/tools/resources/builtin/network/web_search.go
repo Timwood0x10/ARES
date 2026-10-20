@@ -227,7 +227,13 @@ func (t *WebSearch) Execute(ctx context.Context, params map[string]interface{}) 
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, MaxHTTPResponseBytes))
-		return core.NewErrorResult(fmt.Sprintf("SearXNG returned status %d: %s", resp.StatusCode, string(body))), nil
+		// The cause rides along with the message: the scheduler turns a failed tool
+		// result into a task failure, and without the class it could only classify by
+		// text, so a permanent status (404) burned the retry budget like a transient
+		// one (defect T-F1's producer side).
+		return core.NewErrorResultWithCause(
+			fmt.Sprintf("SearXNG returned status %d: %s", resp.StatusCode, string(body)),
+			core.HTTPStatusError(resp.StatusCode)), nil
 	}
 
 	// Parse response with size cap to prevent memory exhaustion.

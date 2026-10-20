@@ -216,6 +216,10 @@ func (m *mockMemoryManager) GetLatestSessionForAgent(_ context.Context, _ string
 	return "sess-mem", nil
 }
 
+func (m *mockMemoryManager) SessionOwner(_ context.Context, _ string) (string, error) {
+	return "", nil
+}
+
 func (m *mockMemoryManager) Start(_ context.Context) error { return nil }
 func (m *mockMemoryManager) Stop(_ context.Context) error  { return nil }
 func (m *mockMemoryManager) SetEventStore(_ ares_events.EventStore, _ string) {
@@ -307,6 +311,12 @@ func (m *errMemoryManager) SearchSimilarTasks(_ context.Context, _ string, _ int
 }
 
 func (m *errMemoryManager) GetLatestSessionForAgent(_ context.Context, _ string) (string, error) {
+	return "", m.sessionErr
+}
+
+// SessionOwner mirrors GetLatestSessionForAgent: it injects sessionErr so a
+// caller can exercise the "ownership unavailable" (fail-closed) path.
+func (m *errMemoryManager) SessionOwner(_ context.Context, _ string) (string, error) {
 	return "", m.sessionErr
 }
 

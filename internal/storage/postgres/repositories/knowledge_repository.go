@@ -21,6 +21,25 @@ import (
 type KnowledgeRepository struct {
 	db     postgres.DBTX
 	dbPool *sql.DB
+	// searchTuning is the per-query index tuning (ivfflat probes / hnsw ef_search)
+	// applied to every vector search; a zero value keeps the server defaults. It is set
+	// at construction and never mutated, so no lock guards it — the same posture as the
+	// other knobs this repository takes from configuration.
+	searchTuning postgres.VectorSearchTuning
+}
+
+// KnowledgeRepositoryOption configures a KnowledgeRepository at construction.
+type KnowledgeRepositoryOption func(*KnowledgeRepository)
+
+// WithSearchTuning sets the per-query index tuning for vector searches (defect R1).
+//
+// Both knobs travel together because each index method reads exactly one of them and
+// ignores the other: a deployment that switches method must set the matching value, and
+// separate options would let it set the wrong one while looking configured.
+func WithSearchTuning(tuning postgres.VectorSearchTuning) KnowledgeRepositoryOption {
+	return func(r *KnowledgeRepository) {
+		r.searchTuning = tuning
+	}
 }
 
 // Ensure KnowledgeRepository implements KnowledgeRepositoryInterface.
@@ -31,8 +50,12 @@ var _ KnowledgeRepositoryInterface = (*KnowledgeRepository)(nil)
 // db - database connection or transaction implementing DBTX interface.
 // dbPool - optional database pool for transaction operations (can be nil for transaction-bound repositories).
 // Returns new KnowledgeRepository instance.
-func NewKnowledgeRepository(db postgres.DBTX, dbPool *sql.DB) *KnowledgeRepository {
-	return &KnowledgeRepository{db: db, dbPool: dbPool}
+func NewKnowledgeRepository(db postgres.DBTX, dbPool *sql.DB, opts ...KnowledgeRepositoryOption) *KnowledgeRepository {
+	r := &KnowledgeRepository{db: db, dbPool: dbPool}
+	for _, opt := range opts {
+		opt(r)
+	}
+	return r
 }
 
 // Create inserts a new knowledge chunk into the database.
@@ -471,6 +494,28 @@ func (r *KnowledgeRepository) SearchByVector(ctx context.Context, embedding []fl
 	if len(embedding) == 0 {
 		return nil, errors.New("search by vector: embedding must not be empty")
 	}
+
+	// The probe count only applies INSIDE a transaction, so the search runs in the
+	// one the helper opens. This is the path RAG actually uses (defect R1): it had
+	// no probe setting at all, so a deployment that configured one was not tuned.
+	var chunks []*storage_models.KnowledgeChunk
+	err := postgres.WithVectorSearchTuning(ctx, r.db, r.searchTuning, func(ctx context.Context, db postgres.DBTX) error {
+		var queryErr error
+		chunks, queryErr = r.searchByVectorQuery(ctx, db, embedding, tenantID, limit)
+		return queryErr
+	})
+	if err != nil {
+		return nil, err
+	}
+	return chunks, nil
+}
+
+// searchByVectorQuery runs the vector query and drains its rows.
+//
+// It takes the connection handle as an argument rather than reading r.db so the
+// caller can run it inside the probe-scoped transaction, and it consumes the rows
+// here — while that transaction is still open.
+func (r *KnowledgeRepository) searchByVectorQuery(ctx context.Context, db postgres.DBTX, embedding []float64, tenantID string, limit int) ([]*storage_models.KnowledgeChunk, error) {
 	log.Info("SearchByVector called",
 		"embedding_length", len(embedding),
 		"tenant_id", tenantID,
@@ -497,7 +542,7 @@ func (r *KnowledgeRepository) SearchByVector(ctx context.Context, embedding []fl
 	}
 	log.Info("Vector search query", "vector_length", len(vectorStr), "vector_preview", vectorStr[:previewLen])
 
-	rows, err := r.db.QueryContext(ctx, query, vectorStr, tenantID, limit)
+	rows, err := db.QueryContext(ctx, query, vectorStr, tenantID, limit)
 	if err != nil {
 		log.Error("Vector search query failed", "error", err)
 		return nil, errors.Wrap(err, "vector search")
@@ -554,6 +599,12 @@ func (r *KnowledgeRepository) SearchByVector(ctx context.Context, embedding []fl
 			chunk.Metadata = make(map[string]interface{})
 		}
 		chunk.Metadata["similarity"] = similarity
+		// The row's timestamp rides along so a downstream rerank can score
+		// freshness (defect R2's recency term). The column was already selected
+		// and scanned above, so this costs nothing — without it every candidate
+		// reports "unknown age" and the rerank drops the term entirely, which is
+		// the wired-but-never-firing shape this defect already had once.
+		chunk.Metadata["created_at"] = chunk.CreatedAt
 		chunks = append(chunks, chunk)
 	}
 

@@ -28,6 +28,17 @@ type EvolutionConfig struct {
 	// Higher = more diversity, slower convergence. Default: 0.6.
 	SurvivalRate float64 `yaml:"survival_rate"`
 
+	// ExperimentLogPath is where the append-only experiment log is written (M10).
+	//
+	// Empty (the default) DISABLES sealing entirely, so a deployment that never sets it keeps
+	// its previous behaviour. When set, each generation appends one JSONL record describing
+	// what was proposed and the fitness weights in force; the file is opened at bootstrap and
+	// fsynced per record, so losing power does not lose the experiment that explains a crash.
+	//
+	// It is a file rather than a table on purpose: append-only by construction, no migration,
+	// and readable with `cat` at 3am.
+	ExperimentLogPath string `yaml:"experiment_log_path"`
+
 	// MutationRate is the base probability of gene mutation per agent.
 	// Higher = more exploration, less stability. Default: 0.2.
 	MutationRate float64 `yaml:"mutation_rate"`
@@ -320,13 +331,37 @@ type EvolutionGateConfig struct {
 	RequireManualApproval bool `yaml:"require_manual_approval"`
 	// EvalSuite loads the G3 regression test suite from a YAML file
 	// (eval.TestSuite schema: {name, description, test_cases: [...]}).
-	// Empty string disables the G3 gate (it degrades to pass-through).
+	//
+	// UNSET no longer means "no G3 gate": bootstrap falls back to the repository's
+	// test/eval/golden.yaml when that file is present, so the gates are armed by
+	// default instead of only for operators who already knew the knob existed.
+	//
+	// The DEFAULTED suite and a CONFIGURED one fail differently, deliberately:
+	//   - defaulted (unset here): a missing file or missing eval infrastructure
+	//     degrades to "no G3" with a Warn — nobody armed anything, so a repository
+	//     path must not be able to keep a deployment from starting;
+	//   - configured (set here): a load failure or missing infrastructure FAILS
+	//     bootstrap — an operator who armed a gate must not silently get a weaker
+	//     pipeline from a typo or an unwired client.
+	// Set it explicitly to opt into the fail-closed behaviour.
 	EvalSuite string `yaml:"eval_suite"`
-	// EvalStrict fails the G3 gate closed when eval infrastructure is
-	// missing. Default false preserves backward compatibility;
-	// production should set it true so an unwired gate cannot silently
-	// pass every candidate.
+	// EvalStrict makes an ABSENT suite fatal (fatal vs. degraded-with-Warn). It
+	// does not relax a built gate, and it does not apply to a defaulted suite
+	// either: "I never configured one" and "I configured one and it is missing"
+	// are different promises. Default false.
 	EvalStrict bool `yaml:"eval_strict"`
+	// EvalProbeInterval re-reads the eval corpus on a timer and reports what changed
+	// (fingerprint) and whether it still carries deterministic anchors.
+	//
+	// It exists because the corpus is a REPOSITORY FILE with no version stamp: nothing
+	// notices when it is edited, emptied, or when a case quietly loses its checks — the
+	// anchor count just drops, and every later score is judge opinion. This probe makes
+	// that visible over time instead of at the one moment someone reads the file.
+	//
+	// It costs NO model calls (it loads and hashes the file), which is why it can be on
+	// by default where the timed re-scoring cannot. Empty/zero DISABLES it; the zero value
+	// is therefore unchanged behaviour.
+	EvalProbeInterval string `yaml:"eval_probe_interval"`
 	// RegressionEnabled arms the arena preserved-case regression gate
 	// (candidate vs active strategy A/B over the eval suite's cases, Welch
 	// significance; rejects only on a significant drop). M-G2 default:
@@ -338,6 +373,21 @@ type EvolutionGateConfig struct {
 	// rounds.
 	// Default: nil (auto-arm when infrastructure exists).
 	RegressionEnabled *bool `yaml:"regression_enabled"`
+
+	// RegressionRuntimeReplay scores each candidate by RUNNING it through the real
+	// runtime instead of asking a model to role-play it. Default false = the LLM
+	// scorer, exactly as before.
+	//
+	// The default is about COST, not caution: the LLM scorer batches a candidate's
+	// runs into two calls, while a replay runs every case per candidate for real —
+	// real model calls, real tool calls, one isolated runtime per candidate. The
+	// arena gate above is auto-armed, so making replay the default would multiply a
+	// default's spend; the deployment that has decided to pay it turns this on and
+	// gets the boundary and the cost logged at startup.
+	//
+	// It needs the serving tool binder, and a deployment that enables it without one
+	// fails loudly at bootstrap rather than measuring candidates that had no tools.
+	RegressionRuntimeReplay bool `yaml:"regression_runtime_replay"`
 	// RegressionRuns is the per-strategy run count for the regression gate
 	// (baseline and compare each run the preserved cases this many times).
 	// Default 5 when zero.

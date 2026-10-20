@@ -293,14 +293,14 @@ ConfidenceMax    = 100  // ARES 自身 registry、已验证
 
 ### 但这里有个我必须在代码里确认到边界的地方（待核实）
 
-文章旧版写了一套 "Manager 监听 `EventServiceAdded` → 自动连接新发现的服务器 → 工具落进 Registry" 的完整流程。**我在代码里没找到这段接线。** 实码里 `ProvideDiscovery`（`internal/ares_bootstrap/provide_discovery.go`）做的事是：
+**代码里没有这条接线**：不存在 "Manager 监听 `EventServiceAdded` → 自动连接新发现的服务器 → 工具落进 Registry" 这套流程。 实码里 `ProvideDiscovery`（`internal/ares_bootstrap/provide_discovery.go`）做的事是：
 
 - 配置里启用了 `discovery` 才构建引擎，否则返回 `ErrDiscoveryDisabled`
 - 添加 ARES/Claude/Cursor/VSCode/Binary 五个 provider
 - `eng.StartAutoDiscovery(ctx, interval)` 启动周期轮询（默认 5 分钟）
 - 把事件**转发到共享的 `ares_events.EventStore`**（`"discovery"` 流），仅此而已
 
-也就是说：**发现到的服务目前不会自动变成连接中的 MCP 服务器 / 组件里的工具**。引擎找到了"可能存在"的服务，但到 MCP Manager 的桥尚未接通（待核实）。所以老文章的流程图最后那两行 `MCP Manager 连接健康的服务 → 工具出现在 Registry 中` 要划掉。
+也就是说：**发现到的服务目前不会自动变成连接中的 MCP 服务器 / 组件里的工具**。引擎找到了"可能存在"的服务，但到 MCP Manager 的桥尚未接通（待核实）。所以 `MCP Manager 连接健康的服务 → 工具出现在 Registry 中` 这两步在实码里并不成立。
 
 ---
 
@@ -363,7 +363,7 @@ graph TB
 
 MCP 客户端声明了 `Tools: ListChanged: true` 能力。服务器发 `notifications/tools/listChanged` 时，`MCPClient.handleNotification` 会重新拉一次 `ListTools`，成功就触发 `OnChange`。在 manager 侧 `connectWithTransport` 的 `onChange` 会调 `RefreshTools`（重新发现+重注册），再调 `notifyToolChange()`——后者会调用 `SetToolChangeHandler` 设置的回调。
 
-**但 `SetToolChangeHandler` 在整个仓库里只有定义、没有任何调用点被接上。** 也就是说这个钩子目前是"悬空"的——老文章里写的"`MCPManager.SetToolChangeHandler` 桥接 listChanged → Skill Catalog.Refresh（hash 增量重索引）"在实码里**没有接通**（待核实）。真要接，下一个 caller 是在 `serve` 里把 catalog 的 `Refresh` 塞进来。
+**但 `SetToolChangeHandler` 在整个仓库里只有定义、没有任何调用点被接上。** 也就是说这个钩子目前是"悬空"的——**`MCPManager.SetToolChangeHandler` 桥接 listChanged → Skill Catalog.Refresh（hash 增量重索引）这条路在实码里没有接通**（待核实）。真要接，下一个 caller 是在 `serve` 里把 catalog 的 `Refresh` 塞进来。
 
 ### 5.3 Skill 懒连接（这个是真的接上了）
 
@@ -400,7 +400,7 @@ type MCPServerStatus struct {
 
 注意 `Version` **永远是空的**——client 不暴露服务器版本字符串，代码选择留空而不是灌一个误导性的状态值。另外 `ListServers` 会把"已配置、启用但尚未连接"的服务器也算进去（`Connected: false, Error: "not connected"`），保证必连服务器挂了是可见的 `Degraded`，而不是凭空消失。
 
-> 关于 Dashboard：老文章里写的 `MCPStatusProvider`、`MCPServerStatusView`、`ArenaActionMCPDisconnect`、`FaultMCPDisconnect` **在仓库里都不存在**（`internal/dashboard/` 目录、这些符号我都没找到）。所以那一段我整段删掉了，不替它圆场。
+> 关于 Dashboard：`MCPStatusProvider`、`MCPServerStatusView`、`ArenaActionMCPDisconnect`、`FaultMCPDisconnect` **在仓库里都不存在**（`internal/dashboard/` 目录与这些符号我都没找到），因此本节不涉及它们。
 
 ---
 

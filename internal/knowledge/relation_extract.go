@@ -140,3 +140,177 @@ func stripTrailingPunct(s string) string {
 	s = strings.TrimRight(s, " \t\n\r.,;:。，；：、!?！？")
 	return s
 }
+
+// RelationGateConfig configures the relation validation gate (M2.5).
+type RelationGateConfig struct {
+	// RequireEvidence, when true, rejects candidate relations that have no
+	// evidence span. The RelationExtractor always sets Evidence to the match
+	// text, so this only rejects relations added by other paths.
+	RequireEvidence bool
+}
+
+// DefaultRelationGateConfig returns the default relation gate config:
+// evidence not required (backward compatible with pre-0.3.4 relations).
+func DefaultRelationGateConfig() RelationGateConfig {
+	return RelationGateConfig{
+		RequireEvidence: false,
+	}
+}
+
+// ValidateRelation checks a candidate relation against the M2.5 relation
+// validation gate:
+//  1. Predicate is in AllowedPredicates.
+//  2. Subject type is compatible with the predicate (e.g. "fixes" requires
+//     a non-user subject — a user cannot "fix" a bug in the knowledge graph).
+//  3. Evidence is present (when RequireEvidence is true).
+//  4. The relation does not conflict with existing knowledge (same predicate
+//     + same target already present is not a conflict, it is a confirmation;
+//     a contradiction would be "fixes" + "causes" on the same target, which
+//     is left for the LLM to resolve — the gate only rejects structurally
+//     invalid relations).
+//
+// Returns true when the relation passes the gate, false when it is rejected.
+func ValidateRelation(rel Relation, subjectType ObjectType, cfg RelationGateConfig) bool {
+	// Step 1: predicate must be in the allowed vocabulary.
+	if !AllowedPredicates[rel.Predicate] {
+		return false
+	}
+
+	// Step 2: subject-predicate type compatibility. Some predicates only make
+	// sense for certain subject types. The checks are deliberately permissive:
+	// they reject obvious type errors, not edge cases.
+	if !isPredicateCompatible(rel.Predicate, subjectType) {
+		return false
+	}
+
+	// Step 3: evidence requirement (when enabled).
+	if cfg.RequireEvidence && rel.Evidence == "" {
+		return false
+	}
+
+	// Step 4: conflict detection is left to the store-layer dedup; the gate
+	// only validates the structural shape of a single candidate relation.
+	return true
+}
+
+// isPredicateCompatible checks whether the predicate makes semantic sense for
+// the given subject type. Unknown predicates (not in the map) are allowed by
+// default — the AllowedPredicates check in ValidateRelation already filters
+// unknown predicates.
+func isPredicateCompatible(predicate string, subjectType ObjectType) bool {
+	// No subject type means we cannot check compatibility — allow it.
+	if subjectType == "" {
+		return true
+	}
+	switch predicate {
+	case RelFixes:
+		// "fixes" requires a non-user, non-project subject: typically a
+		// commit, decision, or tool result. A "user" cannot "fix" a bug
+		// in the knowledge graph sense.
+		switch subjectType {
+		case ObjectUser, ObjectProject, ObjectDocument:
+			return false
+		}
+		return true
+	case RelDependsOn, RelCalls:
+		// "depends_on" and "calls" require a technical subject: code,
+		// project, commit, or workflow. A "user" or "memory" does not
+		// "depend on" or "call" things in the knowledge graph.
+		switch subjectType {
+		case ObjectUser, ObjectMemory, ObjectDecision:
+			return false
+		}
+		return true
+	default:
+		// All other predicates (belongs_to, similar_to, supersedes, etc.)
+		// are universally applicable.
+		return true
+	}
+}
+
+// FilterRelations applies the relation validation gate to a slice of
+// candidate relations, returning only those that pass. The subject type is
+// taken from the owning object.
+// RelationConflict is a candidate relation that disagrees with what the graph already
+// asserts about the same pair of objects.
+type RelationConflict struct {
+	// Candidate is the relation the gate was asked to admit.
+	Candidate Relation
+	// Existing is the relation already in the graph that it disagrees with.
+	Existing Relation
+	// Reason names the disagreement in one line, for whoever must arbitrate it.
+	Reason string
+}
+
+// relationPairKey identifies the pair a relation is about. The target falls back to the raw
+// text when it has not been resolved to a graph object — that is the same identity the
+// extraction path uses for an unresolved target, so two assertions about "redis" collide
+// whether or not either was resolved.
+func relationPairKey(r Relation) string {
+	target := r.To
+	if target == "" {
+		target = r.ObjectText
+	}
+	return r.From + "\x00" + target
+}
+
+// FindRelationConflicts reports candidate relations that disagree with existing ones.
+//
+// The rule uses the vocabulary's OWN notion of disagreement — the `contradicts` predicate —
+// instead of a hand-written list of "single-valued" predicates, which would have to be kept
+// in sync with AllowedPredicates forever and would silently rot:
+//
+//   - the graph already records this pair as contradictory and the candidate asserts
+//     something else about it; or
+//   - the candidate asserts a contradiction about a pair the graph already asserts.
+//
+// Both are FLAGS, never rejections. A new source disagreeing with an old one is precisely
+// the case a human (or the pipeline's conflict strategy) has to arbitrate; dropping the
+// candidate here would erase the disagreement and leave the graph looking unanimous.
+//
+// It is a separate function rather than another bool on ValidateRelation because a verdict
+// cannot carry the pair that disagreed: the caller needs Candidate + Existing to decide,
+// and "false" would collapse "incompatible type" and "contradicts the graph" into one
+// unactionable no.
+func FindRelationConflicts(candidates, existing []Relation) []RelationConflict {
+	// The vocabulary stores this predicate as a literal (AllowedPredicates has no constant
+	// for it), so the comparison must use the same literal.
+	const contradicts = "contradicts"
+
+	byPair := make(map[string][]Relation, len(existing))
+	for _, e := range existing {
+		byPair[relationPairKey(e)] = append(byPair[relationPairKey(e)], e)
+	}
+
+	var out []RelationConflict
+	for _, c := range candidates {
+		for _, e := range byPair[relationPairKey(c)] {
+			switch {
+			case e.Predicate == contradicts && c.Predicate != contradicts:
+				out = append(out, RelationConflict{
+					Candidate: c, Existing: e,
+					Reason: "the graph already records this pair as contradictory",
+				})
+			case c.Predicate == contradicts && e.Predicate != contradicts:
+				out = append(out, RelationConflict{
+					Candidate: c, Existing: e,
+					Reason: "the candidate contradicts a relation the graph already asserts",
+				})
+			}
+		}
+	}
+	return out
+}
+
+func FilterRelations(rels []Relation, subjectType ObjectType, cfg RelationGateConfig) []Relation {
+	if len(rels) == 0 {
+		return rels
+	}
+	filtered := rels[:0:0]
+	for _, rel := range rels {
+		if ValidateRelation(rel, subjectType, cfg) {
+			filtered = append(filtered, rel)
+		}
+	}
+	return filtered
+}

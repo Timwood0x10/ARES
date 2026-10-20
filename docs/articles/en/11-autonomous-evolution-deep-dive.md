@@ -474,7 +474,7 @@ graph TD
 
 ## 8. Honest Accounting: What I Deleted, Flagged, and What's Missing
 
-Before writing this I audited the old draft's "looks-good-but-unfounded" claims against `TOOL_DAG_MAINLINE_DESIGN.md` Section 10's **release-wording boundary** (the B-list).
+The claims below were audited against `TOOL_DAG_MAINLINE_DESIGN.md` Section 10's **release-wording boundary** (the B-list).
 
 ### 8.1 Three confirmed debts (E1 / E2 / E3) — I verified them in the code, they're real
 
@@ -502,7 +502,7 @@ Config fact: `shadow_execution` and `channel_feedback` are defined in `internal/
 ### 8.3 Deleted (no code provenance)
 
 - **"Six genomes"**: the Scheduler genome is retired; bootstrap registers workflow/recovery/knowledge/memory (four).
-- **All concrete benchmark numbers** ("100 gens 21.5ms", "EvolveOnIdle 40% faster", etc.): from my earlier draft — **no statically verifiable provenance in the source** (benchmarks exist, but median latency depends on hardware and RNG seed). I kept only the qualitative conclusion: **population evolution is pure in-memory, zero-LLM-call**; run `go test -bench=.` for exact microseconds, marked unverified.
+- **All concrete benchmark numbers** ("100 gens 21.5ms", "EvolveOnIdle 40% faster", etc.): **no statically verifiable provenance in the source** (benchmarks exist, but median latency depends on hardware and RNG seed). I kept only the qualitative conclusion: **population evolution is pure in-memory, zero-LLM-call**; run `go test -bench=.` for exact microseconds, marked unverified.
 - **Precise example-run numbers** ("p=0.0297", "8s closed loop", "60→4 calls"): same — one round of example logs, unverified.
 - **Provider comparison "good avg 0.85 / bad avg 0.00"**: a single example-model run, not generalizable — deleted.
 

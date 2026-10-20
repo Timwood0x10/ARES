@@ -71,12 +71,23 @@ func (h *actionHandler) taskStatusFromTask(t *taskfabric.Task) taskStatusRespons
 		CreatedAt:     t.CreatedAt,
 		UpdatedAt:     t.UpdatedAt,
 	}
-	dc, err := taskfabric.DecodeCheckpoint(t.Checkpoint)
+	dc, err := h.decodeCheckpoint(t.Checkpoint)
 	if err != nil {
 		return resp
 	}
 	resp.Result, resp.Error = h.terminalViewFields(t, dc)
 	return resp
+}
+
+// decodeCheckpoint uses the handler's kernel fabric when present so the
+// read-back is observed by the data-consistency metric. The legacy leader path
+// has no kernel; the pure decode keeps that path working (and honestly
+// unobserved).
+func (h *actionHandler) decodeCheckpoint(cp any) (taskfabric.DecodedCheckpoint, error) {
+	if h.kernel != nil && h.kernel.fabric != nil {
+		return h.kernel.fabric.DecodeCheckpoint(cp)
+	}
+	return taskfabric.DecodeCheckpoint(cp)
 }
 
 // terminalViewFields resolves the external result/error pair for a terminal

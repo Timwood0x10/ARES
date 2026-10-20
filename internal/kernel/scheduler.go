@@ -191,6 +191,16 @@ func New(fabric *taskfabric.Fabric, executors map[string]CapabilityExecutor, tra
 	}
 }
 
+// decodeCheckpoint routes through the fabric so the data-consistency observer
+// sees scheduler read-backs. The pure decode keeps minimal schedulers built
+// without a fabric (tests) working; those samples are honestly unobserved.
+func (s *Scheduler) decodeCheckpoint(cp any) (taskfabric.DecodedCheckpoint, error) {
+	if s == nil || s.fabric == nil {
+		return taskfabric.DecodeCheckpoint(cp)
+	}
+	return s.fabric.DecodeCheckpoint(cp)
+}
+
 // WithAttribution attaches the execution-outcome source (aresrecovery.
 // ExecutionAttribution). When set, execute() records every finalized outcome
 // after the quantum. Returns the scheduler for chaining.

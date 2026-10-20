@@ -1,9 +1,10 @@
 package memory
 
 import (
-	"unicode/utf8"
+	"math"
 
 	memctx "github.com/Timwood0x10/ares/internal/runtime/memory/context"
+	"github.com/Timwood0x10/ares/internal/runtime/memory/tokencount"
 )
 
 // Token-budget trimming (plan/0.3.3_task.md Appendix B G2).
@@ -23,18 +24,38 @@ import (
 // message carries on the wire. It is part of the deliberate OVER-estimate.
 const perMessageTokenOverhead = 4
 
-// estimateMessageTokens returns a DELIBERATELY CONSERVATIVE (over-)estimate of
-// a message's token cost. It is NOT a tokenizer: it approximates tokens as
-// ceil(runes/3) — biased high versus the common ~4-chars-per-token heuristic —
-// plus a small per-message framing overhead, so the budget trims MORE rather
-// than risk overflowing the real context window ("宁可少塞"). Do not treat the
-// result as exact.
-func estimateMessageTokens(m Message) int {
-	runes := utf8.RuneCountInString(m.Content)
-	for _, tc := range m.ToolCalls {
-		runes += utf8.RuneCountInString(tc.Function.Name) + utf8.RuneCountInString(tc.Function.Arguments)
+// DefaultContextBudgetRatio is the share of the model window a prompt may occupy.
+//
+// 45%, not 50%+: the prompt is not the only thing that has to fit. The answer needs room, and
+// the skills block plus RAG snippets are appended AFTER this budget is applied — so a budget
+// set at the window's edge leaves the last-added block with nowhere to go. The remaining 55%
+// is not waste; it is the space those additions and the completion use.
+const DefaultContextBudgetRatio = 0.45
+
+// EffectiveContextTokenBudget resolves which budget applies: an explicit ContextTokenBudget
+// wins, otherwise DefaultContextBudgetRatio of a configured model window, otherwise disabled.
+//
+// Explicit-wins matters: a deployment that measured its own prompts must be able to pin the
+// number, and a derived default must never override it.
+func (c MemoryConfig) EffectiveContextTokenBudget() int {
+	if c.ContextTokenBudget > 0 {
+		return c.ContextTokenBudget
 	}
-	return perMessageTokenOverhead + (runes+2)/3 // ceil(runes/3), an estimate
+	if c.ModelContextWindow > 0 {
+		return int(float64(c.ModelContextWindow) * DefaultContextBudgetRatio)
+	}
+	return 0
+}
+
+// estimateMessageTokens estimates a message's cost plus the per-message framing overhead
+// (role, delimiters). Tool-call arguments are counted: they travel on the wire and are often
+// the largest part of a message.
+func estimateMessageTokens(m Message) int {
+	tokens := tokencount.Text(m.Content)
+	for _, tc := range m.ToolCalls {
+		tokens += tokencount.Text(tc.Function.Name) + tokencount.Text(tc.Function.Arguments)
+	}
+	return perMessageTokenOverhead + int(math.Ceil(tokens))
 }
 
 // estimateTokens sums the conservative per-message estimate over a slice.

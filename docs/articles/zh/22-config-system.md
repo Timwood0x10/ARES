@@ -4,7 +4,7 @@
 
 `internal/ares_config/config.go`（1,084 行）+ `config_defaults.go` + `config_validate.go` 就是这套系统，SDK 侧再由 `sdk/config.go`（430 行）桥接。
 
-> 诚实校正：旧文写"`config.go` 844 行、`sdk/config.go` 165 行、Config 十二个 section"。实际 `wc -l` 是 config.go 1,084 行、sdk/config.go 430 行，顶层 `Config` 目前有 **17 个** section（见下）。
+> 顶层 `Config` 目前有 **17 个** section（见下）。
 
 ---
 
@@ -80,8 +80,6 @@ func Load(path string) (*Config, error) {
 ```
 
 `SetAllowedConfigDir()` 限制配置文件的加载范围。校验用的是 **`filepath.Rel` 的 `".."` 前缀拒绝**（加上 `allowedConfigDirMu` 读写锁，让 `SetAllowedConfigDir` 能和并发 `Load`/热重载安全竞争）。
-
-> 诚实校正：旧文讲"曾用 `filepath.Rel`，在 Windows 失败，所以改成 `strings.HasPrefix`"。**与当前代码相反**——现状正是 `filepath.Rel` + `".."` 前缀检查。我们以代码为准，不做超出代码的"历史叙述"。
 
 ### 有类型校验
 
@@ -205,7 +203,7 @@ func (c *ConfigFile) Validate() error
 func (c *ConfigFile) ToOptions() ([]Option, error)
 ```
 
-`ToOptions()` 把 provider 转成对应 `WithOpenAI`/`WithOllama`/`WithAnthropic`/`WithOpenRouter`，默认模型各不同（ollama→`llama3.2`、openai→`gpt-4o-mini`、anthropic→`claude-3-haiku`、openrouter→`openai/gpt-4o-mini`）；`llm.max_prompt_length` 由一条内联 Option 桥进 `cfg.llmCfg.MaxPromptLength`（旧版这里静默丢字段，长 Agent 跑到 8192 就挂——代码注释原话）；Database 给了 host 才 `WithPostgres`；memory enabled 才 `WithMemoryConfig`/`WithDistillation`/`WithRAG`，否则 `WithoutMemory()`；knowledge 有 chunk_size 才生效；evolution.enabled 才 `WithEvolution()`。API key 仅来自配置文件（`resolveAPIKey` 环境变量兜底已于 0.3.1 移除）。
+`ToOptions()` 把 provider 转成对应 `WithOpenAI`/`WithOllama`/`WithAnthropic`/`WithOpenRouter`，默认模型各不同（ollama→`llama3.2`、openai→`gpt-4o-mini`、anthropic→`claude-3-haiku`、openrouter→`openai/gpt-4o-mini`）；`llm.max_prompt_length` 由一条内联 Option 桥进 `cfg.llmCfg.MaxPromptLength`（此前这里会静默丢字段，长 Agent 跑到 8192 就挂——代码注释原话）；Database 给了 host 才 `WithPostgres`；memory enabled 才 `WithMemoryConfig`/`WithDistillation`/`WithRAG`，否则 `WithoutMemory()`；knowledge 有 chunk_size 才生效；evolution.enabled 才 `WithEvolution()`。API key 仅来自配置文件（`resolveAPIKey` 环境变量兜底已于 0.3.1 移除）。
 
 用户于是可以：
 

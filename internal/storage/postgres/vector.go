@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 
@@ -9,12 +10,17 @@ import (
 	"github.com/Timwood0x10/ares/internal/storage"
 )
 
-// defaultVectorDimension matches the VECTOR(1024) dimension used by the
+// DefaultVectorDimension matches the VECTOR(1024) dimension used by the
 // knowledge_chunks_1024 / experiences_1024 migrations. The previous
 // hardcoded 1536 caused runtime failures because inserts did not match the
 // migration schema. Override via CreateCollection when a different dimension
 // is required.
-const defaultVectorDimension = 1024
+//
+// Exported because the PRODUCER side has to agree with it: the embedding
+// provider wired in ares_bootstrap declares the dimension it will emit, and a
+// second literal there is exactly how the 1536/1024 mismatch above happened
+// once. One number, two readers.
+const DefaultVectorDimension = 1024
 
 // VectorSearcher handles vector similarity search.
 type VectorSearcher struct {
@@ -98,12 +104,42 @@ func (v *VectorSearcher) Search(ctx context.Context, table, tenantID string, emb
 		return nil, errors.Wrap(err, "marshal embedding")
 	}
 
-	rows, err := v.db.QueryContext(ctx, query, embeddingJSON, limit, tenantID)
-	if err != nil {
-		return nil, errors.Wrap(err, "vector search")
-	}
-	defer func() { _ = rows.Close() }()
+	// The probe count is the recall lever that needs no index rebuild (defect R1):
+	// the default of 1 looks at a single cluster per search, so a table whose rows
+	// are spread over many clusters returns plausible-but-not-nearest neighbours.
+	// It only takes effect INSIDE a transaction, so the query runs in the one the
+	// helper opens — setting it on the bare handle this path used to hold was
+	// silently ignored, and the deployment believed it was tuned.
+	tuning := vectorSearchTuningFromEmbedding(v.embeddingConfig)
+	var results []*SearchResult
+	err = WithVectorSearchTuning(ctx, v.db, tuning, func(ctx context.Context, db DBTX) error {
+		rows, queryErr := db.QueryContext(ctx, query, embeddingJSON, limit, tenantID)
+		if queryErr != nil {
+			return errors.Wrap(queryErr, "vector search")
+		}
+		defer func() { _ = rows.Close() }()
 
+		var scanErr error
+		results, scanErr = scanSearchResults(rows)
+		return scanErr
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	if len(results) == 0 {
+		return nil, errors.ErrRecordNotFound
+	}
+
+	return results, nil
+}
+
+// scanSearchResults drains a vector search result set.
+//
+// The scan lives outside Search's body because the rows must be consumed while the
+// probe-scoped transaction is still open: a defer inside the closure would leave the
+// loop reading from a committed transaction.
+func scanSearchResults(rows *sql.Rows) ([]*SearchResult, error) {
 	var results []*SearchResult
 	for rows.Next() {
 		var result SearchResult
@@ -112,22 +148,14 @@ func (v *VectorSearcher) Search(ctx context.Context, table, tenantID string, emb
 		if err := rows.Scan(&result.ID, &result.Score, &metadataJSON); err != nil {
 			return nil, errors.Wrap(err, "scan result")
 		}
-
 		if err := json.Unmarshal(metadataJSON, &result.Metadata); err != nil {
 			return nil, errors.Wrap(err, "unmarshal metadata")
 		}
-
 		results = append(results, &result)
 	}
-
 	if err := rows.Err(); err != nil {
 		return nil, errors.Wrap(err, "iterate search results")
 	}
-
-	if len(results) == 0 {
-		return nil, errors.ErrRecordNotFound
-	}
-
 	return results, nil
 }
 
@@ -242,7 +270,7 @@ func vectorCollectionDDL(table string, dimension int) string {
 
 // CreateVectorTable creates a table with vector support.
 // This is a simplified implementation - in production use proper pgvector setup.
-// The vector dimension defaults to defaultVectorDimension (1024) to match the
+// The vector dimension defaults to DefaultVectorDimension (1024) to match the
 // migrations; callers needing a different dimension should use CreateCollection.
 func (v *VectorSearcher) CreateVectorTable(ctx context.Context, table string, metadataSchema string) error {
 	safeTable, err := validateTable(table)
@@ -250,9 +278,14 @@ func (v *VectorSearcher) CreateVectorTable(ctx context.Context, table string, me
 		return errors.Wrap(err, "invalid table name")
 	}
 
+	// The configured index method decides what gets built; the row count is 0
+	// here because the table was just created, which keeps the historical
+	// default lists (see vectorIndexDDL).
+	indexMethod, _ := vectorIndexConfigFromEmbedding(v.embeddingConfig)
+
 	// Use the migration-consistent dimension (1024). The previous hardcoded
 	// 1536 caused runtime failures because the migrations create VECTOR(1024).
-	dim := defaultVectorDimension
+	dim := DefaultVectorDimension
 	if dim < 1 || dim > 2000 {
 		return fmt.Errorf("invalid dimension: %d (must be 1-2000)", dim)
 	}
@@ -262,10 +295,10 @@ func (v *VectorSearcher) CreateVectorTable(ctx context.Context, table string, me
 		return errors.Wrap(err, "create vector table")
 	}
 
-	createIndex := fmt.Sprintf(
-		`CREATE INDEX IF NOT EXISTS %s_embedding_idx ON %s USING ivfflat (embedding vector_cosine_ops)`,
-		safeTable, safeTable,
-	)
+	createIndex, err := vectorIndexDDL(safeTable, indexMethod, 0)
+	if err != nil {
+		return errors.Wrap(err, "build vector index ddl")
+	}
 	if _, err = v.db.ExecContext(ctx, createIndex); err != nil {
 		return errors.Wrap(err, "create vector index")
 	}
@@ -279,6 +312,8 @@ func (v *VectorSearcher) CreateCollection(ctx context.Context, name string, dime
 	if err != nil {
 		return errors.Wrap(err, "invalid collection name")
 	}
+
+	indexMethod, _ := vectorIndexConfigFromEmbedding(v.embeddingConfig)
 	if dimension < 1 || dimension > 2000 {
 		return fmt.Errorf("invalid dimension: %d (must be 1-2000)", dimension)
 	}
@@ -300,11 +335,10 @@ func (v *VectorSearcher) CreateCollection(ctx context.Context, name string, dime
 		return errors.Wrap(err, "add tenant_id column")
 	}
 
-	indexQuery := fmt.Sprintf(`
-		CREATE INDEX IF NOT EXISTS %s_embedding_idx
-		ON %s USING ivfflat (embedding vector_cosine_ops)
-	`, safeName, safeName)
-
+	indexQuery, err := vectorIndexDDL(safeName, indexMethod, 0)
+	if err != nil {
+		return errors.Wrap(err, "build vector index ddl")
+	}
 	if _, err := v.db.ExecContext(ctx, indexQuery); err != nil {
 		return errors.Wrap(err, "create vector index")
 	}

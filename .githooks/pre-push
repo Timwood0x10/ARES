@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# pre-push — catch the two checks that fail on file *shapes*, before they reach CI.
+#
+# Both are sub-second and purely local (no network, no build), so running them on every push
+# costs nothing. They are also the two that actually went stale: the freeze manifest drifted for
+# eight days because CI only ran on main, and file.go:NNN anchors rot every time a file is edited.
+#
+# Enable once per clone:   git config core.hooksPath .githooks
+# Bypass deliberately:     git push --no-verify
+set -u
+
+root="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+cd "$root" || exit 0
+
+fail=0
+if ! bash scripts/check_convergence_freeze.sh; then
+  echo "pre-push: convergence freeze failed." >&2
+  echo "  A new top-level package/dir must be recorded in docs/convergence/freeze-manifest.txt" >&2
+  echo "  with a dated reason above the entry (see the comment block there)." >&2
+  fail=1
+fi
+if ! bash scripts/check_doc_anchors.sh; then
+  echo "pre-push: documentation anchors are stale." >&2
+  echo "  A file.go:NNN reference points at a file that no longer has that many lines." >&2
+  fail=1
+fi
+exit "$fail"

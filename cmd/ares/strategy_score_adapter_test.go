@@ -30,14 +30,36 @@ func TestStrategyScoreAdapterWriteBackContract(t *testing.T) {
 		}
 	})
 
-	t.Run("seeded store persists the score", func(t *testing.T) {
+	t.Run("seeded store persists the score ON THE FIELD'S SCALE", func(t *testing.T) {
 		store := evolution.NewMemoryStrategyStore(0)
 		if err := store.SetActive(ctx, &evolution.Strategy{
 			ID:    "bootstrap-root",
-			Score: 0.5,
+			Score: 50.0,
 		}); err != nil {
 			t.Fatalf("SetActive: %v", err)
 		}
+		writer := newStrategyScoreAdapter(store)
+		// The input is the recovery loop's [0,1] quality ratio; the stored Score is on
+		// the GA scale. Storing the ratio unchanged made a 0.9-quality strategy look
+		// 100x worse than a fresh mutant the constant scorer had just given 50.
+		if err := writer.WriteActiveScore(ctx, 0.9); err != nil {
+			t.Fatalf("WriteActiveScore: %v", err)
+		}
+		got, err := store.GetActive(ctx)
+		if err != nil || got == nil {
+			t.Fatalf("GetActive = (%v, %v)", got, err)
+		}
+		if want := 0.9 * evolution.JudgeScaleCeiling; got.Score != want {
+			t.Fatalf("Score = %v, want %v (the [0,1] input lifted onto the judge scale)", got.Score, want)
+		}
+		if got.ID != "bootstrap-root" {
+			t.Fatalf("ID = %q, write-back must not change which strategy is active", got.ID)
+		}
+	})
+
+	t.Run("the written score stays comparable with GA-produced scores", func(t *testing.T) {
+		store := evolution.NewMemoryStrategyStore(0)
+		_ = store.SetActive(ctx, &evolution.Strategy{ID: "incumbent", Score: 50.0})
 		writer := newStrategyScoreAdapter(store)
 		if err := writer.WriteActiveScore(ctx, 0.9); err != nil {
 			t.Fatalf("WriteActiveScore: %v", err)
@@ -46,11 +68,9 @@ func TestStrategyScoreAdapterWriteBackContract(t *testing.T) {
 		if err != nil || got == nil {
 			t.Fatalf("GetActive = (%v, %v)", got, err)
 		}
-		if got.Score != 0.9 {
-			t.Fatalf("Score = %v, want 0.9 persisted", got.Score)
-		}
-		if got.ID != "bootstrap-root" {
-			t.Fatalf("ID = %q, write-back must not change which strategy is active", got.ID)
+		if got.Score <= 50.0 {
+			t.Fatalf("a 0.9-quality strategy scored %v, not above the 50 a fresh mutant gets: "+
+				"the two producers are still on different scales", got.Score)
 		}
 	})
 

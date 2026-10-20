@@ -235,9 +235,10 @@ func runKernelQuotaLoop(ctx context.Context, mgr *aresrecovery.EvolutionAwareQuo
 	}
 }
 
-// runSweepChain executes the three-step recovery sweep: deadline expiry,
-// approval SLA expiry, and lease requeue. Extracted from runKernelRecoveryLoop
-// to keep that function under the cyclomatic-complexity gate.
+// runSweepChain executes the recovery sweep: deadline expiry, approval SLA
+// expiry, lease requeue, idle agent reclamation, and retired-record reaping.
+// Extracted from runKernelRecoveryLoop to keep that function under the
+// cyclomatic-complexity gate.
 //
 // Ordering rationale:
 //  1. ExpireTaskDeadlines — a task past its absolute deadline must fail
@@ -249,6 +250,12 @@ func runKernelQuotaLoop(ctx context.Context, mgr *aresrecovery.EvolutionAwareQuo
 //     auto-reject to operators).
 //  3. RequeueExpiredLeases — requeue the tasks whose lease expired THIS sweep
 //     (not all READY tasks), then give each one an execution body.
+//  4. ReclaimIdleAgents — give back the resource claim of agents nothing is
+//     using. Runs last of the task steps so a task that expired this sweep has
+//     already had its replacement bound before any agent can be retired.
+//  5. ReapRetiredAgents — drop the registry records of agents retired long ago.
+//     Last because it is the only step that deletes rather than restores, and it
+//     must never race the step that creates tombstones.
 func runSweepChain(
 	ctx context.Context,
 	recovery *aresrecovery.Recovery,
@@ -271,13 +278,67 @@ func runSweepChain(
 	}
 	// Recovery closed loop: requeue the tasks whose lease expired THIS sweep.
 	requeued := recovery.RequeueExpiredLeases()
-	if len(requeued) == 0 {
-		return
+	if len(requeued) > 0 {
+		log.Info(ctx, "runKernelRecoveryLoop",
+			"kernel recovery loop: requeued expired task(s)",
+			"count", len(requeued), "task_ids", requeued)
+		bindReplacements(requeued)
 	}
-	log.Info(ctx, "runKernelRecoveryLoop",
-		"kernel recovery loop: requeued expired task(s)",
-		"count", len(requeued), "task_ids", requeued)
-	bindReplacements(requeued)
+	// Idle agent reclamation runs LAST and unconditionally (defect A-factory3 /
+	// P1-6): it is what hands back the claims of agents nothing is using, so a
+	// sweep that requeued no task must not skip it. Running it after the requeue
+	// and bind steps means a task that expired this sweep has already had its
+	// replacement bound before any agent is retired.
+	reclaimed := recovery.ReclaimIdleAgents(ctx)
+	if len(reclaimed) > 0 {
+		log.Info(ctx, "runKernelRecoveryLoop",
+			"kernel recovery loop: reclaimed inactive agent(s) (idle or paused), releasing their resource claims",
+			"count", len(reclaimed), "agent_ids", reclaimIDs(reclaimed))
+	}
+	// Tombstone reaping runs after reclamation and unconditionally (defect
+	// A-factory3 / P1-6, second half): reclamation retires but never removes, so
+	// without this step the registry keeps one record per spawn for the process's
+	// lifetime. Retention is far longer than a tick, so it cannot delete the
+	// tombstone the step above just created.
+	reaped := recovery.ReapRetiredAgents(ctx)
+	if len(reaped) > 0 {
+		log.Info(ctx, "runKernelRecoveryLoop",
+			"kernel recovery loop: reaped retired agent record(s)",
+			"count", len(reaped), "agent_ids", reaped)
+	}
+
+	// P2-7 ②: the ACCUMULATION retirement leaves behind.
+	//
+	// Retiring an agent does not retire the agents it spawned (`Agent.Parent` is
+	// provenance, not a lifecycle relation), so those stay live and keep their resource
+	// claims. Each retirement now names its own orphans in the event stream; what nobody
+	// could see is the total, which is what a spawn/retire loop grows without anyone
+	// noticing — the claims are held by agents that look idle and correct one at a time.
+	//
+	// Reported only when non-empty: a quiet pool must not emit a line per sweep. Warn,
+	// because it is actionable (reclaim them, fix the spawner, or raise the budget) and
+	// because the alternative — silence — is how this stayed invisible.
+	if audit := recovery.AuditOrphans(3); audit.Agents > 0 {
+		log.Warn(ctx, "runKernelRecoveryLoop",
+			"kernel recovery loop: agents whose spawning parent is gone are still holding resources",
+			"orphans", audit.Agents,
+			"resources", audit.Resources,
+			"sample", audit.Sample,
+			"why", "retirement is single-node by contract (Parent is provenance); this is their cumulative footprint, not an error in this sweep")
+	}
+}
+
+// reclaimIDs flattens reclaimed agents for the sweep's log line, keeping the STATE
+// each one was retired from. The sweep covers two states, and they mean different
+// things to whoever reads the log: an IDLE agent was unused, while a SUSPENDED one
+// had paused work whose task is resumed by the lease path. A line listing bare ids
+// invites the reader to assume "idle" for both.
+func reclaimIDs(reclaimed []agentfabric.IdleAgent) []string {
+	out := make([]string, 0, len(reclaimed))
+	for _, a := range reclaimed {
+		out = append(out, fmt.Sprintf("%s(%s)", a.Identity, a.State))
+	}
+	return out
 }
 
 // runKernelRecoveryLoop is the Kernel-level event-driven recovery loop. It
@@ -410,12 +471,32 @@ func runKernelRecoveryLoop(
 					if errors.Is(err, aresrecovery.ErrRecoveryExhausted) {
 						reason = agentfabric.StopRecoveryExhausted
 					}
-					log.Info(ctx, "runKernelRecoveryLoop",
-						"kernel recovery loop: in-place revival unavailable; using replacement",
+					// BOTH budgets in one line (P2-5). This is the only place that can
+					// state them together: the task fabric knows nothing about agents,
+					// and the recovery policy is handed a dead agent id and nothing
+					// else. The revival budget is the one just refused; the task's own
+					// retry budget decides whether that refusal matters YET — with
+					// attempts left the replacement below simply runs the task again,
+					// while with none the work has nowhere left to go and needs a
+					// human. Reported separately, an operator could see "revival
+					// exhausted" forever without ever learning whether it mattered.
+					snapFields := []any{
 						"snap_id", snapID,
 						"stop_reason", reason.String(),
 						"death_reason", snap.StopReason.String(),
-						"error", err)
+						"task_attempts", rt.Attempts,
+						"task_max_retries", rt.MaxRetries,
+						"error", err,
+					}
+					if rt.Attempts >= rt.MaxRetries {
+						log.Warn(ctx, "runKernelRecoveryLoop",
+							"kernel recovery loop: in-place revival unavailable AND the task's retry budget is spent — nothing is left to try for this task",
+							snapFields...)
+					} else {
+						log.Info(ctx, "runKernelRecoveryLoop",
+							"kernel recovery loop: in-place revival unavailable; using replacement",
+							snapFields...)
+					}
 				}
 			}
 

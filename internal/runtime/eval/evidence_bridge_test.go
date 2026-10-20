@@ -23,7 +23,7 @@ func TestDimensionJudgeBridge_ToEvidence_Pass(t *testing.T) {
 		Reason:       "all dimensions look good",
 	}
 
-	ev, err := bridge.ToEvidence("task-1", "coder", resp)
+	ev, err := bridge.ToEvidence("task-1", "coder", resp, 1.0)
 	require.NoError(t, err)
 	require.NotNil(t, ev)
 	assert.Equal(t, VerdictPass, ev.Verdict)
@@ -46,7 +46,7 @@ func TestDimensionJudgeBridge_ToEvidence_Fail(t *testing.T) {
 		Reason:       "incorrect answer",
 	}
 
-	ev, err := bridge.ToEvidence("task-1", "coder", resp)
+	ev, err := bridge.ToEvidence("task-1", "coder", resp, 1.0)
 	require.NoError(t, err)
 	assert.Equal(t, VerdictFail, ev.Verdict)
 	assert.True(t, ev.HasFailure())
@@ -76,7 +76,7 @@ func TestDimensionJudgeBridge_ToEvidence_UncertainReason(t *testing.T) {
 				Safety:       1,
 				Reason:       tt.reason,
 			}
-			ev, err := bridge.ToEvidence("task-1", "coder", resp)
+			ev, err := bridge.ToEvidence("task-1", "coder", resp, 1.0)
 			require.NoError(t, err)
 			assert.Equal(t, VerdictUncertain, ev.Verdict)
 		})
@@ -85,7 +85,7 @@ func TestDimensionJudgeBridge_ToEvidence_UncertainReason(t *testing.T) {
 
 func TestDimensionJudgeBridge_ToEvidence_NilResponse(t *testing.T) {
 	bridge := NewDimensionJudgeBridge(nil)
-	ev, err := bridge.ToEvidence("task-1", "coder", nil)
+	ev, err := bridge.ToEvidence("task-1", "coder", nil, 0)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrNilJudgeResponse)
 	assert.Nil(t, ev)
@@ -112,7 +112,7 @@ func TestDimensionJudgeBridge_EmitAndQueryBack(t *testing.T) {
 		Reason:       "mostly correct",
 	}
 
-	err := bridge.Emit(context.Background(), "task-7", "coder", resp)
+	err := bridge.Emit(context.Background(), "task-7", "coder", resp, 0.9)
 	require.NoError(t, err)
 
 	// Query the universal store by the new kind.
@@ -137,14 +137,14 @@ func TestDimensionJudgeBridge_EmitAndQueryBack(t *testing.T) {
 
 func TestDimensionJudgeBridge_Emit_NilStore(t *testing.T) {
 	bridge := NewDimensionJudgeBridge(nil)
-	err := bridge.Emit(context.Background(), "task-1", "coder", &DimensionJudgeResponse{})
+	err := bridge.Emit(context.Background(), "task-1", "coder", &DimensionJudgeResponse{}, 0)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrNilEvidenceStore)
 }
 
 func TestDimensionJudgeBridge_Emit_NilResponse(t *testing.T) {
 	bridge := NewDimensionJudgeBridge(evidence.NewMemoryStore())
-	err := bridge.Emit(context.Background(), "task-1", "coder", nil)
+	err := bridge.Emit(context.Background(), "task-1", "coder", nil, 0)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrNilJudgeResponse)
 }

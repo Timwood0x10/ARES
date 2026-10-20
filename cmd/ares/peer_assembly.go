@@ -18,6 +18,7 @@ import (
 	agentfabric "github.com/Timwood0x10/ares/internal/fabric/agent"
 	taskfabric "github.com/Timwood0x10/ares/internal/fabric/task"
 	"github.com/Timwood0x10/ares/internal/fabric/task/workflow/engine"
+	"github.com/Timwood0x10/ares/internal/runtime/arena"
 	evolution "github.com/Timwood0x10/ares/internal/runtime/ares_evolution"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/repositories"
 )
@@ -332,6 +333,9 @@ func (a *peerAssembly) assembleExecution() error {
 		ReaperGrace:    resolveReaperGrace(cfg.Kernel.DAGExecution),
 		SessionIdleTTL: resolveSessionIdleTTL(cfg.Kernel.DAGExecution),
 		CompileStore:   store,
+		EventStore:     store,
+		ToolTagFilter:  cfg.Kernel.ToolTagFilter,
+		LLMToolTagging: cfg.Kernel.LLMToolTagging,
 		// Serve-side memory enrichment: fold conversation history into the
 		// submission prompt before admission, the way the SDK folds it in
 		// Agent.composePrompt. Nil when memory is disabled/unbuilt — the
@@ -500,6 +504,18 @@ func (a *peerAssembly) spawnPeers() error {
 		policy.MaxRestarts = cfg.Kernel.MaxRestarts
 	}
 	kernel.recovery = aresrecovery.New(kernel.fabric, agents, policy)
+	// Wire the recovery observer so RecoverFromAgentDeath records timing
+	// into kernel.arenaMetrics — the SINGLE collector for the serve path.
+	// It has a consumer: the chaos domain reads its Snapshot for the
+	// recovery metrics in the introspection panel. A standalone collector
+	// (as the initial P3 did) was a data black hole — written but never read.
+	kernel.arenaMetrics = arena.NewMetricsCollector()
+	kernel.recovery.WithRecoveryObserver(arena.NewRecoveryAdapter(kernel.arenaMetrics))
+	// Data consistency: the fabric counts every checkpoint read-back through
+	// Fabric.DecodeCheckpoint, and the adapter turns decode outcomes into the
+	// same collector's consistency window. Both half-producers feed the ONE
+	// collector the chaos/introspection panel reads.
+	kernel.fabric.WithConsistencyObserver(arena.NewConsistencyAdapter(kernel.arenaMetrics))
 	sched.WithGovernance(agents)
 	// The scheduler's candidate pool includes every live, IDLE, executable
 	// fabric agent — the configured peers spawned above, plus any spawned via

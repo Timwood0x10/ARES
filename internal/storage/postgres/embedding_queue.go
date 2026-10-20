@@ -342,6 +342,131 @@ func (q *EmbeddingQueue) MarkCompleted(ctx context.Context, tableName, taskID st
 	return nil
 }
 
+// deadLetterInsertSQL moves an exhausted queue row into the dead-letter table.
+//
+// It copies auto_replayed from the queue row on purpose (defect D1 / P1-4): the
+// stamp means "this content already had its one automatic second chance", and it
+// has to survive the round trip or an embedding that can never succeed would be
+// replayed again on every reconciler tick, forever. created_at is taken from
+// queued_at because embedding_queue has no created_at column (see the note at
+// the call site).
+const deadLetterInsertSQL = `
+	INSERT INTO embedding_dead_letter
+	(task_id, table_name, content, tenant_id, embedding_model, embedding_version, error_message, retry_count, created_at, auto_replayed)
+	SELECT task_id, table_name, content, tenant_id, embedding_model, embedding_version, $1, retry_count, queued_at, auto_replayed
+	FROM embedding_queue WHERE task_id = $2 AND table_name = $3
+`
+
+// deadLetterBacklogSQL counts dead-letter rows split by what an operator can
+// still do about them.
+//
+// The split is the difference between a number that can be acted on and one that
+// cannot: pending_replay rows have never had their automatic second chance, while
+// given_up rows were already replayed once and failed again — those need a human
+// (a too-long document, a dimension mismatch), and counting them as "about to be
+// retried" would make the alarm meaningless.
+const deadLetterBacklogSQL = `
+	SELECT
+		COUNT(*) FILTER (WHERE auto_replayed = FALSE) AS pending_replay,
+		COUNT(*) FILTER (WHERE auto_replayed = TRUE) AS given_up
+	FROM embedding_dead_letter
+`
+
+// replayDeadLettersSQL re-enqueues up to $1 dead-letter rows that have never been
+// replayed, and stamps them so they never are again.
+//
+// One statement, and the atomicity is the point: the queue insert and the stamp
+// must not be separable by a crash, or a row could be requeued and replayed a
+// second time. The stamp lands on the dead-letter row (kept, not deleted) so
+// Reconcile's "already given up on" probe keeps skipping the source row, and
+// MarkFailed copies the stamp forward if the replay fails again.
+//
+// The NOT EXISTS guard skips content that is already queued (a Reconcile pass may
+// have re-enqueued it), which would otherwise put the same row in flight twice.
+const replayDeadLettersSQL = `
+	WITH picked AS (
+		SELECT d.task_id, d.table_name, d.content, d.tenant_id, d.embedding_model, d.embedding_version
+		FROM embedding_dead_letter d
+		WHERE d.auto_replayed = FALSE
+		  AND NOT EXISTS (
+			SELECT 1 FROM embedding_queue q
+			WHERE q.task_id = d.task_id AND q.table_name = d.table_name
+		  )
+		ORDER BY d.created_at
+		LIMIT $1
+		FOR UPDATE
+	), requeued AS (
+		INSERT INTO embedding_queue
+			(task_id, table_name, content, tenant_id, embedding_model, embedding_version, retry_count, status, queued_at, auto_replayed)
+		SELECT task_id, table_name, content, tenant_id, embedding_model, embedding_version, 0, 'pending', NOW(), TRUE
+		FROM picked
+	)
+	UPDATE embedding_dead_letter d
+	SET auto_replayed = TRUE
+	WHERE (d.task_id, d.table_name) IN (SELECT task_id, table_name FROM picked)
+`
+
+// DeadLetterBacklog is the dead-letter table split by what the operator can still
+// do about it, which is the number the reconciler reports.
+type DeadLetterBacklog struct {
+	// Pending is the count of entries that have never had their automatic
+	// second chance; the reconciler replays these.
+	Pending int64
+	// GivenUp is the count of entries already replayed once and failed again.
+	// Nothing automatic will touch them; they need a human to fix the cause.
+	GivenUp int64
+}
+
+// Total is the number of pieces of content that have no embedding, and are
+// therefore invisible to every retrieval query (the defect's whole harm).
+func (b DeadLetterBacklog) Total() int64 { return b.Pending + b.GivenUp }
+
+// CountDeadLetters reports the dead-letter backlog.
+//
+// It exists so the backlog cannot be silent (defect D1 / P1-4): rows in this
+// table have no embedding in their source table, so the retrieval queries that
+// filter on `embedding IS NOT NULL` skip them forever without erroring. A
+// non-zero count is the only signal that content has fallen out of the agent's
+// reach.
+func (q *EmbeddingQueue) CountDeadLetters(ctx context.Context) (DeadLetterBacklog, error) {
+	var backlog DeadLetterBacklog
+	if err := q.db.QueryRow(ctx, deadLetterBacklogSQL).Scan(&backlog.Pending, &backlog.GivenUp); err != nil {
+		return DeadLetterBacklog{}, errors.Wrap(err, "count dead letters")
+	}
+	return backlog, nil
+}
+
+// ReplayDeadLetters re-enqueues up to limit never-replayed dead letters.
+//
+// This is the automatic half of the D1 fix, as opposed to RequeueDeadLetter's
+// operator path: most dead letters come from a transient provider outage (an
+// exhausted quota, a model restart), and content that failed then is perfectly
+// embeddable now. Each piece of content gets exactly ONE automatic replay — the
+// stamp is durable, so this cannot become a retry loop — and what it recovers is
+// content that would otherwise stay invisible to retrieval until the retention
+// purge deleted the last remaining queue copy of it.
+//
+// Args:
+//   - ctx: database operation context.
+//   - limit: maximum rows to replay; must be positive (the caller bounds the
+//     batch so one tick cannot stamp an entire outage's backlog at once).
+//
+// Returns the number of dead letters replayed, or an error if the operation fails.
+func (q *EmbeddingQueue) ReplayDeadLetters(ctx context.Context, limit int) (int64, error) {
+	if limit <= 0 {
+		return 0, fmt.Errorf("replay dead letters: limit must be positive: %w", errors.ErrInvalidArgument)
+	}
+	result, err := q.db.Exec(ctx, replayDeadLettersSQL, limit)
+	if err != nil {
+		return 0, errors.Wrap(err, "replay dead letters")
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return 0, errors.Wrap(err, "check replayed rows")
+	}
+	return rows, nil
+}
+
 // MarkFailed marks a task as failed and updates retry count.
 // This implements exponential backoff for retries.
 //
@@ -402,12 +527,7 @@ func (q *EmbeddingQueue) MarkFailed(ctx context.Context, tableName, taskID, errM
 		// retry_count already at the limit — the worker then picked it up,
 		// failed, and hit this same broken statement forever. Reconcile's
 		// dead-letter guard also depends on this INSERT actually landing.
-		_, err = tx.ExecContext(ctx, `
-			INSERT INTO embedding_dead_letter
-			(task_id, table_name, content, tenant_id, embedding_model, embedding_version, error_message, retry_count, created_at)
-			SELECT task_id, table_name, content, tenant_id, embedding_model, embedding_version, $1, retry_count, queued_at
-			FROM embedding_queue WHERE task_id = $2 AND table_name = $3
-		`, errMessage, taskID, tableName)
+		_, err = tx.ExecContext(ctx, deadLetterInsertSQL, errMessage, taskID, tableName)
 		if err != nil {
 			return errors.Wrap(err, "move to dead letter")
 		}

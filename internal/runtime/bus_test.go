@@ -843,7 +843,12 @@ func TestPluginBus_UnregisterDuringHotPlugStart_NeverStopsUnstartedPlugin(t *tes
 	close(p.release)
 
 	errReg := <-regErr
-	<-unregErr
+	// The concurrent Unregister's own error is logged rather than discarded: this test
+	// asserts the REGISTER side below, and `_ = <-unregErr` is rejected by staticcheck
+	// (S1005) while a bare receive is rejected by errcheck.
+	if err := <-unregErr; err != nil {
+		t.Logf("concurrent Unregister returned %v (the assertion here is the register side)", err)
+	}
 	require.Error(t, errReg, "register must report the concurrent unregistration")
 	assert.False(t, p.stopEarly.Load(),
 		"Stop must never run before Start returned (unstarted plugin teardown)")

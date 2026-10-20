@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/agents"
@@ -43,6 +44,18 @@ type ExecutionConfig struct {
 	// CompileStore is the event store the compile coordinator records
 	// provenance to (optional; nil = no provenance events).
 	CompileStore ares_events.EventStore
+	// EventStore, when set, receives one tool-advertisement event per quantum so the
+	// narrowing can be attributed after the fact (nil = no events).
+	EventStore ares_events.EventStore
+	// ToolTagFilter is the deployment-level static tool filter (nil = advertise everything).
+	//
+	// This is the switch that makes the static filter reachable from configuration; it is
+	// deliberately separate from the per-task capability tags, which answer a different
+	// question ("what does this task need" vs "what may this deployment ever show").
+	ToolTagFilter map[string]string
+	// LLMToolTagging derives a task's capability tags with a model call instead of keywords
+	// alone. Off by default: one extra round-trip per quantum.
+	LLMToolTagging bool
 	// PromptEnricher is the optional prompt enrichment hook applied to
 	// submissions before session admission (nil = pass-through). Serve
 	// wires its memory component here; the SDK leaves it nil because its
@@ -98,15 +111,18 @@ func NewExecution(cfg ExecutionConfig) (*Execution, error) {
 	compile := planprojection.NewCompileCoordinator(cfg.Fabric, cfg.CompileStore)
 
 	planner, err := agentfabric.NewPlannerCognition(agentfabric.PlannerDeps{
-		ChatClient:     cfg.ChatClient,
-		ToolBinder:     cfg.ToolBinder,
-		Sessions:       reg,
-		Fabric:         cfg.Fabric,
-		L1DAG:          cfg.L1DAG,
-		StrategySource: cfg.StrategySource,
-		AgentFabric:    cfg.Agents,
-		MaxDepth:       cfg.MaxPlanDepth,
-		Logger:         logger,
+		ChatClient:        cfg.ChatClient,
+		ToolBinder:        cfg.ToolBinder,
+		Sessions:          reg,
+		Fabric:            cfg.Fabric,
+		L1DAG:             cfg.L1DAG,
+		StrategySource:    cfg.StrategySource,
+		AgentFabric:       cfg.Agents,
+		MaxDepth:          cfg.MaxPlanDepth,
+		Logger:            logger,
+		ToolTagFilter:     cfg.ToolTagFilter,
+		AdvertisementSink: advertisementSinkFor(cfg.EventStore),
+		Tagger:            taggerFor(cfg.ChatClient, cfg.LLMToolTagging),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("agentruntime: create planner cognition: %w", err)
@@ -149,4 +165,44 @@ func (e *Execution) AdmitSession(ctx context.Context, sessionID, prompt string) 
 		return fmt.Errorf("agentruntime: execution is nil")
 	}
 	return e.Sessions.Admit(ctx, sessionID, prompt)
+}
+
+// advertisementSinkFor returns the sink that records advertisements, or nil when no store is
+// configured — nil is what keeps the feature inert for deployments that never set it.
+func advertisementSinkFor(store ares_events.EventStore) agentfabric.ToolAdvertisementSink {
+	if store == nil {
+		return nil
+	}
+	return &eventAdvertisementSink{store: store}
+}
+
+// eventAdvertisementSink records one event per advertisement on the task's stream.
+type eventAdvertisementSink struct{ store ares_events.EventStore }
+
+// OnToolAdvertisement writes what the model was shown and why.
+//
+// It is best-effort: an advertisement that cannot be recorded must not fail the quantum, but it
+// is recorded as an event rather than only a log line because "which tools did this run see"
+// outlives the log retention window and is what cost attribution and keyword tuning read.
+func (s *eventAdvertisementSink) OnToolAdvertisement(ctx context.Context, sessionID, taskID string, caps []string, advertised, total int) {
+	stream := sessionID
+	if stream == "" {
+		stream = taskID
+	}
+	ev := &ares_events.Event{
+		ID:        "tool_advertisement_" + taskID + "_" + strconv.FormatInt(time.Now().UnixNano(), 10),
+		StreamID:  stream,
+		Type:      ares_events.EventType("tool.advertisement"),
+		Payload:   map[string]any{"task_id": taskID, "caps": caps, "advertised": advertised, "total": total},
+		Timestamp: time.Now(),
+	}
+	_ = s.store.Append(ctx, stream, []*ares_events.Event{ev}, 0)
+}
+
+// taggerFor returns the model tagger when enabled, or nil so the keyword table is used.
+func taggerFor(chat agentfabric.ChatClient, enabled bool) agentfabric.CapabilityTagger {
+	if !enabled {
+		return nil
+	}
+	return agentfabric.NewLLMCapabilityTagger(chat)
 }

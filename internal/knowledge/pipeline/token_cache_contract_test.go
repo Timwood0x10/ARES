@@ -61,6 +61,84 @@ func TestMatchTokensAndMatchAgree(t *testing.T) {
 	}
 }
 
+// TestMatchTokens_SameConversationEvidenceIsNotIdentity pins that two facts
+// distilled from the SAME conversation are not collapsed into one entity. A
+// conversation is a container of many distinct facts, so shared
+// conversation-scoped evidence must not fire the M2.5 "data-source unique ID"
+// step. Regression guard for DistillBridge.attachEvidence: once its Ref points
+// at the source conversation, this guard is the only thing preventing every
+// fact of a session from merging at 0.95.
+func TestMatchTokens_SameConversationEvidenceIsNotIdentity(t *testing.T) {
+	m := &DefaultEntityMatcher{MatchThreshold: 0.9}
+	ctx := context.Background()
+
+	shared := knowledge.Evidence{Source: "conversation:c1", Ref: "c1", Weight: 1}
+	candidates := []*knowledge.KnowledgeObject{{
+		ID: "a", Type: knowledge.ObjectMemory,
+		Normalized: "postgres connection pool tuning", Summary: "postgres pool",
+		Evidence: []knowledge.Evidence{shared},
+	}}
+	obj := &knowledge.KnowledgeObject{
+		ID: "new", Type: knowledge.ObjectMemory,
+		Normalized: "kubernetes ingress certificate rotation", Summary: "ingress certs",
+		Evidence: []knowledge.Evidence{shared},
+	}
+
+	bag := func(s string) map[string]int {
+		out := map[string]int{}
+		for _, w := range strings_Fields_norm(s) {
+			out[w]++
+		}
+		return out
+	}
+	cache := map[string]map[string]int{"a": bag(candidates[0].Normalized + " " + candidates[0].Summary)}
+
+	got, err := m.MatchTokens(ctx, obj, bag(obj.Normalized+" "+obj.Summary), candidates, cache)
+	if err != nil {
+		t.Fatalf("MatchTokens: %v", err)
+	}
+	if !got.IsNew {
+		t.Errorf("facts sharing only conversation-scoped evidence must stay separate, got %+v", got)
+	}
+}
+
+// TestMatchTokens_RecordScopedEvidenceMatches pins the other side of that
+// contract: identical RECORD-scoped evidence (the same DB row) is an entity
+// identity signal and must still match at step 2.
+func TestMatchTokens_RecordScopedEvidenceMatches(t *testing.T) {
+	m := &DefaultEntityMatcher{MatchThreshold: 0.9}
+	ctx := context.Background()
+
+	shared := knowledge.Evidence{Source: "postgres://orders", Ref: "row-42", Weight: 1}
+	candidates := []*knowledge.KnowledgeObject{{
+		ID: "a", Type: knowledge.ObjectMemory,
+		Normalized: "order 42 shipped", Summary: "order 42",
+		Evidence: []knowledge.Evidence{shared},
+	}}
+	obj := &knowledge.KnowledgeObject{
+		ID: "new", Type: knowledge.ObjectMemory,
+		Normalized: "order 42 refunded", Summary: "order 42 refund",
+		Evidence: []knowledge.Evidence{shared},
+	}
+
+	bag := func(s string) map[string]int {
+		out := map[string]int{}
+		for _, w := range strings_Fields_norm(s) {
+			out[w]++
+		}
+		return out
+	}
+	cache := map[string]map[string]int{"a": bag(candidates[0].Normalized + " " + candidates[0].Summary)}
+
+	got, err := m.MatchTokens(ctx, obj, bag(obj.Normalized+" "+obj.Summary), candidates, cache)
+	if err != nil {
+		t.Fatalf("MatchTokens: %v", err)
+	}
+	if got.IsNew || got.MatchedObjectID != "a" {
+		t.Errorf("shared record-scoped evidence must match candidate a, got %+v", got)
+	}
+}
+
 // strings_Fields_norm mirrors the matcher's tokenization for building bags
 // in tests (split on whitespace, lowercase handled by input).
 func strings_Fields_norm(s string) []string {

@@ -7,8 +7,13 @@ test_cases:
   - id: tool-001
     name: Calculator Tool
     input: "What is 123 * 456?"
+    expected_output: "56088"
     expected_tools:
       - calculator
+    # Both halves, because this case has both: the delegated work must have run
+    # AND the answer must be right. It is the shape most of this suite should
+    # move to — see the corpus notes in docs/defects/cognition-persistence.md.
+    checks: [tools, numeric]
     timeout: 30s
     tags:
       - math
@@ -18,6 +23,10 @@ test_cases:
     input: "Search for the latest news about AI"
     expected_tools:
       - web_search
+    # Only the tool is checkable here: the answer is open-ended (the news
+    # changes), so correctness stays with the judge. Anchoring what is provable
+    # and saying so is the point — a fake expectation would be worse than none.
+    checks: [tools]
     timeout: 60s
     tags:
       - search
@@ -27,6 +36,7 @@ test_cases:
     input: "Read the file /tmp/test.txt and summarize its contents"
     expected_tools:
       - file_read
+    checks: [tools]
     timeout: 30s
     tags:
       - file
@@ -38,6 +48,7 @@ test_cases:
       - web_search
       - calculator
       - file_write
+    checks: [tools]
     timeout: 90s
     tags:
       - multi-tool

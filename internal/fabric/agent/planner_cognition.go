@@ -15,8 +15,8 @@ import (
 	"github.com/Timwood0x10/ares/internal/fabric/task"
 	"github.com/Timwood0x10/ares/internal/fabric/task/workflow/engine"
 	llmcore "github.com/Timwood0x10/ares/internal/llmcore"
+	"github.com/Timwood0x10/ares/internal/tools/capability"
 	resources "github.com/Timwood0x10/ares/internal/tools/resources/core"
-	"github.com/Timwood0x10/ares/internal/truncate"
 )
 
 // DefaultMaxPlanDepth is the default growth-depth upper bound for an L2
@@ -42,6 +42,20 @@ type PlannerDeps struct {
 	// Fabric is the task fabric used to read predecessor outputs by
 	// node-ID = task-ID join (the node does not store Output).
 	Fabric FabricReader
+
+	// Tagger, when set, derives the task's capability tags with a model call instead of relying
+	// only on the keyword table. Nil (the default) uses keywords.
+	Tagger CapabilityTagger
+	// AdvertisementSink, when set, receives one record per advertisement so "why did this
+	// quantum see these tools" is answerable after the fact, not only in a log line.
+	AdvertisementSink ToolAdvertisementSink
+	// ToolTagFilter, when non-empty, narrows the tools ADVERTISED to the model to those whose
+	// Tags match every entry. Empty (the default) advertises everything, so a deployment that
+	// never sets it behaves exactly as before.
+	//
+	// It filters only what the model is shown; L1 node ids and priors still read the full set
+	// (see advertisedToolSchemas for why).
+	ToolTagFilter map[string]string
 	// L1DAG is the L1 ToolClass capability graph. The planner reads
 	// each tool's enabled/budget/prior metadata before growing an L2 tool
 	// node — enabled=false blocks growth, budget=N caps instances per
@@ -95,8 +109,14 @@ type FabricReader interface {
 // to toolCognition through the same fabric → scheduler → routerCognition
 // path as every other node.
 type plannerCognition struct {
-	chat     ChatClient
-	binder   ToolBinder
+	chat   ChatClient
+	binder ToolBinder
+	// toolTagFilter narrows the advertised tool set; nil/empty advertises everything.
+	toolTagFilter map[string]string
+	// tagger, when set, replaces the keyword table for per-task capability derivation.
+	tagger CapabilityTagger
+	// adSink, when set, records every advertisement.
+	adSink   ToolAdvertisementSink
 	sessions *SessionRegistry
 	fabric   FabricReader
 	l1       *engine.MutableDAG // L1 ToolClass graph, nil = permissive
@@ -150,15 +170,18 @@ func NewPlannerCognition(deps PlannerDeps) (Cognition, error) {
 		logger = slog.Default()
 	}
 	return &plannerCognition{
-		chat:        deps.ChatClient,
-		binder:      deps.ToolBinder,
-		sessions:    deps.Sessions,
-		fabric:      deps.Fabric,
-		l1:          deps.L1DAG,
-		maxDepth:    maxD,
-		strategy:    deps.StrategySource,
-		agentFabric: deps.AgentFabric,
-		logger:      logger,
+		chat:          deps.ChatClient,
+		binder:        deps.ToolBinder,
+		toolTagFilter: deps.ToolTagFilter,
+		tagger:        deps.Tagger,
+		adSink:        deps.AdvertisementSink,
+		sessions:      deps.Sessions,
+		fabric:        deps.Fabric,
+		l1:            deps.L1DAG,
+		maxDepth:      maxD,
+		strategy:      deps.StrategySource,
+		agentFabric:   deps.AgentFabric,
+		logger:        logger,
 	}, nil
 }
 
@@ -211,6 +234,241 @@ const (
 //
 // Returns "" when the tool has no schema: an unknown tool has no ToolClass to
 // constrain, and the caller treats a lookup miss as permissive.
+// advertisedToolSchemas returns the schemas the model is shown for this quantum.
+//
+// A non-empty toolTagFilter narrows the list to tools whose Tags match EVERY entry: the
+// prompt is the cost, and a smaller candidate set is also a smaller chance of picking wrong.
+//
+// An empty filter returns everything — the behaviour before this existed.
+//
+// A filter that matches NOTHING falls back to everything and says so. A wrong or stale filter
+// must degrade to today's behaviour, never silently remove a capability the model needs: an
+// empty advertisement is indistinguishable from "that tool does not exist" and cannot be
+// falsified from the transcript.
+//
+// Only the ADVERTISEMENT is filtered. l1ToolClassID and l1Priors deliberately keep reading the
+// full set: L1 node ids and per-tool priors must be stable regardless of what is advertised,
+// and a lookup that missed an existing-but-filtered tool would fall through to the permissive
+// default and quietly ignore enabled=false.
+// TaskToolCapabilityKey is the task payload key carrying the capability flags that narrow the
+//
+// CONVENTION: the payload carries BARE capability names ("network", "file"). The `cap_` prefix
+// is a TOOL-side registration spelling (see builtin.WithToolTags); matching accepts both so a
+// payload that arrives with prefixes still works, but do not rely on that — write bare names.
+// advertised tool set for THIS quantum.
+//
+// It lives on the task rather than on the planner because it is per-task and the planner is
+// shared by every session ("one shared planner serves every session"): writing it on the
+// planner would let one task's routing decide what another task's model can see.
+const TaskToolCapabilityKey = "tool_capabilities"
+
+// toolCapabilitiesFromTask reads the task's capability flags.
+//
+// Accepted forms: []string, []any of strings, or a comma-separated string. Anything else —
+// including an absent key — means "no narrowing", which is the previous behaviour. A malformed
+// value degrades to no narrowing rather than to an empty tool list.
+// toolCapabilitiesForTask returns the capability tags that narrow this quantum's toolbelt.
+//
+// Explicit payload tags win; when a caller has not tagged the task, the description is tagged
+// here by keyword. Deriving at read time (rather than requiring every submitter to tag) is what
+// makes the routing live without changing the task fabric — but it is deliberately biased
+// towards NOT narrowing: an unknown description yields no caps, which advertises everything.
+//
+// The bias matters because a wrong cap is asymmetric: missing a cap only costs tokens, while
+// inventing one hides a tool the model needed. So the keyword table holds only terms that name
+// a capability unambiguously, and no stemming/fuzzy matching is attempted.
+func toolCapabilitiesForTask(task *models.Task) []string {
+	if caps := explicitTaskCapabilities(task); len(caps) > 0 {
+		return caps
+	}
+	if task == nil {
+		return nil
+	}
+	return capabilitiesFromText(taskTextForCapabilities(task))
+}
+
+// taskTextForCapabilities reads the task's request text from the payload keys the rest of the
+// system already uses for it (see agents/sub/event_payload.go). Task has no Description field:
+// the request has always lived in the payload, so reading anything else would invent a second
+// convention.
+func taskTextForCapabilities(task *models.Task) string {
+	if task == nil {
+		return ""
+	}
+	for _, key := range []string{"request", "query", "input", "prompt", "instruction"} {
+		if v, ok := task.Payload[key].(string); ok && v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// toolCapTagPrefix names the namespaced spelling of a capability tag.
+const toolCapTagPrefix = "cap_"
+
+// tagValueTrue is the only value a capability tag may carry; shared with l2graph so the two
+// spellings cannot drift.
+const tagValueTrue = "true"
+
+// capabilitiesFor derives the capability tags that narrow this quantum's toolbelt.
+//
+// Order: explicit payload tags, then the model tagger when configured, then the keyword table.
+// The payload wins because a submitter that tagged the task knows better than either heuristic;
+// a failing tagger falls through to keywords rather than narrowing to nothing, since the cost
+// of a missed capability is a hidden tool while the cost of no narrowing is only tokens.
+func (c *plannerCognition) capabilitiesFor(ctx context.Context, task *models.Task) []string {
+	if task == nil {
+		return nil
+	}
+	if caps := explicitTaskCapabilities(task); len(caps) > 0 {
+		return caps
+	}
+	text := taskTextForCapabilities(task)
+	if c.tagger != nil {
+		if caps, err := c.tagger.Tags(ctx, text); err == nil && len(caps) > 0 {
+			return caps
+		}
+		if c.logger != nil {
+			c.logger.Warn("planner: capability tagger returned nothing; using the keyword table", "task_id", task.TaskID)
+		}
+	}
+	return capabilitiesFromText(text)
+}
+
+// capabilitiesFromText delegates to the shared table (internal/tools/capability) so the routing
+// keywords have exactly one home: the drift test that compares them with the capabilities tools
+// actually declare lives next to the table, not here.
+func capabilitiesFromText(text string) []string { return capability.FromText(text) }
+
+func explicitTaskCapabilities(task *models.Task) []string {
+	if task == nil {
+		return nil
+	}
+	switch v := task.Payload[TaskToolCapabilityKey].(type) {
+	case []string:
+		return v
+	case []any:
+		out := make([]string, 0, len(v))
+		for _, e := range v {
+			if s, ok := e.(string); ok && s != "" {
+				out = append(out, s)
+			}
+		}
+		return out
+	case string:
+		if v == "" {
+			return nil
+		}
+		parts := strings.Split(v, ",")
+		out := make([]string, 0, len(parts))
+		for _, part := range parts {
+			if t := strings.TrimSpace(part); t != "" {
+				out = append(out, t)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+// advertisedToolSchemas returns the schemas the model is shown for this quantum.
+//
+// Three filters, in this order and with this precedence:
+//
+//  1. L1 policy — a ToolClass the evolution disabled is NEVER advertised. That is not routing
+//     and it is not waivable below: advertising a tool whose node can never grow spends a turn
+//     to produce nothing.
+//  2. c.toolTagFilter — construction-time hard constraints, ALL of which must match.
+//  3. caps — the task's capability flags, ANY of which may match (union).
+//
+// Union for caps is deliberate: Tags is map[string]string, one value per key, so a task that
+// needs weather AND code reading cannot express that by ANDing two values onto one key — it
+// would match nothing and fall open, i.e. route nowhere.
+//
+// When a narrowing was requested and nothing survives, the ROUTING is waived (every enabled
+// tool is advertised) but the L1 policy is not. A stale or wrong filter must degrade to
+// "like before", never to an empty list: an empty advertisement is indistinguishable from
+// "the tool does not exist" and nothing in the transcript would show the filter as the cause.
+func (c *plannerCognition) advertisedToolSchemas(caps []string) []resources.ToolSchema {
+	if c.binder == nil {
+		return nil
+	}
+	all := c.binder.GetToolSchemas()
+
+	enabled := make([]resources.ToolSchema, 0, len(all))
+	for _, s := range all {
+		if c.isToolEnabled(s.Name) {
+			enabled = append(enabled, s)
+		}
+	}
+	if len(c.toolTagFilter) == 0 && len(caps) == 0 {
+		return enabled
+	}
+
+	kept := make([]resources.ToolSchema, 0, len(enabled))
+	for _, s := range enabled {
+		if len(c.toolTagFilter) > 0 && !tagsMatch(s.Tags, c.toolTagFilter) {
+			continue
+		}
+		// A tool that declares NO capability tag cannot take part in capability routing, so
+		// hiding it would remove a tool this filter was never able to consider. Only tools that
+		// opt in (declare at least one cap_*) are subject to it — otherwise MCP tools, which
+		// carried no tags at all, were silently dropped whenever any builtin happened to match.
+		if len(caps) > 0 && declaresAnyCapability(s.Tags) && !matchesAnyCapability(s.Tags, caps) {
+			continue
+		}
+		kept = append(kept, s)
+	}
+	if len(kept) == 0 {
+		if c.logger != nil {
+			c.logger.Warn("planner cognition: tool routing matched nothing; advertising every enabled tool",
+				"filter", c.toolTagFilter, "capabilities", caps, "tools", len(enabled))
+		}
+		return enabled
+	}
+	return kept
+}
+
+// declaresAnyCapability reports whether a tool opted into capability routing at all.
+//
+// This is the difference between "I serve other capabilities" and "I have no capability
+// vocabulary": the former should be hidden by a capability filter, the latter cannot be judged
+// by one and must stay visible.
+func declaresAnyCapability(tags map[string]string) bool {
+	for k := range tags {
+		if strings.HasPrefix(k, toolCapTagPrefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// matchesAnyCapability reports whether the tool carries ANY of the wanted capability flags.
+func matchesAnyCapability(tags map[string]string, caps []string) bool {
+	for _, cap := range caps {
+		// Both spellings count: a tool may declare its capability as `cap_weather: "true"`
+		// (namespaced, avoids colliding with the routing keys the static filter uses) or
+		// plainly `weather: "true"`. Accepting only one of them silently turned every match
+		// into a miss, and a miss fails open to the full toolbelt — i.e. the feature would
+		// look enabled and narrow nothing.
+		if tags[cap] == tagValueTrue || tags[toolCapTagPrefix+cap] == tagValueTrue {
+			return true
+		}
+	}
+	return false
+}
+
+// tagsMatch reports whether every wanted tag is present with the wanted value.
+func tagsMatch(have, want map[string]string) bool {
+	for k, v := range want {
+		if have[k] != v {
+			return false
+		}
+	}
+	return true
+}
+
 func (c *plannerCognition) l1ToolClassID(toolName string) string {
 	if c.binder == nil {
 		return ""
@@ -270,6 +528,7 @@ func (c *plannerCognition) ExecuteStep(ctx context.Context, task *models.Task) (
 		// be able to distinguish "completed" from "hit the depth bound".
 		return c.growAnswerNode(ctx, g, task, "", nil, map[string]any{
 			answerTruncatedKey: true,
+			answerCauseKey:     answerCauseDepthCapped,
 		})
 	}
 
@@ -309,11 +568,49 @@ func (c *plannerCognition) ExecuteStep(ctx context.Context, task *models.Task) (
 	// Build the tool schemas for the LLM.
 	var llmTools []llmcore.Tool
 	if c.binder != nil {
-		schemas := c.binder.GetToolSchemas()
-		llmTools = make([]llmcore.Tool, 0, len(schemas))
+		caps := c.capabilitiesFor(ctx, task)
+		// Write the derived caps back so the next quantum (and a restart) can answer "why did
+		// this task see these tools": re-deriving from the description every time made the
+		// answer depend on the keyword table at read time, with nothing to audit afterwards.
+		if len(caps) > 0 && task.Payload[TaskToolCapabilityKey] == nil {
+			if task.Payload == nil {
+				task.Payload = make(map[string]any, 1)
+			}
+			task.Payload[TaskToolCapabilityKey] = caps
+		}
+		schemas := c.advertisedToolSchemas(caps)
+		if c.logger != nil && c.binder != nil {
+			// The success path was silent, so "only a few tools were offered" was unanswerable.
+			// total vs advertised shows the narrowing, and caps show what caused it.
+			c.logger.Info("planner: tool advertisement",
+				"caps", caps,
+				"advertised", len(schemas),
+				"total", len(c.binder.GetToolSchemas()),
+				"narrowed", len(caps) > 0,
+				"task_id", task.TaskID)
+		}
+		if c.adSink != nil {
+			// A log line answers "why now"; a recorded event answers "why last Tuesday", which
+			// is what cost attribution and keyword-table tuning need.
+			total := 0
+			if c.binder != nil {
+				total = len(c.binder.GetToolSchemas())
+			}
+			c.adSink.OnToolAdvertisement(ctx, task.SessionID, task.TaskID, caps, len(schemas), total)
+		}
+		llmTools = make([]llmcore.Tool, 0, len(schemas)+1)
 		for _, s := range schemas {
 			llmTools = append(llmTools, toCoreTool(s))
 		}
+		// Advertise the rationale tool to THIS cognition only — see
+		// rationaleToolSchema for why it is not in the registry. Without it the model has
+		// no way to state a reason on a tool-call turn, which is the measured common case
+		// (empty Content), so the rationale feature would exist and never fire.
+		llmTools = append(llmTools, rationaleToolSchema())
+		// The escape hatch travels with every advertisement (P4). Without it a partly-wrong
+		// keyword match is unrecoverable: the model cannot see the missing tool and has no way
+		// to ask for it, so the only recovery is a retry that fails the same way.
+		llmTools = append(llmTools, needToolsToolSchema())
 	}
 
 	// Call the LLM once with the context and tool schemas.
@@ -332,19 +629,43 @@ func (c *plannerCognition) ExecuteStep(ctx context.Context, task *models.Task) (
 
 	// No tool calls: the LLM gave a final answer. Grow an answer node.
 	if len(resp.ToolCalls) == 0 {
-		return c.growAnswerNode(ctx, g, task, resp.Content, resp, nil)
+		// The normal ending is labelled explicitly so a consumer can tell it
+		// apart from the forced ones (D1/D2) without inspecting the body.
+		return c.growAnswerNode(ctx, g, task, resp.Content, resp, map[string]any{
+			answerCauseKey: answerCausePlanned,
+		})
 	}
 
 	// Tool calls: grow tool nodes + a new plan node depending on them.
-	grown, err := c.growToolNodes(ctx, g, task, resp.ToolCalls, sessionID)
+	grown, rationales, err := c.growToolNodes(ctx, g, task, resp, sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("agentfabric: planner cognition: grow nodes: %w", err)
 	}
+	if grown == 0 && rationales > 0 {
+		// The model stated WHY it was about to act and then asked for no work at all.
+		// Nothing was blocked, so this MUST NOT be labelled as an L1 rejection: a
+		// constraint failure in the record where a model behaviour belongs is exactly the
+		// kind of mislabel this package keeps having to undo. The session ends (there is
+		// nothing to execute) with the cause naming what actually happened.
+		c.logger.Warn("planner: the model requested no work after stating its rationale, forcing answer",
+			"session", sessionID, "rationale_calls", rationales)
+		return c.growAnswerNode(ctx, g, task, resp.Content, resp, map[string]any{
+			answerCauseKey: answerCauseRationaleOnly,
+		})
+	}
 	if grown == 0 {
-		// All tool calls were skipped by L1 constraints (enabled=false
-		// or budget exhausted). Force an answer so the session terminates
-		// instead of looping on a planner that can never grow a tool.
-		return c.growAnswerNode(ctx, g, task, resp.Content, resp, nil)
+		// All tool calls were skipped by L1 constraints (enabled=false,
+		// per-agent allowlist, or budget exhausted). Force an answer so the
+		// session terminates instead of looping on a planner that can never grow
+		// a tool — and label the ending (D2): the result used to be a
+		// success-looking COMPLETED with no tool ever run and nothing recording
+		// why. The per-tool skips are logged individually by growToolNodes; this
+		// is the aggregate fact ("nothing could run") that none of them states.
+		c.logger.Warn("planner: every tool call skipped by L1 constraints, forcing answer",
+			"session", sessionID, "requested", len(resp.ToolCalls))
+		return c.growAnswerNode(ctx, g, task, resp.Content, resp, map[string]any{
+			answerCauseKey: answerCauseL1Blocked,
+		})
 	}
 
 	result := models.NewTaskResult(task.TaskID, task.AgentType)
@@ -368,280 +689,20 @@ func (c *plannerCognition) activeStrategy(ctx context.Context) *agents.ActiveStr
 	return st
 }
 
-// assembleContext builds the LLM message list from the predecessor path:
-// the session prompt (root output) + the outputs of every tool node on the
-// path from root to this plan node. Outputs are read from the fabric task
-// envelopes by node ID = task ID join (nodes carry no Output of
-// their own).
-func (c *plannerCognition) assembleContext(ctx context.Context, task *models.Task, g *L2Graph) ([]*llmcore.LLMMessage, error) {
-	// Read the session prompt from the root task's envelope.
-	rootID := g.Root()
-	rootPrompt, err := c.readNodeOutput(rootID)
-	if err != nil || strings.TrimSpace(rootPrompt) == "" {
-		// The root may not have completed yet (readNodeOutput reports an
-		// incomplete task as empty, not as an error), or it completed
-		// empty. Either way the payload's "input" is the prompt the
-		// admission path stamped — never send an empty user message, real
-		// providers reject it.
-		//
-		// The payload's "input" is asserted strictly: the admission path
-		// (submitPeerTask → ensureSessionAdmission) always stamps a string
-		// input, so a missing or non-string value is a wiring bug, not a
-		// data condition — surface it as an error (the fabric retries the
-		// task) instead of silently planning on an empty prompt.
-		fallback, ok := task.Payload["input"].(string)
-		if !ok {
-			return nil, fmt.Errorf("agentfabric: planner cognition: task %q payload has no string %q (root %q unreadable: %v)",
-				task.TaskID, "input", rootID, err)
-		}
-		rootPrompt = fallback
+// stableRound derives the growth round of the executing plan quantum. The
+// admission-submitted plan task (not a graph node) is the round-0 trigger and
+// grows round 1; a grown plan node sess/<sid>/d<N>/plan#0 has N-1 plan
+// ancestors and grows round N+1. In the normal flow this equals
+// PlanDepth()+1 — it only diverges on re-execution, which is exactly the
+// point: every node ID this quantum grows (tools, the round's plan node, the
+// answer node) is derived from the SAME stable round, so a replay after the
+// graph advanced re-derives the identical IDs instead of forking the session
+// into duplicate branches.
+func stableRound(g *L2Graph, taskID string) int {
+	if g.HasNode(taskID) {
+		return g.AncestorPlanCount(taskID) + 2
 	}
-
-	messages := []*llmcore.LLMMessage{
-		{Role: "user", Content: rootPrompt},
-	}
-
-	// Collect this plan node's full ancestor set (BFS over ALL DependsOn
-	// edges, nearest-first). The walk is nearest-first, so the collected
-	// nodes are REVERSED before being appended: the LLM must observe tool
-	// results in execution order, the same order ReAct's Messages[] presented
-	// them. Appending in walk order would invert the history and change what
-	// the model concludes.
-	chain := g.Ancestors(task.TaskID)
-	steps := g.DAG().StepIndex()
-	for i := len(chain) - 1; i >= 0; i-- {
-		nodeID := chain[i]
-		step, ok := steps[nodeID]
-		if !ok || !strings.HasPrefix(step.AgentType, "tool/") {
-			continue
-		}
-		output, err := c.readNodeOutput(nodeID)
-		switch {
-		case err != nil:
-			// A predecessor whose task is gone is a HOLE in the history, not
-			// an empty step: the envelope is the only place output lives
-			// (decision C), so losing it silently would let the model plan on
-			// a truncated past. Surface it and keep walking.
-			c.logger.Warn("planner: predecessor output unreadable; context has a hole",
-				"node", nodeID, "error", err)
-		case output != "":
-			messages = append(messages, toolHistoryPair(step, nodeID, output)...)
-		}
-	}
-
-	// M4.3 read side: the executing agent's distilled experience prior rides
-	// as the FIRST message, ahead of the root prompt and the strategy
-	// template appended by ExecuteStep — early grounding, late steering.
-	if sys := c.experiencePriorSystemMessage(task); sys != nil {
-		messages = append([]*llmcore.LLMMessage{sys}, messages...)
-	}
-
-	// Degraded-inputs disclosure (closure of the AllowPartial contract): when
-	// an AllowPartial task proceeds without a permanently-failed predecessor,
-	// the fabric mirrors that predecessor's ID into the task payload under
-	// degraded_inputs. Surface it to the model so it reasons WITH the gap
-	// ("input X is missing") instead of silently assuming every input is
-	// present — otherwise degraded_inputs is a write-only field and the task
-	// plans on a truncated reality.
-	//
-	// Role: system, appended after the tool history. This matches the planner's
-	// existing convention for trailing system hints (the L1 priors and the
-	// evolution-strategy template that ExecuteStep appends next), so the
-	// prefix stays cache-stable. If a strict system-must-be-first provider is
-	// targeted, fold these trailing hints into the leading system block
-	// together — do not special-case this one message.
-	if gaps := degradedInputsFromPayload(task.Payload); len(gaps) > 0 {
-		messages = append(messages, &llmcore.LLMMessage{
-			Role: roleSystem,
-			Content: "degraded inputs — the following prerequisites failed permanently and are MISSING; " +
-				"reason about their absence, do not assume their output exists:\n- " + strings.Join(gaps, "\n- "),
-		})
-	}
-
-	return messages, nil
-}
-
-// degradedInputsFromPayload extracts the degraded_inputs id list the fabric
-// mirrors into an AllowPartial task's payload. The checkpoint envelope round-
-// trips through JSON, so the slice may arrive as []string (in-process) or
-// []any of strings (after decode); both are handled. A missing key or wrong
-// type yields nil; an empty list yields a zero-length slice, not nil — either
-// way the caller's len>0 check injects nothing, so a task with no gap is never
-// announced as degraded.
-func degradedInputsFromPayload(payload map[string]any) []string {
-	if payload == nil {
-		return nil
-	}
-	raw, ok := payload[taskfabric.PayloadKeyDegradedInputs]
-	if !ok {
-		return nil
-	}
-	switch v := raw.(type) {
-	case []string:
-		return v
-	case []any:
-		ids := make([]string, 0, len(v))
-		for _, e := range v {
-			if s, ok := e.(string); ok && s != "" {
-				ids = append(ids, s)
-			}
-		}
-		return ids
-	default:
-		return nil
-	}
-}
-
-// assembleAnswerMessages rebuilds the session's LLM context for the answer
-// body's synthesis call (M4.2): the same message list the planner would send
-// on its next quantum — root prompt, tool history (rebuilt as
-// assistant+tool pairs from the fabric envelopes), experience prior —
-// assembled from the ANSWER task's own predecessor chain. The answer node IS
-// a graph node (node id = task id), so the same walk that feeds the planner
-// feeds the synthesizer; non-tool nodes on the chain (plan nodes) are
-// skipped by assembleContext already.
-//
-// It delegates to assembleContext wholesale so the synthesizer sees EXACTLY
-// what the planner sees — a divergent context would make the synthesized
-// answer inconsistent with the plan that produced it. The context is bounded
-// by the same growth-depth guard that bounds every planner quantum (no
-// extra truncation: parity with the planner's own view is the contract).
-//
-// The bool (not error) contract is deliberate: an assembly miss is a
-// degraded condition (session already released, root prompt unreadable),
-// not a retriable quantum failure — the answer body falls back to the gap
-// body instead of letting the fabric burn retry budget on a failure no
-// retry can fix.
-func (c *plannerCognition) assembleAnswerMessages(ctx context.Context, task *models.Task) ([]*llmcore.LLMMessage, bool) {
-	g, err := c.sessions.GetSession(task.SessionID)
-	if err != nil {
-		// Most commonly the session was already released (duplicate
-		// answer execution): there is no history left to synthesize
-		// from, which is a gap, not a failure.
-		c.logger.Warn("answer synthesis: session graph unavailable",
-			"session", task.SessionID, "task", task.TaskID, "error", err)
-		return nil, false
-	}
-	msgs, err := c.assembleContext(ctx, task, g)
-	if err != nil {
-		c.logger.Warn("answer synthesis: context assembly failed",
-			"session", task.SessionID, "task", task.TaskID, "error", err)
-		return nil, false
-	}
-	return msgs, true
-}
-
-// experiencePriorSystemMessage renders the EXECUTING agent's distilled
-// experience prior as the leading system message. The join key is the
-// executingAgentKey stamp Agent.ExecuteStep puts on the task payload (the
-// planner is shared across agents; the task is the only carrier of the
-// executor's identity). Every failure mode — no fabric wired, no stamp
-// (planner invoked directly), unknown agent, empty/unrenderable prior —
-// degrades to nil: a missing prior must change nothing (zero-value usable),
-// never fail the quantum.
-func (c *plannerCognition) experiencePriorSystemMessage(task *models.Task) *llmcore.LLMMessage {
-	if c.agentFabric == nil {
-		return nil
-	}
-	agentID, _ := task.Payload[executingAgentKey].(string)
-	if agentID == "" {
-		return nil
-	}
-	cs, err := c.agentFabric.CognitiveState(agentID)
-	if err != nil {
-		// The executing agent vanished from the fabric (killed mid-lease):
-		// log and plan without a prior — the quantum is still runnable.
-		c.logger.Warn("planner: executing agent unreadable; planning without experience prior",
-			"agent", agentID, "error", err)
-		return nil
-	}
-	prior := truncate.WithEllipsis(renderExperiencePrior(cs.Context), maxExperiencePriorRunes)
-	if prior == "" {
-		return nil
-	}
-	return &llmcore.LLMMessage{
-		Role:    roleSystem,
-		Content: experiencePriorPrefix + prior,
-	}
-}
-
-// renderExperiencePrior renders a cognitive Context value into prompt text.
-// The production write side (cmd/ares loadExperiencePrior) stores a
-// {type, problem, solution, constraints} map, which is JSON-encoded for
-// readability; a plain-string prior (tests, Recover-restored states) is used
-// as-is. Unrenderable values yield "" — the prior is informative, never
-// load-bearing.
-func renderExperiencePrior(v any) string {
-	switch p := v.(type) {
-	case nil:
-		return ""
-	case string:
-		return strings.TrimSpace(p)
-	default:
-		buf, err := json.MarshalIndent(p, "", "  ")
-		if err != nil {
-			return ""
-		}
-		return string(buf)
-	}
-}
-
-// toolHistoryPair renders one executed tool node as the assistant+tool
-// message pair the Chat API requires: the assistant message carries the
-// original tool call (reconstructed from the node's arg.-namespaced
-// Metadata), and the tool message carries its envelope output, linked by
-// the node ID as the tool-call ID.
-//
-// A bare tool message with no preceding assistant tool_call violates the
-// provider contract (OpenAI rejects orphan tool messages; lenient providers
-// accept them but the model loses track of what it already did — observed
-// live as the same grep call repeated every round until the depth cap).
-// ReAct never has this problem because its history IS the live conversation
-// that produced the calls; the planner rebuilds history from the graph, so
-// it must rebuild the pairing too.
-func toolHistoryPair(step *engine.Step, nodeID, output string) []*llmcore.LLMMessage {
-	tool := strings.TrimPrefix(step.AgentType, "tool/")
-	meta := make(map[string]any, len(step.Metadata))
-	for k, v := range step.Metadata {
-		meta[k] = v
-	}
-	argsJSON, err := json.Marshal(argsFromPayload(meta))
-	if err != nil {
-		argsJSON = []byte("{}")
-	}
-	return []*llmcore.LLMMessage{
-		{
-			Role:    "assistant",
-			Content: "",
-			ToolCalls: []llmcore.ToolCall{{
-				ID:   nodeID,
-				Type: "function",
-				Function: llmcore.FunctionCall{
-					Name:      tool,
-					Arguments: string(argsJSON),
-				},
-			}},
-		},
-		{Role: roleTool, Content: output, ToolCallID: nodeID},
-	}
-}
-
-// readNodeOutput reads one node's execution output from its fabric task
-// envelope by node ID = task ID join. Returns "" when the task is not
-// found or has no output yet (e.g. not yet completed).
-func (c *plannerCognition) readNodeOutput(nodeID string) (string, error) {
-	tk, err := c.fabric.Task(nodeID)
-	if err != nil {
-		return "", err
-	}
-	if tk.State != taskfabric.StateCompleted {
-		return "", nil
-	}
-	dc, err := taskfabric.DecodeCheckpoint(tk.Checkpoint)
-	if err != nil {
-		return "", err
-	}
-	return extractOutputContent(dc.StepCheckpoint), nil
+	return 1
 }
 
 // growToolNodes grows one tool node per LLM tool call, then grows a new plan
@@ -670,22 +731,6 @@ func (c *plannerCognition) readNodeOutput(nodeID string) (string, error) {
 // instead of erroring on the duplicate ID, and a round whose plan node
 // already exists is a successful no-op.
 //
-// stableRound derives the growth round of the executing plan quantum. The
-// admission-submitted plan task (not a graph node) is the round-0 trigger and
-// grows round 1; a grown plan node sess/<sid>/d<N>/plan#0 has N-1 plan
-// ancestors and grows round N+1. In the normal flow this equals
-// PlanDepth()+1 — it only diverges on re-execution, which is exactly the
-// point: every node ID this quantum grows (tools, the round's plan node, the
-// answer node) is derived from the SAME stable round, so a replay after the
-// graph advanced re-derives the identical IDs instead of forking the session
-// into duplicate branches.
-func stableRound(g *L2Graph, taskID string) int {
-	if g.HasNode(taskID) {
-		return g.AncestorPlanCount(taskID) + 2
-	}
-	return 1
-}
-
 // Returns the number of tool nodes the round carries (grown or already
 // present), 0 when the round is genuinely empty — in which case the caller
 // forces an answer node.
@@ -693,11 +738,17 @@ func (c *plannerCognition) growToolNodes(
 	ctx context.Context,
 	g *L2Graph,
 	task *models.Task,
-	toolCalls []llmcore.ToolCall,
+	resp *llmcore.GenerateResponse,
 	sessionID string,
-) (int, error) {
+) (int, int, error) {
+	// The whole response is passed, not just its tool calls, because the round's
+	// plan node must also carry this quantum's rationale (see rationaleKey).
+	// resp is non-nil by the caller's contract: ExecuteStep only reaches this
+	// branch after reading resp.ToolCalls.
+	toolCalls := resp.ToolCalls
 	round := stableRound(g, task.TaskID)
 	grown := 0
+	rationales := 0
 
 	// Determine the predecessor for the first tool node: the current plan
 	// node when it exists, otherwise the root (first plan quantum).
@@ -708,6 +759,22 @@ func (c *plannerCognition) growToolNodes(
 
 	for seq, tc := range toolCalls {
 		toolName := tc.Function.Name
+
+		// A rationale statement is NOT work: it was already captured by rationaleFrom,
+		// which reads this call's argument. Growing a tool node for it would put a node in
+		// the graph that performs nothing — one per statement, each with its own result —
+		// which is noise for the projection and for anyone reading the session. Counted so
+		// the caller can tell this ending apart from "L1 blocked every call".
+		if toolName == RecordRationaleToolName {
+			rationales++
+			continue
+		}
+		// The escape hatch: union the requested capabilities into the task so the NEXT quantum
+		// advertises them. It grows no node — asking for a tool is not doing work.
+		if toolName == NeedToolsToolName {
+			c.applyNeedTools(ctx, task, tc)
+			continue
+		}
 
 		// Check L1 constraints before growing the node.
 		if !c.isToolEnabled(toolName) {
@@ -745,7 +812,7 @@ func (c *plannerCognition) growToolNodes(
 		args := map[string]any{}
 		if tc.Function.Arguments != "" {
 			if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
-				return grown, fmt.Errorf("parse tool %s args: %w", toolName, err)
+				return grown, rationales, fmt.Errorf("parse tool %s args: %w", toolName, err)
 			}
 		}
 
@@ -764,7 +831,7 @@ func (c *plannerCognition) growToolNodes(
 		metadata[tenantMetadataKey] = task.TenantID
 
 		if err := g.AddToolNode(ctx, nodeID, toolName, metadata, prev); err != nil {
-			return grown, fmt.Errorf("add tool node %s: %w", nodeID, err)
+			return grown, rationales, fmt.Errorf("add tool node %s: %w", nodeID, err)
 		}
 		// Chain sequential tools within the same round: the next tool depends on
 		// this one (data flow).
@@ -800,8 +867,17 @@ func (c *plannerCognition) growToolNodes(
 		if task.TenantID != "" {
 			planArgs[tenantMetadataKey] = task.TenantID
 		}
+		// This quantum's rationale rides onto the node grown for the NEXT round:
+		// that node becomes the next quantum's task — and the task a replacement
+		// agent resumes — so the successor reads the reasoning of the quantum
+		// before it from its own args. Bounded on the write side
+		// (rationaleMaxRunes); absent when the provider emitted no content, so
+		// nothing is invented and the reader simply adds no message.
+		if r := rationaleFrom(resp); r != "" {
+			planArgs[rationaleKey] = r
+		}
 		if err := g.AddToolNode(ctx, newPlanID, "plan", planArgs, prev); err != nil {
-			return grown, fmt.Errorf("add plan node %s: %w", newPlanID, err)
+			return grown, rationales, fmt.Errorf("add plan node %s: %w", newPlanID, err)
 		}
 	} else if planExists && grown == 0 {
 		// Full-growth retry whose LLM response matched nothing: the round
@@ -809,7 +885,7 @@ func (c *plannerCognition) growToolNodes(
 		// the caller does not force a spurious answer.
 		grown = 1
 	}
-	return grown, nil
+	return grown, rationales, nil
 }
 
 // isToolEnabled reads the L1 ToolClass graph's "enabled" metadata for the
@@ -993,34 +1069,6 @@ func (c *plannerCognition) growAnswerNode(
 	result.SetSuccess(nil, "planner grew answer node")
 	result.Metadata = tokenUsageMetadata(resp)
 	return &StepOutcome{Done: true, Result: result}, nil
-}
-
-// Token-usage metadata keys on StepOutcome.Result.Metadata — the quantum's
-// LLM usage report. The scheduler's buildQuantumStep reads these keys when
-// re-wrapping the envelope (accumulating into InputTokens/OutputTokens), so
-// the key names are the cross-package contract (kernel/…/scheduler.go
-// mirrors them in tokenUsageFromResult).
-const (
-	resultMetaInputTokens  = "input_tokens"
-	resultMetaOutputTokens = "output_tokens"
-)
-
-// tokenUsageMetadata extracts the response's token usage into result
-// metadata. A nil response or zero usage yields nil — the scheduler's
-// accumulate step treats a missing map as "nothing to add", so a provider
-// that reports no usage contributes nothing to the session total.
-func tokenUsageMetadata(resp *llmcore.GenerateResponse) map[string]any {
-	if resp == nil {
-		return nil
-	}
-	in, out := resp.Usage.PromptTokens, resp.Usage.CompletionTokens
-	if in <= 0 && out <= 0 {
-		return nil
-	}
-	return map[string]any{
-		resultMetaInputTokens:  in,
-		resultMetaOutputTokens: out,
-	}
 }
 
 // extractOutputContent reads the textual output from a step checkpoint. The

@@ -86,11 +86,19 @@ func buildBootstrapKnowledgeStore(cfg *ares_config.Config) (knowledge.KnowledgeS
 			_ = db.Close()
 			return nil, nil, fmt.Errorf("bootstrap: ping postgres knowledge store: %w", err)
 		}
-		store, err := postgresstore.New(db)
+		// The store's scoring weights come from config, and this is the ONE place they
+		// are applied: every retrieval path that searches through this store (the
+		// knowledge tool's adapter, the AKG provider, the context retriever) inherits
+		// them, so a deployment does not have to set the same thing at four call sites
+		// and cannot end up with a recency term that is configured but never applied.
+		weights := knowledge.DefaultHybridWeights().WithRecency(cfg.Knowledge.RecencyWeight)
+		store, err := postgresstore.New(db, postgresstore.WithDefaultWeights(weights))
 		if err != nil {
 			_ = db.Close()
 			return nil, nil, fmt.Errorf("bootstrap: init postgres knowledge store: %w", err)
 		}
+		log.Info("bootstrap: knowledge store scoring weights",
+			"vector", weights.Vector, "lexical", weights.Lexical, "recency", weights.Recency)
 		return store, func() { _ = db.Close() }, nil
 	}
 	return memstore.New(), func() {}, nil
@@ -234,7 +242,14 @@ func triggerAKGBridge(
 	taskText := akgEventStringField(ev.Payload, ares_events.EventKeyTask)
 	resultText := akgEventStringField(ev.Payload, ares_events.EventKeyResult)
 	tenantID := akgEventStringField(ev.Payload, ares_events.EventKeyTenantID)
-	agentID := akgEventStringField(ev.Payload, "agent_id")
+	// M5: read the caller-declared user id from the event payload instead of
+	// passing agent_id into the userID parameter (pre-0.3.4 used agent_id as a
+	// stand-in, so AKG never had a real user dimension). The producer is the
+	// executing agent, which stamps it from task.Payload (agents/sub), and the
+	// payload is the durable carrier the checkpoint envelope already persists.
+	// An empty value means "no user known": the distiller then falls back to
+	// the tenant namespace, preserving pre-M5 behaviour.
+	userID := akgEventStringField(ev.Payload, ares_events.EventKeyUserID)
 
 	if tenantID == "" || len(taskText) < 10 || len(resultText) < 20 {
 		return
@@ -248,7 +263,10 @@ func triggerAKGBridge(
 	eg.Go(func() error {
 		bridgeCtx, cancel := context.WithTimeout(ctx, akgBridgeTimeout)
 		defer cancel()
-		if _, err := bridge.DistillConversation(bridgeCtx, ev.ID, messages, tenantID, agentID); err != nil {
+		// M5: pass the real userID so DistillConversation can resolve the
+		// user-level namespace. When userID is empty, DistillConversation
+		// falls back to the tenant namespace (pre-M5 behaviour).
+		if _, err := bridge.DistillConversation(bridgeCtx, ev.ID, messages, tenantID, userID); err != nil {
 			log.Warn("bootstrap: AKG distill conversation failed",
 				"event_id", ev.ID, "error", err)
 		}

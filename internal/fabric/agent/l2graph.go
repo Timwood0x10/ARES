@@ -8,7 +8,9 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/core/models"
+	"github.com/Timwood0x10/ares/internal/fabric/task"
 	"github.com/Timwood0x10/ares/internal/fabric/task/workflow/engine"
 	kctx "github.com/Timwood0x10/ares/internal/kernel/ctx"
 	llmcore "github.com/Timwood0x10/ares/internal/llmcore"
@@ -509,7 +511,76 @@ const answerContentKey = "content"
 // (the plan hit the growth-depth upper bound and the answer was forced).
 // answerCognition copies it into the terminal result metadata so external
 // callers can distinguish "completed" from "hit the depth bound".
-const answerTruncatedKey = "truncated"
+const answerTruncatedKey = ares_events.EventKeyAnswerTruncated
+
+// answerCauseKey is the arg a planner stamps on the answer node recording WHY
+// the session ended, and the metadata key the terminal result carries it under.
+//
+// "COMPLETED" alone hides endings that are NOT the model simply finishing: the
+// growth-depth guard forcing an answer (D1) and L1 constraints skipping EVERY
+// tool call so no tool ever ran (D2) both produce a success-looking result. An
+// external caller could not tell them from a normal completion.
+const answerCauseKey = "answer_cause"
+
+// The answerCause* values are a closed set and wire-visible: a caller (or a
+// dashboard) keys on these strings, so they are stable identifiers, not prose.
+// Extending the set is a contract change.
+const (
+	// answerCausePlanned: the model produced a final answer (its turn carried no
+	// tool calls) and the planner grew the terminal node for it — the normal
+	// completion.
+	answerCausePlanned = "planned"
+	// answerCauseDepthCapped: the growth-depth guard grew the answer because the
+	// L2 graph hit its depth bound (D1). The node is content-less on purpose;
+	// the body comes from synthesis or the gap fallback.
+	answerCauseDepthCapped = "depth_capped"
+	// answerCauseL1Blocked: the model asked for tools but L1 constraints (tool
+	// disabled, per-agent allowlist, or budget) skipped EVERY one of them, so
+	// no tool could ever run in this session (D2).
+	answerCauseL1Blocked = "l1_blocked"
+	// answerCauseUnlabeled: the terminal node carried no cause — a producer other
+	// than the planner (a direct/SDK caller) grew it. Reported as unattributed
+	// rather than guessed as "planned", which would dress an unknown ending up as
+	// a normal one.
+	answerCauseUnlabeled = "unlabeled"
+	// answerCauseRationaleOnly: the model's turn carried ONLY a record_rationale
+	// call — it stated why it was about to act and then asked for no work at all,
+	// so there was nothing to execute and the session was ended.
+	//
+	// A distinct cause rather than answerCauseL1Blocked: nothing was blocked, and
+	// reporting "L1 blocked" here would put a constraint failure in the record
+	// where a model behaviour belongs. It is also the honest label for an ending
+	// that produces no answer — an empty completion labelled "planned" would read
+	// as a real one.
+	answerCauseRationaleOnly = "rationale_only"
+)
+
+// answerBodySourceKey is the arg a producer may set — and always the metadata
+// key the terminal result carries — recording where the emitted body CAME FROM.
+//
+// It is a separate fact from the cause on purpose: a session can end because the
+// depth guard forced an answer (cause) AND have no body to emit at all (source =
+// gap). One label cannot carry both, and whichever it dropped was exactly what a
+// consumer needed — "is this a real answer?" reads this key (or the depth-guard
+// truncation marker), "why did growth stop?" reads answerCauseKey.
+// The wire strings are defined ONCE in ares_events (EventKeyAnswerBodySource and
+// the AnswerBodySource* values) because three packages touch them — the producer
+// here, the carrier in fabric/task, and the consumer in runtime/ares_evolution.
+// These local names are this package's vocabulary for that one contract; a
+// rename only has to happen in ares_events, and every user then fails to compile
+// instead of drifting apart silently.
+const answerBodySourceKey = ares_events.EventKeyAnswerBodySource
+
+const (
+	// answerBodySupplied: the body is the content the producer put on the node.
+	answerBodySupplied = ares_events.AnswerBodySourceSupplied
+	// answerBodySynthesized: the body was reconstructed by M4.2 synthesis over
+	// the predecessor history — a real answer, but not one the model handed over.
+	answerBodySynthesized = ares_events.AnswerBodySourceSynthesized
+	// answerBodyGap: no body existed; the result carries the explicit gap
+	// (unansweredBody). This is the degraded ending.
+	answerBodyGap = ares_events.AnswerBodySourceGap
+)
 
 // unansweredBody is the body emitted when a terminal answer node carries no
 // supplied content. It states the absence instead of reading like a result:
@@ -573,25 +644,65 @@ var _ Cognition = (*answerCognition)(nil)
 
 // ExecuteStep completes the terminal node with the answer content supplied
 // on the node; a content-less node completes with the synthesized answer
-// when synthesis is wired, else with the explicit gap body. A node stamped
-// with the depth-guard truncation marker carries it into the terminal
-// result metadata so external callers can detect the truncation.
+// when synthesis is wired, else with the explicit gap body. Three facts ride the
+// terminal result metadata so external callers can tell the endings apart
+// without parsing the body: answerCauseKey (why growth stopped), answerBodySourceKey
+// (whether a real answer was emitted at all) and the depth-guard truncation
+// marker. Two further keys report WHO carried the session (defect A6):
+// executorRevivedKey and the scheduler's requeued flag.
 func (c *answerCognition) ExecuteStep(ctx context.Context, task *models.Task) (*StepOutcome, error) {
-	body, ok := argsFromPayload(task.Payload)[answerContentKey].(string)
-	if !ok || strings.TrimSpace(body) == "" {
+	args := argsFromPayload(task.Payload)
+	body, ok := args[answerContentKey].(string)
+	supplied := ok && strings.TrimSpace(body) != ""
+	// cause says WHY the session ended; the planner stamps it on the node it
+	// grows. A node grown without a stamp (a direct/SDK caller) is reported as
+	// unattributed — unless it carried a body, in which case it is a supplied
+	// answer, which is the normal shape.
+	cause := answerCauseUnlabeled
+	if stamped, stampedOK := args[answerCauseKey].(string); stampedOK && stamped != "" {
+		cause = stamped
+	} else if supplied {
+		cause = answerCausePlanned
+	}
+	// bodySource says where the body CAME FROM. Kept separate from the cause: a
+	// forced ending can still produce a real (synthesized) answer, and a normal
+	// ending can produce no answer at all.
+	bodySource := answerBodySupplied
+	if !supplied {
 		body = c.synthesizeAnswer(ctx, task)
+		bodySource = answerBodySynthesized
 	}
 	if strings.TrimSpace(body) == "" {
 		body = unansweredBody
+		bodySource = answerBodyGap
 		c.logAnswerGap(task)
 	}
 	result := models.NewTaskResult(task.TaskID, task.AgentType)
 	result.SetSuccess([]*models.RecommendItem{{ItemID: task.TaskID, Content: body}}, "answer node terminated session")
-	if truncated, ok := argsFromPayload(task.Payload)[answerTruncatedKey].(bool); ok && truncated {
-		if result.Metadata == nil {
-			result.Metadata = make(map[string]any)
-		}
+	if result.Metadata == nil {
+		result.Metadata = make(map[string]any)
+	}
+	result.Metadata[answerCauseKey] = cause
+	result.Metadata[answerBodySourceKey] = bodySource
+	if answerArgTruncated(args) {
 		result.Metadata[answerTruncatedKey] = true
+	}
+	// Who finished the session, and whether the work was continued (defect A6).
+	// Both are read from the raw payload, not from args: they are unprefixed
+	// envelope-namespace keys (executorRevivedKey is stamped by the executing
+	// agent at dispatch, taskfabric.PayloadKeyRequeued by the scheduler), while
+	// argsFromPayload exposes only the arg. namespace.
+	//
+	// The pair answers the question the two continuation paths used to hide: a
+	// session finished by an agent whose executor_revived is true was continued
+	// WITH a dead agent's brain; requeued without it was continued on a blank
+	// slate. They are reported separately on purpose — "why the session ended"
+	// (the cause above) and "who carried it" are independent facts.
+	if revived, revivedOK := task.Payload[executorRevivedKey].(bool); revivedOK {
+		result.Metadata[executorRevivedKey] = revived
+	}
+	if requeued, requeuedOK := task.Payload[taskfabric.PayloadKeyRequeued].(bool); requeuedOK && requeued {
+		result.Metadata[taskfabric.PayloadKeyRequeued] = true
 	}
 	if c.sessions != nil && strings.TrimSpace(task.SessionID) != "" {
 		// The session ends here: drop the graph handle and stop the
@@ -629,7 +740,7 @@ func (c *answerCognition) synthesizeAnswer(ctx context.Context, task *models.Tas
 	if !ok {
 		return "" // the assembler already logged why
 	}
-	msgs = append(msgs, &llmcore.LLMMessage{Role: "user", Content: answerSynthesisInstruction})
+	msgs = append(msgs, &llmcore.LLMMessage{Role: roleUser, Content: answerSynthesisInstruction})
 	// No tool schemas and no param overrides: this is a plain completion
 	// over the session's history, not a planning call — the session is
 	// terminating, so a tool call could never execute, and strategy
@@ -701,6 +812,31 @@ func argsMetadata(args map[string]any) map[string]string {
 		md[argMetadataPrefix+k] = stringify(v)
 	}
 	return md
+}
+
+// answerArgTruncated reports whether the depth-guard truncation marker rides this
+// answer node's args.
+//
+// It reads the value in the shape the WIRE carries, not the shape the producer
+// wrote. argsMetadata stores node args as strings (the engine's node metadata is
+// a map[string]string), so the planner's bool arrives here as the JSON text
+// "true". A bare .(bool) assertion therefore never fires in production: every
+// depth-capped session stamped the marker and none read it, which silently
+// deleted the depth-capped tier from BOTH scorers that key on it — the fitness
+// observer's penalty and the eval judge's deterministic floor (defect P0-1(ii)
+// half). The in-memory bool is accepted too, because the fact is the same one
+// whichever layer encoded it; the string form is only "true"/"false" since
+// stringify renders it with json.Marshal, so no other spelling is tolerated and
+// an absent/false marker stays absent.
+func answerArgTruncated(args map[string]any) bool {
+	switch v := args[answerTruncatedKey].(type) {
+	case bool:
+		return v
+	case string:
+		return v == tagValueTrue
+	default:
+		return false
+	}
 }
 
 // argsFromPayload re-extracts the tool arguments from a node's payload,

@@ -9,6 +9,7 @@ import (
 
 	"github.com/Timwood0x10/ares/internal/ares_config"
 	"github.com/Timwood0x10/ares/internal/ares_events"
+	"github.com/Timwood0x10/ares/internal/evidence"
 	evolution "github.com/Timwood0x10/ares/internal/runtime/ares_evolution"
 	"github.com/Timwood0x10/ares/internal/runtime/eval"
 	experience "github.com/Timwood0x10/ares/internal/runtime/memory/experience"
@@ -26,6 +27,17 @@ type EvolutionComponents struct {
 	// G3 eval gate needs it to score candidate strategies through the
 	// AgentTestRunner at promote time. Nil when no LLM client was available.
 	EvalLLMClient eval.LLMClient
+	// CandidateReplayProvider, when non-nil, lets the arena regression gate RUN each
+	// candidate through a real per-candidate runtime
+	// (evolution.gates.regression_runtime_replay) instead of asking a model to role-play it.
+	//
+	// It is a provider (called on first case execution) and it is set by the process that
+	// owns the serving tool binder — cmd/ares — because bootstrap wires the LLM client but
+	// NOT the tool registry, and because that binder does not exist yet when these
+	// components are built. Nil therefore means "replay is not available in this process",
+	// and an enabled flag with a nil provider is refused at gate construction rather than
+	// quietly falling back to the role-play scorer.
+	CandidateReplayProvider func() (*CandidateReplayFactory, error)
 	// FlightRecorder is the recorder created for the Flight→Experience
 	// adapter. It is exposed so Bootstrap can start/stop it explicitly:
 	// without Start the collector never subscribes to events and the GA
@@ -50,9 +62,16 @@ func ProvideEvolution(
 	expRepo repositories.ExperienceRepositoryInterface,
 	llmClient eval.LLMClient,
 	fr *flight.FlightRecorder,
+	options ...EvolutionOption,
 ) (*EvolutionComponents, error) {
 	if eventStore == nil || expRepo == nil {
 		return nil, errors.New("bootstrap: evolution skipped (missing dependencies)")
+	}
+	var o evolutionOptions
+	for _, opt := range options {
+		if opt != nil {
+			opt(&o)
+		}
 	}
 
 	// 1. Flight → Experience adapter (reuses the shared recorder — do NOT
@@ -100,7 +119,7 @@ func ProvideEvolution(
 	// 3. Evaluators (optional — requires LLM client).
 	var evalRegistry *eval.EvaluatorRegistry
 	if llmClient != nil {
-		evalRegistry, err = setupEvaluators(llmClient)
+		evalRegistry, err = setupEvaluators(llmClient, o.evalEvidenceStore)
 		if err != nil {
 			// Register already subscribed to the EventStore on its own
 			// background goroutine; without Shutdown that goroutine leaks
@@ -123,16 +142,59 @@ func ProvideEvolution(
 	}, nil
 }
 
-func setupEvaluators(llmClient eval.LLMClient) (*eval.EvaluatorRegistry, error) {
-	judge, err := eval.NewLLMJudgeEvaluator(llmClient,
+// EvolutionOption configures ProvideEvolution. Variadic so an added optional
+// dependency does not breach the parameter-count rule and does not churn every
+// call site.
+type EvolutionOption func(*evolutionOptions)
+
+// evolutionOptions holds the resolved options of one ProvideEvolution call.
+type evolutionOptions struct {
+	// evalEvidenceStore is the shared evidence store handed to the eval
+	// evaluators. Wired, golden-replay judgments are persisted as dimension_eval
+	// evidence — the only correctness signal the runtime path can produce for GA
+	// fitness (defect G1 / P0-1). Left nil, evaluation behaves exactly as before
+	// and nothing is persisted.
+	evalEvidenceStore evidence.Store
+}
+
+// WithEvalEvidenceStore wires store into the evaluators built by
+// ProvideEvolution, so that judging the golden suite leaves behind the accuracy
+// evidence the fitness aggregator reads.
+func WithEvalEvidenceStore(store evidence.Store) EvolutionOption {
+	return func(o *evolutionOptions) { o.evalEvidenceStore = store }
+}
+
+// setupEvaluators builds the production evaluator registry.
+//
+// The judge runs the DIMENSION path: its four-rubric judgment is the only
+// producer of dimension_eval evidence (dimension_judge.go), so leaving it off —
+// which is what this wiring did — is why the fitness aggregator's DimensionEval
+// weight (0.25) had nothing to weigh and GA optimised on outcome + cost/latency
+// alone.
+//
+// Recorded, deliberate consequence: the eval gate's score becomes the mean of
+// four rubric scores instead of one overall judgment. Both normalize to [0,1] so
+// min_score keeps its scale, but the quantity measured changes — an operator
+// comparing historical gate verdicts should know that.
+func setupEvaluators(llmClient eval.LLMClient, evStore evidence.Store) (*eval.EvaluatorRegistry, error) {
+	judgeOpts := []eval.LLMJudgeOption{
 		eval.WithChinesePrompt(),
 		eval.WithScale(eval.ScaleOneToTen),
-	)
+		eval.WithDimensionAveraging(),
+	}
+	if evStore != nil {
+		judgeOpts = append(judgeOpts, eval.WithEvidenceStore(evStore))
+	}
+	judge, err := eval.NewLLMJudgeEvaluator(llmClient, judgeOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("create llm judge: %w", err)
 	}
 	registry := eval.NewEvaluatorRegistry()
-	if err := registry.Register("llm_judge", judge); err != nil {
+	// Registered through the reporting decorator: the judge's own counters are the
+	// only measurement of how much of the accuracy signal deterministic checks
+	// anchor, and until something reads them at runtime the number is invisible
+	// while the scalar it qualifies keeps being produced (P0-1(ii)).
+	if err := registry.Register("llm_judge", eval.NewAgreementReportingEvaluator(judge)); err != nil {
 		return nil, fmt.Errorf("register llm judge: %w", err)
 	}
 	return registry, nil

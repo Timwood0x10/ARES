@@ -70,6 +70,13 @@ type MemoryManager interface {
 	// (empty string, nil error) from "unsupported backend" (non-nil error).
 	GetLatestSessionForAgent(ctx context.Context, agentID string) (string, error)
 
+	// SessionOwner returns the user a session belongs to. Returns ("", nil)
+	// when the session is unknown (never created, or expired) — the same
+	// convention as GetLatestSessionForAgent — so a caller handed a session id
+	// from an untrusted source (e.g. a tool parameter) can verify it belongs to
+	// the request's user before reading its messages.
+	SessionOwner(ctx context.Context, sessionID string) (string, error)
+
 	// Start starts the memory manager and background workers.
 	Start(ctx context.Context) error
 
@@ -158,6 +165,18 @@ type MemoryConfig struct {
 	// system. 0 (default) disables it — BuildContext behaves as before. It
 	// only trims; it never widens anything.
 	ContextTokenBudget int
+
+	// ModelContextWindow is the model's total context window in tokens. When set (and
+	// ContextTokenBudget is 0), the effective budget is DefaultContextBudgetRatio of it.
+	//
+	// 0 means "unknown", and unknown must not silently become a guess: with no window there is
+	// no share to take, so the budget stays disabled exactly as before.
+	ModelContextWindow int
+
+	// SessionMaxTokens bounds how much memory ONE session may hold (0 = no cap). It is the
+	// storage counterpart of ContextTokenBudget: the count cap bounds how many messages are
+	// kept, not how large they are, and one big tool result is a single message.
+	SessionMaxTokens int
 
 	// EnableRAG enables retrieval-augmented generation: past experiences and
 	// distilled memories are retrieved and injected into the LLM prompt.

@@ -112,6 +112,13 @@ func newEmbeddingHTTPClient(timeout time.Duration) *http.Client {
 // (a misbehaving service could OOM the process with an unbounded response).
 func readEmbeddingBody(resp *http.Response) ([]byte, error) {
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		// A 401/403 from the embedding service is permanent (no in-band re-auth here):
+		// without the class, the async worker would retry it MaxRetries times before
+		// dead-lettering the content, and the operator would see "retries exhausted"
+		// instead of "the credential is wrong".
+		if cause := core.HTTPStatusError(resp.StatusCode); cause != nil {
+			return nil, fmt.Errorf("embedding service returned %s: %w", resp.Status, cause)
+		}
 		return nil, fmt.Errorf("embedding service returned %s", resp.Status)
 	}
 	return io.ReadAll(io.LimitReader(resp.Body, aresnet.MaxHTTPResponseBytes))

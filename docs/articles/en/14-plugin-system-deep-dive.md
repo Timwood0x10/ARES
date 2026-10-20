@@ -1,7 +1,5 @@
 # ares Architecture Deep Dive (XIV): The Plugin System — Honestly, It's Not "Load a .so Without Code Changes" (0.3.x)
 
-> 0.3.x note: This article is a complete rewrite grounded in the current code. The old narrative of an "executor god object being decomposed by plugins", and the claim of a "ToolExpander" that instantly resolves skill names into LLM tool definitions, must be kept separate from the plugin contract that actually exists. This article covers only what we really have: the `RuntimePlugin` **interface contract** and the `PluginBus` **lifecycle/hook manager** in `internal/runtime`.
-
 > Let me be brutally honest first: **the "plugin system" in the current code is not dynamic loading.** No `go:plugin`, no `.so` hot-loading, no "inject external plugins without changing code". It is a **compiled-in Go interface + registry** — at startup assembly you `Register` structs that implement the interface into a `PluginBus`, which then owns lifecycles and calls the defined extension points.
 
 ---
@@ -124,7 +122,7 @@ This is arguably the most important part. Current "plugin system" real boundarie
 | Discover and register external plugins at runtime | ❌ Plugins are `Register`ed during startup assembly |
 | Lifecycle/hook management for a shared bus in one process | ✅ Real, `PluginBus` |
 
-**Why I stress this**: the old article's opening narrative about "splitting the executor's god object into plugins", and the claim that a "ToolExpander lets an Agent gain new skills without a restart", actually refer to *completely different mechanisms* — capability discovery in `internal/runtime/protocol/skills` (Discovery/Loader/Catalog/Resolver) and the event-callback registry in `internal/ares_callbacks/`. These do not go through `PluginBus`, and they are not "dynamic plugin loading". If what you want is "upload a plugin bundle to extend capabilities", **the current code does not have that**.
+**Why I stress this**: "splitting the executor's god object into plugins" and "a `ToolExpander` that lets an Agent gain new skills without a restart" refer to *completely different mechanisms* — capability discovery in `internal/runtime/protocol/skills` (Discovery/Loader/Catalog/Resolver) and the event-callback registry in `internal/ares_callbacks/`. These do not go through `PluginBus`, and they are not "dynamic plugin loading". If what you want is "upload a plugin bundle to extend capabilities", **the current code does not have that**.
 
 ### 2.1 Don't confuse two systems: `ares_callbacks` ≠ plugins
 
