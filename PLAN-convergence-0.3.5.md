@@ -127,7 +127,8 @@
 
 - 新增接口：`aresrecovery.RecoveryObserver`（`OnRecovery(time.Duration)`）
 - 新增方法：`Recovery.WithRecoveryObserver(obs)` / `Recovery.notifyObserver(start)`（panic-safe）
-- 新增适配器：`arena.recoveryMetricsAdapter` / `arena.NewRecoveryAdapter(mc)` / `Service.RecoveryObserver()`
+- 新增适配器：`arena.recoveryMetricsAdapter` / `arena.NewRecoveryAdapter(mc)`（**唯一生产入口**）。原 `Service.RecoveryObserver()`
+  已删除——它零生产调用，两套取 adapter 的路径违反"同一语义只允许一条执行路径"，按"删死 API"标准清理。
 - 生产接线：`peer_assembly.go`（serve 主路径 — collector 挂在 `kernelHandle.arenaMetrics`）
 - 消费方接线：`serve_chaos_domain.go` 的 `runLiveChaosInjection` 在恢复验证后读 `arenaMetrics.Snapshot()` →
   记录到 `introspect.ChaosReporter` 的 `RecoveryMetrics` 字段，面板可见
@@ -164,3 +165,51 @@
 - 每个阶段至少 1 条新测试 + 1 次反证；
 - 计划与本文件同步更新；台账（`docs/defects/00-INDEX.md`）记录判定与证据；
 - 三处改动均可独立回滚（不互相依赖）。
+
+### P4 · 数据一致性观测点（`DataConsistencyRate`）
+
+**现状**：`RecordConsistency` **零生产调用**，字段恒 0；`calcConsistency` 见 `>0` 才采信，
+否则走启发式（失败数的一半 ×5 惩罚）。`Unmeasured` 仍输出 `data_consistency`。
+P3 只修了 recovery 一侧，这一半按约定**未假装修好**。
+
+**它在评分里的语义**（`score.go:116-129`）：值 >0 就采信，否则按"约一半失败是数据问题"估算。
+⇒ 要诚实填充，必须先定义**什么算一次一致性检查**，否则填进去的仍是猜测。
+
+**设计（推荐：checkpoint 解码成功率）**
+
+一次一致性检查 = **一段已持久化的 checkpoint 被读回来并成功解码**。
+
+| 要素 | 取值 | 理由 |
+|---|---|---|
+| 观测点 | `taskfabric.DecodeCheckpoint` 的**每一次**调用 | 这是"存进去的数据还能不能读回来"的唯一真实判定点；已有 `ErrCheckpointSchemaVersion` / 损坏 payload 两条失败路径 |
+| 分子 | 解码成功次数 | — |
+| 分母 | 解码总次数 | 未做解码的部署样本 = 0 ⇒ **继续保持 unmeasured**，不伪造 |
+| 窗口 | FIFO 上限（复用 `maxRecoverySamples` 同款） | 长期进程不能让样本无限增长 |
+| 上报门槛 | 样本数 ≥ `minConsistencySamples`（建议 20）才输出比率 | 1 次成功 = 100% 会误导评分 |
+
+**关键修正（当前实现无法表达 0%）**：`calcConsistency` 用 `DataConsistencyRate > 0` 判断
+"是否已测量"——于是"**全都不一致**（0%）"会被当成"没数据"而回落到启发式，正好把最坏的
+情况掩盖掉。修法：快照增加 `ConsistencySamples int`，判定改为 `Samples >= min`；
+比率可以是 0。
+
+**接线（复用 P3 的形状，不新增全局单例）**
+
+- `Fabric`/`taskfabric` 增加 `WithConsistencyObserver(obs)`，与 `WithRecoveryObserver` 同构；
+- 观测点在 `DecodeCheckpoint` 的**调用侧**或包一层 `decodeAndObserve`，避免 `taskfabric`
+  依赖 arena；
+- `cmd/ares` 把 `arena.NewConsistencyAdapter(kernel.arenaMetrics)` 接进去；
+- `arena` 侧新增 `RecordConsistency(ok bool)`（现在只有 `int` 版本，语义是"比率"，不适合逐次采样）。
+
+**验收**
+
+1. 一次成功解码 → `ConsistencySamples == 1`，仍不输出比率（未到门槛）；
+2. 达到门槛且全成功 → 比率 100，`Unmeasured` 不含 `data_consistency`；
+3. 注入一次解码失败 → 比率 < 100（**且 0% 时也能表达**）；
+4. 从未解码 → `Unmeasured` 仍含该项；
+5. 反证：去掉观测调用 → 第 1 条失败。
+
+**不做**：不把 epoch 冲突、事件版本冲突混进同一个比率——它们是并发不变量，不是"数据能不能读回来"，
+混在一起会让这个数无法解释。若将来要覆盖，另立指标。
+
+**风险**：`DecodeCheckpoint` 调用点分散（`await.go` 多处、`planner_context.go`），漏接一处就少采一次样本；
+缓解：把解码收敛到一个函数（与"rule written once"同一原则），并在该函数内观测。
