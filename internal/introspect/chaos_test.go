@@ -72,6 +72,28 @@ func TestChaosReporterConcurrent(t *testing.T) {
 	}
 }
 
+// TestChaosReporterRecoveryMetricsSurvivesFlagFrames locks the anti-clobber
+// contract for RecoveryMetrics. Regression: it used to be written through
+// SetLive, whose whole-struct Store meant any later flag-only frame (GA-pause,
+// fail-safe, loop stop) zeroed it until the next injection. SetRecoveryMetrics
+// keeps it in its own atomic, so the panel no longer flickers.
+func TestChaosReporterRecoveryMetricsSurvivesFlagFrames(t *testing.T) {
+	r := NewChaosReporter()
+	r.SetLive(LiveChaosState{Active: true})
+	r.SetRecoveryMetrics(&RecoveryMetrics{TotalRecoveries: 3, AvgRecoveryTime: 2 * time.Second})
+
+	// A GA-pause frame writes only flags — it must not wipe the metrics.
+	r.SetLive(LiveChaosState{Active: true, PausedForGA: true})
+
+	cs := r.Snapshot()
+	if cs.Live.RecoveryMetrics == nil || cs.Live.RecoveryMetrics.TotalRecoveries != 3 {
+		t.Fatalf("recovery metrics clobbered by a flag-only SetLive: %+v", cs.Live.RecoveryMetrics)
+	}
+	if !cs.Live.PausedForGA {
+		t.Fatalf("GA-pause flag lost: %+v", cs.Live)
+	}
+}
+
 // TestCollectorChaosSource verifies the chaos source lands in the snapshot
 // when present and is omitted when nil.
 func TestCollectorChaosSource(t *testing.T) {

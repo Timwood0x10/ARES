@@ -12,6 +12,21 @@ import (
 	"github.com/Timwood0x10/ares/internal/fabric/task"
 )
 
+// RecoveryObserver receives recovery timing events. It is the minimal surface
+// the recovery path needs to feed timing into the arena metrics without
+// aresrecovery反向依赖 arena: the arena side adapts its MetricsCollector to
+// this interface at wiring time.
+//
+// The observer is called SYNCHRONOUSLY from the recovery path — it must be
+// cheap (a map append + arithmetic, not a network call). A panic inside the
+// observer is recovered so it can never kill the recovery loop.
+type RecoveryObserver interface {
+	// OnRecovery records one successful recovery. duration is the wall-clock
+	// time from death detection to revival completion (zero when the start
+	// time was unavailable — see RecoverFromAgentDeath).
+	OnRecovery(duration time.Duration)
+}
+
 // Recovery orchestrates the Kernel's failure-recovery paths. It is a
 // SEPARATE responsibility from Chaos (which injects failures):
 // Recovery proves the Runtime survives them. The subsystem wires the Task
@@ -21,6 +36,9 @@ import (
 type Recovery struct {
 	tasks  *taskfabric.Fabric
 	agents *agentfabric.Fabric
+	// observer receives recovery timing events. Nil = no observation
+	// (the default; production wiring injects the arena adapter).
+	observer RecoveryObserver
 	// spawner is the optional evolution-aware spawn gate. When
 	// set, every replacement spawn goes through it so the evolution policy
 	// (Enabled / MaxConcurrent / PreferredCapabilities) shapes restarts and
@@ -203,6 +221,15 @@ func (r *Recovery) WithClock(now func() time.Time) *Recovery {
 // real time.Sleep. Returns the Recovery for chaining.
 func (r *Recovery) WithSleeper(sleep func(ctx context.Context, d time.Duration) error) *Recovery {
 	r.sleep = sleep
+	return r
+}
+
+// WithRecoveryObserver injects a recovery timing observer. When set, each
+// successful recovery in RecoverFromAgentDeath calls OnRecovery with the
+// wall-clock duration from the sweep start to the recovery completion. Nil
+// (the default) leaves observation off — the recovery path is unchanged.
+func (r *Recovery) WithRecoveryObserver(obs RecoveryObserver) *Recovery {
+	r.observer = obs
 	return r
 }
 
@@ -553,6 +580,11 @@ func (r *Recovery) RevivableSnapshot(capability string) (string, agentfabric.Age
 // Returns:
 //   - int: the number of tasks fully recovered (requeued + checkpoint resumed).
 func (r *Recovery) RecoverFromAgentDeath(ctx context.Context) int {
+	// Record the sweep start so each successful recovery can report its
+	// wall-clock duration. The start point is the sweep itself (not the
+	// agent's death timestamp, which is not reliably available here — the
+	// lease expiry that triggers this sweep is the earliest signal).
+	sweepStart := r.now()
 	requeued := r.RequeueExpiredLeases()
 	if len(requeued) == 0 {
 		return 0
@@ -574,8 +606,28 @@ func (r *Recovery) RecoverFromAgentDeath(ctx context.Context) int {
 			continue
 		}
 		recovered++
+		// Notify the observer (if wired) with the per-task recovery
+		// duration. The panic guard ensures an observer bug can never
+		// kill the recovery loop.
+		r.notifyObserver(sweepStart)
 	}
 	return recovered
+}
+
+// notifyObserver calls the recovery observer with the elapsed time since
+// start. It is panic-safe: an observer bug is logged and swallowed so the
+// recovery loop never crashes through the observer path.
+func (r *Recovery) notifyObserver(start time.Time) {
+	if r.observer == nil {
+		return
+	}
+	defer func() {
+		if rec := recover(); rec != nil {
+			slog.Error("aresrecovery: recovery observer panicked",
+				slog.Any("panic", rec))
+		}
+	}()
+	r.observer.OnRecovery(r.now().Sub(start))
 }
 
 // RecoveryTask is a snapshot of a task that was requeued from an expired

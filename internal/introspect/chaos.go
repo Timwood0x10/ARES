@@ -70,6 +70,24 @@ type LiveChaosState struct {
 	PausedForGA bool `json:"paused_for_ga"`
 	// LastInjection is when the most recent injection cycle ran.
 	LastInjection time.Time `json:"last_injection"`
+
+	// RecoveryMetrics carries the measured recovery timing from the arena
+	// metrics collector. It is written through SetRecoveryMetrics (its own
+	// atomic) and merged into the frame by Snapshot — never through SetLive,
+	// which would clobber it on the next flag-only frame. Zero-valued until the
+	// first recovery completes.
+	RecoveryMetrics *RecoveryMetrics `json:"recovery_metrics,omitempty"`
+}
+
+// RecoveryMetrics is a snapshot of recovery timing from the arena metrics
+// collector, rendered on the chaos panel. It is the measured counterpart of
+// the "recovery_timing" field the arena score reads.
+type RecoveryMetrics struct {
+	TotalRecoveries  int           `json:"total_recoveries"`
+	AvgRecoveryTime  time.Duration `json:"avg_recovery_time"`
+	MinRecoveryTime  time.Duration `json:"min_recovery_time"`
+	MaxRecoveryTime  time.Duration `json:"max_recovery_time"`
+	LastRecoveryTime time.Duration `json:"last_recovery_time"`
 }
 
 // chaosReporter is the concrete source the chaos loops update. A single
@@ -89,6 +107,14 @@ type chaosReporter struct {
 	liveFlags     atomic.Value // LiveChaosState flags only
 	injections    atomic.Uint64
 	lastInjection atomic.Value // time.Time
+
+	// recoveryMetrics is deliberately its own atomic rather than a field on
+	// LiveChaosState: SetLive replaces that whole struct, so a metric written
+	// through it would be wiped by the next flag-only frame (GA-pause,
+	// fail-safe, loop start/stop). Snapshot merges it back in exactly like
+	// Injections/LastInjection. atomic.Pointer is nil-safe, so an unwritten
+	// metric reads as nil instead of panicking.
+	recoveryMetrics atomic.Pointer[RecoveryMetrics]
 }
 
 // NewChaosReporter builds a chaos status reporter (cmd/ares uses it to bridge
@@ -113,8 +139,9 @@ func (c *ChaosReporter) RecordShadow(res ShadowResult) { c.r.shadow.Store(res) }
 
 // SetLive stores the live-injection loop's flag state (active / fail-safe /
 // GA-pause / emergency-stop). Callers set only the flag fields; the injection
-// counter and last-injection time are maintained by AddInjection and merged
-// by Snapshot.
+// counter, last-injection time and recovery metrics are maintained by
+// AddInjection / SetRecoveryMetrics and merged by Snapshot (this call replaces
+// the whole flag struct, so it must not carry them).
 func (c *ChaosReporter) SetLive(st LiveChaosState) { c.r.liveFlags.Store(st) }
 
 // AddInjection increments the process-lifetime injection counter by one and
@@ -123,6 +150,12 @@ func (c *ChaosReporter) AddInjection(t time.Time) {
 	c.r.injections.Add(1)
 	c.r.lastInjection.Store(t)
 }
+
+// SetRecoveryMetrics stores the latest measured recovery timing for the panel.
+// It is add-only against the live flags: unlike SetLive (which replaces the
+// whole flag struct), it targets its own atomic, so a later flag-only frame
+// cannot wipe it. Snapshot merges it back in.
+func (c *ChaosReporter) SetRecoveryMetrics(m *RecoveryMetrics) { c.r.recoveryMetrics.Store(m) }
 
 // Snapshot assembles the current chaos status frame. Implements the panel's
 // chaos Source contract (func() introspect.ChaosStatus).
@@ -140,6 +173,9 @@ func (c *ChaosReporter) Snapshot() ChaosStatus {
 	status.Live.Injections = c.r.injections.Load()
 	if t, ok := c.r.lastInjection.Load().(time.Time); ok && !t.IsZero() {
 		status.Live.LastInjection = t
+	}
+	if m := c.r.recoveryMetrics.Load(); m != nil {
+		status.Live.RecoveryMetrics = m
 	}
 	return status
 }

@@ -197,3 +197,58 @@ func TestSnapshot_DeclaresUnmeasuredInputs(t *testing.T) {
 	snap = mc.Snapshot()
 	assert.Empty(t, snap.Unmeasured, "measured inputs must not be listed as unmeasured")
 }
+
+// TestRecoveryAdapter_DataReachesSnapshot is the end-to-end proof that
+// recovery timing written through the adapter (the same path the recovery
+// observer uses in production) is readable from Snapshot — the consumer
+// side of the P3 observer. Without this test the observer could write
+// into a black hole (as the initial P3 did with a standalone collector
+// that nobody read).
+func TestRecoveryAdapter_DataReachesSnapshot(t *testing.T) {
+	mc := NewMetricsCollector()
+	adapter := NewRecoveryAdapter(mc)
+
+	// Simulate two recovery events through the observer interface —
+	// the same interface aresrecovery.RecoveryObserver uses.
+	adapter.OnRecovery(100 * time.Millisecond)
+	adapter.OnRecovery(300 * time.Millisecond)
+
+	// The consumer reads the snapshot.
+	snap := mc.Snapshot()
+	assert.Equal(t, 2, snap.TotalRecoveries, "both recoveries must be counted")
+	assert.Equal(t, 200*time.Millisecond, snap.AvgRecoveryTime, "avg = (100+300)/2")
+	assert.Equal(t, 100*time.Millisecond, snap.MinRecoveryTime)
+	assert.Equal(t, 300*time.Millisecond, snap.MaxRecoveryTime)
+	assert.Equal(t, 300*time.Millisecond, snap.LastRecoveryTime)
+
+	// recovery_timing must NOT be in Unmeasured — it has a producer now.
+	assert.NotContains(t, snap.Unmeasured, "recovery_timing",
+		"recovery_timing has a producer; it must not be Unmeasured")
+}
+
+// TestRecoveryAdapter_FIFOEviction verifies that the recoveries slice is
+// bounded: after maxRecoverySamples, the oldest sample is evicted so a
+// long-running process does not accumulate unbounded memory.
+func TestRecoveryAdapter_FIFOEviction(t *testing.T) {
+	mc := NewMetricsCollector()
+	adapter := NewRecoveryAdapter(mc)
+
+	// Fill to the cap.
+	for i := 0; i < maxRecoverySamples; i++ {
+		adapter.OnRecovery(time.Duration(i) * time.Millisecond)
+	}
+	snap := mc.Snapshot()
+	assert.Equal(t, maxRecoverySamples, snap.TotalRecoveries,
+		"TotalRecoveries = cap (no eviction yet)")
+
+	// One more — the oldest (0ms) must be evicted.
+	adapter.OnRecovery(999 * time.Millisecond)
+	snap = mc.Snapshot()
+	assert.Equal(t, maxRecoverySamples, snap.TotalRecoveries,
+		"TotalRecoveries stays at cap after eviction (not cap+1)")
+	assert.Equal(t, 999*time.Millisecond, snap.LastRecoveryTime,
+		"the newest sample is the one just added")
+	// Min should be 1ms (the second sample), not 0ms (the evicted oldest).
+	assert.Equal(t, 1*time.Millisecond, snap.MinRecoveryTime,
+		"the oldest sample (0ms) was evicted; min is now 1ms")
+}

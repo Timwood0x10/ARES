@@ -18,6 +18,7 @@ import (
 	agentfabric "github.com/Timwood0x10/ares/internal/fabric/agent"
 	taskfabric "github.com/Timwood0x10/ares/internal/fabric/task"
 	"github.com/Timwood0x10/ares/internal/fabric/task/workflow/engine"
+	"github.com/Timwood0x10/ares/internal/runtime/arena"
 	evolution "github.com/Timwood0x10/ares/internal/runtime/ares_evolution"
 	"github.com/Timwood0x10/ares/internal/storage/postgres/repositories"
 )
@@ -503,6 +504,13 @@ func (a *peerAssembly) spawnPeers() error {
 		policy.MaxRestarts = cfg.Kernel.MaxRestarts
 	}
 	kernel.recovery = aresrecovery.New(kernel.fabric, agents, policy)
+	// Wire the recovery observer so RecoverFromAgentDeath records timing
+	// into kernel.arenaMetrics — the SINGLE collector for the serve path.
+	// It has a consumer: the chaos domain reads its Snapshot for the
+	// recovery metrics in the introspection panel. A standalone collector
+	// (as the initial P3 did) was a data black hole — written but never read.
+	kernel.arenaMetrics = arena.NewMetricsCollector()
+	kernel.recovery.WithRecoveryObserver(arena.NewRecoveryAdapter(kernel.arenaMetrics))
 	sched.WithGovernance(agents)
 	// The scheduler's candidate pool includes every live, IDLE, executable
 	// fabric agent — the configured peers spawned above, plus any spawned via

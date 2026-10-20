@@ -85,30 +85,36 @@
 
    > 这与"fail-open"同一条原则：过滤器不能隐藏它**根本无法判断**的工具。
 
-### P2 · 端到端链路验证
+### P2 · 端到端链路验证 ✅ 已完成 2026-10-20
 
 **做法**
 
-- 在 `internal/agentruntime` 起一个最小 `Execution`：真实 fabric + 真实 registry（带 tag 的假工具）
+- 在 `internal/fabric/agent` 起一个最小 `ExecuteStep`：真实 fabric + 真实 compile coordinator（带 tag 的假工具）
   + 脚本化 `ChatClient`（第一次返回 tool call，第二次返回答案）；
 - 断言三件事：
-  1. 广告集合被收窄（通过 `AdvertisementSink` 或 binder 记录）；
-  2. L2 图长出预期的 tool 节点；
-  3. 产出 answer 节点且内容来自第二次模型回复；
-- 再加一条**反证**：去掉 caps → 广告集合变全量（证明收窄真的发生在链路里，而不是测试夹具里）。
+  1. 广告集合被收窄（通过 `scriptedChat.seen` 记录模型实际看到的工具列表）；
+  2. L2 图长出预期的 tool 节点（通过 `waitForTaskExists` 验证 fabric 任务创建）；
+  3. 产出 answer 节点（通过 `g.DAG().StepIndex()` 验证节点存在于图中）；
+- 再加一条**反证**：去掉 caps → 广告集合变全量（`TestE2E_NoCaps_AdvertisesFullToolbelt` 证明收窄真的发生在链路里，而不是测试夹具里）。
 
 **验收**：测试在以上任一处接缝被切断时失败（三处各做一次 mutation）。
 
-### P3 · 恢复观测点
+**落地结果**
+
+- 测试文件：`internal/fabric/agent/planner_e2e_test.go`
+- 两个新测试：`TestE2E_NarrowedAdvertisedToolExecutedAndAnswered`（三接缝全断言）+ `TestE2E_NoCaps_AdvertisesFullToolbelt`（反证）
+- 复用了 `planner_cognition_test.go` 的 `driveTaskToCompleted` / `waitForTaskExists` 夹具
+- 新增 `recordingBinder`（可记录工具调用）和 `toolNames` 辅助函数
+
+### P3 · 恢复观测点 ✅ 已完成 2026-10-20
 
 **做法**
 
-- 在 `RecoverFromAgentDeath`（`recovery.go:555`）成功复活处记录时长：起点是死亡检测时间，
-  终点是复活完成；
-- 通过一个**最小接口**（`RecoveryObserver`）注入 `MetricsCollector`，避免 `aresrecovery`
-  反向依赖 `arena`；
-- `DataConsistencyRate`：只在**有真实校验点**时记录（例如 checkpoint 解码失败计数），
-  不造数；没有校验点就继续保持 `Unmeasured`。
+- 在 `RecoverFromAgentDeath`（`recovery.go:582`）成功复活处调用 `notifyObserver(sweepStart)`，
+  记录从 sweep 起点到复活完成的时长；
+- 通过一个**最小接口**（`RecoveryObserver`）注入，避免 `aresrecovery`
+  反向依赖 `arena`：arena 侧的 `recoveryMetricsAdapter` 结构化实现该接口；
+- `DataConsistencyRate`：没有诚实的生产者来源，保持 `Unmeasured` 标注，不造数。
 
 **验收**
 
@@ -117,9 +123,30 @@
 - 反证：去掉记录调用 → 测试失败；
 - **若找不到诚实的 consistency 来源**：明确记录"该输入仍无生产者"，不假装已修。
 
+**落地结果**
+
+- 新增接口：`aresrecovery.RecoveryObserver`（`OnRecovery(time.Duration)`）
+- 新增方法：`Recovery.WithRecoveryObserver(obs)` / `Recovery.notifyObserver(start)`（panic-safe）
+- 新增适配器：`arena.recoveryMetricsAdapter` / `arena.NewRecoveryAdapter(mc)` / `Service.RecoveryObserver()`
+- 生产接线：`peer_assembly.go`（serve 主路径 — collector 挂在 `kernelHandle.arenaMetrics`）
+- 消费方接线：`serve_chaos_domain.go` 的 `runLiveChaosInjection` 在恢复验证后读 `arenaMetrics.Snapshot()` →
+  记录到 `introspect.ChaosReporter` 的 `RecoveryMetrics` 字段，面板可见
+- `RecordRecovery` 不再刷 deprecated Warn（它现在有生产调用方）；注释更新为"production entry point"
+- `recoveries` slice 加 FIFO 封顶（`maxRecoverySamples = 1000`），防止长进程无界增长
+- 测试（5 条）：
+  - `TestRecoveryObserver_CalledOnSuccess`：observer 被调用且 duration > 0
+  - `TestRecoveryObserver_NilNoOp`：nil observer 不影响恢复路径
+  - `TestRecoveryObserver_PanicSafe`：panicking observer 不会 crash 恢复循环
+  - `TestRecoveryAdapter_DataReachesSnapshot`：**端到端** — adapter 写入的数据在 `Snapshot()` 读得到（消费方有数据）
+  - `TestRecoveryAdapter_FIFOEviction`：封顶后最老样本被淘汰，`TotalRecoveries` 不超 cap
+
+**关于 DataConsistencyRate**：找不到诚实的生产者来源（checkpoint 解码失败计数没有现成的聚合点），
+继续保持 `Unmeasured` 标注。不假装已修。
+
 ## 5. 不做的事
 
-- 不新增 per-task 修改 L1 的路径（共享图 + 并发干扰，见 `PLAN-tool-routing.md` §3.6）；
+- 不新增 per-task 修改 L1 的路径（共享图 + 并发干扰：同一 L1 DAG 被
+  多个量子并发读写会导致不可复现的 routing 结果）；
 - 不为 MCP 单独造一套广告逻辑；
 - 不用"估算的恢复时长"充数——没有观测点就不写。
 

@@ -5,6 +5,14 @@ import (
 	"time"
 )
 
+// maxRecoverySamples bounds the recovery timeseries. Without a cap a
+// long-running process accumulates samples forever (one per successful
+// revival), making Snapshot's O(n) scan grow without bound. The cap turns
+// it into a rolling window: older samples are evicted FIFO, so the
+// snapshot approximates recent recovery performance rather than the full
+// lifetime average.
+const maxRecoverySamples = 1000
+
 // MetricsSnapshot holds a point-in-time view of arena metrics.
 type MetricsSnapshot struct {
 	// Timing metrics
@@ -23,11 +31,12 @@ type MetricsSnapshot struct {
 	// Unmeasured names the fields above that NO producer filled, so a zero in them means
 	// "never measured" rather than "measured as zero".
 	//
-	// This exists because the score reads these fields: recovery timing and data consistency
-	// are consumed by CalculateScore/calcConsistency, yet nothing in production calls
-	// RecordRecovery or RecordConsistency. Without this list an operator (and a reviewer)
-	// sees `data_consistency_rate: 0` and cannot tell a perfect-ish fallback from a real
-	// measurement — the silent-degradation shape this codebase keeps closing.
+	// Recovery timing now has a producer — the P3 recovery observer feeds RecordRecovery —
+	// so it clears as soon as the first revival lands. Data consistency still has none
+	// (RecordConsistency has no production caller), so it stays listed and the score's
+	// consistency dimension keeps falling back to its heuristic (calcConsistency). The list
+	// exists so an operator (and a reviewer) can tell a fallback from a real measurement —
+	// the silent-degradation shape this codebase keeps closing.
 	Unmeasured []string `json:"unmeasured,omitempty"`
 
 	// Per-action-type breakdown
@@ -84,40 +93,44 @@ func (mc *MetricsCollector) RecordActionResult(actionType ActionType, success bo
 
 // RecordRecovery records a recovery duration sample.
 //
-// Deprecated: Use RecordActionResult instead. No production caller remains
-// (the service records per-action results via RecordActionResult; recovery
-// timing derives from action events), so this is test-only surface.
-// CONSEQUENCE BEFORE ANYONE DELETES THIS: the snapshot fields it feeds
-// (TotalRecoveries, AvgRecoveryTime, MinRecoveryTime, MaxRecoveryTime, LastRecoveryTime) are
-// read by CalculateScore. Nothing in production calls this method, so in a real deployment
-// those fields are ALWAYS ZERO and the score's recovery component is permanently on its
-// fallback. Deleting the method without addressing the score would silently remove the
-// evidence that the component is unmeasured — fix the score first, then remove this.
+// This is the production entry point for recovery timing: the recovery
+// observer (arena.NewRecoveryAdapter → aresrecovery.RecoveryObserver) calls
+// this from RecoverFromAgentDeath on each successful revival. The snapshot
+// fields it feeds (TotalRecoveries, Avg/Min/Max/LastRecoveryTime) are read by
+// the chaos panel's RecoveryMetrics (via kernel.arenaMetrics.Snapshot(), wired
+// in cmd/ares).
 //
-// TODO(tech-debt): remove RecordRecovery together with its metrics_test.go
-// coverage once no test needs the raw recovery-timeseries path.
+// They are NOT read by CalculateScore: the arena score takes its average
+// recovery time from scenario-run events (calculateAvgRecoveryTime) and reads
+// only DataConsistencyRate off a *MetricsSnapshot* — and from the arena
+// Service's own collector, a separate instance from this one. The seam that
+// would connect the two (Service.RecoveryObserver) currently has no production
+// caller, so it is dead surface, not a live path.
+//
+// The samples slice is bounded by maxRecoverySamples to prevent unbounded
+// growth in long-running processes — older samples are evicted (FIFO) once
+// the cap is reached, so the snapshot approximates a rolling window rather
+// than accumulating the full lifetime history.
 func (mc *MetricsCollector) RecordRecovery(d time.Duration) {
-	log.Warn("MetricsCollector.RecordRecovery is deprecated, use RecordActionResult instead; no production caller remains (test-only)")
 	mc.mu.Lock()
 	defer mc.mu.Unlock()
+	if len(mc.recoveries) >= maxRecoverySamples {
+		// FIFO eviction: drop the oldest sample to make room. This keeps the
+		// slice bounded without a separate eviction pass.
+		mc.recoveries = mc.recoveries[1:]
+	}
 	mc.recoveries = append(mc.recoveries, d)
 }
 
 // RecordConsistency records a data consistency rate sample (0-100).
 //
-// Deprecated: Use RecordActionResult instead. No production caller remains
-// (action results are recorded via RecordActionResult), so this is test-only
-// surface.
-// CONSEQUENCE BEFORE ANYONE DELETES THIS: DataConsistencyRate is read by
-// calcConsistency, which falls back to a heuristic whenever it is zero. Nothing in production
-// calls this method, so that field is ALWAYS ZERO and every deployment is scored by the
-// heuristic while the metrics snapshot still reports a "rate" field. Removing this method (and
-// the field) is only honest together with making the fallback explicit in the score.
-//
-// TODO(tech-debt): remove RecordConsistency and the DataConsistencyRate
-// snapshot field once no test needs the legacy consistency-timeseries path.
+// No production caller exists: DataConsistencyRate is read by calcConsistency
+// (which falls back to a heuristic when zero), but no code path produces
+// honest consistency samples. The field stays in Unmeasured as a result.
+// This method remains for test coverage of the legacy consistency-timeseries
+// path; removing it is only honest together with making the fallback
+// explicit in the score.
 func (mc *MetricsCollector) RecordConsistency(rate float64) {
-	log.Warn("MetricsCollector.RecordConsistency is deprecated, use RecordActionResult instead; no production caller remains (test-only)")
 	mc.mu.Lock()
 	defer mc.mu.Unlock()
 	mc.consistencySamples = append(mc.consistencySamples, rate)
@@ -187,6 +200,28 @@ func (mc *MetricsCollector) Snapshot() MetricsSnapshot {
 	}
 
 	return snap
+}
+
+// recoveryMetricsAdapter bridges the recovery path to MetricsCollector, so
+// recovery timing feeds into the arena metrics without aresrecovery importing
+// arena. The adapter structurally implements aresrecovery.RecoveryObserver
+// (OnRecovery(time.Duration)); the wiring happens in cmd/ares where both
+// packages are visible.
+type recoveryMetricsAdapter struct{ mc *MetricsCollector }
+
+// OnRecovery records one recovery duration sample. Called synchronously from
+// the recovery path — cheap (append + arithmetic).
+func (a *recoveryMetricsAdapter) OnRecovery(d time.Duration) {
+	a.mc.RecordRecovery(d)
+}
+
+// NewRecoveryAdapter returns an object implementing
+// aresrecovery.RecoveryObserver. It is the single bridge between the recovery
+// path and the metrics collector: cmd/ares passes the return value to
+// recovery.WithRecoveryObserver, and the recovery path calls OnRecovery on
+// each successful revival.
+func NewRecoveryAdapter(mc *MetricsCollector) *recoveryMetricsAdapter {
+	return &recoveryMetricsAdapter{mc: mc}
 }
 
 // Reset clears all collected metrics.
