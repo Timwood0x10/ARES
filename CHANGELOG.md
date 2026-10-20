@@ -40,6 +40,9 @@ unchanged: the token budget, the tool filter and the experiment log are all opt-
   strategy attribution it was submitted with.
 - Timed eval-corpus probe with anchor/fingerprint health, plus arena regression candidates run
   through a real runtime.
+- Recovery timing is measured: the recovery path notifies an observer on each successful revival
+  and `cmd/ares` binds it to the arena metrics collector, so the chaos panel reports real
+  durations instead of a permanent zero.
 
 **Tools and routing**
 - Per-task toolbelt narrowing: L1 `enabled` → static `kernel.tool_tag_filter` → task capability
@@ -47,8 +50,10 @@ unchanged: the token budget, the tool filter and the experiment log are all opt-
 - Capability tags come from the task payload, else a shared keyword table
   (`internal/tools/capability`), else an optional model call (`kernel.llm_tool_tagging`).
 - `need_tools` escape hatch for the case the keyword read misses a capability the task needs.
-- MCP tools report planner capabilities derived from their advertised description at
-  registration.
+- MCP tools report planner capabilities from their advertised description at registration, and
+  now also declare `cap_*` tags so the kernel's capability routing can select them.
+- A tool that declares no capability at all is no longer dropped by capability narrowing: a
+  filter must not hide a tool it cannot judge.
 
 **Memory**
 - Prompt budget by tokens on **both** paths (`BuildContext` and `BuildPromptMessages`), estimated
@@ -92,12 +97,16 @@ unchanged: the token budget, the tool filter and the experiment log are all opt-
 
 ### Known gaps
 
-- **MCP tools are outside kernel-side capability narrowing**: they are registered into the SDK's
-  tool registry and carry planner capabilities instead of `cap_*` tags.
+- ~~MCP tools are outside kernel-side capability narrowing~~ — **closed in this release**: an MCP
+  tool derives `cap_*` tags from its advertised description at registration, so it takes part in
+  the same capability routing as a builtin.
 - **L1 metadata has no production writer**: `enabled`/`budget`/`prior` come from tool
   declarations, not from the GA loop — a GA-to-L1 patch executor does not exist yet.
-- **Two resilience-score inputs are unmeasured** (recovery timing, data consistency); the
-  snapshot now says so instead of reporting zero as if measured.
+- **Data consistency is still unmeasured.** Recovery timing now has a producer (the recovery path
+  notifies an observer wired in `cmd/ares`), but nothing performs a consistency check yet, so the
+  snapshot keeps reporting `data_consistency` under `Unmeasured` rather than a fabricated rate.
+  The design for closing it (checkpoint decode success rate, with a minimum sample count) is in
+  `PLAN-convergence-0.3.5.md` P4.
 - `internal/evoapi` still has no importers; removal is scheduled for 0.5.0.
 
 ## [0.3.3]
