@@ -177,7 +177,7 @@ func (f *Fabric) recordDegradedInputLocked(t *Task, missing string, pending *[]*
 // authoritative record, so an undecodable envelope is logged rather than
 // failing the cascade.
 func (f *Fabric) mirrorDegradedInputsLocked(t *Task) {
-	dc, err := DecodeCheckpoint(t.Checkpoint)
+	dc, err := f.DecodeCheckpoint(t.Checkpoint)
 	if err != nil {
 		log.Warn(context.Background(), "mirrorDegradedInputsLocked",
 			"taskfabric: cannot mirror degraded_inputs into payload",
@@ -236,7 +236,7 @@ func (f *Fabric) UpdatePayload(id string, payload map[string]any) error {
 	// Decode → replace → re-encode keeps every field the envelope already
 	// carried (notably StrategyID, the submission-time attribution) intact
 	// and keeps this the single decode path for checkpoints.
-	dc, err := DecodeCheckpoint(t.Checkpoint)
+	dc, err := f.DecodeCheckpoint(t.Checkpoint)
 	if err != nil {
 		return err
 	}

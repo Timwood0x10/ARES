@@ -337,43 +337,38 @@ func setupMCP(_ context.Context, mcpMgr *ares_mcp.MCPManager, registry *api_tool
 		return internalReg, fmt.Errorf("register general tools: %w", err)
 	}
 
-	// Copy tools from the bootstrap-created MCP manager into the internal
-	// registry so sub-agents and the dashboard see MCP tools. The manager was
-	// already started by Bootstrap; no second manager is created here.
+	// Bridge builtins into the public registry first: the existing behavior
+	// lets these definitions replace the API-layer copies, and doing it before
+	// MCP tools keeps builtins winning any name collision.
+	bridgeInternalToolsToPublic(internalReg, registry)
+
+	// Mirror the MCP manager's tools and keep the mirror current: servers can
+	// add/remove tools after reconnect or a tools/listChanged notification, and
+	// a one-shot copy would leave the planner advertising the startup snapshot
+	// forever. The manager was already started by Bootstrap; no second manager
+	// is created here.
 	if mcpMgr != nil {
-		for _, tool := range mcpMgr.RegisteredTools() {
-			t := tool
-			if err := internalReg.Register(t); err != nil {
-				fmt.Printf("MCP bridge: failed to register tool %s: %v\n", t.Name(), err)
-			}
-		}
+		installMCPToolBridge(mcpMgr, mcpMgr, internalReg, registry)
 	}
 
-	// Bridge: register all internal tools (builtin + MCP) into the public
-	// api/tools registry so the dashboard sees them regardless of whether MCP
-	// servers are configured.
+	return internalReg, nil
+}
+
+// bridgeInternalToolsToPublic copies the kernel registry's tools into the
+// public /api/tools registry. It is the startup half of the bridge: MCP deltas
+// are handled separately by mcpToolBridge.Sync so a later refresh never
+// re-registers builtins or removes tools it did not add.
+func bridgeInternalToolsToPublic(internalReg *core.Registry, registry *api_tools.Registry) {
 	for _, name := range internalReg.List() {
 		tool, ok := internalReg.Get(name)
 		if !ok || tool == nil {
 			continue
 		}
-		t := tool
-		if err := registry.Register(api_tools.ToolFunc{
-			ToolName: t.Name(),
-			ToolDesc: t.Description(),
-			Fn: func(ctx context.Context, params map[string]any) (any, error) {
-				res, err := t.Execute(ctx, params)
-				if err != nil {
-					return nil, err
-				}
-				return res.Data, nil
-			},
-		}); err != nil {
-			fmt.Printf("MCP bridge: failed to register tool %s: %v\n", t.Name(), err)
+		if err := registry.Register(publicToolFunc(tool)); err != nil {
+			log.Warn(context.Background(), "bridgeInternalToolsToPublic",
+				"mcp bridge: failed to register tool in public registry", "tool", name, "error", err)
 		}
 	}
-
-	return internalReg, nil
 }
 
 // ── mcp-null demo CLI ────────────────────────────────────

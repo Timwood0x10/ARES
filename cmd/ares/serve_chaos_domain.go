@@ -496,24 +496,34 @@ func runLiveChaosInjection(ctx context.Context, chaos *aresrecovery.Chaos, fabri
 	}
 	log.InfoContext(context.Background(), "serve: live chaos — agent killed and recovered (agents recovered)", "target", target, "recovered", recovered)
 
-	// Read the recovery timing from the arena metrics collector and surface it
-	// to the chaos panel. This is the CONSUMER side of the P3 observer: the
-	// recovery observer writes into arenaMetrics, and this is where it is read —
-	// so the metrics have a real consumer, not a black hole. SetRecoveryMetrics
-	// (not SetLive) is used on purpose: SetLive replaces the whole live-flag
-	// struct, so a metric sent through it would be wiped by the next flag-only
-	// frame (GA-pause / fail-safe / loop stop).
+	// Read recovery timing and the checkpoint consistency window from the
+	// arena metrics collector and surface them to the chaos panel. This is the
+	// CONSUMER side of the P3/P4 observers: both write into arenaMetrics, and
+	// this is where they are read — so the metrics are not a black hole.
+	// SetRecoveryMetrics (not SetLive) is used on purpose: SetLive replaces the
+	// whole live-flag struct, so a metric sent through it would be wiped by the
+	// next flag-only frame (GA-pause / fail-safe / loop stop).
 	if status != nil && arenaMetrics != nil {
 		snap := arenaMetrics.Snapshot()
-		if snap.TotalRecoveries > 0 {
-			status.SetRecoveryMetrics(&introspect.RecoveryMetrics{
-				TotalRecoveries:  snap.TotalRecoveries,
-				AvgRecoveryTime:  snap.AvgRecoveryTime,
-				MinRecoveryTime:  snap.MinRecoveryTime,
-				MaxRecoveryTime:  snap.MaxRecoveryTime,
-				LastRecoveryTime: snap.LastRecoveryTime,
-			})
+		if snap.TotalRecoveries > 0 || snap.ConsistencySamples > 0 {
+			status.SetRecoveryMetrics(recoveryMetricsFromSnapshot(snap))
 		}
+	}
+}
+
+// recoveryMetricsFromSnapshot maps the single arena collector snapshot onto the
+// chaos panel's payload. Keeping the mapping in one function makes the
+// "producer → panel" seam testable without spinning up a live chaos loop.
+func recoveryMetricsFromSnapshot(snap arena.MetricsSnapshot) *introspect.RecoveryMetrics {
+	return &introspect.RecoveryMetrics{
+		TotalRecoveries:     snap.TotalRecoveries,
+		AvgRecoveryTime:     snap.AvgRecoveryTime,
+		MinRecoveryTime:     snap.MinRecoveryTime,
+		MaxRecoveryTime:     snap.MaxRecoveryTime,
+		LastRecoveryTime:    snap.LastRecoveryTime,
+		DataConsistencyRate: snap.DataConsistencyRate,
+		ConsistencySamples:  snap.ConsistencySamples,
+		ConsistencyMeasured: snap.ConsistencyMeasured(),
 	}
 }
 

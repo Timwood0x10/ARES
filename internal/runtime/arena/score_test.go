@@ -142,6 +142,31 @@ func TestCalculateScore_FastRecovery(t *testing.T) {
 
 // --- New 3D scoring tests with metrics ---
 
+// TestCalculateScore_ConsistencyZeroIsMeasured pins the bug P4 exists to fix:
+// with enough samples a 0% decode success rate must reach the score as 0, not
+// fall through to the heuristic (which would report ~50-100 for a total
+// checkpoint-decode failure).
+func TestCalculateScore_ConsistencyZeroIsMeasured(t *testing.T) {
+	stats := Stats{TotalActions: 10, SuccessfulActions: 10, FailedActions: 0}
+
+	allFailed := &MetricsSnapshot{
+		DataConsistencyRate: 0,
+		ConsistencySamples:  minConsistencySamples,
+	}
+	score := CalculateScore(stats, 500*time.Millisecond, allFailed)
+	assert.Equal(t, 0.0, score.ConsistencyScore,
+		"a full window of failed decodes is a measured 0%")
+
+	// Below the threshold the rate is not trustworthy and the heuristic runs.
+	below := &MetricsSnapshot{
+		DataConsistencyRate: 0,
+		ConsistencySamples:  minConsistencySamples - 1,
+	}
+	score = CalculateScore(stats, 500*time.Millisecond, below)
+	assert.Greater(t, score.ConsistencyScore, 0.0,
+		"below the publication threshold the score falls back to the heuristic")
+}
+
 func TestCalculateScoreWithMetrics_ThreeDimensions(t *testing.T) {
 	stats := Stats{
 		TotalActions:      10,

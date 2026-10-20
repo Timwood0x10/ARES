@@ -128,12 +128,12 @@ func (f *Fabric) recordWithExtrasLocked(t *Task, typ EventType, extras map[strin
 	// active at fold time". The value comes from the checkpoint envelope;
 	// decode is pure in-memory (safe under f.mu) and failure degrades to ""
 	// (no key — the observer's activeID fallback), never an error.
-	if sid := strategyIDFromCheckpoint(t.Checkpoint); sid != "" {
+	if sid := f.strategyIDFromCheckpoint(t.Checkpoint); sid != "" {
 		payload[restoreKeyStrategyID] = sid
 	}
 	// SessionID rides on every event too, same reasoning as StrategyID —
 	// the session scope must be visible without decoding checkpoints.
-	if sid := sessionIDFromCheckpoint(t.Checkpoint); sid != "" {
+	if sid := f.sessionIDFromCheckpoint(t.Checkpoint); sid != "" {
 		payload[restoreKeySessionID] = sid
 	}
 	// The task's capability rides on EVERY persisted event (not only the
@@ -161,7 +161,7 @@ func (f *Fabric) recordWithExtrasLocked(t *Task, typ EventType, extras map[strin
 		// ONE decode for every fact this terminal payload carries (see
 		// terminalCheckpointFacts): this runs under the fabric mutex, and the
 		// token totals and the answer-quality signals live in the same envelope.
-		in, out, bodySource, truncated := terminalCheckpointFacts(t.Checkpoint)
+		in, out, bodySource, truncated := f.terminalCheckpointFacts(t.Checkpoint)
 		if in > 0 || out > 0 {
 			payload[restoreKeyInputTokens] = in
 			payload[restoreKeyOutputTokens] = out
@@ -238,7 +238,7 @@ func (f *Fabric) recordWithExtrasLocked(t *Task, typ EventType, extras map[strin
 		payload[restoreKeyRetryMax] = t.RetryPolicy.MaxRetries
 		payload[restoreKeyCreatedAt] = t.CreatedAt.Format(time.RFC3339)
 		if t.Checkpoint != nil {
-			if b, err := MarshalCheckpoint(t.Checkpoint); err == nil {
+			if b, err := f.marshalCheckpoint(t.Checkpoint); err == nil {
 				payload[restoreKeyCheckpointJSON] = string(b)
 			} else {
 				// The rebuilt task will resume without this checkpoint. Log

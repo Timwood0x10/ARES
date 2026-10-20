@@ -146,7 +146,7 @@ func SessionAnswerProvenance(fabric *taskfabric.Fabric, sessionID string) (bodyS
 	// The facts come from the task envelope, not from decoding a body, so they are
 	// reported even when the adopted answer had no readable body: that is the
 	// documented "found, but no signal to pair with a body" shape.
-	bodySource, truncated = taskfabric.AnswerQualityFromCheckpoint(task.Checkpoint)
+	bodySource, truncated = fabric.AnswerQualityFromCheckpoint(task.Checkpoint)
 	return bodySource, truncated, true
 }
 
@@ -173,7 +173,7 @@ func adoptedAnswerTask(fabric *taskfabric.Fabric, sessionID string) (task *taskf
 		return nil, "", false
 	}
 	for _, tk := range tasks {
-		content, err := SessionAnswerContent(tk)
+		content, err := SessionAnswerContent(fabric, tk)
 		if err != nil || content == "" {
 			continue
 		}
@@ -280,8 +280,11 @@ func SessionAnswerFailed(fabric *taskfabric.Fabric, sessionID string) bool {
 // checkpoint (the shared decode path: items[0].Content of the step
 // checkpoint). The in-memory fabric keeps the concrete
 // []*models.RecommendItem type, so no serialization fallback is needed.
-func SessionAnswerContent(tk *taskfabric.Task) (string, error) {
-	dc, err := taskfabric.DecodeCheckpoint(tk.Checkpoint)
+func SessionAnswerContent(fabric *taskfabric.Fabric, tk *taskfabric.Task) (string, error) {
+	if fabric == nil || tk == nil {
+		return "", fmt.Errorf("answer checkpoint requires a fabric and task")
+	}
+	dc, err := fabric.DecodeCheckpoint(tk.Checkpoint)
 	if err != nil {
 		return "", err
 	}
@@ -323,12 +326,12 @@ func TaskResolved(fabric *taskfabric.Fabric, t *taskfabric.Task, stalls *StallDe
 		// A FAILED result is readable. Decode the checkpoint anyway so a
 		// session-scoped failure still yields its sessionID — that is exactly
 		// when the caller needs it (to read the failure diagnostics).
-		if dc, err := taskfabric.DecodeCheckpoint(t.Checkpoint); err == nil {
+		if dc, err := fabric.DecodeCheckpoint(t.Checkpoint); err == nil {
 			return true, dc.SessionID
 		}
 		return true, ""
 	case taskfabric.StateCompleted:
-		dc, err := taskfabric.DecodeCheckpoint(t.Checkpoint)
+		dc, err := fabric.DecodeCheckpoint(t.Checkpoint)
 		if err != nil || dc.SessionID == "" {
 			return true, ""
 		}
@@ -480,7 +483,7 @@ func sessionFailedTasks(fabric *taskfabric.Fabric, sessionID string) []FailedTas
 			Quantum:          tk.Quantum,
 			FailedDependency: tk.FailedDependency,
 		}
-		if dc, err := taskfabric.DecodeCheckpoint(tk.Checkpoint); err == nil {
+		if dc, err := fabric.DecodeCheckpoint(tk.Checkpoint); err == nil {
 			ft.Cause = dc.LastError
 		}
 		failed = append(failed, ft)

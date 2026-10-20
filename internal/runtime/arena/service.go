@@ -231,15 +231,6 @@ func (s *Service) Metrics() MetricsSnapshot {
 	return s.metrics.Snapshot()
 }
 
-// RecoveryObserver returns an adapter that feeds recovery timing into the
-// arena metrics collector. The adapter implements aresrecovery.RecoveryObserver
-// (OnRecovery(time.Duration)); cmd/ares passes it to
-// recovery.WithRecoveryObserver so RecoverFromAgentDeath records timing
-// without aresrecovery importing arena.
-func (s *Service) RecoveryObserver() *recoveryMetricsAdapter {
-	return NewRecoveryAdapter(s.metrics)
-}
-
 // Reset clears history, stats, and metrics.
 func (s *Service) Reset() {
 	s.mu.Lock()

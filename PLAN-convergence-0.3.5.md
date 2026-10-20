@@ -14,6 +14,10 @@
 ⇒ MCP 工具因此**不进 kernel 的工具面**：既不参与 `cap_*` 收窄，也不受 L1 `enabled` 约束。
 对 agent OS 而言这是结构性缺口：MCP 是工具增长最快的来源，却整个游离在策略之外。
 
+> **2026-10-20 更新**：此条已修。`setupMCP` 通过 `mcpToolBridge` 把协议层 registry 镜像进
+> kernel/公开表，并挂 `SetToolChangeHandler` 持续同步；`MCPTool.Tags()` 提供 `cap_*`。
+> 详见 P1「落地结果」。
+
 ### 1.2 路由链路只有单测证据
 
 已有测试证明的：`advertisedToolSchemas` 的过滤逻辑、`toolCapabilitiesForTask` 的派生、
@@ -28,6 +32,9 @@
 被 `CalculateScore` / `calcConsistency` 读取，但生产里**从不调用** `RecordRecovery` /
 `RecordConsistency` ⇒ 恒 0，评分长期走启发式兜底。0.3.4 已用 `Unmeasured` 标注，
 但**标注不等于修复**。
+
+> **2026-10-20 更新**：P3/P4 已分别补上 recovery 与 consistency 的生产者；两者都接到
+> `kernel.arenaMetrics`，`calcConsistency` 也改按样本数判断，真实 0% 可表达。
 
 ## 2. 现有零件（已核实，避免重复造）
 
@@ -76,14 +83,34 @@
 
 **落地结果（与计划的两处出入，按实际为准）**
 
-1. **MCP 工具本来就在 kernel 注册表里**：`setupMCP`（`cmd/ares/agent_routes_tools.go`）已把
-   `mcpMgr.RegisteredTools()` 拷进 `internalReg`。真正的缺口不是"没进注册表"，而是
+1. **MCP 工具在启动瞬间已在 kernel 注册表里**：`setupMCP`（`cmd/ares/agent_routes_tools.go`）会把
+   `mcpMgr.RegisteredTools()` 拷进 `internalReg`。真正的缺口不是"启动时没进注册表"，而是
    **`MCPTool` 没有 `Tags()`** ⇒ 没有 `cap_*`。
+   **2026-10-20 补洞**：这个拷贝是**一次性**的，生产又从不 `SetToolChangeHandler` ⇒
+   server 重连后新增/删除/更新的工具永远到不了 kernel。现改为 `mcpToolBridge`：
+   启动同步 + `mcpMgr.SetToolChangeHandler(bridge.Sync)`，按名持有、只删自己注册的项、
+   内置工具 first-wins；同时 `MCPTool.Tags()` 改用原始 `toolDef.Description`，health
+   附注不再改变 `cap_*`。零调用的 `ares_bootstrap.SetupMCP`（会另造私有 registry）已删。
+
+   **与计划的第三处出入（架构选择 2A）**：没有把 `ProvideMCP` 改成接收外部 registry。
+   MCP server 必须在 builtin deps 之前启动，单 registry 重构会把启动顺序和 builtin 装配
+   耦在一起；采用 **mirror-on-change**：`MCPManager` 仍是协议层唯一真源，bridge 只把
+   增量镜像到 kernel/公开表，并按名记录所有权。代价是两个 registry 需要同步（有测试），
+   收益是内置工具 first-wins、单条工具失败不阻塞其它工具、启动顺序不变。
 2. **顺带发现并修掉一个更严重的缺陷**：能力过滤会丢弃**未声明能力**的工具（只要有别的工具命中）。
    MCP 工具恰好属此类 ⇒ 任务带 caps 时它们会被**静默隐藏**。修法：只对**声明了 `cap_*`** 的工具应用
    能力匹配；"无能力词汇"的工具不参与判定，保持在广告集合里。
 
    > 这与"fail-open"同一条原则：过滤器不能隐藏它**根本无法判断**的工具。
+
+**证据（2026-10-20 补强）**
+
+- `TestMCPToolBridge_MirrorsAddsUpdatesAndRemoves`：新增 / 删除 / 更新都同步到 kernel + 公开表；
+- `TestMCPToolBridge_KernelCollisionKeepsBuiltin`、`TestMCPToolBridge_PublicOnlyCollisionIsNotOverwritten`：重名策略；
+- `TestMCPToolBridge_LogsTagNarrowingOnChange`：重连后描述/`cap_*` 变化会留下 old/new tags 的 Info 行；
+- `TestInstallMCPToolBridge_SubscribesToManagerChanges`：`SetToolChangeHandler` 真的被挂上，fire 后新工具到达两个 registry；
+- `TestMCPToolTags_StableAcrossHealthFlip`：health reason 含 `http` 也不再改变 tags；
+- 反证：去掉 `SetToolChangeHandler` → 订阅测试失败；`Tags()` 改回读 `Description()` → health 测试失败。
 
 ### P2 · 端到端链路验证 ✅ 已完成 2026-10-20
 
@@ -103,6 +130,7 @@
 
 - 测试文件：`internal/fabric/agent/planner_e2e_test.go`
 - 两个新测试：`TestE2E_NarrowedAdvertisedToolExecutedAndAnswered`（三接缝全断言）+ `TestE2E_NoCaps_AdvertisesFullToolbelt`（反证）
+- 三接缝 mutation（本轮实跑，均恢复后通过）：① 关闭收窄 → `web.search` 出现在广告集合；② 跳过 tool 节点增长 → `invalid dependency: step not found`；③ 跳过 answer 节点增长 → `answer#0 not found within 2s`
 - 复用了 `planner_cognition_test.go` 的 `driveTaskToCompleted` / `waitForTaskExists` 夹具
 - 新增 `recordingBinder`（可记录工具调用）和 `toolNames` 辅助函数
 
@@ -141,8 +169,9 @@
   - `TestRecoveryAdapter_DataReachesSnapshot`：**端到端** — adapter 写入的数据在 `Snapshot()` 读得到（消费方有数据）
   - `TestRecoveryAdapter_FIFOEviction`：封顶后最老样本被淘汰，`TotalRecoveries` 不超 cap
 
-**关于 DataConsistencyRate**：找不到诚实的生产者来源（checkpoint 解码失败计数没有现成的聚合点），
-继续保持 `Unmeasured` 标注。不假装已修。
+**关于 DataConsistencyRate**：P3 当时未找到诚实的生产者来源，按约定保持 `Unmeasured`，没有造数。
+**P4（2026-10-20）已补上**：观测点选 `taskfabric.Fabric.DecodeCheckpoint` 的每次读回，
+`DataConsistencyRate` 现在是"checkpoint 解码成功率"，不再是猜测。
 
 ## 5. 不做的事
 
@@ -166,9 +195,9 @@
 - 计划与本文件同步更新；台账（`docs/defects/00-INDEX.md`）记录判定与证据；
 - 三处改动均可独立回滚（不互相依赖）。
 
-### P4 · 数据一致性观测点（`DataConsistencyRate`）
+### P4 · 数据一致性观测点（`DataConsistencyRate`）✅ 已完成 2026-10-20（观测点；score 路径分离说明见落地结果）
 
-**现状**：`RecordConsistency` **零生产调用**，字段恒 0；`calcConsistency` 见 `>0` 才采信，
+**修复前现状（2026-10-19）**：`RecordConsistency` **零生产调用**，字段恒 0；`calcConsistency` 见 `>0` 才采信，
 否则走启发式（失败数的一半 ×5 惩罚）。`Unmeasured` 仍输出 `data_consistency`。
 P3 只修了 recovery 一侧，这一半按约定**未假装修好**。
 
@@ -208,8 +237,50 @@ P3 只修了 recovery 一侧，这一半按约定**未假装修好**。
 4. 从未解码 → `Unmeasured` 仍含该项；
 5. 反证：去掉观测调用 → 第 1 条失败。
 
-**不做**：不把 epoch 冲突、事件版本冲突混进同一个比率——它们是并发不变量，不是"数据能不能读回来"，
-混在一起会让这个数无法解释。若将来要覆盖，另立指标。
+**落地结果（与设计的出入，按实际为准）**
+
+1. **观察者按 Fabric 隔离，不是进程全局**：`Fabric.WithConsistencyObserver(obs)` 把
+   observer 存进该 Fabric 的 `atomic.Pointer`；`Fabric.DecodeCheckpoint` 是唯一的观测入口。
+   包级 `DecodeCheckpoint` 仍保持纯函数。这样 serve 的指标不会被同进程里的
+   evaluation/scratch fabric 污染（比"包级单例"更符合 §5.3）。
+2. **观测点收敛到 `Fabric.DecodeCheckpoint`**：scheduler、agentruntime await/失败扫描、
+   planner 读前驱输出、task fabric restore/payload/failure/event 派生、API task read、SDK
+   token usage 全部改走该方法；包级 `DecodeCheckpoint` 仍保持纯函数（测试与纯 helper 用）。
+   事件派生（StrategyID/SessionID/terminal facts）各自解码一次，因此**同一段 envelope 可能
+   贡献多次样本**——分母是"解码次数"，不是"envelope 数"；这与"观测每一次调用"一致，也避免
+   为了去重引入跨层缓存。
+3. **窗口与门槛**：`maxConsistencySamples = 1000`（FIFO），`minConsistencySamples = 20`；
+   `MetricsSnapshot` 新增 `ConsistencySamples`。未达门槛时 `DataConsistencyRate = 0` 且
+   `Unmeasured` 含 `data_consistency`；达门槛后 0% 也是已测量。
+4. **评分函数支持 0%，但不把两个进程混为一谈**：`calcConsistency` 先看
+   `ConsistencySamples`；为了兼容直接构造快照的旧调用方，`Samples == 0 && Rate > 0`
+   仍采信 rate，但 `Samples >= 20` 的 0% 不再回落启发式。注意
+   `CalculateScore` 只在 `arena.Service`（`ares arena serve` 的独立进程）里被调用，
+   那个进程没有 task-fabric checkpoint 流，因此它的 `data_consistency` 仍会诚实标注
+   `Unmeasured`；本进程（serve）的比率不会跨进程喂给它。
+5. **接线与真实消费者**：`peer_assembly.go` 在同一个 `kernel.arenaMetrics` 上
+   `WithRecoveryObserver` + `WithConsistencyObserver`；chaos 面板的
+   `introspect.RecoveryMetrics` 现在同时携带 recovery 与 consistency
+   （`data_consistency_rate` / `consistency_samples` / `consistency_measured`），由
+   `runLiveChaosInjection` 从 `Snapshot()` 写入。这样 P4 的样本有面板消费方，不再是黑洞。
+
+**证据（Fabric 5 条 + arena 6 条 + 评分逻辑 1 条 + 面板 3 条 + 跨阶段 8 条反证）**
+
+- Fabric：成功/失败按序上报、包级函数不观测、双 Fabric 隔离、panic-safe、nil observer no-op；
+- arena：1 样本不发布、20 样本 95%、20 样本全失败 0%、20 样本全成功 100%、adapter 端到端、FIFO 淘汰；
+- 评分逻辑：`TestCalculateScore_ConsistencyZeroIsMeasured`（0% 进评分；低于门槛回落启发式）；
+- 面板：`TestChaosReporterRecoveryMetricsSurvivesFlagFrames` 断言 consistency 字段随同
+  recovery 存活于 flag-only 帧；`TestRecoveryMetricsFromSnapshot_CarriesConsistency` /
+  `..._BelowThresholdIsNotMeasured` 锁定 snapshot→panel 的字段映射与 measured 位；
+  `TestRecoveryMetricsJSONShapeAndBelowThresholdSignal` 锁定 JSON 形状：未填充时省略、
+  填充后三个一致性字段始终存在，低于门槛时 samples>0 / measured=false / rate=0；
+- 反证（实跑）：`Tags()` 改回读 `Description()` → health 测试失败；删 `SetToolChangeHandler` →
+  订阅测试失败；e2e 关闭收窄 / 跳过 tool 节点 / 跳过 answer 节点 → 三条接线分别失败；
+  删 `notifyObserver` → recovery 测试失败；删 `notifyCheckpointDecode` → Fabric 观测测试失败；
+  `calcConsistency` 改回 `DataConsistencyRate > 0` → 0% 评分测试失败。
+
+**不做**（维持原设计）：不把 epoch 冲突、事件版本冲突混进同一个比率——它们是并发不变量，
+不是"数据能不能读回来"。若将来要覆盖，另立指标。
 
 **风险**：`DecodeCheckpoint` 调用点分散（`await.go` 多处、`planner_context.go`），漏接一处就少采一次样本；
 缓解：把解码收敛到一个函数（与"rule written once"同一原则），并在该函数内观测。

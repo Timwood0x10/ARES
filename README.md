@@ -30,7 +30,20 @@ this README knows it cannot yet claim; read it before trusting any number or
 capability here.
 
 ---
-**ARES** — Agent Operating System (AgentOS).
+## Why "ARES"?
+
+**ARES — Agent Operating System (AgentOS): runtime, kernel & GA evolution.**
+
+- **Name origin** — Ares, the Greek god of war: the `ares arena` chaos
+  scenarios literally pit candidates against faults and survival tests.
+- **What the letters stood for** — originally **A**gent **R**untime &
+  **E**volution **S**ystem: a runtime kernel plus a GA that evolves it
+  (genomes, crossover, mutation; `ares evolution`).
+- **What it is now** — since v0.3.0 the kernel was promoted to an
+  **Agent Operating System (AgentOS)**: scheduling, synchronization,
+  IPC, resource enforcement, lifecycle management and recovery.
+  Evolution didn't disappear — it became a first-class subsystem of
+  the OS (evidence-driven GA, evolving in production without restarts).
 
 Agents are autonomous cognitive processes, not functions invoked by an orchestrator. They independently create work, communicate as peers, maintain private cognitive state, and may spawn other agents. The ARES Kernel provides scheduling, synchronization, IPC, resource enforcement, lifecycle management, and recovery.
 

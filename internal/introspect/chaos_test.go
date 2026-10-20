@@ -2,6 +2,7 @@ package introspect
 
 import (
 	"context"
+	"encoding/json"
 	"sync"
 	"testing"
 	"time"
@@ -80,7 +81,13 @@ func TestChaosReporterConcurrent(t *testing.T) {
 func TestChaosReporterRecoveryMetricsSurvivesFlagFrames(t *testing.T) {
 	r := NewChaosReporter()
 	r.SetLive(LiveChaosState{Active: true})
-	r.SetRecoveryMetrics(&RecoveryMetrics{TotalRecoveries: 3, AvgRecoveryTime: 2 * time.Second})
+	r.SetRecoveryMetrics(&RecoveryMetrics{
+		TotalRecoveries:     3,
+		AvgRecoveryTime:     2 * time.Second,
+		DataConsistencyRate: 95,
+		ConsistencySamples:  20,
+		ConsistencyMeasured: true,
+	})
 
 	// A GA-pause frame writes only flags — it must not wipe the metrics.
 	r.SetLive(LiveChaosState{Active: true, PausedForGA: true})
@@ -89,8 +96,90 @@ func TestChaosReporterRecoveryMetricsSurvivesFlagFrames(t *testing.T) {
 	if cs.Live.RecoveryMetrics == nil || cs.Live.RecoveryMetrics.TotalRecoveries != 3 {
 		t.Fatalf("recovery metrics clobbered by a flag-only SetLive: %+v", cs.Live.RecoveryMetrics)
 	}
+	if !cs.Live.RecoveryMetrics.ConsistencyMeasured || cs.Live.RecoveryMetrics.DataConsistencyRate != 95 {
+		t.Fatalf("consistency metrics clobbered by a flag-only SetLive: %+v", cs.Live.RecoveryMetrics)
+	}
 	if !cs.Live.PausedForGA {
 		t.Fatalf("GA-pause flag lost: %+v", cs.Live)
+	}
+}
+
+// TestRecoveryMetricsJSONShapeAndBelowThresholdSignal locks the panel wire
+// contract: recovery_metrics is omitted until populated, and when populated it
+// always carries all three consistency fields. A below-threshold window is
+// emitted as samples>0 / measured=false / rate=0 — the "producer is alive but
+// the number is not publishable" signal the panel must render as not measured.
+func TestRecoveryMetricsJSONShapeAndBelowThresholdSignal(t *testing.T) {
+	r := NewChaosReporter()
+
+	raw, err := json.Marshal(r.Snapshot())
+	if err != nil {
+		t.Fatalf("marshal empty snapshot: %v", err)
+	}
+	var frame map[string]any
+	if err := json.Unmarshal(raw, &frame); err != nil {
+		t.Fatalf("unmarshal empty snapshot: %v", err)
+	}
+	live, ok := frame["live"].(map[string]any)
+	if !ok {
+		t.Fatalf("live frame missing: %s", raw)
+	}
+	if _, exists := live["recovery_metrics"]; exists {
+		t.Fatalf("nil recovery metrics must be omitted: %s", raw)
+	}
+
+	r.SetRecoveryMetrics(&RecoveryMetrics{
+		TotalRecoveries:     2,
+		AvgRecoveryTime:     250 * time.Millisecond,
+		MinRecoveryTime:     100 * time.Millisecond,
+		MaxRecoveryTime:     500 * time.Millisecond,
+		LastRecoveryTime:    250 * time.Millisecond,
+		DataConsistencyRate: 0, // below the publication threshold
+		ConsistencySamples:  19,
+		ConsistencyMeasured: false,
+	})
+
+	raw, err = json.Marshal(r.Snapshot())
+	if err != nil {
+		t.Fatalf("marshal populated snapshot: %v", err)
+	}
+	if err := json.Unmarshal(raw, &frame); err != nil {
+		t.Fatalf("unmarshal populated snapshot: %v", err)
+	}
+	live, ok = frame["live"].(map[string]any)
+	if !ok {
+		t.Fatalf("live frame missing: %s", raw)
+	}
+	metrics, ok := live["recovery_metrics"].(map[string]any)
+	if !ok {
+		t.Fatalf("recovery_metrics missing when populated: %s", raw)
+	}
+
+	for _, key := range []string{
+		"total_recoveries",
+		"avg_recovery_time",
+		"min_recovery_time",
+		"max_recovery_time",
+		"last_recovery_time",
+		"data_consistency_rate",
+		"consistency_samples",
+		"consistency_measured",
+	} {
+		if _, exists := metrics[key]; !exists {
+			t.Errorf("recovery_metrics missing %q: %s", key, raw)
+		}
+	}
+	if got := metrics["total_recoveries"].(float64); got != 2 {
+		t.Errorf("total_recoveries = %v, want 2", got)
+	}
+	if got := metrics["data_consistency_rate"].(float64); got != 0 {
+		t.Errorf("data_consistency_rate = %v, want 0", got)
+	}
+	if got := metrics["consistency_samples"].(float64); got != 19 {
+		t.Errorf("consistency_samples = %v, want 19", got)
+	}
+	if got := metrics["consistency_measured"].(bool); got {
+		t.Error("consistency_measured = true below threshold, want false")
 	}
 }
 

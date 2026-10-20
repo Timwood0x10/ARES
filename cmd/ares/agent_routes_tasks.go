@@ -689,10 +689,10 @@ func runCollabGraph(ctx context.Context, k *kernelHandle, runID, tenantID string
 			}
 			switch tk.State {
 			case taskfabric.StateCompleted:
-				outputs[nid] = collabNodeOutput(tk)
+				outputs[nid] = collabNodeOutput(k.fabric, tk)
 				progressed = true
 			case taskfabric.StateFailed:
-				outputs[nid] = collabNodeOutput(tk)
+				outputs[nid] = collabNodeOutput(k.fabric, tk)
 				failedNodes = append(failedNodes, nid)
 			default:
 				still = append(still, nid)
@@ -783,8 +783,11 @@ func findCycle(ids map[string]bool, deps map[string][]string) string {
 // that place structured payloads under other checkpoint keys expose them via
 // the task itself (query fabric.Task(id) + DecodeCheckpoint), not through
 // this map — keep callers' expectations aligned with that boundary.
-func collabNodeOutput(tk *taskfabric.Task) string {
-	dc, err := taskfabric.DecodeCheckpoint(tk.Checkpoint)
+func collabNodeOutput(f *taskfabric.Fabric, tk *taskfabric.Task) string {
+	if f == nil || tk == nil {
+		return ""
+	}
+	dc, err := f.DecodeCheckpoint(tk.Checkpoint)
 	if err != nil {
 		return ""
 	}

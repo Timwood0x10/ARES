@@ -218,11 +218,11 @@ func failureVisibilityReason(fc failureContext) string {
 // It decodes through the shared helper rather than reaching into the checkpoint:
 // Task.Checkpoint is an opaque `any` (an envelope, a map, or a restored shape), and
 // one decode path for every reader is what keeps those shapes from diverging.
-func carriesCollaborationReply(t *Task) bool {
+func (f *Fabric) carriesCollaborationReply(t *Task) bool {
 	if t == nil {
 		return false
 	}
-	decoded, err := DecodeCheckpoint(t.Checkpoint)
+	decoded, err := f.DecodeCheckpoint(t.Checkpoint)
 	if err != nil || decoded.Payload == nil {
 		return false
 	}

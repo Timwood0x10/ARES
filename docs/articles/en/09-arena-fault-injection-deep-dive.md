@@ -230,18 +230,32 @@ flowchart TB
     A --> A1["base = (total - failed) / total × 100"]
     R --> R1["recovery rate ×70% + recovery speed ×30%"]
     R1 --> R2["speed: avg ≤1s→100, ≥10s→0, linear"]
-    C --> C1["use metrics.DataConsistencyRate, else heuristic"]
+    C --> C1["rate with ≥20 samples, else heuristic"]
     A1 -.weighted sum.-> FIN["Final = A×0.4 + R×0.3 + C×0.3"]
     R2 -.-> FIN
     C1 -.-> FIN
     FIN --> G["grade: ≥95 A+ / ≥90 A / ≥80 B / ≥70 C / ≥60 D / else F"]
 ```
 
-An honest note on the Consistency dimension: `MetricsSnapshot.DataConsistencyRate` in `metrics.go` defaults to 0, because `RecordConsistency` is marked **Deprecated** (`RecordActionResult` is the current entry point) and no steady stream of real data feeds it. So `calcConsistency`:
-- uses `metrics.DataConsistencyRate` when it is `> 0`;
-- otherwise falls back to a **heuristic**: treats about half the failures as data-related (`dataRelated = max(1, failed/2)`) and deducts 5 points per unit.
+An honest note on the Consistency dimension (updated 2026-10-20): `RecordConsistency` is **no longer a
+dead entry point**. In the serve process,
+`taskfabric.Fabric.WithConsistencyObserver(arena.NewConsistencyAdapter(kernel.arenaMetrics))` records one
+`ok bool` per `Fabric.DecodeCheckpoint` read-back. The window is FIFO-capped at 1000, and
+`DataConsistencyRate` is published only once `ConsistencySamples >= 20`; below that the rate is 0 and
+`Unmeasured` contains `data_consistency`. `calcConsistency` therefore checks
+`metrics.ConsistencySamples >= 20`:
+- with enough samples it uses `DataConsistencyRate`, **including a real 0%** (a window of all-failed
+  decodes is no longer mistaken for "no data");
+- below the threshold it falls back to the **heuristic**: about half the failures are treated as
+  data-related (`dataRelated = max(1, failed/2)`), deducting 5 points per unit.
 
-In other words, the third dimension — unless someone wires real consistency metrics in — is a **documented estimate**, not a measured value. And the recovery-speed thresholds (≤1s → 100, ≥10s → 0) are this score's own rubric, not a measured SLA.
+Mind the process boundary: `CalculateScore` is called only inside `arena.Service` (`ares arena serve`),
+which has no task-fabric checkpoint stream, so that process's own `data_consistency` remains honestly
+unmeasured. The rate measured by the serve process is exposed on the chaos panel through
+`recovery_metrics` (`data_consistency_rate` / `consistency_samples` / `consistency_measured`), not
+cross-process into the arena scorer. The panel must render `consistency_measured=false` as
+"not measured" (or hide the number), never as a 0% consistency rate. The recovery-speed thresholds (≤1s → 100, ≥10s → 0) are likewise this
+score's own rubric, not a measured SLA.
 
 ---
 

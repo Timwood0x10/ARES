@@ -227,18 +227,26 @@ flowchart TB
     A --> A1["base = (total - failed) / total × 100"]
     R --> R1["恢复速率 ×70% + 恢复速度 ×30%"]
     R1 --> R2["速度：avg ≤1s→100，≥10s→0，线性插值"]
-    C --> C1["优先用 metrics.DataConsistencyRate，否则启发式"]
+    C --> C1["采样数 ≥20 时用 DataConsistencyRate，否则启发式"]
     A1 -.加权求和.-> FIN["Final = A×0.4 + R×0.3 + C×0.3"]
     R2 -.-> FIN
     C1 -.-> FIN
     FIN --> G["grade：≥95 A+ / ≥90 A / ≥80 B / ≥70 C / ≥60 D / 其余 F"]
 ```
 
-关于一致性维度的**诚实说明**：`metrics.go` 里 `MetricsSnapshot.DataConsistencyRate` 默认是 0，因为 `RecordConsistency` 已标记 **Deprecated**（`RecordActionResult` 才是现行入口），实际没有源源不断喂数据进来。所以代码路径 `calcConsistency`：
-- 有 `metrics.DataConsistencyRate > 0` 就用它；
-- 否则走**启发式**：把失败数的一半当作"与数据有关"（`dataRelated = max(1, failed/2)`），每单位扣 5 分。
+关于一致性维度的**诚实说明（2026-10-20 更新）**：`RecordConsistency` **不再是空入口**。serve 进程里
+`taskfabric.Fabric.WithConsistencyObserver(arena.NewConsistencyAdapter(kernel.arenaMetrics))` 会在每次
+`Fabric.DecodeCheckpoint` 读回时写入一次 `ok bool`；窗口 FIFO 上限 1000，样本数 ≥20 才发布
+`DataConsistencyRate`，未达门槛时该字段为 0 且 `Unmeasured` 含 `data_consistency`。因此 `calcConsistency` 现在按
+`metrics.ConsistencySamples >= 20` 判断：
+- 有足够样本就用 `DataConsistencyRate`，**包括真实的 0%**（全部解码失败不再被当成"没数据"）；
+- 低于门槛才走**启发式**：把失败数的一半当作"与数据有关"（`dataRelated = max(1, failed/2)`），每单位扣 5 分。
 
-也就是说，第三维"一致性"——除非有人把真实的一致性指标接进 Metrics——默认是一套明说的**估算**，不是实测值。恢复速度阈值（≤1s=100，≥10s=0）也只是这套评分自己的标尺，别当成实测 SLA。
+注意两个进程的边界：`CalculateScore` 只在 `arena.Service`（`ares arena serve`）里调用，那个进程没有
+task-fabric checkpoint 流，所以它自己的 `data_consistency` 仍会诚实标为未测量；serve 进程测到的比率通过
+chaos 面板的 `recovery_metrics`（`data_consistency_rate` / `consistency_samples` / `consistency_measured`）
+暴露，而不是跨进程喂给 arena 评分器。面板必须把 `consistency_measured=false` 显示为“未测量”（或隐藏数字），
+不能把未达门槛的 0 当成 0% 一致性。恢复速度阈值（≤1s=100，≥10s=0）也只是这套评分自己的标尺，别当成实测 SLA。
 
 ---
 

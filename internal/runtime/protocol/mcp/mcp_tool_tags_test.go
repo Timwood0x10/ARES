@@ -1,9 +1,11 @@
 package ares_mcp
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestCapabilityTagsFor is the bridge from an MCP description to the kernel's routing
@@ -25,4 +27,25 @@ func TestCapabilityTagsFor(t *testing.T) {
 
 	// Nothing recognisable: no tags at all, which means "not participating", not "matches none".
 	assert.Nil(t, capabilityTagsFor("arena.echo", "Echoes its input back"))
+}
+
+// TestMCPToolTags_StableAcrossHealthFlip pins the routing contract: capability
+// tags come from the tool's advertised description, never from the availability
+// note appended to Description(). That note carries the failure reason, which can
+// contain "http" or "api" and would otherwise invent a cap_network tag for an
+// unrelated tool after its server goes down.
+func TestMCPToolTags_StableAcrossHealthFlip(t *testing.T) {
+	health := NewServerHealth()
+	client := NewMCPClient(MCPClientConfig{ServerName: "echo", Health: health})
+	tool, err := NewMCPTool(client, &MCPToolDef{
+		Name:        "echo",
+		Description: "Echoes its input back",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),
+	})
+	require.NoError(t, err)
+	assert.Nil(t, tool.Tags(), "a prose description with no capability words declares nothing")
+
+	health.MarkUnavailable("connect failed: http://127.0.0.1:1 refused")
+	require.Contains(t, tool.Description(), "UNAVAILABLE", "the model must see the outage note")
+	assert.Nil(t, tool.Tags(), "the outage note must not invent a capability")
 }

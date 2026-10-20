@@ -111,11 +111,19 @@ func calcRecoveryDimension(total, recovered int, avgRecovery time.Duration) floa
 }
 
 // calcConsistency computes the consistency dimension score (0-100).
-// Uses metrics.DataConsistencyRate if available; otherwise falls back to a
-// heuristic based on the proportion of failed faults.
+// A rate is trusted once the snapshot carries at least minConsistencySamples
+// decode outcomes; this is what lets a real 0% (every read-back failed) reach
+// the score instead of being mistaken for "not measured". Legacy snapshots
+// built by callers/tests with only a positive rate and no sample count are
+// still accepted, but a bare zero falls back to the heuristic.
 func calcConsistency(failed int, metrics *MetricsSnapshot) float64 {
-	if metrics != nil && metrics.DataConsistencyRate > 0 {
-		return clamp(metrics.DataConsistencyRate, 0, 100)
+	if metrics != nil {
+		if metrics.ConsistencySamples >= minConsistencySamples {
+			return clamp(metrics.DataConsistencyRate, 0, 100)
+		}
+		if metrics.ConsistencySamples == 0 && metrics.DataConsistencyRate > 0 {
+			return clamp(metrics.DataConsistencyRate, 0, 100)
+		}
 	}
 	// Heuristic: assume ~50% of failures are data-related, penalize accordingly.
 	if failed == 0 {

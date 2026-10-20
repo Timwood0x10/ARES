@@ -15,7 +15,7 @@
 > - `cognition-persistence.md`（P0-4 / A / P0-1 认知持久化专项：存什么 / 如何存，Rationale 载体 + 摘要分档 + 为何不上 Merkle）
 >
 > **注意**：`A`（disposable 复活）与 `A`（agent 工厂）共用前缀，看文件名区分；
-> `S` 也撞：`S-mcp`=service-loading 的 S1-S6，`S-st`=retrieval-and-storage 的存储侧 S1-S3。
+> `S` 也撞：`S-mcp`=service-loading 的 S1-S7，`S-st`=retrieval-and-storage 的存储侧 S1-S3。
 > 下标一律带文件前缀（如 `A-dispo`、`A-factory`、`S-mcp-S5`、`S-st-S2`）。
 
 ---
@@ -110,6 +110,19 @@
 ---
 
 ## 修订记录
+
+**2026-10-20 · 收敛 0.3.5：把三条"半条证据"补成生产接线**
+
+| 项 | 结论 |
+|---|---|
+| **P1 MCP 治理边界（补洞）** | 0.3.5 原判定"MCP 已进 kernel registry"只对启动瞬间成立：`setupMCP` 只 `RegisteredTools()` 拷贝一次，生产从不 `SetToolChangeHandler` ⇒ 服务器重连后新增/删除/更新的工具永远到不了 `internalReg` / 公开工具表。已加 `cmd/ares/mcp_tool_bridge.go`（按名持有、只删自己注册的项、内置工具 first-wins），`setupMCP` 启动同步后挂 `mcpMgr.SetToolChangeHandler(bridge.Sync)`。顺带修掉 `MCPTool.Tags()` 从 `Description()`（含 health 附注）派生 `cap_*` 的漂移：health reason 里的 `http/api` 会给无关工具凭空加 `cap_network`；改为读原始 `toolDef.Description`。删掉零调用、且会再造私有 registry 的 `ares_bootstrap.SetupMCP`（`ProvideMCP` 仍是唯一构造入口） |
+| **P1 证据** | 新测试：`TestMCPToolBridge_MirrorsAddsUpdatesAndRemoves`（增/删/改 + 双 registry）、`TestMCPToolBridge_KernelCollisionKeepsBuiltin`、`TestMCPToolBridge_PublicOnlyCollisionIsNotOverwritten`、`TestMCPToolBridge_LogsTagNarrowingOnChange`（重连后 old/new tags 的 Info 行）、`TestMCPToolTags_StableAcrossHealthFlip`、`TestInstallMCPToolBridge_SubscribesToManagerChanges`（真实挂上 change handler 后 `fire()` 能同步新工具）。反证：去掉 `Tags()` 的原始 description 读取 → health 测试失败；去掉 `SetToolChangeHandler` → 订阅测试失败 |
+| **P2 端到端证据** | `planner_e2e_test.go` 两条测试已在 `c901c805` 落地：真实 `ExecuteStep` 下同时断言"广告集合收窄 / tool 节点真的创建 / answer 节点真的产出"，另有 `TestE2E_NoCaps_AdvertisesFullToolbelt` 反证。本轮复核通过，未改代码。**本轮 mutation（实跑，三接缝各一次）**：① 收窄条件改成 `if true` → 报 `should not contain "web.search"`；② 跳过 tool 节点 `AddToolNode` → 报 `add plan node ... invalid dependency: step not found`；③ 跳过 answer 节点增长 → 报 `task "sess/e2e-narrow/d2/answer#0" not found within 2s`；三次恢复后均通过 |
+| **P3 恢复观测点** | `aresrecovery.RecoveryObserver` + `arena.NewRecoveryAdapter` 已在 `c901c805` 落地，`peer_assembly.go` 接到 `kernel.arenaMetrics`；`Service.RecoveryObserver()` 零调用死面已删。本轮复核通过。**本轮 mutation（实跑）**：把 `r.notifyObserver(sweepStart)` 改成 `_ = sweepStart` → `TestRecoveryObserver_CalledOnSuccess` 报 `observer called 0 times, want 1`；恢复后通过 |
+| **P4 一致性观测点（新做）** | `DataConsistencyRate` 不再无生产者：`taskfabric.Fabric.WithConsistencyObserver` + `Fabric.DecodeCheckpoint` 逐次上报成功/失败，`arena.NewConsistencyAdapter` 写入 `RecordConsistency(ok bool)`；窗口 FIFO 上限 1000，`ConsistencySamples >= 20` 才发布比率。`calcConsistency` 改按样本数判断 ⇒ **评分函数能表达全失败的真实 0%**，不再被 `>0` 当成"未测量"（`CalculateScore` 只在独立 arena 进程调用，该进程无 checkpoint 流，故其自身仍诚实 `Unmeasured`）。任务生命周期内的读回点（scheduler、await、planner、restore、API read、SDK）已切到 `Fabric.DecodeCheckpoint`；观察者按 Fabric 隔离，评测/临时 fabric 不会污染 serve 指标；chaos 面板的 `RecoveryMetrics` 新增 `data_consistency_rate`/`consistency_samples`/`consistency_measured`，由 `Snapshot()` 真实消费 |
+| **P4 证据** | 新测试：Fabric 侧成功/失败/panic/nil/双 Fabric 隔离 5 条；arena 侧阈值、100%、0%、adapter 端到端、FIFO、`ConsistencyMeasured` 6 条；评分侧 `TestCalculateScore_ConsistencyZeroIsMeasured`；面板侧 `TestChaosReporterRecoveryMetricsSurvivesFlagFrames` 扩展 + `TestRecoveryMetricsFromSnapshot_*` 2 条 + `TestRecoveryMetricsJSONShapeAndBelowThresholdSignal`。反证：去掉 `notifyCheckpointDecode` → Fabric 观测测试失败；把 `calcConsistency` 判据改回 `>0` → 0% 评分测试失败 |
+| **回滚映射（互不依赖）** | P1：`cmd/ares/mcp_tool_bridge.go` + `setupMCP` 的两处调用 + `MCPTool.Tags()` + 删除 `ares_bootstrap.SetupMCP`；P2：仅测试文件（无生产代码改动）；P3：`aresrecovery` observer + adapter + `peer_assembly` 一行接线；P4：`checkpoint_observer.go` + arena `RecordConsistency`/`calcConsistency` + 各读回点改方法 + panel 三个字段。任一项单独 revert 不会让其它项失效 |
+| **台账更正** | 2026-10-19 codescope 条目里"`RecordRecovery`/`RecordConsistency` 都保留并写清后果"已过期：两边现在都有生产生产者与消费方。保留该历史行但拆开标注：recovery 2026-10-20 前已修，consistency 2026-10-20 修 |
 
 **2026-10-19 · 收敛 C（§26–§30 全量，44 条）**
 
@@ -315,7 +328,7 @@
 | **索引重建** | `codescope index <path>` **不建索引**（它只是启动 MCP 服务）；真正可用的是 `index-parallel --workers N`。索引会**替换** DB 文件 ⇒ 运行中的服务读到空/旧数据，必须重启 |
 | **复测（新索引 25505 节点 / 1729 文件）** | 陈旧类误报**消失**：`knowledge/retriever`、`postgres/services` 两条"死模块"不再出现；`internal/evoapi` 仍报（**真**，0 importer）。死函数仍大量误报（抽样 5/8），并新增一例 `proposalKeyFor`——它以**函数值**传给 `SetExperimentLog`，`DeadFunction` 看不见函数值。`trust_score` 仍为 0 |
 | **`RecordFailover`/`FailoverCount` 已删** | 无任何生产者、也**不参与评分**（`CalculateScore` 不读），仅测试调用 ⇒ 按 TODO 一并移除（方法 + 快照字段 + 测试引用） |
-| ⚠️ **`RecordRecovery`/`RecordConsistency` 保留并写清后果** | 它们的快照字段（`TotalRecoveries`、`Avg/Min/Max/LastRecoveryTime`、`DataConsistencyRate`）**被 `CalculateScore`/`calcConsistency` 读取**，但生产里**从不调用这两个方法** ⇒ **字段恒为 0**，评分的"恢复/一致性"分量**永久走启发式兜底**。这是**真缺陷**（评分输入从未被填充），不是清理项；删掉生产者会把证据一起删，故在方法注释里写明"先修评分，再删" |
+| ✅ **`RecordRecovery`/`RecordConsistency` 已有生产者（2026-10-20 拆分更新）** | 2026-10-19 时两者都只被测试调用，快照字段恒 0。现状态：**recovery** 由 P3 `aresrecovery.RecoveryObserver → arena.NewRecoveryAdapter` 填充（`peer_assembly.go`）；**consistency** 由 P4 `taskfabric.Fabric.WithConsistencyObserver → arena.NewConsistencyAdapter` 在每次 `Fabric.DecodeCheckpoint` 上填充，窗口达 20 样本才发布比率。`calcConsistency` 已按 `ConsistencySamples` 判断：**有足够样本时**真实 0% 不再回落启发式；样本不足时仍诚实走启发式/标 unmeasured。历史结论保留在此，供审计"当时为什么没删" |
 
 **2026-10-18 · M10 收尾第一半：持久化实验日志（JSONL 追加）**
 

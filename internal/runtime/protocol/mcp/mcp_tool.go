@@ -84,7 +84,16 @@ func (t *MCPTool) Description() string {
 // as fetching HTTP. Without this the tool declared nothing, and an untagged tool is invisible to
 // capability narrowing: it could never be selected by it, and (before the fix next to
 // declaresAnyCapability) could be dropped by it.
-func (t *MCPTool) Tags() map[string]string { return capabilityTagsFor(t.Name(), t.Description()) }
+func (t *MCPTool) Tags() map[string]string {
+	if t.toolDef == nil {
+		return nil
+	}
+	// Use the raw tool definition, not t.Description(): the latter appends an
+	// "UNAVAILABLE ..." note whose reason can contain routing keywords ("http",
+	// "api"), which would make capability tags depend on server health. Tags are
+	// part of the routing contract and must stay stable across health flips.
+	return capabilityTagsFor(t.Name(), t.toolDef.Description)
+}
 
 // capabilityTagsFor maps a tool's name and description onto cap_* tags. Split out from Tags so
 // it can be exercised without constructing a live MCP client.

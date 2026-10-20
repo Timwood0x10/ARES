@@ -596,9 +596,13 @@ caps 推导顺序：任务 payload 显式标签 > 模型 tagger（opt-in，配�
 **可观测**：每次广告经 `ToolAdvertisementSink` 记一条（caps、广告数、总数）；
 启动时打注册总数（**刻意不设上限**——上限形态是产品决定，静默限流比响亮的数字糟）。
 
-**MCP 工具不在这条路上**：MCP 工具注册进 SDK 自己的 registry、靠 description 上报
-capability（`sdk/mcp_capabilities.go`），kernel 侧的 tag filter / caps 收窄对它们
-**不适用**。
+**MCP 工具也在这条路上（serve 路径）**：`ProvideMCP` 仍先持有协议层 registry（服务器要在
+builtin deps 之前启动），`setupMCP` 通过 `mcpToolBridge` 把它镜像进 kernel 的 `internalReg`
+和公开工具表；`MCPTool.Tags()` 从**原始 description** 派生 `cap_*`，因此 kernel 侧的
+tag filter / caps 收窄 / L1 `enabled` / 重名 first-wins 对 MCP 工具同样生效。服务器在
+启动后增删或更新工具时，manager 的 `SetToolChangeHandler` 会调用 `bridge.Sync`，镜像不再
+是启动时的一次性快照。未声明能力词汇的 MCP 工具仍按“无法判断就不隐藏”的规则保留在广告
+集合里。
 
 | 环节 | 源码 |
 |---|---|
@@ -1550,6 +1554,7 @@ flowchart TB
 |---|---|---|
 | MCP 装配 | `ProvideMCP`（stdio / http 传输） | `internal/ares_bootstrap/provide_mcp.go:203` |
 | MCP 管理器 | `MCPManager`（transport_stdio / transport_server） | `internal/runtime/protocol/mcp/` |
+| MCP 工具镜像 | `mcpToolBridge`：启动时 + `SetToolChangeHandler` 动态同步 | `cmd/ares/mcp_tool_bridge.go` |
 | **渐进披露** | 注册表保留**全量**工具；**每个量子只广告收窄后的子集** | `internal/fabric/agent/planner_cognition.go`（`advertisedToolSchemas`） |
 | 能力搜索器 | `registerCapabilitySearch`（envcap）：把 skills 变成可检索的工具能力 | `cmd/ares/agent_routes_tools.go:280` |
 | L1 工具类图 | `buildToolClassDAG(toolBinder.GetToolSchemas())` | `cmd/ares/serve_peer.go:515` |
@@ -1566,9 +1571,12 @@ flowchart TB
 搬运 task-scoped 键时才成立（`internal/kernel/scheduler_quantum.go` 的
 `carryTaskScopedPayload`）。
 
-**必须知道的边界**：MCP 工具**不在这条路上**。它们注册进 SDK 自己的工具表（`sdk/sdk.go`），
-用 `Capabilities()`（由其描述分类得到）而不是 `cap_*` tag 表达能力，因此 kernel 侧的收窄
-**不作用于 MCP 工具**。
+**必须知道的边界**：MCP 工具在 **serve 路径**上已进入 kernel 工具面。`ProvideMCP` 仍先
+持有协议层 registry（服务器启动早于 builtin deps），`setupMCP` 再通过
+`cmd/ares/mcp_tool_bridge.go` 的 bridge 把它镜像进 kernel 的 `internalReg` 与公开工具表；
+`MCPTool.Tags()` 从原始 description 派生 `cap_*`，所以 L1 `enabled`、tag/caps 收窄和
+内置工具优先的重名策略都同样作用。启动后的工具增删/更新由 `SetToolChangeHandler` →
+`bridge.Sync` 持续同步，不是一次性拷贝。SDK 的独立工具表仍走自己的装配路径。
 
 ### 19.1 主动服务发现（`internal/discovery` 引擎）
 

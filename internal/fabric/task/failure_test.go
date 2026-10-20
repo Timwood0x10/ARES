@@ -157,14 +157,15 @@ func TestFailureVisibilityReason(t *testing.T) {
 // above: the marker is read from the task's checkpoint payload, and a task with no
 // checkpoint (or no payload) is simply not a reply task.
 func TestCarriesCollaborationReply(t *testing.T) {
+	f := NewFabric()
 	reply := &Task{ID: "ask-reply-1", Checkpoint: NewCheckpointEnvelope(map[string]any{
 		PayloadKeyCollaborationReply: map[string]any{"from": "agent-b"},
 	})}
-	assert.True(t, carriesCollaborationReply(reply))
+	assert.True(t, f.carriesCollaborationReply(reply))
 
-	assert.False(t, carriesCollaborationReply(&Task{ID: "t", Checkpoint: NewCheckpointEnvelope(map[string]any{"input": "x"})}))
-	assert.False(t, carriesCollaborationReply(&Task{ID: "t"}))
-	assert.False(t, carriesCollaborationReply(nil))
+	assert.False(t, f.carriesCollaborationReply(&Task{ID: "t", Checkpoint: NewCheckpointEnvelope(map[string]any{"input": "x"})}))
+	assert.False(t, f.carriesCollaborationReply(&Task{ID: "t"}))
+	assert.False(t, f.carriesCollaborationReply(nil))
 }
 
 // TestFailKnownPermanentCauseSkipsTheRetryBudget is the T-F1 contract end to end:

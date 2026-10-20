@@ -377,7 +377,7 @@ func (s *Scheduler) ToModelTask(tk *taskfabric.Task) *models.Task {
 	if tk.Checkpoint == nil {
 		return t
 	}
-	dc, err := taskfabric.DecodeCheckpoint(tk.Checkpoint)
+	dc, err := s.decodeCheckpoint(tk.Checkpoint)
 	if err != nil {
 		log.Warn(context.Background(), "ToModelTask",
 			"kernel scheduler: toModelTask decode checkpoint failed", "task_id", tk.ID, "error", err)

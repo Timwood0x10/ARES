@@ -511,6 +511,11 @@ func (a *peerAssembly) spawnPeers() error {
 	// (as the initial P3 did) was a data black hole — written but never read.
 	kernel.arenaMetrics = arena.NewMetricsCollector()
 	kernel.recovery.WithRecoveryObserver(arena.NewRecoveryAdapter(kernel.arenaMetrics))
+	// Data consistency: the fabric counts every checkpoint read-back through
+	// Fabric.DecodeCheckpoint, and the adapter turns decode outcomes into the
+	// same collector's consistency window. Both half-producers feed the ONE
+	// collector the chaos/introspection panel reads.
+	kernel.fabric.WithConsistencyObserver(arena.NewConsistencyAdapter(kernel.arenaMetrics))
 	sched.WithGovernance(agents)
 	// The scheduler's candidate pool includes every live, IDLE, executable
 	// fabric agent — the configured peers spawned above, plus any spawned via

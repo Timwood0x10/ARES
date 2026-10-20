@@ -4,6 +4,7 @@ import (
 	"errors"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/ares_events"
@@ -131,6 +132,12 @@ type Fabric struct {
 	// per-task timeout still expires; leaving the default zero is the
 	// deliberate fabric-wide "wait forever" choice.
 	defaultApprovalSLA time.Duration
+
+	// decodeObserver receives one notification per checkpoint read-back that
+	// goes through Fabric.DecodeCheckpoint. Atomic because the scheduler and
+	// await paths read it without f.mu; nil means observation is off. Set once
+	// at assembly (WithConsistencyObserver) before tasks run.
+	decodeObserver atomic.Pointer[checkpointDecodeObserverSlot]
 
 	// flushSeq/flushedSeq gate durable appends into strict causal order
 	// (concurrent flushAppends must not land out of order in the store's

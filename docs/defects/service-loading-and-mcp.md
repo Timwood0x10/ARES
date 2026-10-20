@@ -203,6 +203,40 @@ if oldHealthy != svc.Healthy {
 
 ---
 
+## S7 · MCP 工具镜像只在启动时拷一次，运行期增删永远不到 kernel 〔缺陷 · 已修 2026-10-20〕
+
+`setupMCP` 把 `mcpMgr.RegisteredTools()` 拷进 `internalReg` 后就不再管；`MCPManager`
+明明有 `SetToolChangeHandler`，生产里却**零调用**。后果：
+
+- 服务器重连后 `RefreshTools` 新增的工具只进 manager 的协议层 registry，kernel 的
+  `internalReg` 与公开 `/api/tools` 都看不到 ⇒ planner 永远不知道它存在；
+- 服务器删掉的工具仍留在两个 registry 里 ⇒ planner 继续广告一个必然失败的名字；
+- 同一个 server 更新了 description/parameters，广告面仍是旧 schema。
+
+这与 S2/S5 是同一族问题的另一半：S2/S5 修的是"manager 的 registry 会变"，S7 是
+"变了之后没人同步给真正的消费方"。
+
+**修法**（`cmd/ares/mcp_tool_bridge.go`）：
+
+| 设计点 | 做法 |
+|---|---|
+| 所有权 | bridge 记录自己注册过的名字（internal/public 各一份）；删除只删自己拥有的，内置工具不会被误删 |
+| 重名 | kernel 的 `Register` 是 first-wins；bridge 注册失败就不写公开表，保持"内置赢"且两个表面一致 |
+| 更新 | fingerprint = description + category + parameters + tags；变化时先 `Unregister` 再 `Register` |
+| 动态 | `setupMCP` 在初始 `Sync()` 后挂 `mcpMgr.SetToolChangeHandler(bridge.Sync)` |
+| 失败 | 单条工具的注册/删除失败只 `Warn`，不阻断其它工具的同步 |
+
+**证据**：`TestMCPToolBridge_MirrorsAddsUpdatesAndRemoves`（增/删/改 + 双 registry）、
+`TestMCPToolBridge_KernelCollisionKeepsBuiltin`、`TestMCPToolBridge_PublicOnlyCollisionIsNotOverwritten`。
+反证：去掉 `SetToolChangeHandler` → 新工具不会出现在 registry，测试失败。
+
+**顺带修掉 S7.1（tag 漂移）**：`MCPTool.Tags()` 原先从 `Description()` 派生，而
+`Description()` 会追加 `UNAVAILABLE ...` health 附注；附注里的 `http` / `api` 会让一个
+无关工具凭空获得 `cap_network`。现在 tags 用构造时的原始 `toolDef.Description`，health
+翻转只影响可见文案，不影响路由契约。测试：`TestMCPToolTags_StableAcrossHealthFlip`。
+
+---
+
 ## 已做（确认非缺陷）
 
 | 保护 | 现状 | 锚点 |
@@ -224,6 +258,8 @@ if oldHealthy != svc.Healthy {
 | **S2 MCP 挂了工具静默消失 LLM 不知** | 缺陷 | 高（注入 degradation notice） |
 | S4 health 标了没人消费 | 隐患 | 中（MCP Manager 订阅 health 事件摘工具） |
 | **S5 transport 自动断连不摘工具** | 缺陷 | 中（transport 层加 onDisconnect → 自动 unregisterTools） |
+| **S7 运行期 MCP 增删不同步到 kernel** | 缺陷 | ✅ 已修 2026-10-20（`mcpToolBridge` + `SetToolChangeHandler`） |
+| **S7.1 health 附注改变 cap_* tag** | 缺陷 | ✅ 已修 2026-10-20（tags 读原始 description） |
 | S3 discovery 默认关 | 取舍 | 知边界（文档写清） |
 | S6 工具规模稀释 LLM 选择 | 取舍 | 知边界（大集做分组/裁剪） |
 | 连接隔离 / 手动注册保护 / 热重连 / 去重 / 默认关 | ✅ 已做 | 无需动 |
@@ -237,6 +273,7 @@ if oldHealthy != svc.Healthy {
 > ② **server 挂了** → 它的工具直接没进 Registry，LLM 不知道自己少了什么，会对着
 > 不存在的工具白调；
 > ③ **半死 server**（health 标了 `unhealthy` 但工具还挂着）→ 没人消费 health 事件摘工具；
-> ④ **discovery 默认关** → 工具集启动时定死，不随网络动态发现。
+> ④ **discovery 默认关** → 工具集启动时定死，不随网络动态发现；
+> ⑤ **运行期 MCP 增删** 只进 manager 的协议层 registry，kernel 与公开工具表是启动时的一次性拷贝（已修：`mcpToolBridge` + `SetToolChangeHandler`）。
 > 这些和前面 '协作/工厂' 那份的 '静默'是一族——**整系统的'坏'都是静默的**（任务卡死、
 > 工具消失、认知丢失、GA 漂），不是'响的'。要补的是**一族可观测/告警**。"

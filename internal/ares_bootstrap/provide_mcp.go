@@ -3,7 +3,6 @@ package ares_bootstrap
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -214,22 +213,6 @@ func ProvideMCP(ctx context.Context, cfg ares_config.MCPConfig) (*ares_mcp.MCPMa
 	}
 	if err := mcpMgr.Start(ctx); err != nil {
 		return nil, fmt.Errorf("bootstrap: MCP manager start: %w", err)
-	}
-	return mcpMgr, nil
-}
-
-// SetupMCP is a backward-compatible alias kept for existing callers.
-func SetupMCP(ctx context.Context, cfg *ares_config.MCPConfig, registry *core.Registry) (*ares_mcp.MCPManager, error) {
-	if cfg == nil || len(cfg.Servers) == 0 {
-		return nil, errors.New("bootstrap: MCP not configured")
-	}
-	mgrCfg := mapMCPServerConfig(*cfg)
-	mcpMgr, err := ares_mcp.NewMCPManager(mgrCfg, registry)
-	if err != nil {
-		return nil, fmt.Errorf("create ares_mcp manager: %w", err)
-	}
-	if err := mcpMgr.Start(ctx); err != nil {
-		return nil, fmt.Errorf("start ares_mcp manager: %w", err)
 	}
 	return mcpMgr, nil
 }

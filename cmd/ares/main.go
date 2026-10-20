@@ -59,8 +59,8 @@ import (
 
 var rootCmd = &cobra.Command{
 	Use:   "ares",
-	Short: "ARES — Agent Runtime & Evolution System",
-	Long: `ARES is the unified CLI for the Agent Runtime & Evolution System.
+	Short: "ARES — Agent Operating System (AgentOS): runtime, kernel & GA evolution",
+	Long: `ARES is the unified CLI for the Agent Operating System (AgentOS): runtime, kernel & GA evolution.
 
 It provides commands for running agents, managing databases,
 inspecting flight data, running chaos engineering scenarios,

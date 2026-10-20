@@ -354,7 +354,7 @@ func (s *Scheduler) executeWithCandidates(ctx context.Context, taskID string, ca
 	// Capturing it here — before
 	// RunQuantum overwrites the task Checkpoint — is what keeps UserProfile
 	// alive through an arbitrary number of yield→resume cycles.
-	meta, decodeErr := taskfabric.DecodeCheckpoint(tk.Checkpoint)
+	meta, decodeErr := s.decodeCheckpoint(tk.Checkpoint)
 	if decodeErr != nil {
 		log.Warn(ctx, "executeWithCandidates",
 			"kernel scheduler: decode checkpoint failed", "task_id", taskID, "error", decodeErr)

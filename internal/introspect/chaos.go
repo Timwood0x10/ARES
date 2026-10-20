@@ -71,23 +71,33 @@ type LiveChaosState struct {
 	// LastInjection is when the most recent injection cycle ran.
 	LastInjection time.Time `json:"last_injection"`
 
-	// RecoveryMetrics carries the measured recovery timing from the arena
-	// metrics collector. It is written through SetRecoveryMetrics (its own
-	// atomic) and merged into the frame by Snapshot — never through SetLive,
-	// which would clobber it on the next flag-only frame. Zero-valued until the
-	// first recovery completes.
+	// RecoveryMetrics carries the measured recovery timing and checkpoint
+	// consistency window from the arena metrics collector. It is written
+	// through SetRecoveryMetrics (its own atomic) and merged into the frame by
+	// Snapshot — never through SetLive, which would clobber it on the next
+	// flag-only frame. Zero-valued until the first sample.
 	RecoveryMetrics *RecoveryMetrics `json:"recovery_metrics,omitempty"`
 }
 
-// RecoveryMetrics is a snapshot of recovery timing from the arena metrics
-// collector, rendered on the chaos panel. It is the measured counterpart of
-// the "recovery_timing" field the arena score reads.
+// RecoveryMetrics is a snapshot of the arena metrics collector, rendered on
+// the chaos panel. It carries recovery timing plus the checkpoint
+// data-consistency window: one producer's payload, one panel frame.
+//
+// ConsistencyMeasured is false while the window is below the collector's
+// publication threshold. DataConsistencyRate can then be 0 for two different
+// reasons ("no samples yet" and "every decode failed"), so consumers must read
+// this flag rather than treating zero as measured. The panel should render
+// "not measured" (or omit the number) while this is false.
 type RecoveryMetrics struct {
 	TotalRecoveries  int           `json:"total_recoveries"`
 	AvgRecoveryTime  time.Duration `json:"avg_recovery_time"`
 	MinRecoveryTime  time.Duration `json:"min_recovery_time"`
 	MaxRecoveryTime  time.Duration `json:"max_recovery_time"`
 	LastRecoveryTime time.Duration `json:"last_recovery_time"`
+
+	DataConsistencyRate float64 `json:"data_consistency_rate"`
+	ConsistencySamples  int     `json:"consistency_samples"`
+	ConsistencyMeasured bool    `json:"consistency_measured"`
 }
 
 // chaosReporter is the concrete source the chaos loops update. A single

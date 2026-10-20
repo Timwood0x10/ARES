@@ -92,11 +92,12 @@ type kernelHandle struct {
 	// recoveryStop / recoveryDone do the same for the kernel recovery loop.
 	recoveryStop context.CancelFunc
 	recoveryDone chan struct{}
-	// arenaMetrics holds recovery timing samples from the recovery loop.
-	// It is the SINGLE metrics collector for the serve path: the recovery
-	// observer writes into it, and the chaos domain / introspection panel
-	// reads its Snapshot. Creating a separate collector (as P3 initially did)
-	// made a data black hole — the collector had a writer but no reader.
+	// arenaMetrics holds recovery timing and checkpoint-decode consistency
+	// samples from the serve path. It is the SINGLE metrics collector for the
+	// serve path: the recovery observer and the fabric decode observer write
+	// into it, and the chaos domain / introspection panel reads its Snapshot.
+	// Creating a separate collector (as P3 initially did) made a data black
+	// hole — the collector had a writer but no reader.
 	arenaMetrics *arena.MetricsCollector
 	flipped      bool
 }

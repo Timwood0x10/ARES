@@ -462,7 +462,7 @@ func (f *Fabric) logFailureVisibilityLocked(t *Task, cause error, retryable, ter
 		MaxRetries: t.RetryPolicy.MaxRetries,
 		Retryable:  retryable,
 		Terminal:   terminal,
-		ReplyTask:  carriesCollaborationReply(t),
+		ReplyTask:  f.carriesCollaborationReply(t),
 	})
 	if reason == "" {
 		return
@@ -502,7 +502,7 @@ func (f *Fabric) failTerminalLocked(t *Task, cause error, retryable bool, pendin
 	// Replace (never mutate) the checkpoint pointer so off-lock snapshot
 	// readers of the previous envelope stay race-free — the fabric's
 	// documented checkpoint ownership rule.
-	t.Checkpoint = checkpointWithCause(t.Checkpoint, cause)
+	t.Checkpoint = f.checkpointWithCause(t.Checkpoint, cause)
 	*pending = append(*pending, f.failedEventLocked(t, retryable))
 	// Terminal failures are shared by Fail and ExpireDeadlines, so the escalation
 	// belongs here rather than at either call site: a budget that ran out on an

@@ -289,6 +289,20 @@ func toolHistoryPair(step *engine.Step, nodeID, output string) []*llmcore.LLMMes
 	}
 }
 
+// checkpointDecoder is the optional observed read-back surface. FabricReader
+// deliberately stays minimal (tests use small fakes); the production fabric
+// implements this method, so its reads count toward the consistency metric.
+type checkpointDecoder interface {
+	DecodeCheckpoint(cp any) (taskfabric.DecodedCheckpoint, error)
+}
+
+func decodeNodeCheckpoint(f FabricReader, cp any) (taskfabric.DecodedCheckpoint, error) {
+	if decoder, ok := f.(checkpointDecoder); ok {
+		return decoder.DecodeCheckpoint(cp)
+	}
+	return taskfabric.DecodeCheckpoint(cp)
+}
+
 // readNodeOutput reads one node's execution output from its fabric task
 // envelope by node ID = task ID join. Returns "" when the task is not
 // found or has no output yet (e.g. not yet completed).
@@ -300,7 +314,7 @@ func (c *plannerCognition) readNodeOutput(nodeID string) (string, error) {
 	if tk.State != taskfabric.StateCompleted {
 		return "", nil
 	}
-	dc, err := taskfabric.DecodeCheckpoint(tk.Checkpoint)
+	dc, err := decodeNodeCheckpoint(c.fabric, tk.Checkpoint)
 	if err != nil {
 		return "", err
 	}

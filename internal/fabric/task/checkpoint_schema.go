@@ -298,11 +298,11 @@ func EncodeCheckpoint(dc DecodedCheckpoint) *CheckpointEnvelope {
 // cause returns the checkpoint unchanged (failures with no recorded error,
 // e.g. operator Fail calls); an undecodable checkpoint degrades to a fresh
 // envelope holding only the cause rather than losing the failure text.
-func checkpointWithCause(cp any, cause error) any {
+func (f *Fabric) checkpointWithCause(cp any, cause error) any {
 	if cause == nil {
 		return cp
 	}
-	dc, err := DecodeCheckpoint(cp)
+	dc, err := f.DecodeCheckpoint(cp)
 	if err != nil {
 		return EncodeCheckpoint(DecodedCheckpoint{LastError: cause.Error()})
 	}
@@ -316,8 +316,8 @@ func checkpointWithCause(cp any, cause error) any {
 // best-effort: a missing StrategyID degrades to the caller's active-strategy
 // fallback and must never break the state machine. DecodeCheckpoint is a pure
 // in-memory operation, so this is safe to call under the fabric mutex.
-func strategyIDFromCheckpoint(cp any) string {
-	dc, err := DecodeCheckpoint(cp)
+func (f *Fabric) strategyIDFromCheckpoint(cp any) string {
+	dc, err := f.DecodeCheckpoint(cp)
 	if err != nil {
 		return ""
 	}
@@ -328,8 +328,8 @@ func strategyIDFromCheckpoint(cp any) string {
 // through the single shared decode path. A decode failure or a session-less
 // checkpoint returns "". Best-effort like strategyIDFromCheckpoint: a missing
 // SessionID degrades to "" and never breaks the state machine.
-func sessionIDFromCheckpoint(cp any) string {
-	dc, err := DecodeCheckpoint(cp)
+func (f *Fabric) sessionIDFromCheckpoint(cp any) string {
+	dc, err := f.DecodeCheckpoint(cp)
 	if err != nil {
 		return ""
 	}
@@ -337,14 +337,16 @@ func sessionIDFromCheckpoint(cp any) string {
 }
 
 // tokenUsageFromCheckpoint extracts the cumulative LLM token spend from a
-// checkpoint value through the single shared decode path. Decode failure or
-// a pre-v4 envelope yields 0,0 — best-effort like strategyIDFromCheckpoint:
-// missing accounting must never break the state machine, and callers
-// (recordLocked's terminal-event payload) treat 0,0 as "emit nothing".
-// Pure in-memory decode, safe under the fabric mutex.
+// checkpoint value for envelope round-trip tests. It deliberately bypasses
+// Fabric.DecodeCheckpoint: tests should not need observer wiring, and the
+// production terminal-event path uses terminalCheckpointFacts (which is
+// observed). Decode failure or a pre-v4 envelope yields 0,0.
 func tokenUsageFromCheckpoint(cp any) (input, output int) {
-	in, out, _, _ := terminalCheckpointFacts(cp)
-	return in, out
+	dc, err := DecodeCheckpoint(cp)
+	if err != nil {
+		return 0, 0
+	}
+	return dc.InputTokens, dc.OutputTokens
 }
 
 // terminalCheckpointFacts extracts, in ONE decode, everything the terminal event
@@ -359,8 +361,8 @@ func tokenUsageFromCheckpoint(cp any) (input, output int) {
 // Best-effort by contract: a nil/undecodable checkpoint, a non-map
 // StepCheckpoint, or absent keys yield zero values, never an error — the
 // observer then scores on outcome and latency alone instead of inventing facts.
-func terminalCheckpointFacts(cp any) (inTokens, outTokens int, bodySource string, truncated bool) {
-	inTokens, outTokens, meta := stepCheckpointMetadata(cp)
+func (f *Fabric) terminalCheckpointFacts(cp any) (inTokens, outTokens int, bodySource string, truncated bool) {
+	inTokens, outTokens, meta := f.stepCheckpointMetadata(cp)
 	bs, _ := meta[ares_events.EventKeyAnswerBodySource].(string)
 	tr, _ := meta[ares_events.EventKeyAnswerTruncated].(bool)
 	return inTokens, outTokens, bs, tr
@@ -376,8 +378,8 @@ func terminalCheckpointFacts(cp any) (inTokens, outTokens int, bodySource string
 // instead of having to guess from the answer's text. One extraction rule (this
 // delegation), not a second one: the two halves of P0-3 must agree on what "gap"
 // means.
-func AnswerQualityFromCheckpoint(cp any) (bodySource string, truncated bool) {
-	_, _, bodySource, truncated = terminalCheckpointFacts(cp)
+func (f *Fabric) AnswerQualityFromCheckpoint(cp any) (bodySource string, truncated bool) {
+	_, _, bodySource, truncated = f.terminalCheckpointFacts(cp)
 	return bodySource, truncated
 }
 
@@ -388,8 +390,8 @@ func AnswerQualityFromCheckpoint(cp any) (bodySource string, truncated bool) {
 // quantum), and one walk keeps that a single decode.
 //
 // Callers must not mutate the returned map: it belongs to the decoded envelope.
-func stepCheckpointMetadata(cp any) (inTokens, outTokens int, meta map[string]any) {
-	dc, err := DecodeCheckpoint(cp)
+func (f *Fabric) stepCheckpointMetadata(cp any) (inTokens, outTokens int, meta map[string]any) {
+	dc, err := f.DecodeCheckpoint(cp)
 	if err != nil {
 		return 0, 0, nil
 	}
@@ -421,6 +423,17 @@ const stepCheckpointMetadataKey = "metadata"
 //   - []byte: the JSON encoding.
 //   - error: json.Marshal error.
 func MarshalCheckpoint(cp any) ([]byte, error) {
+	return marshalCheckpointWith(DecodeCheckpoint, cp)
+}
+
+// marshalCheckpoint is the observed form used inside the fabric: a non-envelope
+// checkpoint goes through Fabric.DecodeCheckpoint, so its read-back failure is
+// counted by the consistency observer.
+func (f *Fabric) marshalCheckpoint(cp any) ([]byte, error) {
+	return marshalCheckpointWith(f.DecodeCheckpoint, cp)
+}
+
+func marshalCheckpointWith(decode func(any) (DecodedCheckpoint, error), cp any) ([]byte, error) {
 	if cp == nil {
 		return []byte("null"), nil
 	}
@@ -428,7 +441,7 @@ func MarshalCheckpoint(cp any) ([]byte, error) {
 		return json.Marshal(env)
 	}
 	// Wrap non-envelope values so the serialized form is always versioned.
-	dc, err := DecodeCheckpoint(cp)
+	dc, err := decode(cp)
 	if err != nil {
 		return nil, err
 	}

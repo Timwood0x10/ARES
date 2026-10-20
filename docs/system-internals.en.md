@@ -656,10 +656,15 @@ planner-session specific):
 (**deliberately no cap** — what shape a cap should take is a product decision,
 and a silent limit is worse than a loud number).
 
-**MCP tools are OFF this path**: they register into the SDK's own registry and
-report planner capabilities from their description
-(`sdk/mcp_capabilities.go`), so kernel-side tag filter / caps narrowing does not
-apply to them.
+**MCP tools are ON this path (serve path)**: `ProvideMCP` still owns the protocol
+registry first (servers start before builtin deps exist), then `setupMCP` mirrors it through
+`mcpToolBridge` into the kernel's `internalReg` and the public tool registry.
+`MCPTool.Tags()` derives `cap_*` from the **raw description**, so the kernel tag filter,
+caps narrowing, L1 `enabled`, and builtin-first collision policy all apply to MCP tools too.
+When a server adds, removes or updates tools after startup, the manager's
+`SetToolChangeHandler` calls `bridge.Sync`, so the mirror is not a one-shot startup snapshot.
+MCP tools whose description declares no capability word still stay advertised under the
+"cannot judge, do not hide" rule.
 
 | Stage | Source |
 |---|---|
@@ -1794,6 +1799,7 @@ flowchart TB
 |---|---|---|
 | MCP assembly | `ProvideMCP` (stdio / http transports) | `internal/ares_bootstrap/provide_mcp.go:203` |
 | MCP manager | `MCPManager` (transport_stdio / transport_server) | `internal/runtime/protocol/mcp/` |
+| MCP tool mirror | `mcpToolBridge`: startup + `SetToolChangeHandler` live sync | `cmd/ares/mcp_tool_bridge.go` |
 | **Progressive disclosure** | the registry keeps the **full** tool set; each quantum advertises a **narrowed subset** | `internal/fabric/agent/planner_cognition.go` (`advertisedToolSchemas`) |
 | Capability searcher | `registerCapabilitySearch` (envcap): makes the skills catalog a searchable tool capability | `cmd/ares/agent_routes_tools.go:280` |
 | L1 tool-class graph | `buildToolClassDAG(toolBinder.GetToolSchemas())` | `cmd/ares/serve_peer.go:515` |
@@ -1812,10 +1818,14 @@ can call `need_tools`; the request is unioned into the task and reaches the next
 works only because the kernel carries task-scoped payload keys across the checkpoint re-wrap
 (`carryTaskScopedPayload` in `internal/kernel/scheduler_quantum.go`).
 
-**Boundary worth knowing**: MCP tools are not on this path. They are registered into the SDK's
-own tool registry (`sdk/sdk.go`) and report planner capabilities through `Capabilities()`
-(derived from their advertised description) instead of `cap_*` tags, so kernel-side narrowing
-does not apply to them.
+**Boundary worth knowing**: MCP tools now participate in the **serve path's** kernel
+tool surface. `ProvideMCP` still owns the protocol registry first (servers start before
+builtin deps exist); `setupMCP` then mirrors it through `cmd/ares/mcp_tool_bridge.go` into
+`internalReg` and the public registry. `MCPTool.Tags()` derives `cap_*` from the raw
+description, so L1 `enabled`, tag/caps narrowing, and the builtin-first collision policy
+apply. Tool additions/removals/updates after startup are kept in sync by
+`SetToolChangeHandler` → `bridge.Sync`, not by a one-shot copy. The SDK's separate tool
+registry still follows its own assembly path.
 
 ### 19.1 Active service discovery (the `internal/discovery` engine)
 

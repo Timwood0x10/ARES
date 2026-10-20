@@ -42,7 +42,7 @@ SUSPENDED → LEASED (re-acquire with preserved checkpoint), READY (release)
 ```go
 var rootCmd = &cobra.Command{
 	Use: "ares",
-	Short: "ARES — Agent Runtime & Evolution System",
+	Short: "ARES — Agent Operating System (AgentOS): runtime, kernel & GA evolution",
 	...
 }
 ```
