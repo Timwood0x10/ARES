@@ -168,7 +168,12 @@ func TestNewRuntimeArenaExecutor_RefusesMissingPieces(t *testing.T) {
 
 	// Deliberate nil context: this pins the constructor's guard, which exists because an
 	// executor without a base context would have no way to outlive a case.
-	_, err = NewRuntimeArenaExecutor(nil, func() (*CandidateReplayFactory, error) { return nil, nil }, nil) //nolint:staticcheck // deliberate: pins the nil-base-context guard
+	// Two directive families are needed here and they are not interchangeable: the standalone
+	// staticcheck binary in `make lint-staticcheck` only understands //lint:ignore, while
+	// golangci-lint only understands //nolint. Keeping just one of them leaves the other tool
+	// reporting the same deliberate call.
+	//lint:ignore SA1012 deliberate: pins the nil-base-context guard
+	_, err = NewRuntimeArenaExecutor(nil, func() (*CandidateReplayFactory, error) { return nil, nil }, nil) //nolint:staticcheck // same reason as the lint:ignore above
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "base context")
 
