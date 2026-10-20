@@ -1438,7 +1438,7 @@ flowchart LR
 
 ## 17. 知识层：AKG
 
-AKG（Agent Knowledge Graph，BETA）的 `KnowledgeObject` 是统一知识表示，
+AKG（Agent Knowledge Graph；0.3.4 已冻结 API）的 `KnowledgeObject` 是统一知识表示，
 **三层**：`Raw`（原始字节，留作再蒸馏）→ `Normalized`（清洗后给向量/匹配）→
 `Summary`（LLM 友好摘要）。
 
@@ -1451,7 +1451,7 @@ AKG（Agent Knowledge Graph，BETA）的 `KnowledgeObject` 是统一知识表示
 
 关键是"写"和"读"是两条独立的路：写侧（DistillBridge）把商品上架，
 读侧（HybridSearch → KnowledgeRuntime）从货架取货喂给 agent 的工具和
-RAG 检索器。而且**BETA 不绑架热路径**——AKG 挂了，系统打个警告继续跑，
+RAG 检索器。而且**AKG 不绑架热路径**——AKG 挂了，系统打个警告继续跑，
 不会因为"知识库暂时不可用"就把活干不了。
 
 ```mermaid
@@ -1469,7 +1469,7 @@ flowchart TB
 `DefaultSummarizer`（取前 200 字符截断）、`defaultPlanner`（`containsAny` 关键词 + 权重）
 （`internal/knowledge/pipeline/normalizer.go` / `planner/default.go`）。
 装配在 Bootstrap ② `wireAKGLoop`（`bootstrap_builder.go` `assembleExperience`），
-**AKG 不可用 → 警告降级，系统照常跑**（BETA 不绑架热路径）。
+**AKG 不可用 → 警告降级，系统照常跑**（AKG 不绑架热路径）。
 
 | 关注点 | 机制 | 源码 |
 |---|---|---|
@@ -1480,7 +1480,7 @@ flowchart TB
 
 > **与"任务规范化"的衔接**（前文 AKG 提议）：建议把"原任务 + 拆解任务"作为
 > `ObjectTask` 的**影子语义账本**（旁路写 + 降级读先验），**不要**提为活任务语义权威，
-> 否则 0.3.x "热路径不依赖知识组件"的不变量会被 BETA 的 AKG 拖垮。
+> 否则 0.3.x "热路径不依赖知识组件"的不变量会被 AKG 拖垮。
 
 ---
 
@@ -1520,7 +1520,7 @@ flowchart LR
 最像的历史经验"作为先验塞进它的提示词——**新实习生一入职就带着前辈的
 踩坑笔记**；跑到一半要查资料时，RAG 再从经验库按语义检索 top-5 相关
 snippet 塞进上下文。写侧（蒸馏）和读侧（检索/先验）之间是**异步解耦**的：
-蒸馏失败不影响任务本身（BETA 不绑架热路径），只是"这次没学到东西"。
+蒸馏失败不影响任务本身（AKG 不绑架热路径），只是"这次没学到东西"。
 
 两个安全细节值得单独说：
 - **fenceUntrusted 围栏**：任务正文（可能是用户输入的恶意内容）被

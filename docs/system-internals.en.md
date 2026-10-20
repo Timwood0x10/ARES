@@ -1658,7 +1658,7 @@ cleanup worker" (`startExpiryCleanupWorker`).
 
 ## 17. Knowledge Layer: AKG
 
-AKG (Agent Knowledge Graph, BETA) uses `KnowledgeObject` as the universal
+AKG (Agent Knowledge Graph; API frozen in 0.3.4) uses `KnowledgeObject` as the universal
 knowledge representation, with **three layers**: `Raw` (original bytes, kept
 for re-distillation) → `Normalized` (cleaned text for vectors/matching) →
 `Summary` (LLM-friendly summary).
@@ -1676,7 +1676,7 @@ standard **product** (`KnowledgeObject`), packed in three layers:
 The key is that "write" and "read" are two separate roads: the write side
 (DistillBridge) shelves the product; the read side (HybridSearch →
 KnowledgeRuntime) pulls it off the shelf and feeds the agent's tools and the
-RAG retriever. And **BETA never blocks the hot path** — if AKG goes down, the
+RAG retriever. And **AKG never blocks the hot path** — if AKG goes down, the
 system just warns and keeps running; a temporarily unavailable knowledge base
 cannot stop the work.
 
@@ -1697,7 +1697,7 @@ flowchart TB
 (`internal/knowledge/pipeline/normalizer.go` / `planner/default.go`).
 It is assembled in Bootstrap step ② `wireAKGLoop`
 (`bootstrap_builder.go` `assembleExperience`); **if AKG is unavailable the
-system warns and degrades, still fully functional** (BETA never blocks the hot
+system warns and degrades, still fully functional** (AKG never blocks the hot
 path).
 
 | Concern | Mechanism | Source |
@@ -1712,7 +1712,7 @@ path).
 > ledger** (bypass write + degraded read-prior). Do **not** make it the
 > authoritative source of live task semantics, or the 0.3.x invariant
 > "hot path never depends on the knowledge component" would be dragged down
-> by a BETA AKG.
+> by AKG.
 
 ---
 
@@ -1760,7 +1760,7 @@ mid-run, when it needs to look something up, RAG semantically retrieves the
 top-5 relevant snippets from the experience library and stuffs them into the
 context. The write side (distillation) and the read side (retrieval/prior) are
 **asynchronously decoupled**: a distillation failure does not hurt the task
-itself (BETA never blocks the hot path) — it just means "nothing learned this
+itself (AKG never blocks the hot path) — it just means "nothing learned this
 time".
 
 Two safety details worth their own line:

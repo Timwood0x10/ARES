@@ -19,8 +19,8 @@
 | Area | State |
 |---|---|
 | Kernel / task fabric / SDK | exercised end-to-end and regression-locked; **not a hardened runtime** |
-| GA evolution + patch pipeline | runs end-to-end; the apply gate and the multi-objective entry points are **not wired** |
-| **AKG** (Adaptive Knowledge Graph) | **API frozen (0.3.4), schema versioned; the 0.3.4 features are still landing — see Honest limits** |
+| GA evolution + patch pipeline | runs end-to-end; the apply gate is **installed** (`bootstrap_evolution.go`) and both evolution loops share the NSGA-II dimension scoring |
+| **AKG** (Adaptive Knowledge Graph) | **API frozen (0.3.4), schema versioned, tiered retrieval opt-in** |
 
 AKG is the **first attempt to build a knowledge graph without relying on LLMs**
 (rule-based relation extraction, BM25-style lexical + vector hybrid search,
@@ -147,7 +147,7 @@ make examples          # build all examples
 | **Chaos Resilient** | Fault injection, failover, survival testing, self-healing |
 | **Memory** | Session context, task distillation, vector similarity search |
 | **Durable archive & retention** | Per-stream event-round archive (concurrent streams never overwrite each other's rounds) + scheduled TTL purge across sessions / knowledge / conversations / secrets |
-| **AKG (Experimental)** | LLM-free knowledge graph — rule-based extraction + hybrid retrieval + quality gate |
+| **AKG** | LLM-free knowledge graph — rule-based extraction + hybrid retrieval + quality gate |
 | **Candidate release pipeline (0.3.0)** | `CandidatePipeline`: candidate → 3-gate validation (static / evidence / regression) → release gate → `SetStable`; gate 3 uses `LLMArenaScorer` + `BatchScorer` (batched/merged requests) for LLM-driven retained-case regression, with `FailoverClient` multi-provider chains (openai / openrouter / anthropic / ollama) auto-switching |
 | **MCP Ready** | Connect any Model Context Protocol server for tools and data |
 | **Multi-Agent** | Capability-based agent registration (`RegisterAgent`) + task dispatch (`Submit`) with peer IPC and recovery |
@@ -171,7 +171,7 @@ How it holds together:
 
 - **Experience/distillation store**: every query in `internal/storage/postgres/repositories/experience_repository.go` carries a `tenant_id = $N` predicate — column-level isolation. Distillation writes take the tenant through a context seam (`distillation.WithTenant`), so a runtime override reaches the write side.
 - **Knowledge isolates by namespace, not by a tenant column**: `KnowledgeStore` objects have a `namespace` column and no `tenant_id` column. `StoreProvider` maps tenant → namespace via `namespaceFor` (explicit `Scope.Namespaces` → `tenantctx` → provider default), so isolation depends on the caller always supplying one. The underlying `Get`/`Delete`/`Search` all carry `AND namespace = ?` predicates (`store/postgres/store.go`, `store/sqlite/store.go`), so cross-tenant access returns `ErrObjectNotFound` rather than leaking data.
-- **AKG-distilled facts default to `"default"` but respect tenant context**: `akgNamespace` in `internal/ares_bootstrap/knowledge_akg.go` is the constant `"default"` as a fallback, but `tenantctx` propagation overrides it when a tenant is present, so AKG facts land in the caller's namespace when one is supplied and in `"default"` when not.
+- **AKG-distilled facts are not split per tenant**: `akgNamespace` in `internal/ares_bootstrap/knowledge_akg.go` is the constant `"default"`, passed straight into the distillation bridge (`adapter/distill.go` stores a fixed namespace), so every AKG fact lands in `"default"` regardless of the caller's tenant. Splitting them is a real design task, not a configuration flag.
 
 - **Multi-tenant deployments**: the tenant is currently *caller-declared* at the HTTP boundary. A genuine multi-tenant deployment must bind the tenant at the auth layer (e.g. derive it from the JWT principal server-side) rather than trust the request body — and the two knowledge-side gaps above must be closed first before the isolation is end to end. See `SECURITY.md` → Tenancy.
 
