@@ -1264,9 +1264,9 @@ loop leaves behind stay live and keep their resource claims. Two halves
 | Stage | Function | Source |
 |---|---|---|
 | Recovery subsystem | `Recovery` | `internal/aresrecovery/recovery.go:21` |
-| Lease-expiry sweep | `RequeueExpiredLeases` | `recovery.go:254` |
+| Lease-expiry sweep | `RequeueExpiredLeases` | `recovery.go:281` |
 | In-place revive (windowed budget) | `RestartAgent` | `recovery.go` (`RestartWindow` / `pruneRestarts`) |
-| Full recovery chain | `RecoverFromAgentDeath` | `recovery.go:555` |
+| Full recovery chain | `RecoverFromAgentDeath` | `recovery.go:582` |
 | Orphan audit | `Fabric.AuditOrphans` | `internal/fabric/agent/orphan_audit.go` |
 | Orphan event key | `PayloadKeyOrphanedSpawns` | `internal/fabric/agent/stopreason.go` |
 | Kernel recovery loop | `runKernelRecoveryLoop` | `cmd/ares/kernel_loop.go:389` |

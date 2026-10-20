@@ -1110,9 +1110,9 @@ sequenceDiagram
 | 环节 | 函数 | 源码 |
 |---|---|---|
 | 恢复系统 | `Recovery` | `internal/aresrecovery/recovery.go:21` |
-| 租约过期扫描 | `RequeueExpiredLeases` | `recovery.go:254` |
+| 租约过期扫描 | `RequeueExpiredLeases` | `recovery.go:281` |
 | 原地复活（窗口预算） | `RestartAgent` | `recovery.go`（`RestartWindow` / `pruneRestarts`） |
-| 完整恢复链 | `RecoverFromAgentDeath` | `recovery.go:555` |
+| 完整恢复链 | `RecoverFromAgentDeath` | `recovery.go:582` |
 | 孤儿审计 | `Fabric.AuditOrphans` | `internal/fabric/agent/orphan_audit.go` |
 | 孤儿事件键 | `PayloadKeyOrphanedSpawns` | `internal/fabric/agent/stopreason.go` |
 | 内核恢复循环 | `runKernelRecoveryLoop` | `cmd/ares/kernel_loop.go:389` |
@@ -1973,7 +1973,7 @@ sequenceDiagram
 | 装脑子 | A 的 LLM 上下文/工具历史装进 B | `recovery.go:340` |
 | 绑定 + 续跑（**调用方**） | *不在* `RestartAgent` 内：`runKernelRecoveryLoop` 绑定 task-X，调度器从 `StepCheckpoint` 续跑 | `kernel_loop.go:451` |
 
-> `RecoverTaskCheckpoint`（`recovery.go:305`）与 `RecoverFromAgentDeath`（`recovery.go:555`）
+> `RecoverTaskCheckpoint`（`recovery.go:305`）与 `RecoverFromAgentDeath`（`recovery.go:582`）
 > 被标为 TEST/CHAOS-ONLY；`RestartAgent` 才是生产路径。
 
 ### 25.4 两种恢复模式
