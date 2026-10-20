@@ -217,11 +217,14 @@ a bug in the README.
   next quantum only because the kernel carries task-scoped payload keys across the checkpoint
   re-wrap. **MCP tools are outside this path** — they register into the SDK's own registry and
   report planner capabilities instead of `cap_*` tags, so kernel-side narrowing does not apply.
-- **Two resilience-score inputs have no producer.** `TotalRecoveries`, the recovery-time fields
-  and `DataConsistencyRate` are read by `CalculateScore`, but nothing in production calls
-  `RecordRecovery`/`RecordConsistency`, so they are always zero and the score silently runs on
-  its heuristics. `MetricsSnapshot.Unmeasured` names them rather than letting a zero look like a
-  measurement; filling them needs a health-observation point the arena does not have.
+- **The resilience score's measured inputs need samples before they mean anything.** Recovery
+  timing and data consistency are now both produced: the recovery path notifies an observer on
+  each successful revival, and every task-lifecycle checkpoint decode notifies one too (both
+  wired in `cmd/ares`). Two limits remain. A rate is published only after enough samples, so a
+  fresh process reports the input as unmeasured until then; and a deployment that never resumes a
+  task never decodes a checkpoint, so its consistency input stays unmeasured indefinitely.
+  `MetricsSnapshot.Unmeasured` names whichever input lacks samples rather than letting a zero
+  look like a measurement.
 - **The GA proposes; the kernel disposes.** Nothing the evolution loop produces reaches a
   running strategy without passing the kernel: a candidate is a proposal plus its evidence, the
   apply path is gated on manual approval when the lifecycle is holding one, and knowledge is
