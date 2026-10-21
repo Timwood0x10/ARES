@@ -19,7 +19,7 @@
 | Area | State |
 |---|---|
 | Kernel / task fabric / SDK | exercised end-to-end and regression-locked; **not a hardened runtime** |
-| GA evolution + patch pipeline | runs end-to-end; the apply gate is **installed** (`bootstrap_evolution.go`) and both evolution loops share the NSGA-II dimension scoring |
+| GA evolution + patch pipeline | runs end-to-end; **`evolution.objective` defaults to `strategy`**, so runtime patches need `objective=runtime\|both` **and** `runtime_patches.allow_live=true`; the apply gate is installed and both loops share the NSGA-II dimension scoring |
 | **AKG** (Adaptive Knowledge Graph) | **API frozen (0.3.4), schema versioned, tiered retrieval opt-in** |
 
 AKG is the **first attempt to build a knowledge graph without relying on LLMs**

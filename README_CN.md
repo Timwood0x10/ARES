@@ -21,7 +21,7 @@
 | 区域 | 状态 |
 |---|---|
 | Kernel / task fabric / SDK | 端到端可用、有回归锁定；**尚不是加固过的 runtime** |
-| GA 进化 + patch 管线 | 端到端可跑；apply gate **已安装**（`bootstrap_evolution.go`），两条进化路径共用 NSGA-II 维度打分 |
+| GA 进化 + patch 管线 | 端到端可跑；**`evolution.objective` 默认 `strategy`**，要用 runtime patch 必须同时设 `objective=runtime\|both` 与 `runtime_patches.allow_live=true`；apply gate 已安装，两条进化路径共用 NSGA-II 维度打分 |
 | **AKG**（自适应知识图谱） | **API 已冻结（0.3.4）、schema 已版本化、tiered retrieval 可选** |
 
 下面「已知不足」一节列出这份 README 明知不能宣称的内容；在相信任何数字或能力之前请先读它。
