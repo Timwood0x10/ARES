@@ -65,6 +65,11 @@ func assembleGAConfig(ctx context.Context, cfg *ares_config.Config, comp *Compon
 	// M10: forward the configured experiment-log path. Empty stays empty, so a deployment that
 	// never sets it seals nothing and behaves exactly as before.
 	gaCfg.ExperimentLogPath = cfg.Evolution.ExperimentLogPath
+	// Single-path guarantee (M3): the objective decides whether a generation may submit runtime
+	// patches, strategies, or both. Forwarded here rather than defaulted in the wiring package so
+	// the config layer stays the only place the policy is chosen — and so a caller that forgets
+	// to pass it is visible in this one line instead of hidden behind a struct default.
+	gaCfg.Objective = cfg.Evolution.Objective
 	gaCfg.EnableDreamCycle = false
 	// EnableScheduler is now always true so the ticker path goes
 	// through scheduler.Tick (which applies shouldEvolve + guardrails).

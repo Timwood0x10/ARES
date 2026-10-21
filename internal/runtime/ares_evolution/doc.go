@@ -33,4 +33,9 @@
 // the trust-root declaration above is not misread as covering the patch
 // path. A future change that gates the patch path through StrategyLifecycle
 // MUST update this declaration and remove the test.
+//
+// SEPARATE FROM THAT: the path is also governed by `evolution.objective`. With the default
+// objective=strategy the path is not merely "ungated" but DISABLED — submitToCoordinator is
+// never reached, and `evolution.runtime_patches.allow_live` must be set for runtime|both.
+// "Ungated" refers to the StrategyLifecycle chain only; it never meant "always runs".
 package evolution

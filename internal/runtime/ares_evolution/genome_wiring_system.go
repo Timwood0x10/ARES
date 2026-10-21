@@ -17,6 +17,10 @@ import (
 
 // WiredEvolutionSystem holds a fully wired autonomous evolution system.
 type WiredEvolutionSystem struct {
+	// Objective is the normalised objective for this system ("strategy"|"runtime"|"both").
+	// See SystemConfig.Objective for why empty normalises to strategy.
+	Objective string
+
 	Scheduler             *EvolutionScheduler
 	DreamCycle            *DreamCycle
 	PopAdapter            *GenomePopulationAdapter
@@ -138,6 +142,14 @@ type DependencyConfig struct {
 // SystemConfig holds configuration for creating a wired evolution system.
 // Sub-configs are anonymous-embedded so all fields are accessible directly.
 type SystemConfig struct {
+	// Objective selects which path a generation may take: "strategy", "runtime" or "both".
+	//
+	// Empty normalises to "strategy" (see normalizeObjective): an unwired caller gets the narrow
+	// behaviour, the same default the config layer applies. Both layers choosing narrow is
+	// deliberate — if this one defaulted to "both", a bootstrap that forgot to forward the value
+	// would silently reopen live patch application.
+	Objective string
+
 	// ExperimentLogPath, when set, makes the wired system seal one ExperimentRecord per
 	// generation into an append-only JSONL file (M10).
 	//
@@ -225,6 +237,7 @@ func NewWiredEvolutionSystem(base *mutation.Strategy, cfg SystemConfig) (*WiredE
 	}
 
 	system := &WiredEvolutionSystem{
+		Objective:    normalizeObjective(cfg.Objective),
 		Population:   pop,
 		Genealogy:    NewPopulationGenealogyRecorder(),
 		AdaptiveDist: mutResult.adaptiveDist,
@@ -239,6 +252,11 @@ func NewWiredEvolutionSystem(base *mutation.Strategy, cfg SystemConfig) (*WiredE
 	system.ScoreCache = cache
 
 	popAdapter, err := NewGenomePopulationAdapter(pop, mutResult.genomeMut, mutResult.crosser, adapterOpts...)
+	if err == nil && popAdapter != nil {
+		// The adapter drives Run(), one of the two submission paths; it must agree with the
+		// system rather than re-deriving the objective from its own config.
+		popAdapter.objective = system.Objective
+	}
 	if err != nil {
 		return nil, fmt.Errorf("create population adapter: %w", err)
 	}
@@ -483,4 +501,47 @@ func BestStrategyFromSystem(system *WiredEvolutionSystem) (*mutation.Strategy, e
 		return nil, errors.New("population is empty")
 	}
 	return system.Population.Best(), nil
+}
+
+// normalizeObjective maps a configured objective onto the three accepted values.
+//
+// Empty and unknown both fall back to "strategy" — the narrow option. Falling back to "both"
+// would mean a typo re-enables live patch application, which is the failure this knob exists to
+// prevent; the config layer validates the value, so an unknown string here means the caller
+// bypassed validation, not that the deployment asked for the wider behaviour.
+func normalizeObjective(o string) string {
+	switch o {
+	case EvolutionObjectiveRuntime, EvolutionObjectiveBoth:
+		return o
+	default:
+		return EvolutionObjectiveStrategy
+	}
+}
+
+// Objective values, mirrored from ares_config so this package does not import the config layer.
+const (
+	EvolutionObjectiveStrategy = "strategy"
+	EvolutionObjectiveRuntime  = "runtime"
+	EvolutionObjectiveBoth     = "both"
+)
+
+// RuntimeObjective reports whether this system may submit runtime patches.
+func (s *WiredEvolutionSystem) RuntimeObjective() bool {
+	if s == nil {
+		return false
+	}
+	o := normalizeObjective(s.Objective)
+	return o == EvolutionObjectiveRuntime || o == EvolutionObjectiveBoth
+}
+
+// StrategyObjective reports whether this system may submit strategies.
+//
+// A nil system reports false for the same reason RuntimeObjective does: there is no objective to
+// satisfy, and answering "true" would let a missing system look like a permissive one.
+func (s *WiredEvolutionSystem) StrategyObjective() bool {
+	if s == nil {
+		return false
+	}
+	o := normalizeObjective(s.Objective)
+	return o == EvolutionObjectiveStrategy || o == EvolutionObjectiveBoth
 }

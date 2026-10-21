@@ -30,3 +30,27 @@ func TestAssembleGAConfig_EmptyPathStaysEmpty(t *testing.T) {
 
 	assert.Empty(t, gaCfg.ExperimentLogPath)
 }
+
+// TestAssembleGAConfig_ForwardsTheObjective is the wiring half of M3: the config layer decides the
+// default, but unless it reaches the system the gate is decorative. Mirrors the experiment-log
+// forwarding test for the same reason — "the key exists" and "the value arrives" are different
+// claims, and only the second one changes behaviour.
+func TestAssembleGAConfig_ForwardsTheObjective(t *testing.T) {
+	cfg := &aresconfig.Config{}
+	cfg.Evolution.Objective = "both"
+
+	gaCfg := assembleGAConfig(context.Background(), cfg, &Components{}, nil, nil)
+
+	assert.Equal(t, "both", gaCfg.Objective)
+}
+
+// TestAssembleGAConfig_EmptyObjectiveStaysEmpty: forwarding an empty value must not invent a
+// default here. The config layer applies "strategy"; doing it twice would hide a config that
+// never ran its defaults.
+func TestAssembleGAConfig_EmptyObjectiveStaysEmpty(t *testing.T) {
+	cfg := &aresconfig.Config{}
+
+	gaCfg := assembleGAConfig(context.Background(), cfg, &Components{}, nil, nil)
+
+	assert.Empty(t, gaCfg.Objective)
+}
