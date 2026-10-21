@@ -245,6 +245,9 @@ func (c *Config) setDefaults() {
 		}
 	}
 	// Evolution defaults
+	if c.Evolution.Objective == "" {
+		c.Evolution.Objective = EvolutionObjectiveStrategy
+	}
 	if c.Evolution.PopulationSize == 0 {
 		c.Evolution.PopulationSize = DefaultEvolutionPopulationSize
 	}

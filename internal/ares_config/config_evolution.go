@@ -16,6 +16,21 @@ type EvolutionConfig struct {
 	// Default: false — must be explicitly enabled in YAML.
 	Enabled bool `yaml:"enabled"`
 
+	// Objective selects which path a generation may take. Default: "strategy".
+	//
+	//   strategy — the GA proposes strategies only; the runtime-patch path does not exist.
+	//   runtime  — only runtime patches.
+	//   both     — both paths, which is what every deployment did before this knob existed
+	//              (Run submitted patches and the lifecycle submitted strategies), and is why
+	//              "one generation, two outcomes" could not be audited.
+	//
+	// The default is deliberately the narrow one: a deployment that does not think about this
+	// should not be able to change live runtime state as a side effect of tuning strategies.
+	Objective string `yaml:"objective"`
+
+	// RuntimePatches governs the runtime-patch half of the GA.
+	RuntimePatches RuntimePatchConfig `yaml:"runtime_patches"`
+
 	// PopulationSize is the number of agents in each GA generation.
 	// Larger = more diverse search, slower per generation. Default: 20.
 	PopulationSize int `yaml:"population_size"`
@@ -419,3 +434,19 @@ type LLMScoringConfig struct {
 	// Default: 100 when zero.
 	MaxCallsPerGeneration int `yaml:"max_calls_per_generation"`
 }
+
+// RuntimePatchConfig governs patches that change live runtime behaviour, as opposed to strategy
+// parameters the lifecycle can hold for approval.
+type RuntimePatchConfig struct {
+	// AllowLive is the second key that must be turned on before objective=runtime|both is
+	// accepted. Requiring two keys is the point: one typo in `objective` must not be enough to
+	// start applying patches to a running system.
+	AllowLive bool `yaml:"allow_live"`
+}
+
+// Objective values. An empty string means "not configured" and is defaulted to strategy.
+const (
+	EvolutionObjectiveStrategy = "strategy"
+	EvolutionObjectiveRuntime  = "runtime"
+	EvolutionObjectiveBoth     = "both"
+)
