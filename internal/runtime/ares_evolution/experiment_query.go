@@ -42,6 +42,10 @@ type ExperimentFilter struct {
 	Outcome ExperimentOutcome
 	// CandidateID restricts to one candidate. Empty means any.
 	CandidateID string
+	// ReplayKey restricts to the PROPOSAL record with that fingerprint. It exists so the audit
+	// chain can find the proposal by identity instead of scanning the whole log and hoping it
+	// falls inside the page limit.
+	ReplayKey string
 	// ProposalKey restricts to the records carrying that join key. Decision records point at the
 	// proposal they decided; proposal records leave it empty and are therefore NOT selected by
 	// this filter — fetch them by CandidateID or Generation instead. Empty means any.
@@ -166,6 +170,9 @@ func matchesExperimentFilter(rec ExperimentRecord, filter ExperimentFilter) bool
 		return false
 	}
 	if filter.ProposalKey != "" && rec.ProposalKey != filter.ProposalKey {
+		return false
+	}
+	if filter.ReplayKey != "" && rec.ReplayKey() != filter.ReplayKey {
 		return false
 	}
 	if !filter.Since.IsZero() && rec.At.Before(filter.Since) {

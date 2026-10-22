@@ -109,6 +109,11 @@ type actionHandler struct {
 	// POST /api/evolution/approve (manual gate release); nil disables the
 	// endpoint with 503 "evolution lifecycle not active".
 	lifecycle *evolution.StrategyLifecycle
+	// experiments reads the append-only experiment log
+	// (GET /api/evolution/experiments). Nil when
+	// evolution.experiment_log_path is unset: the routes then 404 rather than
+	// 503 — an audit surface that was never turned on is not a broken one.
+	experiments *evolution.ExperimentQuery
 	// cost serves the LLM cost dashboard API: /api/v1/observability/cost*
 	// and the HTML dashboard. Nil disables the routes (404).
 	cost *observability.CostDashboard
@@ -447,6 +452,12 @@ var actionRoutes = []routeSpec{
 	{Method: "POST", Path: "/api/evolution/approve", Auth: authWrite,
 		Desc:    "evolution manual-approval gate release",
 		Handler: (*actionHandler).routeEvolutionApprove},
+	{Method: "GET", Path: "/api/evolution/experiments/{proposal_key}", Auth: authRead, Available: experimentsAvailable,
+		Desc:    "one experiment proposal with the decisions that decided it",
+		Handler: (*actionHandler).routeExperimentChain},
+	{Method: "GET", Path: "/api/evolution/experiments", Auth: authRead, Available: experimentsAvailable,
+		Desc:    "evolution experiment log (filtered read; bounded scan)",
+		Handler: (*actionHandler).routeExperiments},
 	{Method: "POST", Path: "/api/tools/call", Auth: authWrite,
 		Desc:    "tool invocation",
 		Handler: (*actionHandler).routeCallTool},

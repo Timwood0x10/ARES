@@ -161,27 +161,29 @@ func TestActionRoutesRegistry(t *testing.T) {
 		path   string
 		auth   authLevel
 	}{
-		{"POST", "/api/agents/...", authWrite},               // agent lifecycle kill/resume/retry
-		{"GET", "/introspect", authNone},                     // panel UI shell
-		{"GET", "/introspect/...", authNone},                 // panel UI assets
-		{"GET", "/api/v1/introspect/...", authRead},          // introspect JSON feed
-		{"GET", "/metrics", authNone},                        // Prometheus scrape
-		{"GET", "/api/v1/observability/cost...", authRead},   // LLM cost API
-		{"GET", "/api/v1/observability/dashboard", authRead}, // cost dashboard
-		{"GET", "/", authNone},                               // root redirect
-		{"POST", "/api/chaos/...", authWrite},                // chaos (admin RBAC in handler)
-		{"POST", "/api/evolution/approve", authWrite},        // manual gate release
-		{"POST", "/api/tools/call", authWrite},               // tool invocation
-		{"GET", "/api/tools", authRead},                      // tool inventory
-		{"GET", "/api/mcp/tools", authRead},                  // MCP tool inventory
-		{"POST", "/api/mcp/tools/{name}/call", authWrite},    // MCP tool invocation
-		{"POST", "/api/tasks", authWrite},                    // peer task submission
-		{"GET", "/api/tasks/{task_id}", authRead},            // peer task status/result read
-		{"POST", "/api/graphs", authWrite},                   // collaboration graph
-		{"GET", "/api/interrupts", authRead},                 // HITL pending approvals
-		{"POST", "/api/interrupts/{id}/resolve", authWrite},  // HITL approve/reject
-		{"*", "/api/...", authRead},                          // control-server read tail
-		{"*", "/...", authNone},                              // non-API 404 tail
+		{"POST", "/api/agents/...", authWrite},                         // agent lifecycle kill/resume/retry
+		{"GET", "/introspect", authNone},                               // panel UI shell
+		{"GET", "/introspect/...", authNone},                           // panel UI assets
+		{"GET", "/api/v1/introspect/...", authRead},                    // introspect JSON feed
+		{"GET", "/metrics", authNone},                                  // Prometheus scrape
+		{"GET", "/api/v1/observability/cost...", authRead},             // LLM cost API
+		{"GET", "/api/v1/observability/dashboard", authRead},           // cost dashboard
+		{"GET", "/", authNone},                                         // root redirect
+		{"POST", "/api/chaos/...", authWrite},                          // chaos (admin RBAC in handler)
+		{"POST", "/api/evolution/approve", authWrite},                  // manual gate release
+		{"GET", "/api/evolution/experiments/{proposal_key}", authRead}, // one proposal's decision chain
+		{"GET", "/api/evolution/experiments", authRead},                // experiment log (filtered, bounded)
+		{"POST", "/api/tools/call", authWrite},                         // tool invocation
+		{"GET", "/api/tools", authRead},                                // tool inventory
+		{"GET", "/api/mcp/tools", authRead},                            // MCP tool inventory
+		{"POST", "/api/mcp/tools/{name}/call", authWrite},              // MCP tool invocation
+		{"POST", "/api/tasks", authWrite},                              // peer task submission
+		{"GET", "/api/tasks/{task_id}", authRead},                      // peer task status/result read
+		{"POST", "/api/graphs", authWrite},                             // collaboration graph
+		{"GET", "/api/interrupts", authRead},                           // HITL pending approvals
+		{"POST", "/api/interrupts/{id}/resolve", authWrite},            // HITL approve/reject
+		{"*", "/api/...", authRead},                                    // control-server read tail
+		{"*", "/...", authNone},                                        // non-API 404 tail
 	}
 	if len(actionRoutes) != len(want) {
 		for i, spec := range actionRoutes {
