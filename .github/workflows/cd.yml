@@ -50,6 +50,12 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
+          # Explicit: the repository ships Dockerfile.demo for the sample app, so leaving this
+          # to the default ("Dockerfile") meant the action looked for a file that did not exist
+          # and failed with "failed to read dockerfile: open Dockerfile: no such file or directory".
+          file: ./Dockerfile
+          build-args: |
+            VERSION=${{ github.ref_name }}
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
