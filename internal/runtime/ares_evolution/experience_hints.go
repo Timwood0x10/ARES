@@ -69,7 +69,19 @@ type StrategyOutcome struct {
 	Cost float64
 
 	// LatencyMs is the execution latency in milliseconds.
+	//
+	// Post-deploy observation does NOT populate this: the runtime metrics channel stores
+	// LatencyCost (normalised [0,1]), and converting a normalised cost into milliseconds would
+	// need the scale that produced it — without that, 0.4ms would be invented, not measured.
 	LatencyMs int64
+
+	// LatencyCost is the normalised wall-time cost in [0,1] (Minimize: lower is better), copied
+	// from the runtime metrics channel as-is. It is what the post-deploy observation can honestly
+	// report about speed.
+	LatencyCost float64
+
+	// SpendCost is the normalised token-spend cost in [0,1], same convention as LatencyCost.
+	SpendCost float64
 
 	// MutationType describes what kind of mutation produced this strategy.
 	MutationType string

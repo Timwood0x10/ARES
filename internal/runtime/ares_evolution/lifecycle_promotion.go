@@ -247,6 +247,15 @@ func (l *StrategyLifecycle) SetExperimentLog(log ExperimentLog, proposalKey func
 //
 // Best-effort: a log write must not fail a lifecycle transition — the state has already moved.
 func (l *StrategyLifecycle) sealDecision(ctx context.Context, candidate *mutation.Strategy, outcome ExperimentOutcome, verdict []GateVerdict) {
+	l.sealRecord(ctx, candidate, outcome, verdict, nil)
+}
+
+// sealRecord seals one record, optionally carrying the post-deploy observation.
+//
+// postDeploy is a parameter rather than a second pass over the same record because the log is
+// append-only: an observation that arrives after the verdict is a THIRD record joined by the same
+// ProposalKey, not an edit of the second.
+func (l *StrategyLifecycle) sealRecord(ctx context.Context, candidate *mutation.Strategy, outcome ExperimentOutcome, verdict []GateVerdict, postDeploy *StrategyOutcome) {
 	if l == nil || candidate == nil {
 		return
 	}
@@ -268,6 +277,7 @@ func (l *StrategyLifecycle) sealDecision(ctx context.Context, candidate *mutatio
 		Score:          candidate.Score,
 		Verification:   verdict,
 		Outcome:        outcome,
+		PostDeploy:     postDeploy,
 		At:             time.Now(),
 	}
 	// MutationType is an int enum with no String(); its numeric id keeps the identity stable.
@@ -360,6 +370,9 @@ func (l *StrategyLifecycle) promote(ctx context.Context, candidate *mutation.Str
 		Passed: true,
 		Reason: "promoted to active",
 	}})
+	// Start observing what the promotion actually did. The verdict says the gates passed; only
+	// the window says whether the strategy works in the runtime it was released into.
+	l.openPostDeployWatch(candidate)
 	log.InfoContext(ctx, "strategy promoted to active", "method", "lifecycle.promote",
 		"strategy_id", candidate.ID,
 		"score", candidate.Score,
@@ -383,6 +396,7 @@ func (l *StrategyLifecycle) watch(ctx context.Context) {
 		case <-ticker.C:
 			l.recordWatchGauges()
 			l.evaluateAndMaybeRollback(ctx)
+			l.tickPostDeploy(ctx)
 		case <-ctx.Done():
 			return
 		}
