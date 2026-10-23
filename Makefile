@@ -174,7 +174,11 @@ fmt:
 # suppression-syntax mismatch — a `//nolint:staticcheck` on a call that the standalone binary also
 # flagged. The standalone tool only reads `//lint:ignore`; the call site now carries both directives
 # so neither tool is silenced by guesswork.
-lint: ci-fmt ci-freeze lint-doc-anchors lint-golangci
+# Mirrors the CI "Lint" job step for step. It did not, and that is how a staticcheck failure and a
+# freeze violation both reached CI while `make check` stayed green locally: the local gate checked
+# four of the six things CI checks. A gate weaker than the pipeline does not gate anything — it
+# only moves the discovery to the push.
+lint: ci-fmt ci-freeze lint-doc-anchors lint-vet lint-staticcheck lint-golangci
 	@echo ""
 	@echo "All lint checks: PASSED"
 

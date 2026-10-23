@@ -18,7 +18,7 @@ import (
 // Existing tests (preserved for backward compatibility)
 // ---------------------------------------------------------------------------
 
-func TestRunScenario_Success(t *testing.T) {
+func TestRunScenarioReport_Success(t *testing.T) {
 	rt := &mockRuntime{
 		listAgentsFn: func() []runtime.AgentInfo {
 			return []runtime.AgentInfo{{ID: "leader-1", Type: "leader"}}
@@ -48,29 +48,29 @@ func TestRunScenario_Success(t *testing.T) {
 		},
 	}
 
-	results, err := RunScenario(context.Background(), svc, scenario)
+	report, err := RunScenarioReport(context.Background(), svc, scenario)
 	require.NoError(t, err)
-	assert.Len(t, results, 2)
-	assert.True(t, results[0].Success)
-	assert.True(t, results[1].Success)
+	require.Len(t, report.Results, 2)
+	assert.True(t, report.Results[0].Success)
+	assert.True(t, report.Results[1].Success)
 }
 
-func TestRunScenario_NilService(t *testing.T) {
+func TestScenarioReport_NilService(t *testing.T) {
 	scenario := Scenario{Name: "test"}
-	_, err := RunScenario(context.Background(), nil, scenario)
+	_, err := RunScenarioReport(context.Background(), nil, scenario)
 	assert.Error(t, err)
 	assert.ErrorContains(t, err, "service is nil")
 }
 
-func TestRunScenario_EmptyName(t *testing.T) {
+func TestScenarioReport_EmptyName(t *testing.T) {
 	svc := newTestService(nil, nil, nil)
 	scenario := Scenario{}
-	_, err := RunScenario(context.Background(), svc, scenario)
+	_, err := RunScenarioReport(context.Background(), svc, scenario)
 	assert.Error(t, err)
 	assert.ErrorContains(t, err, "name is empty")
 }
 
-func TestRunScenario_CancelledContext(t *testing.T) {
+func TestRunScenarioReport_CancelledContext(t *testing.T) {
 	rt := &mockRuntime{}
 	svc := newTestService(rt, nil, nil)
 
@@ -91,12 +91,12 @@ func TestRunScenario_CancelledContext(t *testing.T) {
 		},
 	}
 
-	results, err := RunScenario(ctx, svc, scenario)
+	report, err := RunScenarioReport(ctx, svc, scenario)
 	assert.ErrorIs(t, err, context.Canceled)
-	assert.Empty(t, results)
+	assert.Empty(t, report.Results)
 }
 
-func TestRunScenario_InvalidAction(t *testing.T) {
+func TestRunScenarioReport_InvalidAction(t *testing.T) {
 	svc := newTestService(nil, nil, nil)
 
 	scenario := Scenario{
@@ -112,14 +112,14 @@ func TestRunScenario_InvalidAction(t *testing.T) {
 		},
 	}
 
-	results, err := RunScenario(context.Background(), svc, scenario)
+	report, err := RunScenarioReport(context.Background(), svc, scenario)
 	require.NoError(t, err)
-	assert.Len(t, results, 1)
-	assert.False(t, results[0].Success)
-	assert.Contains(t, results[0].Error, "target_id")
+	require.Len(t, report.Results, 1)
+	assert.False(t, report.Results[0].Success)
+	assert.Contains(t, report.Results[0].Error, "target_id")
 }
 
-func TestRunScenario_MixedResults(t *testing.T) {
+func TestRunScenarioReport_MixedResults(t *testing.T) {
 	rt := &mockRuntime{
 		stopAgentFn: func(_ context.Context, id string) error {
 			if id == "fail-agent" {
@@ -146,14 +146,14 @@ func TestRunScenario_MixedResults(t *testing.T) {
 		},
 	}
 
-	results, err := RunScenario(context.Background(), svc, scenario)
+	report, err := RunScenarioReport(context.Background(), svc, scenario)
 	require.NoError(t, err)
-	assert.Len(t, results, 2)
-	assert.True(t, results[0].Success)
-	assert.False(t, results[1].Success)
+	require.Len(t, report.Results, 2)
+	assert.True(t, report.Results[0].Success)
+	assert.False(t, report.Results[1].Success)
 }
 
-func TestRunScenario_EmptyActions(t *testing.T) {
+func TestRunScenarioReport_EmptyActions(t *testing.T) {
 	svc := newTestService(nil, nil, nil)
 
 	scenario := Scenario{
@@ -161,12 +161,12 @@ func TestRunScenario_EmptyActions(t *testing.T) {
 		Actions: nil,
 	}
 
-	results, err := RunScenario(context.Background(), svc, scenario)
+	report, err := RunScenarioReport(context.Background(), svc, scenario)
 	require.NoError(t, err)
-	assert.Empty(t, results)
+	assert.Empty(t, report.Results)
 }
 
-func TestRunScenario_WithDAGActions(t *testing.T) {
+func TestRunScenarioReport_WithDAGActions(t *testing.T) {
 	dag := &mockDAG{}
 	svc := newTestService(nil, dag, nil)
 
@@ -186,11 +186,11 @@ func TestRunScenario_WithDAGActions(t *testing.T) {
 		},
 	}
 
-	results, err := RunScenario(context.Background(), svc, scenario)
+	report, err := RunScenarioReport(context.Background(), svc, scenario)
 	require.NoError(t, err)
-	assert.Len(t, results, 2)
-	assert.True(t, results[0].Success)
-	assert.True(t, results[1].Success)
+	require.Len(t, report.Results, 2)
+	assert.True(t, report.Results[0].Success)
+	assert.True(t, report.Results[1].Success)
 	assert.Equal(t, []string{"node-1"}, dag.getRemovedNodes())
 	assert.Len(t, dag.getRemovedEdges(), 1)
 }
