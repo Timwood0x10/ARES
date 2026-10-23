@@ -96,26 +96,32 @@ func TestClosure_EvolutionDisabled_NoGATicker(t *testing.T) {
 			"currently Bootstrap always constructs NewEvolution (F02: config gate bypass)")
 	}
 
-	// Target behavior: WaitBackground should return immediately (no goroutines).
-	// Current behavior: GA ticker and distillation subscriber are always started.
+	// The target is narrower than "no goroutines at all": bootstrap legitimately starts workers
+	// that have nothing to do with evolution (memory observation, distillation), and asserting
+	// zero would fail for a reason unrelated to F02. What must NOT exist is an EVOLUTION worker.
+	for _, name := range comp.StartedBackground() {
+		if name == "evolution-ticker" || name == "eval-corpus-probe" {
+			t.Errorf("background worker %q started with cfg.Evolution.Enabled=false "+
+				"(F02: config gate bypass)", name)
+		}
+	}
+
+	// Shutdown contract, asserted separately: every worker exits on cancellation, so
+	// WaitBackground must return promptly once the context is cancelled. This is the half that
+	// catches a worker which starts legitimately but ignores ctx on the way out.
+	cancel()
 	waitDone := make(chan struct{})
 	go func() {
 		comp.WaitBackground()
 		close(waitDone)
 	}()
-
 	select {
 	case <-waitDone:
-		// Good — no background goroutines running.
-	case <-time.After(2 * time.Second):
-		t.Errorf("WaitBackground did not return within 2s; " +
-			"GA ticker is likely still running when cfg.Evolution.Enabled=false " +
-			"(F02: config gate bypass)")
+		// Every worker honoured cancellation.
+	case <-time.After(5 * time.Second):
+		t.Errorf("WaitBackground did not return within 5s after cancellation; " +
+			"a background worker ignores ctx")
 	}
-
-	// Ensure we cancel the context to stop any leaked goroutines.
-	cancel()
-	comp.WaitBackground()
 }
 
 // ---------------------------------------------------------------------------
