@@ -57,7 +57,6 @@ We welcome feature suggestions! Please:
 
 - Go 1.21+
 - PostgreSQL 15+ with pgvector extension
-- Docker (for local development)
 - Git
 
 ### Enable the local hooks (once per clone)
@@ -86,17 +85,14 @@ CI runs the same checks, now on `dev` as well as `main`: without that, a freeze 
    cd ares
    ```
 
-2. **Start PostgreSQL with pgvector**:
+2. **Start PostgreSQL with pgvector** (a local install; this project does not ship container
+   tooling):
    ```bash
-   docker run -d --name ares-db \
-     -e POSTGRES_PASSWORD=postgres \
-     -e POSTGRES_DB=ARES \
-     -p 5433:5432 \
-     pgvector/pgvector:pg16
-
-   # Enable pgvector extension
-   docker exec -it ares-db psql -U postgres -d ARES -c "CREATE EXTENSION IF NOT EXISTS vector;"
+   createdb ARES
+   psql -d ARES -c "CREATE EXTENSION IF NOT EXISTS vector;"
    ```
+
+   Point `storage.dsn` (or `TEST_POSTGRES_DSN` for the integration suite) at that instance.
 
 3. **Run database migrations**:
    ```bash

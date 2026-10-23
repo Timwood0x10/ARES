@@ -24,15 +24,9 @@ cp configs/ares.yaml ares.yaml   # edit llm.provider / server.port as needed
 bin/ares serve --config ares.yaml
 ```
 
-### Docker Compose (full demo)
-
-```bash
-docker compose up -d          # ollama + ares-demo (:8080)
-docker compose logs -f ares-demo
-```
-
-> The Compose `ollama` service has a healthcheck; `ares-demo` waits for it
-> to become healthy before starting.
+> **No container image is published.** The project ships a binary; run it with `ares serve` as
+> shown above. The former Compose demo stack was removed: it built an example that no longer
+> exists and waited for a `postgres` service the file never defined.
 
 ## 2. Configuration Tuning (configs/ares.yaml)
 

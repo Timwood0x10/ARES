@@ -403,53 +403,6 @@ demo-mcp:
 		tail -n 20 /tmp/mcp-registry-demo.log || true
 
 # ──────────────────────────────────────────────
-# Demo: Docker + Integration Tests
-# ──────────────────────────────────────────────
-# Start all demo services (pgvector + optional embedding)
-demo-up:
-	@echo "Starting ARES demo services..."
-	@docker compose up -d
-	@echo "Waiting for PostgreSQL to be ready..."
-	@until docker compose exec -T postgres pg_isready -U postgres >/dev/null 2>&1; do \
-		sleep 1; \
-	done
-	@echo ""
-	@echo "✅ PostgreSQL is ready!"
-	@echo "   DSN: postgres://postgres:postgres@localhost:5433/ARES_test?sslmode=disable"
-	@echo ""
-	@echo "Run tests:       make demo-test"
-	@echo "View logs:       make demo-logs"
-	@echo "Shutdown:        make demo-down"
-	@echo ""
-
-# Stop and clean up demo services
-demo-down:
-	@echo "Stopping ARES demo services..."
-	@docker compose down -v
-	@echo "✅ Demo services stopped"
-
-# Run integration tests against demo services
-demo-test:
-	@echo "Running integration tests against demo services..."
-	@TEST_POSTGRES_DSN="postgres://postgres:postgres@localhost:5433/ARES_test?sslmode=disable" \
-		go test -v -count=1 -timeout=180s ./tests/integration/... ./internal/ares_events/... 2>&1 | \
-		grep -E "^(=== RUN|--- |ok |FAIL|--- FAIL|PASS|SKIP)"
-	@echo ""
-	@echo "✅ Integration tests completed"
-
-# Tail logs from demo services
-demo-logs:
-	@docker compose logs -f
-
-# Quick smoke test — just verify the database connection
-demo-smoke:
-	@echo "Checking PostgreSQL connection..."
-	@docker compose exec postgres psql -U postgres -d ARES_test -c "SELECT '✅ pgvector OK' AS status, extname, extversion FROM pg_extension WHERE extname='vector';"
-	@echo ""
-	@echo "Checking test databases..."
-	@docker compose exec postgres psql -U postgres -c "\l ARES_test"
-	@docker compose exec postgres psql -U postgres -c "\l testdb"
-
 # ──────────────────────────────────────────────
 # Quickstart — one-command 5-minute demo
 # ──────────────────────────────────────────────

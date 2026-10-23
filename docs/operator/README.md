@@ -23,14 +23,8 @@ cp configs/ares.yaml ares.yaml   # 按需修改 llm.provider / server.port
 bin/ares serve --config ares.yaml
 ```
 
-### Docker Compose（完整 demo）
-
-```bash
-docker compose up -d          # ollama + ares-demo（:8080）
-docker compose logs -f ares-demo
-```
-
-> Compose 中的 `ollama` 服务含 healthcheck；`ares-demo` 依赖其就绪后才启动。
+> **不再发布容器镜像。** 本项目交付的是二进制，按上面的 `ares serve` 启动即可。原 Compose
+> demo 栈已移除：它构建的示例目录已不存在，且 `demo-up` 等待的 `postgres` 服务在该文件里从未定义。
 
 ## 2. 配置调优（configs/ares.yaml）
 
