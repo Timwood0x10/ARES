@@ -6,7 +6,8 @@
 //
 // The workload churns the goroutine-spawning paths the leak program hardened
 // (event store subscriptions, the workflow reloader's fsnotify loop, the
-// load tracker, fabric task lifecycle) and samples goroutine count, file
+// load tracker, fabric task lifecycle, the evolution experiment log and the
+// checkpoint decode observer) and samples goroutine count, file
 // descriptors and GC'd heap once per second. A stable process shows a flat
 // last third; a leak shows monotonic growth the assertions reject.
 package soak
@@ -26,6 +27,7 @@ import (
 	taskfabric "github.com/Timwood0x10/ares/internal/fabric/task"
 	"github.com/Timwood0x10/ares/internal/fabric/task/workflow/engine"
 	"github.com/Timwood0x10/ares/internal/kernel"
+	evolution "github.com/Timwood0x10/ares/internal/runtime/ares_evolution"
 )
 
 // sample is one stability observation.
@@ -34,6 +36,12 @@ type sample struct {
 	fds        int
 	heapBytes  uint64
 }
+
+// soakDecodeObserver is a no-op checkpoint observer: the workload exists to churn the
+// observer path (and its atomic), not to assert on what it records.
+type soakDecodeObserver struct{}
+
+func (soakDecodeObserver) OnCheckpointDecode(bool) {}
 
 // fdCount counts open file descriptors for the current process.
 func fdCount(t *testing.T) int {
@@ -191,6 +199,65 @@ func TestSoakSteadyStateUnderMixedLoad(t *testing.T) {
 			if err := fabric.Create(&taskfabric.Task{ID: id, Capability: "soak"}); err == nil {
 				_ = fabric.Delete(id)
 			}
+		}
+	}()
+
+	// --- workload 5: evolution experiment log append + bounded query (0.3.5) ---
+	//
+	// The log is append-only and fsyncs every record, so this is the path whose cost
+	// grows with uptime. The query runs periodically because a bounded scan is the
+	// only thing standing between "read the log" and "load the whole file".
+	expLogPath := filepath.Join(t.TempDir(), "experiments.jsonl")
+	expLog, err := evolution.OpenFileExperimentLog(expLogPath)
+	if err != nil {
+		t.Fatalf("open experiment log: %v", err)
+	}
+	t.Cleanup(func() { _ = expLog.Close() })
+	expQuery := evolution.NewExperimentQuery(expLogPath)
+	go func() {
+		for i := 0; ; i++ {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(20 * time.Millisecond):
+			}
+			rec := evolution.ExperimentRecord{
+				SchemaVersion: evolution.ExperimentRecordSchemaVersion,
+				Generation:    i,
+				CandidateID:   fmt.Sprintf("soak-cand-%d", i),
+				Outcome:       evolution.ExperimentOutcomePending,
+			}
+			if err := expLog.Append(ctx, rec); err != nil {
+				return
+			}
+			if i%10 == 0 {
+				// Bounded read: the cap is what keeps query latency independent of how
+				// long this loop has been running.
+				if _, err := expQuery.ListFiltered(ctx, evolution.ExperimentFilter{Limit: 5}); err != nil {
+					return
+				}
+			}
+		}
+	}()
+
+	// --- workload 6: checkpoint decode churn (consistency observer, 0.3.5) ---
+	//
+	// Both outcomes are exercised: a real decode and a schema-mismatch failure. A
+	// sampler that only ever sees successes would publish a 100% rate that no
+	// failure could ever lower.
+	decodeFabric := taskfabric.NewFabric().WithConsistencyObserver(soakDecodeObserver{})
+	goodCheckpoint := taskfabric.EncodeCheckpoint(taskfabric.DecodedCheckpoint{SessionID: "soak-session"})
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(25 * time.Millisecond):
+			}
+			_, _ = decodeFabric.DecodeCheckpoint(goodCheckpoint)
+			_, _ = decodeFabric.DecodeCheckpoint(&taskfabric.CheckpointEnvelope{
+				SchemaVersion: taskfabric.CurrentCheckpointSchemaVersion + 1,
+			})
 		}
 	}()
 
