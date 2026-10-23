@@ -195,9 +195,10 @@ a bug in the README.
   wins and later agents cannot tighten it — and enforcement is **cooperative**
   (yield at a quantum boundary, never mid-LLM-call) (`sdk/options.go:703-717`).
   `<= 0` means unbounded.
-- **`ask_agent` is fire-and-forget.** The target's answer is logged, not written back
-  to the asker (`internal/agentsyscall/syscall.go`: *"the reply is currently
-  FIRE-AND-FORGET"*); `Status: "delivered"` is unreachable through the serve wiring.
+- **`ask_agent` returns before the answer exists, but the answer is not lost.** The call returns
+  `{status: "pending"}`; when the target replies, it is delivered to the asker as a **task**
+  whose payload carries an `ask_reply` entry, and the asking agent reads it in a later turn.
+  "fire-and-forget" described the old path, where the reply was logged and dropped.
 - **Tiered AKG recall is opt-in and still bounded by the same quality bar.** With
   `knowledge.tiered_retrieval`, recall goes L1 (exact keywords over the store) then L2
   (semantic + graph) instead of the single-shot path. It is off by default because it REPLACES
@@ -215,8 +216,10 @@ a bug in the README.
   back to the previous set with a warning: an empty toolbelt is indistinguishable from "that tool
   does not exist". `need_tools` is the escape hatch for the partial-miss case, and it reaches the
   next quantum only because the kernel carries task-scoped payload keys across the checkpoint
-  re-wrap. **MCP tools are outside this path** — they register into the SDK's own registry and
-  report planner capabilities instead of `cap_*` tags, so kernel-side narrowing does not apply.
+  re-wrap. **MCP tools take part in this path**: at registration an MCP tool derives `cap_*`
+  tags from its advertised description (MCP carries prose, not metadata), so capability routing
+  can select it. A tool that declares no capability at all is never hidden by capability
+  matching — a filter must not drop a tool it cannot judge.
 - **The resilience score's measured inputs need samples before they mean anything.** Recovery
   timing and data consistency are now both produced: the recovery path notifies an observer on
   each successful revival, and every task-lifecycle checkpoint decode notifies one too (both
