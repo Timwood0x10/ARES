@@ -5,6 +5,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/Timwood0x10/ares/internal/causalchain"
+	"github.com/Timwood0x10/ares/internal/fabric/task/workflow/engine"
 	"github.com/Timwood0x10/ares/internal/llmcore"
 	"github.com/Timwood0x10/ares/internal/truncate"
 )
@@ -54,6 +56,26 @@ func tokenUsageMetadata(resp *llmcore.GenerateResponse) map[string]any {
 // read it.
 const rationaleKey = "rationale"
 
+// intentKey is the BARE node-metadata key carrying the "why" of one grown
+// ACTION node. rationaleKey answers "why this round"; intentKey answers "why
+// THIS call", and it exists because the L2 history rebuild
+// (assembleContext/toolHistoryPair) replays actions, not rounds: a rationale
+// that only rides the plan node is invisible at the point in the transcript
+// where the model needs it — the assistant message that carries the tool call.
+//
+// It is deliberately unprefixed (no arg. namespace), exactly like session_id:
+// argsFromPayload only exposes arg.* keys, so an intent stored bare can never
+// reach CallTool as an undeclared tool argument (a strict-schema MCP tool
+// rejects those), while ProjectStep still copies it onto the envelope so a
+// replacement agent restarting the node reads the same why.
+const intentKey = "intent"
+
+// intentMaxRunes bounds the intent replayed on an assistant tool-call message.
+// Smaller than rationaleMaxRunes on purpose: the intent is replayed ONCE PER
+// ACTION rather than once per round, so the same budget would multiply the tax
+// by the round's tool count.
+const intentMaxRunes = 320
+
 // rationaleMaxRunes bounds a stored rationale. The bound is a product decision,
 // not a storage limit: an envelope holds bytes cheaply, but whatever is injected
 // into a prompt is paid for in tokens on every subsequent quantum, so the cap is
@@ -100,10 +122,38 @@ func rationaleFrom(resp *llmcore.GenerateResponse) string {
 	if resp == nil {
 		return ""
 	}
+	// Preference order, strongest evidence of intent first:
+	//  1. Content — what the model chose to SAY on this turn.
+	//  2. ReasoningContent — the thinking that produced the call. Reasoning
+	//     models routinely leave Content empty on a tool-call turn, so without
+	//     this tier the "why" of exactly the turns that act is thrown away.
+	//  3. The record_rationale call argument — the only channel left to a
+	//     non-reasoning model that emits neither.
 	if r := truncate.WithEllipsis(strings.TrimSpace(resp.Content), rationaleMaxRunes); r != "" {
 		return r
 	}
+	// Normalized, not merely cut: a thinking trace is laid out over many lines,
+	// and the line breaks carry no reasoning — collapsing them buys back tokens
+	// without touching the argument. The sentence-boundary cut keeps the last
+	// thought readable instead of ending mid-clause.
+	if r := string(causalchain.NormalizeIntent(resp.ReasoningContent, rationaleMaxRunes)); r != "" {
+		return r
+	}
 	return truncate.WithEllipsis(rationaleFromToolCalls(resp.ToolCalls), rationaleMaxRunes)
+}
+
+// intentFromStep returns the stored why of one grown tool node, bounded and
+// normalized for replay. Empty means the round stated none: absence stays
+// absent (no placeholder, no invented reason).
+func intentFromStep(step *engine.Step) string {
+	if step == nil {
+		return ""
+	}
+	raw := strings.TrimSpace(step.Metadata[intentKey])
+	if raw == "" {
+		return ""
+	}
+	return string(causalchain.NormalizeIntent(raw, intentMaxRunes))
 }
 
 // rationaleFromToolCalls returns the rationale stated through RecordRationaleToolName, or "".

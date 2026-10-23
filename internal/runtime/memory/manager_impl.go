@@ -5,6 +5,7 @@ import (
 	"context"
 	stderrors "errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -481,8 +482,24 @@ func (m *memoryManager) SessionOwner(ctx context.Context, sessionID string) (str
 	return session.UserID, nil
 }
 
+// GetArtifact resolves an artifact ref to its verbatim content.
+//
+// The store keeps artifacts inside the session, so this is also where the
+// lifetime question is answered: an expired session takes its bytes with it and
+// the ref fails closed rather than resurrecting a session nobody is using.
+func (m *memoryManager) GetArtifact(ctx context.Context, ref string) (string, error) {
+	return m.sessionMemory.GetArtifact(ctx, ref)
+}
+
 // AddStructuredMessage adds a structured message with full metadata (TurnID, ToolCallID, ToolCalls)
 // to the session. The underlying SessionMemory stores all Message fields faithfully.
+//
+// This is the ONE write funnel for the chat path, and therefore the place where
+// an observation becomes replayable: a tool_result stored here has its verbatim
+// payload retained and a ref stamped on the message (see the artifact table in
+// memory/context), which the cleaner carries into the compressed marker and
+// artifact_read resolves. A tool message written by any other means exists, but
+// it is identifiable only.
 func (m *memoryManager) AddStructuredMessage(ctx context.Context, sessionID string, msg Message) error {
 	if msg.Time.IsZero() {
 		msg.Time = time.Now()
@@ -591,6 +608,16 @@ func (m *memoryManager) BuildContext(ctx context.Context, input string, sessionI
 		return "", errors.Wrap(err, "get messages")
 	}
 
+	// Chronological order, not arrival order. Most writers append as they go,
+	// so the two coincide — but the observation recorder writes from the task
+	// event stream, and a delivery that arrives after the turn already consumed
+	// it would otherwise render the observation AFTER the answer that used it.
+	// Message.Time is the ordering fact; the slice order is an accident of
+	// arrival. The sort is stable, so equal timestamps keep insertion order.
+	sort.SliceStable(messages, func(i, j int) bool {
+		return messages[i].Time.Before(messages[j].Time)
+	})
+
 	// Keep only last N messages to avoid long context. Snapshot under RLock
 	// (see BuildPromptMessages) so config patches do not race with the read.
 	m.mu.RLock()
@@ -659,22 +686,28 @@ func (m *memoryManager) BuildContext(ctx context.Context, input string, sessionI
 		contextBuilder.WriteString("\n")
 	}
 
+	// The cleaner above ALREADY bounded each message to its role's budget
+	// (user 200, assistant 150, tool 50 runes, intent 240), so these lines render
+	// its output as-is. The previous second cut at 100 runes was a dumber bound
+	// applied on top — it threw away the cleaner's own intent budget, and it
+	// truncated the artifact ref that makes a compressed observation replayable
+	// (a marker is ~100-120 runes, so the ref was the first thing to go).
 	if len(cleaned) > 0 {
 		contextBuilder.WriteString("Previous conversation history:\n\n")
 		for _, msg := range cleaned {
 			switch msg.Role {
 			case memctx.RoleUser:
-				fmt.Fprintf(&contextBuilder, "User: %s\n", truncpkg.WithEllipsis(msg.Content, 100))
+				fmt.Fprintf(&contextBuilder, "User: %s\n", msg.Content)
 			case memctx.RoleAssistant:
-				fmt.Fprintf(&contextBuilder, "Assistant: %s\n", truncpkg.WithEllipsis(msg.Content, 100))
+				fmt.Fprintf(&contextBuilder, "Assistant: %s\n", msg.Content)
 			case memctx.RoleToolCall:
-				fmt.Fprintf(&contextBuilder, "Tool call: %s\n", truncpkg.WithEllipsis(msg.Content, 100))
+				fmt.Fprintf(&contextBuilder, "Tool call: %s\n", msg.Content)
 			case memctx.RoleToolResult:
-				fmt.Fprintf(&contextBuilder, "Tool result: %s\n", truncpkg.WithEllipsis(msg.Content, 100))
+				fmt.Fprintf(&contextBuilder, "Tool result: %s\n", msg.Content)
 			case memctx.RoleSystem:
-				fmt.Fprintf(&contextBuilder, "System: %s\n", truncpkg.WithEllipsis(msg.Content, 100))
+				fmt.Fprintf(&contextBuilder, "System: %s\n", msg.Content)
 			default:
-				fmt.Fprintf(&contextBuilder, "Unknown: %s\n", truncpkg.WithEllipsis(msg.Content, 100))
+				fmt.Fprintf(&contextBuilder, "Unknown: %s\n", msg.Content)
 			}
 		}
 		contextBuilder.WriteString("\nCurrent request:\n")

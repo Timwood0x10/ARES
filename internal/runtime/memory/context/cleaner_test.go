@@ -198,9 +198,11 @@ func TestCleaner_MixedSequence(t *testing.T) {
 		t.Fatalf("expected %d messages, got %d", len(msgs), len(result))
 	}
 
-	// Assistant with tool calls should be compressed.
-	if len(result[2].Content) >= len(msgs[2].Content) {
-		t.Errorf("tool-assistant at idx 2 not compressed")
+	// Assistant with tool calls: its prose is the INTENT behind the call, so it
+	// survives within MaxIntentLen (the old policy cut it to a 50-rune gist and
+	// lost the causal chain). Only bulk beyond the budget is dropped.
+	if result[2].Content != msgs[2].Content {
+		t.Errorf("tool-assistant intent must be preserved verbatim within budget: got %q", result[2].Content)
 	}
 	// Tool result should be compressed.
 	if len(result[3].Content) >= len(msgs[3].Content) {
@@ -669,10 +671,12 @@ func TestCleaner_CleanWithTurns_Empty(t *testing.T) {
 func TestCleaner_CleanWithTurns_SummarizesCompletedToolResults(t *testing.T) {
 	cl := NewContextCleaner()
 
-	// Two turns: first completed, second active.
+	// Two turns: first completed, second active. The tool-call turn's prose is
+	// deliberately over MaxIntentLen so the completed-turn compression path is
+	// exercised at all — within the intent budget it must survive verbatim.
 	msgs := []Message{
 		testMsg(RoleUser, "first question"),
-		testMsgWithTool(RoleAssistant, longString(100, 's'),
+		testMsgWithTool(RoleAssistant, longString(DefaultCleanOptions().MaxIntentLen+100, 's'),
 			[]ToolCall{{ID: "c1", Function: ToolCallFunction{Name: "search"}}}),
 		testMsg(RoleToolResult, "very long tool result data that should be dropped"),
 		testMsg(RoleAssistant, "final answer for turn 1"),

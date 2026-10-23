@@ -10,15 +10,17 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/core/models"
 	memory "github.com/Timwood0x10/ares/internal/runtime/memory"
+	memctx "github.com/Timwood0x10/ares/internal/runtime/memory/context"
 	"github.com/Timwood0x10/ares/internal/tenantctx"
 	"github.com/Timwood0x10/ares/internal/userctx"
 )
 
 // MockMemoryManager is a mock implementation of memory.MemoryManager for testing.
 type MockMemoryManager struct {
-	searchFunc func(ctx context.Context, query string, limit int) ([]*models.Task, error)
-	msgFunc    func(ctx context.Context, sessionID string) ([]memory.Message, error)
-	ownerFunc  func(ctx context.Context, sessionID string) (string, error)
+	searchFunc   func(ctx context.Context, query string, limit int) ([]*models.Task, error)
+	msgFunc      func(ctx context.Context, sessionID string) ([]memory.Message, error)
+	ownerFunc    func(ctx context.Context, sessionID string) (string, error)
+	artifactFunc func(ctx context.Context, ref string) (string, error)
 }
 
 // SessionOwner reports the session's recorded owner. Unset means an
@@ -29,6 +31,15 @@ func (m *MockMemoryManager) SessionOwner(ctx context.Context, sessionID string) 
 		return m.ownerFunc(ctx, sessionID)
 	}
 	return "", nil
+}
+
+// GetArtifact resolves a ref through artifactFunc; unset means "no retained
+// bytes", which is what a store without the writer looks like.
+func (m *MockMemoryManager) GetArtifact(ctx context.Context, ref string) (string, error) {
+	if m.artifactFunc != nil {
+		return m.artifactFunc(ctx, ref)
+	}
+	return "", memctx.ErrArtifactNotFound
 }
 
 func (m *MockMemoryManager) SearchSimilarTasks(ctx context.Context, query string, limit int) ([]*models.Task, error) {

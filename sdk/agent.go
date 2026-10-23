@@ -172,6 +172,11 @@ type Result struct {
 	MemoryUsed bool          `json:"memory_used"`
 	TokenUsage TokenUsage    `json:"token_usage"`
 	Duration   time.Duration `json:"duration"`
+	// SessionID is the L2 session this run executed in — and, when memory is
+	// used, the memory session that holds its transcript (the two are made the
+	// same identity, see Run). Pass it back as Task.SessionID to continue the
+	// session, or use it to read the run's recorded observations.
+	SessionID string `json:"session_id"`
 }
 
 // TokenUsage summarises LLM token consumption.
@@ -217,6 +222,19 @@ func (a *Agent) Run(ctx context.Context, input string) (*Result, error) {
 		Capability: a.name,
 		Input:      prompt,
 		Timeout:    a.timeout,
+		// ONE session identity end to end. composePrompt already created the
+		// memory session; submitting under that same id means the L2 session id
+		// the task fabric stamps on every event equals the id the transcript is
+		// stored under. Without this the chat-path observation recorder looks up
+		// sess-auto-N in a store that only knows session_<agent>_<nano>, finds
+		// nothing, and every tool observation is silently dropped — the exact
+		// "wired but inert" failure the recorder exists to prevent.
+		SessionID: sessionID,
+		// The agent's name is this runtime's user identity: composePrompt
+		// creates the memory session with it as the owner, so the execution
+		// context must resolve the same identity or an ownership check compares
+		// a user against nothing.
+		UserID: a.name,
 	})
 	if err != nil {
 		return nil, err
@@ -227,6 +245,9 @@ func (a *Agent) Run(ctx context.Context, input string) (*Result, error) {
 	if memUsed {
 		_ = a.runtime.memMgr.AddMessage(ctx, sessionID, roleAssistant, res.Output)
 		res.MemoryUsed = true
+	}
+	if res.SessionID == "" {
+		res.SessionID = sessionID
 	}
 	return res, nil
 }

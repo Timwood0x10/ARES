@@ -33,6 +33,17 @@ type Task struct {
 	// session is admitted on first use); empty auto-admits a fresh session
 	// (sess-auto-N). Ignored on the static-executor path.
 	SessionID string
+	// UserID is the identity every user-scoped consumer resolves for this task
+	// (knowledge recall, distillation attribution, artifact ownership). Empty
+	// leaves the execution context without a user, which is the pre-existing
+	// behaviour.
+	//
+	// Agent.Run fills it with the agent's name — the same identity it passes to
+	// CreateSession — so the session's recorded owner and the identity seen by
+	// tool executions agree. artifact_read compares exactly those two; without
+	// this stamp the embedded runtime would hand the model artifact refs it
+	// cannot prove ownership of, and every read would be refused.
+	UserID string
 }
 
 // RegisterAgent creates an agent and registers it as the handler for its

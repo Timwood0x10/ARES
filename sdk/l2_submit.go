@@ -60,6 +60,13 @@ func (r *Runtime) submitThroughL2(ctx context.Context, execCore *agentruntime.Ex
 	if t.SessionID != "" {
 		payload["session_id"] = t.SessionID
 	}
+	// The caller's identity rides the payload so the scheduler stamps it onto the
+	// tool-execution context (userctx). Artifact ownership is the consumer that
+	// needs it: the ref a compressed observation carries is scoped to a session
+	// whose recorded owner is this identity.
+	if t.UserID != "" {
+		payload["user_id"] = t.UserID
+	}
 	taskID, sessionID, err := execCore.Submitter.Submit(ctx, t.Capability, payload)
 	if err != nil {
 		// Admission can register the session BEFORE a later failure (fabric

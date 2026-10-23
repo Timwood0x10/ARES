@@ -8,6 +8,7 @@ import (
 	"sync"
 	"unicode/utf8"
 
+	"github.com/Timwood0x10/ares/internal/causalchain"
 	llmcore "github.com/Timwood0x10/ares/internal/llmcore"
 	truncpkg "github.com/Timwood0x10/ares/internal/truncate"
 )
@@ -36,10 +37,23 @@ func DefaultCleanOptions() CleanOptions { return llmcore.DefaultCleanOptions() }
 
 // ContextCleaner intelligently cleans conversation context before LLM calls.
 // It applies differential compression based on message role:
-//   - tool_call / tool_result → aggressively compressed to first sentence
-//   - assistant with ToolCalls → treated as tool-like content
+//   - assistant with ToolCalls → the INTENT is kept (bounded by MaxIntentLen),
+//     because it is the only record of why the call happened
+//   - tool_call / tool_result → compressed to a gist plus an identity marker
+//     (size + digest) so a cut result stays IDENTIFIABLE
 //   - pure assistant reasoning → code blocks compressed, content truncated
 //   - user / system → straightforward truncation
+//
+// The split is the point: the role of a message decides whether it carries
+// reasoning (keep, cheap) or payload (compress, regenerable). A single byte
+// limit for both deletes the causal chain while saving the part that could
+// have been re-fetched.
+//
+// Limit of this path, stated plainly: it compresses, but it cannot by itself
+// make an observation replayable. Replayability comes from a ref the WRITER
+// stamped when it retained the bytes (artifact.go); the cleaner only carries it
+// through into the marker. A message that never went through the retaining
+// writer is identifiable only, and the marker says so. See compressObservation.
 //
 // Statistics on tool calls and bytes saved are tracked internally.
 type ContextCleaner struct {
@@ -72,15 +86,12 @@ func (c *ContextCleaner) Clean(messages []Message, opts ...CleanOptions) []Messa
 	var toolCount, llmCount int64
 
 	for i, msg := range messages {
-		// Preserve all fields including tool call metadata and turn linkage.
-		result[i] = Message{
-			Role:       msg.Role,
-			Content:    msg.Content,
-			Time:       msg.Time,
-			TurnID:     msg.TurnID,
-			ToolCallID: msg.ToolCallID,
-			ToolCalls:  msg.ToolCalls,
-		}
+		// Copy the WHOLE message, then touch only Content. The previous
+		// field-by-field rebuild silently dropped EventKind, ParentID and
+		// ArtifactRefs — the provenance of a step — so cleaning erased the
+		// causal edges the session store had carefully recorded. A struct copy
+		// cannot lose a field the next schema version adds.
+		result[i] = msg
 		origLen := len(msg.Content)
 
 		switch msg.Role {
@@ -89,9 +100,9 @@ func (c *ContextCleaner) Clean(messages []Message, opts ...CleanOptions) []Messa
 
 		case RoleAssistant:
 			if len(msg.ToolCalls) > 0 {
-				// Assistant message that invokes tools → aggressive strip.
+				// A tool-call turn: this prose IS the intent (the "why").
 				toolCount++
-				result[i].Content = extractGist(msg.Content, options.MaxToolLen)
+				result[i].Content = c.compressIntent(msg, options)
 			} else {
 				// Pure reasoning → keep more context.
 				llmCount++
@@ -104,7 +115,7 @@ func (c *ContextCleaner) Clean(messages []Message, opts ...CleanOptions) []Messa
 
 		case RoleToolCall, RoleToolResult:
 			toolCount++
-			result[i].Content = extractGist(msg.Content, options.MaxToolLen)
+			result[i].Content = compressObservation(msg, options.MaxToolLen)
 
 		default:
 			result[i].Content = truncpkg.WithEllipsis(msg.Content, options.MaxAssistantLen)
@@ -122,6 +133,110 @@ func (c *ContextCleaner) Clean(messages []Message, opts ...CleanOptions) []Messa
 	c.mu.Unlock()
 
 	return result
+}
+
+// intentBudget resolves the bound for a tool-call turn's prose. MaxIntentLen
+// falling back to MaxToolLen keeps hand-built options structs (which predate
+// the field) behaving as before instead of silently unbounded.
+func intentBudget(options CleanOptions) int {
+	if options.MaxIntentLen > 0 {
+		return options.MaxIntentLen
+	}
+	return options.MaxToolLen
+}
+
+// compressIntent keeps WHY the assistant acted, dropping only formatting bulk.
+//
+// This is the one place where the old policy destroyed information rather than
+// bytes: an assistant message carrying tool calls was stripped to
+// extractGist(content, 50), so "I grepped because the parser is suspected and
+// the lexer is only reachable through it" reached the next turn as "I grepped
+// because the parser is suspected..." — or, on reasoning models whose Content
+// is empty, as nothing at all.
+func (c *ContextCleaner) compressIntent(msg Message, options CleanOptions) string {
+	budget := intentBudget(options)
+	text := msg.Content
+	if strings.TrimSpace(text) == "" {
+		// Reasoning models frequently answer a tool-call turn with an empty
+		// Content and a non-empty thinking trace. The trace is the intent.
+		text = msg.ReasoningContent
+	}
+	if strings.TrimSpace(text) == "" {
+		return ""
+	}
+	return string(causalchain.NormalizeIntent(c.compressCodeBlocks(text), budget))
+}
+
+// compressObservation compresses a tool payload to a gist plus a marker: how
+// much was dropped, the digest of the original, and — when the writer retained
+// the bytes — the ref that dereferences them.
+//
+// TWO GRADES, decided by whether the message carries an artifact ref:
+//
+//	replayable    gist + size + digest + ref   verifies AND fetches. The store
+//	              callable (see artifact.go) minted the ref at WRITE time, when
+//	              it still had both the session identity and the bytes.
+//	identifiable  gist + size + digest         verifies but cannot fetch. This is
+//	              what a message stored before the artifact writer existed, or
+//	              one evicted by the per-session byte cap, degrades to.
+//
+// The ref is COPIED from the message, never invented here: the cleaner holds a
+// message slice and no addressable store, so a ref it made up would resolve to
+// nothing — which is strictly worse than an honest digest, because it reads as
+// recoverable. That is why the marker only ever names a ref the store still
+// holds (a dropped blob has its ref stripped from the message, see
+// SessionData.releaseUnreferenced).
+//
+// What the marker buys even without a ref: a gist alone is unverifiable — the
+// reader cannot tell a complete short answer from a cut one. The digest makes
+// the cut detectable and the size makes it measurable.
+func compressObservation(msg Message, maxLen int) string {
+	if msg.Content == "" {
+		return ""
+	}
+	gist := extractGist(msg.Content, maxLen)
+	if gist == "" {
+		return ""
+	}
+	original := utf8.RuneCountInString(msg.Content)
+	dropped := original - utf8.RuneCountInString(gist)
+	if dropped <= 0 {
+		return gist
+	}
+	marked := fmt.Sprintf("%s [+%d runes sha256:%s", gist, dropped, causalchain.Digest(msg.Content))
+	if ref := firstArtifactRef(msg); ref != "" {
+		marked += " ref:" + ref
+	}
+	marked += "]"
+	if utf8.RuneCountInString(marked) >= original {
+		// The marker would eat the saving it exists to explain. A cut this
+		// small is not worth an identity tag: keep the gist unmarked rather
+		// than return something longer than the original.
+		return gist
+	}
+	return marked
+}
+
+// firstArtifactRef returns the message's ref when the payload keeper stamped
+// one. Empty means this message has no retained original: the marker then
+// states identity only, and must not claim more.
+func firstArtifactRef(msg Message) string {
+	if len(msg.ArtifactRefs) == 0 {
+		return ""
+	}
+	return msg.ArtifactRefs[0]
+}
+
+// appendObservationRef adds the ref to a summary produced by a typed summarizer
+// (SummarizeToolResultWithCall), which reports the result's shape but knows
+// nothing about retention. The ref is appended only when the message has one and
+// the summary does not already carry it.
+func appendObservationRef(msg Message, summary string) string {
+	ref := firstArtifactRef(msg)
+	if ref == "" || strings.Contains(summary, ref) {
+		return summary
+	}
+	return summary + " ref:" + ref
 }
 
 // compressCodeBlocks replaces long code blocks with a short summary.
@@ -227,8 +342,16 @@ func (c *ContextCleaner) CleanWithTurns(messages []Message, opts ...CleanOptions
 					var summary string
 					if hasMatch {
 						summary = SummarizeToolResultWithCall(msg, tcInfo.name, tcInfo.args)
+						// The typed summary says WHAT the result was; the ref
+						// says WHERE the bytes are. Dropping it here would make
+						// the turn-aware path strictly weaker than the flat one
+						// for the same message.
+						summary = appendObservationRef(msg, summary)
 					} else {
-						summary = extractGist(msg.Content, options.MaxToolLen)
+						// No call to correlate: the generic gist is all the
+						// structure available, but it still carries the
+						// identity marker so the cut stays recoverable.
+						summary = compressObservation(msg, options.MaxToolLen)
 					}
 					saved := int64(len(msg.Content) - len(summary))
 					summarizedMsg := msg
@@ -482,41 +605,23 @@ func summarizeToolCall(msg Message) string {
 	return extractGist(msg.Content, 100)
 }
 
-// extractArgKeys extracts top-level JSON keys from a tool call arguments string.
+// extractArgKeys renders a tool call's arguments for a compact summary:
+// key=value for short values, key=<bounded preview> for long ones.
+//
+// Values, not just keys: "call file_tools(operation, path)" does not say which
+// file was read, so the next turn cannot tell a repeated call from a new one —
+// the measured symptom of dropping values was the same grep re-issued every
+// round. Long values stay bounded; a prompt does not need the whole argument,
+// only enough to identify the call.
 func extractArgKeys(args string) string {
 	if args == "" || args == "{}" {
 		return ""
 	}
-	// Parse as simple JSON object to get keys.
-	dec := json.NewDecoder(strings.NewReader(args))
-	tok, err := dec.Token()
-	if err != nil || tok != json.Delim('{') {
-		// Not a JSON object; return empty.
-		return ""
-	}
-	var keys []string
-	for dec.More() {
-		tok, err := dec.Token()
-		if err != nil {
-			break
-		}
-		key, ok := tok.(string)
-		if !ok {
-			continue
-		}
-		keys = append(keys, key)
-		// Skip the value token.
-		tok, err = dec.Token()
-		if err != nil {
-			break
-		}
-		// If the value is a string, include a brief preview.
-		if str, ok := tok.(string); ok && len(str) <= 20 {
-			keys[len(keys)-1] = fmt.Sprintf("%s=%q", key, str)
-		}
-	}
-	return strings.Join(keys, ", ")
+	return causalchain.ArgShapeJSON(args, argValuePreviewRunes)
 }
+
+// argValuePreviewRunes bounds one argument value inside a tool-call summary.
+const argValuePreviewRunes = 60
 
 func buildToolCallMap(turn []Message) map[string]toolCallInfo {
 	m := make(map[string]toolCallInfo)

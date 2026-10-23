@@ -16,6 +16,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/core/models"
 	memory "github.com/Timwood0x10/ares/internal/runtime/memory"
+	memctx "github.com/Timwood0x10/ares/internal/runtime/memory/context"
 )
 
 // --- Mock implementations ---
@@ -220,6 +221,10 @@ func (m *mockMemoryManager) SessionOwner(_ context.Context, _ string) (string, e
 	return "", nil
 }
 
+func (m *mockMemoryManager) GetArtifact(_ context.Context, ref string) (string, error) {
+	return "", memctx.ErrArtifactNotFound
+}
+
 func (m *mockMemoryManager) Start(_ context.Context) error { return nil }
 func (m *mockMemoryManager) Stop(_ context.Context) error  { return nil }
 func (m *mockMemoryManager) SetEventStore(_ ares_events.EventStore, _ string) {
@@ -317,6 +322,10 @@ func (m *errMemoryManager) GetLatestSessionForAgent(_ context.Context, _ string)
 // SessionOwner mirrors GetLatestSessionForAgent: it injects sessionErr so a
 // caller can exercise the "ownership unavailable" (fail-closed) path.
 func (m *errMemoryManager) SessionOwner(_ context.Context, _ string) (string, error) {
+	return "", m.sessionErr
+}
+
+func (m *errMemoryManager) GetArtifact(_ context.Context, _ string) (string, error) {
 	return "", m.sessionErr
 }
 

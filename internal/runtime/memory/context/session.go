@@ -72,13 +72,16 @@ type SessionMemory struct {
 	maxSize     int
 	maxMessages int
 	// maxTokens bounds how much memory a session HOLDS; 0 = no cap.
-	maxTokens    int
-	ttl          time.Duration
-	cleanupTick  time.Duration
-	stopCleanup  chan struct{}
-	stopOnce     sync.Once
-	cleanupStart sync.Once
-	wg           sync.WaitGroup
+	maxTokens int
+	// maxArtifactBytes bounds the verbatim originals retained per session for
+	// compressed observations (see artifact.go); <= 0 = defaultMaxArtifactBytes.
+	maxArtifactBytes int
+	ttl              time.Duration
+	cleanupTick      time.Duration
+	stopCleanup      chan struct{}
+	stopOnce         sync.Once
+	cleanupStart     sync.Once
+	wg               sync.WaitGroup
 }
 
 // SessionData holds session information.
@@ -89,6 +92,13 @@ type SessionData struct {
 	Context    map[string]interface{}
 	AccessedAt time.Time
 	CreatedAt  time.Time
+
+	// artifacts retains the verbatim originals that compressed observations
+	// point at (see artifact.go). Unexported on purpose: it is tied to the
+	// eviction rules, and a hand-built SessionData must not be able to carry a
+	// table that skips them. It shares the session's lifetime, so TTL expiry,
+	// Delete and Clear release the bytes with no separate sweep.
+	artifacts *artifactState
 }
 
 // Standard role constants for typed message routing.
@@ -124,18 +134,24 @@ type Message struct {
 	EventKind    string     `json:"event_kind,omitempty"`
 	ParentID     string     `json:"parent_id,omitempty"`
 	ArtifactRefs []string   `json:"artifact_refs,omitempty"`
+	// ReasoningContent is the model's thinking for this turn, when the provider
+	// exposes one. On tool-call turns it is frequently the ONLY statement of
+	// intent, so a cleaner that keeps Content and drops this keeps the effect
+	// and loses the cause.
+	ReasoningContent string `json:"reasoning_content,omitempty"`
 }
 
 // NewSessionMemory creates a new SessionMemory. Per-session message storage
 // is bounded by defaultMaxSessionMessages; use WithMaxMessages to tune it.
 func NewSessionMemory(maxSize int, ttl time.Duration) *SessionMemory {
 	return &SessionMemory{
-		sessions:    make(map[string]*SessionData),
-		maxSize:     maxSize,
-		maxMessages: defaultMaxSessionMessages,
-		ttl:         ttl,
-		cleanupTick: ttl / 2, // Cleanup every half TTL period
-		stopCleanup: make(chan struct{}),
+		sessions:         make(map[string]*SessionData),
+		maxSize:          maxSize,
+		maxMessages:      defaultMaxSessionMessages,
+		maxArtifactBytes: defaultMaxArtifactBytes,
+		ttl:              ttl,
+		cleanupTick:      ttl / 2, // Cleanup every half TTL period
+		stopCleanup:      make(chan struct{}),
 	}
 }
 
@@ -276,6 +292,9 @@ func (m *SessionMemory) Get(ctx context.Context, sessionID string) (*SessionData
 	for k, v := range session.Context {
 		contextCopy[k] = v
 	}
+	// The copy carries messages and context only: the artifact table stays in
+	// the store, and refs are resolved through GetArtifact (which applies its
+	// own TTL check) rather than through a snapshot that outlives the bytes.
 	return &SessionData{
 		SessionID:  session.SessionID,
 		UserID:     session.UserID,
@@ -313,6 +332,16 @@ func (m *SessionMemory) Set(ctx context.Context, sessionID, userID string, messa
 		AccessedAt: time.Now(),
 		CreatedAt:  time.Now(),
 	}
+	// A re-Set of a live session keeps the artifacts already retained (the
+	// incoming messages may point at them); a Set of a new session has none.
+	if prior, ok := m.sessions[sessionID]; ok && prior != nil {
+		session.artifacts = prior.artifacts
+	}
+	// Refs that this table cannot resolve are stripped rather than advertised:
+	// Set replaces the message slice, and messages restored from elsewhere may
+	// carry refs minted by a store that no longer exists.
+	session.stripDeadRefs()
+	session.releaseUnreferenced()
 
 	m.sessions[sessionID] = session
 	return nil
@@ -333,14 +362,32 @@ func (m *SessionMemory) AddMessage(ctx context.Context, sessionID string, msg Me
 		return ErrSessionNotFound
 	}
 
+	// Retain the verbatim payload (payload roles only) and stamp the ref BEFORE
+	// the message is stored, so no reader ever sees a message that was
+	// compressed without a way back to its bytes. The session id it embeds is
+	// the ownership key the read tool checks.
+	m.stampArtifact(session, &msg)
+
 	session.Messages = append(session.Messages, msg)
+	dropped := false
 	if m.maxMessages > 0 && len(session.Messages) > m.maxMessages {
 		// Drop from the front, preserving recency. Re-slice rather than
 		// copy: the append above already owns a backing array that no
 		// caller holds a reference to (GetMessages/Get always copy out).
 		session.Messages = session.Messages[len(session.Messages)-m.maxMessages:]
+		dropped = true
 	}
-	session.Messages = trimToTokenCap(session.Messages, m.maxTokens)
+	if trimmed := trimToTokenCap(session.Messages, m.maxTokens); len(trimmed) != len(session.Messages) {
+		session.Messages = trimmed
+		dropped = true
+	}
+	if dropped {
+		// The message that carried a ref is gone, so its blob must go too: a
+		// retained blob nothing references is leaked memory, and a ref whose
+		// blob was dropped is a lie. The sweep answers "what is referenced NOW"
+		// because the caps do not name the messages they cut.
+		session.releaseUnreferenced()
+	}
 	session.AccessedAt = time.Now()
 
 	return nil

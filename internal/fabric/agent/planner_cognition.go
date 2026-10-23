@@ -63,6 +63,16 @@ type PlannerDeps struct {
 	L1DAG *engine.MutableDAG
 	// MaxDepth caps the plan-tool growth depth (0 = DefaultMaxPlanDepth).
 	MaxDepth int
+	// HistoryObservation says how much of each tool output the planner's rebuilt
+	// history replays verbatim before switching to the normalized (shape + size
+	// + digest + ref) form. The zero value means "package default", so an
+	// unwired deployment still compresses.
+	//
+	// It exists because the two things a history must do are priced
+	// differently: the intent is cheap and irreplaceable, the observation is
+	// expensive and re-readable. Compressing both with one byte limit is what
+	// used to delete the reasoning along with the bulk.
+	HistoryObservation ObservationReplayPolicy
 	// StrategySource is the optional live evolution strategy (the
 	// planner is the strategy actuator after ReAct — prompt template + LLM
 	// param overrides steer plan growth the way they steered the chat loop).
@@ -122,6 +132,10 @@ type plannerCognition struct {
 	l1       *engine.MutableDAG // L1 ToolClass graph, nil = permissive
 	maxDepth int
 	strategy agents.StrategySource // live evolution strategy, nil = unsteered
+
+	// historyObservation is the resolved replay policy for the rebuilt history
+	// (see PlannerDeps.HistoryObservation).
+	historyObservation ObservationReplayPolicy
 	// agentFabric reads the EXECUTING agent's cognitive Context (the
 	// spawn-time experience prior). Nil = no prior injection.
 	agentFabric *Fabric
@@ -180,8 +194,10 @@ func NewPlannerCognition(deps PlannerDeps) (Cognition, error) {
 		l1:            deps.L1DAG,
 		maxDepth:      maxD,
 		strategy:      deps.StrategySource,
-		agentFabric:   deps.AgentFabric,
-		logger:        logger,
+
+		historyObservation: deps.HistoryObservation,
+		agentFabric:        deps.AgentFabric,
+		logger:             logger,
 	}, nil
 }
 
@@ -533,7 +549,7 @@ func (c *plannerCognition) ExecuteStep(ctx context.Context, task *models.Task) (
 	}
 
 	// Assemble the LLM context from the predecessor path.
-	prompt, err := c.assembleContext(ctx, task, g)
+	prompt, err := c.assembleContext(ctx, task, g, historyPlanning)
 	if err != nil {
 		return nil, fmt.Errorf("agentfabric: planner cognition: assemble context: %w", err)
 	}
@@ -749,6 +765,12 @@ func (c *plannerCognition) growToolNodes(
 	round := stableRound(g, task.TaskID)
 	grown := 0
 	rationales := 0
+	// The round's stated why, read ONCE: it is stamped onto every action node
+	// the round grows (why THIS call) and onto the plan node (why the NEXT
+	// round), so the intent is preserved at both granularities instead of only
+	// on the plan node — where the transcript that actually reaches the model
+	// never renders it.
+	roundRationale := rationaleFrom(resp)
 
 	// Determine the predecessor for the first tool node: the current plan
 	// node when it exists, otherwise the root (first plan quantum).
@@ -829,6 +851,14 @@ func (c *plannerCognition) growToolNodes(
 		// knowledge under. Overwriting with the task's own value (possibly
 		// "") is the only forgery-proof form.
 		metadata[tenantMetadataKey] = task.TenantID
+		// Causality, not a tool argument (argsMetadata keeps the key bare, so it
+		// never reaches CallTool): the history rebuild renders this call's "why"
+		// next to the call itself. Repeated per action of the round on purpose —
+		// each node must be self-describing on its own, since a replacement
+		// agent may resume from any of them; the renderer collapses the repeats.
+		if roundRationale != "" {
+			metadata[intentKey] = roundRationale
+		}
 
 		if err := g.AddToolNode(ctx, nodeID, toolName, metadata, prev); err != nil {
 			return grown, rationales, fmt.Errorf("add tool node %s: %w", nodeID, err)
@@ -873,8 +903,8 @@ func (c *plannerCognition) growToolNodes(
 		// before it from its own args. Bounded on the write side
 		// (rationaleMaxRunes); absent when the provider emitted no content, so
 		// nothing is invented and the reader simply adds no message.
-		if r := rationaleFrom(resp); r != "" {
-			planArgs[rationaleKey] = r
+		if roundRationale != "" {
+			planArgs[rationaleKey] = roundRationale
 		}
 		if err := g.AddToolNode(ctx, newPlanID, "plan", planArgs, prev); err != nil {
 			return grown, rationales, fmt.Errorf("add plan node %s: %w", newPlanID, err)

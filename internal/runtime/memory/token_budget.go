@@ -16,9 +16,11 @@ import (
 // order: budget first, clean second). It never widens any budget; off
 // (budget <= 0) is a no-op.
 //
-// Pairing caveat — see the fuller note on trimToTokenBudget: the cleaner that
-// runs next does NOT necessarily repair a pair the budget split, because the
-// default flat Clean only truncates each message in place.
+// Trimming is per CAUSAL UNIT, not per message: an assistant tool_call and the
+// tool results that answer it are dropped together or kept together (see
+// trimToTokenBudget). A per-message trim used to be able to leave a tool_result
+// whose call was gone — an effect with no cause — which is precisely the
+// structural half of the causal chain the history is supposed to preserve.
 
 // perMessageTokenOverhead approximates the role + delimiter framing every
 // message carries on the wire. It is part of the deliberate OVER-estimate.
@@ -87,27 +89,26 @@ func budgetTier(m Message) int {
 	}
 }
 
-// trimToTokenBudget drops messages until the conservative token estimate fits
-// budget, in the fixed order history (tier 2) → tool-causal (tier 1), oldest
-// first within a tier; system (tier 0) is never dropped. It returns the kept
-// messages (original order preserved) and their estimated token use. A budget
-// <= 0 disables trimming and returns the input unchanged.
+// trimToTokenBudget drops CAUSAL UNITS until the conservative token estimate
+// fits budget, in the fixed order history (tier 2) → tool-causal (tier 1),
+// oldest first within a tier; system (tier 0) is never dropped. It returns the
+// kept messages (original order preserved) and their estimated token use. A
+// budget <= 0 disables trimming and returns the input unchanged.
 //
-// Pairing caveat: dropping is per-message, so a tool pair can be split — tier 1
-// is dropped oldest-first, which removes an assistant tool_call before the
-// tool_result answering it. The caller cleans afterwards, but the DEFAULT flat
-// ContextCleaner.Clean truncates each message in place (its output slice has
-// the same length as its input) and neither re-pairs nor drops orphans; only
-// CleanWithTurns (TurnAwareCleaning — OFF by default and independent of this
-// budget) groups by turn. So under the default turn-aware setting a trim can
-// leave a tool_result whose tool_call was dropped. BuildContext renders history
-// as plain text, so the consequence is a less coherent transcript for the
-// model rather than an invalid structured payload.
+// The unit is what changed. Dropping used to be per-MESSAGE, so a tier-1 trim
+// could remove an assistant tool_call and keep the tool_result answering it:
+// the model then read an answer with no question, and — worse for the causal
+// chain — an intent with no action, or an action with no intent. A tool call
+// and its results are ONE fact about the world; half of that fact is not a
+// smaller fact, it is a wrong one. So the drop unit is the call plus every
+// result that answers it, and the pair survives or dies together.
 func trimToTokenBudget(msgs []Message, budget int) ([]Message, int) {
 	total := estimateTokens(msgs)
 	if budget <= 0 || total <= budget {
 		return msgs, total
 	}
+
+	units := causalUnits(msgs)
 
 	keep := make([]bool, len(msgs))
 	for i := range msgs {
@@ -115,12 +116,24 @@ func trimToTokenBudget(msgs []Message, budget int) ([]Message, int) {
 	}
 
 	cur := total
+	// No liveness guard is needed: causalUnits partitions the history, so each
+	// message belongs to exactly one unit and each unit is visited at most once
+	// across the two tiers. (The earlier code carried a "kept" check described
+	// as protection against overlapping units — overlap is impossible under
+	// this grouping, so it was dead code that implied a hazard that cannot
+	// occur.)
 	for _, tier := range []int{2, 1} {
-		for i := 0; i < len(msgs) && cur > budget; i++ {
-			if keep[i] && budgetTier(msgs[i]) == tier {
-				keep[i] = false
-				cur -= estimateMessageTokens(msgs[i])
+		for _, u := range units {
+			if cur <= budget {
+				break
 			}
+			if u.tier != tier {
+				continue
+			}
+			for _, i := range u.indexes {
+				keep[i] = false
+			}
+			cur -= u.tokens
 		}
 		if cur <= budget {
 			break
@@ -134,4 +147,82 @@ func trimToTokenBudget(msgs []Message, budget int) ([]Message, int) {
 		}
 	}
 	return out, cur
+}
+
+// causalUnit is one indivisible piece of history: an assistant tool_call plus
+// the tool messages that answer it, or a single standalone message.
+type causalUnit struct {
+	// indexes are the message positions this unit owns, in history order.
+	indexes []int
+	// tier is budgetTier of the unit: 0 system, 1 tool-causal, 2 plain. A unit
+	// takes the LOWEST tier of its members, so a system message inside a unit
+	// protects the whole unit (nothing half-droppable).
+	tier int
+	// tokens is the unit's estimated cost.
+	tokens int
+}
+
+// causalUnits groups a history into indivisible units. The grouping is
+// deliberately conservative: a missing result still binds to its call (the
+// active turn's call has no result YET), and a tool message with no matching
+// call becomes a unit of its own, so an already-orphaned message cannot take a
+// healthy pair down with it.
+func causalUnits(msgs []Message) []causalUnit {
+	units := make([]causalUnit, 0, len(msgs))
+
+	i := 0
+	for i < len(msgs) {
+		msg := msgs[i]
+		if msg.Role == RoleAssistant && len(msg.ToolCalls) > 0 {
+			// pending is per-unit: it holds the call ids this one decision
+			// issued, so a result belongs to the decision that is still owed an
+			// answer, never to an older one.
+			pending := make(map[string]bool, len(msg.ToolCalls))
+			unit := causalUnit{indexes: []int{i}, tier: budgetTier(msg), tokens: estimateMessageTokens(msg)}
+			for _, tc := range msg.ToolCalls {
+				if tc.ID != "" {
+					pending[tc.ID] = true
+				}
+			}
+			// Absorb the results that answer this call. The loop stops at the
+			// next decision (a plain message or another call): a result that
+			// arrives after that belongs to a different fact.
+			for j := i + 1; j < len(msgs); j++ {
+				next := msgs[j]
+				if next.Role != RoleToolResult && next.Role != RoleToolCall {
+					break
+				}
+				if len(pending) == 0 {
+					break
+				}
+				if next.ToolCallID != "" && !pending[next.ToolCallID] {
+					break
+				}
+				// An EMPTY ToolCallID inside a pending window is absorbed: it
+				// cannot be matched to another call, and leaving it behind
+				// would orphan it the moment this unit is dropped. Conservative
+				// on purpose — an unattributable result stays with the call
+				// that was in flight, and the two die together. (Pinned by
+				// TestCausalUnits_EmptyIDResultAbsorbedIntoPendingCall.)
+				delete(pending, next.ToolCallID)
+				unit.indexes = append(unit.indexes, j)
+				unit.tokens += estimateMessageTokens(next)
+				if t := budgetTier(next); t < unit.tier {
+					unit.tier = t
+				}
+				i = j
+			}
+			units = append(units, unit)
+			i++
+			continue
+		}
+
+		units = append(units, causalUnit{
+			indexes: []int{i},
+			tier:    budgetTier(msg),
+			tokens:  estimateMessageTokens(msg),
+		})
+		i++
+	}
+	return units
 }
