@@ -195,7 +195,7 @@ func TestContextIsChronological(t *testing.T) {
 
 	task := models.NewTask(planNode, planAgentType, nil)
 	task.SessionID = sessionID
-	msgs, err := planner.(*plannerCognition).assembleContext(ctx, task, g)
+	msgs, err := planner.(*plannerCognition).assembleContext(ctx, task, g, historyPlanning)
 	require.NoError(t, err)
 	// [user root, assistant grep-call, tool OLDER, assistant read-call,
 	// tool NEWER]: execution order with the provider-mandated pairing.
@@ -247,7 +247,7 @@ func TestAssembleContextSurfacesDegradedInputs(t *testing.T) {
 		taskfabric.PayloadKeyDegradedInputs: []string{"grep-step-7"},
 	}
 
-	msgs, err := planner.(*plannerCognition).assembleContext(ctx, task, g)
+	msgs, err := planner.(*plannerCognition).assembleContext(ctx, task, g, historyPlanning)
 	require.NoError(t, err)
 
 	var degraded *llmcore.LLMMessage
@@ -298,7 +298,7 @@ func TestAssembleContextNoDegradedMessageWhenAbsent(t *testing.T) {
 	task.SessionID = sessionID
 	task.Payload = map[string]any{"input": "root prompt"}
 
-	msgs, err := planner.(*plannerCognition).assembleContext(ctx, task, g)
+	msgs, err := planner.(*plannerCognition).assembleContext(ctx, task, g, historyPlanning)
 	require.NoError(t, err)
 	for _, m := range msgs {
 		require.NotContains(t, m.Content, "degraded inputs",
@@ -404,7 +404,7 @@ func TestDegradedInputsFromFabricReachAssembleContext(t *testing.T) {
 		taskfabric.PayloadKeyDegradedInputs: restored[taskfabric.PayloadKeyDegradedInputs],
 	}
 
-	msgs, err := planner.(*plannerCognition).assembleContext(ctx, task, g)
+	msgs, err := planner.(*plannerCognition).assembleContext(ctx, task, g, historyPlanning)
 	require.NoError(t, err)
 
 	var degraded *llmcore.LLMMessage

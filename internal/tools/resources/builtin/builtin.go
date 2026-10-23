@@ -247,6 +247,10 @@ func RegisterGeneralTools(reg *core.Registry, deps ...GeneralToolsDeps) error {
 			"domain": "memory", "cap_memory": "true", "input_type": "text", "output_type": "json",
 			"side_effects": "false",
 		}))
+		tools = append(tools, base.WithToolTags(builtin_memory.NewArtifactRead(d.MemoryMgr), map[string]string{
+			"domain": "memory", "cap_memory": "true", "input_type": "json", "output_type": "json",
+			"side_effects": "false",
+		}))
 	}
 	if d.LLMClient != nil {
 		tools = append(tools, base.WithToolTags(builtin_planning.NewTaskPlanner(d.LLMClient), map[string]string{

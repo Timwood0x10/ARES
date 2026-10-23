@@ -186,7 +186,16 @@ func (a *GenomePopulationAdapter) Run(ctx context.Context) error {
 	// The Coordinator evaluates and applies patches through the live PatchExecutors
 	// (wired by UpdateLiveDAG in serve.go), so genome evolution results flow
 	// directly into the running agent's DAG, scheduler, and knowledge config.
-	if a.coordinator != nil && a.diffReg != nil && a.genomeReg != nil {
+	// The runtime-patch path exists only when the objective asks for it. objective=strategy
+	// (the default) must produce ZERO proposals here: this is the first half of the single-path
+	// guarantee, and RunIdleEvolution is the other half.
+	//
+	// Note what is NOT covered: RunIdleEvolution's gate has no equivalent end-to-end test.
+	// WiredEvolutionSystem.Coordinator is a concrete *UngatedPatcher (bootstrap calls
+	// SetDeployer/SetApplyGate on it), so a fake cannot be injected there; only the predicate is
+	// tested. Gating Run and forgetting idle would therefore go unnoticed — do not read the
+	// passing suite as proof that both paths are closed.
+	if a.shouldSubmitRuntimePatches() {
 		a.submitToCoordinator(ctx)
 	}
 
@@ -194,7 +203,7 @@ func (a *GenomePopulationAdapter) Run(ctx context.Context) error {
 	// When a StrategyLifecycle is wired, it runs the verify-gate pipeline
 	// before promoting to ACTIVE. When no lifecycle is wired, fall back to
 	// the legacy direct-deploy path (backward compatible).
-	if a.lifecycle != nil {
+	if a.strategyObjective() && a.lifecycle != nil {
 		if best := a.pop.BestStrategy(); best != nil {
 			if a.toolSetRejected(ctx, best) {
 				log.WarnContext(ctx, "best strategy jailed by tool-set guardrail, not submitted to lifecycle",
@@ -203,7 +212,7 @@ func (a *GenomePopulationAdapter) Run(ctx context.Context) error {
 				a.lifecycle.Submit(ctx, best, a.pop.Stats().Generation)
 			}
 		}
-	} else if a.activeStrategyMgr != nil {
+	} else if a.strategyObjective() && a.activeStrategyMgr != nil {
 		a.deployBestStrategy(ctx)
 	}
 
@@ -761,6 +770,15 @@ func (a *GenomePopulationAdapter) submitToCoordinator(ctx context.Context) {
 				continue
 			}
 			logCoordinatorDecision(ctx, d, policy, fitness)
+			if a.metrics != nil && d.Decision == coordinator.DecisionApply {
+				// Applied and failed are counted separately: a patch path that "ran" is not the
+				// same claim as a patch path that changed anything.
+				result := "applied"
+				if d.ApplyError != nil {
+					result = "failed"
+				}
+				a.metrics.RecordEvolutionRuntimePatch(result)
+			}
 		}
 	}
 }
@@ -835,4 +853,15 @@ func computeLineageShares(agents []*mutation.Strategy) map[string]int {
 // currently executing (live-chaos GA quiet-window probe).
 func (a *GenomePopulationAdapter) GenerationActive() bool {
 	return a != nil && a.running.Load()
+}
+
+// shouldSubmitRuntimePatches reports whether this generation may submit runtime patches.
+//
+// Named so the decision can be asserted directly, including the dependency half (a coordinator
+// or registry that is missing must also close the path). The submission tests do not rely on
+// this function alone: they wire a differ and a genome so a generation really produces a patch,
+// and a control asserts that objective=both submits at least one — otherwise "strategy submits
+// nothing" would be true simply because the fixture produces nothing.
+func (a *GenomePopulationAdapter) shouldSubmitRuntimePatches() bool {
+	return a.runtimeObjective() && a.coordinator != nil && a.diffReg != nil && a.genomeReg != nil
 }

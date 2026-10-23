@@ -525,3 +525,41 @@ func TestMustNew_MemoryFollowsConfig(t *testing.T) {
 		})
 	}
 }
+
+// TestAgentRun_WithMemory_SessionIDIsTheMemorySession pins the identity contract
+// the observation recorder depends on: the run's L2 session id IS the memory
+// session id its transcript is stored under.
+//
+// The chat-path recorder is an event subscriber: it reads the session id off the
+// task event and appends the tool observation to that session in memory. If the
+// SDK submits under an auto-admitted id (sess-auto-N) while the transcript lives
+// under session_<agent>_<nano>, the lookup finds nothing and every observation is
+// dropped — silently, because a missing session is expected for stores that do
+// not own it.
+func TestAgentRun_WithMemory_SessionIDIsTheMemorySession(t *testing.T) {
+	rt := NewRuntime(WithOllama("llama3.2"), WithDefaultMemory(), WithTrace(false))
+	defer rt.Close()
+	rec := &recordingMemMgr{MemoryManager: rt.memMgr}
+	rt.memMgr = rec
+	rt.llmSvc = &mockLLMSvc{responses: []*llmcore.GenerateResponse{{Content: "ok"}}}
+
+	agent := rt.NewAgent("sid-agent", WithInstruction("help"))
+	res, err := agent.Run(context.Background(), "hi")
+	if err != nil {
+		t.Fatalf("Agent.Run error: %v", err)
+	}
+	if res.SessionID == "" {
+		t.Fatal("Result.SessionID is empty: callers cannot continue the session")
+	}
+
+	added := rec.snapshot()
+	if len(added) == 0 {
+		t.Fatal("no messages recorded")
+	}
+	for _, m := range added {
+		if m.sessionID != res.SessionID {
+			t.Fatalf("transcript session %q != run session %q: the observation "+
+				"recorder would look up the wrong store entry", m.sessionID, res.SessionID)
+		}
+	}
+}

@@ -804,8 +804,11 @@ func argsMetadata(args map[string]any) map[string]string {
 	}
 	md := make(map[string]string, len(args))
 	for k, v := range args {
-		// Unprefixed keys are envelope plumbing, not tool arguments.
-		if k == sessionMetadataKey || k == tenantMetadataKey {
+		// Unprefixed keys are envelope plumbing or causality annotations, never
+		// tool arguments. intentKey rides bare for that reason: the executing
+		// cognition must not receive "intent" as an undeclared tool argument,
+		// while the history rebuild reads it straight off the node.
+		if k == sessionMetadataKey || k == tenantMetadataKey || k == intentKey {
 			md[k] = stringify(v)
 			continue
 		}

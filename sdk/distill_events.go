@@ -10,6 +10,7 @@ import (
 	ares_bootstrap "github.com/Timwood0x10/ares/internal/ares_bootstrap"
 	ares_events "github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/knowledge/adapter"
+	memory "github.com/Timwood0x10/ares/internal/runtime/memory"
 	"github.com/Timwood0x10/ares/internal/runtime/memory/distillation"
 	aresexp "github.com/Timwood0x10/ares/internal/runtime/memory/experience"
 )
@@ -68,6 +69,7 @@ func wireSDKEventBackend(
 	bootstrapComp *ares_bootstrap.Components,
 	distillSvc *aresexp.DistillationService,
 	akgBridge *adapter.DistillBridge,
+	memMgr memory.MemoryManager,
 ) (
 	context.Context, context.CancelFunc, *errgroup.Group, ares_events.EventStore,
 ) {
@@ -77,9 +79,55 @@ func wireSDKEventBackend(
 		if distillSvc != nil || akgBridge != nil {
 			wireDistillationSubscriber(rtCtx, eg, bootstrapComp.EventStore, distillSvc, akgBridge)
 		}
+		wireObservationSubscriber(rtCtx, eg, bootstrapComp.EventStore, memMgr)
 		return rtCtx, rtCancel, eg, bootstrapComp.EventStore
 	}
 	return newEventBackend(distillSvc, akgBridge)
+}
+
+// wireObservationSubscriber attaches the observation recorder to the SDK's OWN
+// memory manager.
+//
+// It is not enough for bootstrap to run the recorder: the SDK builds a separate
+// manager for the sessions its agents read (wireMemory), so a recorder attached
+// to bootstrap's manager would stamp refs into a store nobody reads — the exact
+// "wired but inert" failure this work exists to avoid. Bootstrap's own
+// subscription stays for the serve/start entry points; here the sink is
+// whatever manager the SDK actually uses.
+func wireObservationSubscriber(
+	ctx context.Context,
+	eg *errgroup.Group,
+	store ares_events.EventStore,
+	memMgr memory.MemoryManager,
+) {
+	if memMgr == nil || store == nil {
+		return
+	}
+	rec := ares_bootstrap.NewObservationRecorder(memMgr)
+	ch, err := store.Subscribe(ctx, ares_events.EventFilter{
+		Types: []ares_events.EventType{ares_events.EventTaskCompleted},
+	})
+	if err != nil {
+		slog.Warn("sdk: observation subscriber failed to subscribe; session history will not record tool observations",
+			"error", err)
+		return
+	}
+	eg.Go(func() error {
+		for {
+			select {
+			case <-ctx.Done():
+				return nil
+			case ev, ok := <-ch:
+				if !ok {
+					return nil
+				}
+				// Consume is panic-safe per event: one malformed payload must
+				// not end observation recording for the process.
+				rec.Consume(ctx, ev)
+			}
+		}
+	})
+	slog.Info("sdk: observation subscriber started (tool task.completed → session memory)")
 }
 
 // wireDistillationSubscriber registers a background consumer of TaskCompleted

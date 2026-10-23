@@ -214,7 +214,7 @@ func (b *sdkBuilder) wireRetrieversAndBridge() {
 // store across entry points) instead of a private SDK store; otherwise fall
 // back to the SDK event backend.
 func (b *sdkBuilder) wireEventBackendPhase() {
-	b.rtCtx, b.rtCancel, b.eg, b.eventStore = wireSDKEventBackend(b.bootstrapComp, b.distillSvc, b.akgBridge)
+	b.rtCtx, b.rtCancel, b.eg, b.eventStore = wireSDKEventBackend(b.bootstrapComp, b.distillSvc, b.akgBridge, b.memMgr)
 }
 
 // buildRuntime assembles the final Runtime from the builder's wiring outputs.

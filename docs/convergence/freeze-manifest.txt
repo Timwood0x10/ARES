@@ -29,6 +29,22 @@ ares_ratelimit
 ares_security
 ares_shutdown
 aresrecovery
+# causalchain — added 2026-10-23 (causal-chain preservation): the intent/action/
+# observation/edge atom plus the normalization both history paths need (intent
+# canonicalization, observation = shape + size + digest + ref).
+#
+# Why it must be a TOP-LEVEL package rather than living in one of its callers:
+# the two producers of a compressed history are `fabric/agent` (planner path,
+# ref = L2 node id) and `runtime/memory/context` (chat path, ref = artifact id).
+# Neither may import the other — fabric owns the graph, memory owns the session —
+# and both must render the SAME normalized form, or "compressed" means two
+# different things depending on which entry point built the prompt. A shared
+# leaf package is the only placement that expresses that without a cycle.
+#
+# Scope discipline: pure types + string functions. Its only dependency is
+# `truncate`; it must never grow an import of fabric, memory, or llmcore, or the
+# leaf property that justified this entry is gone.
+causalchain
 core
 detector
 discovery

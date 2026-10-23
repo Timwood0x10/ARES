@@ -47,9 +47,9 @@
 25. [Checkpoint 与恢复（字段 + 7 步 + 两种模式）](#25-checkpoint-与恢复)
 26. [上下文管理（滑窗截断 + 规则裁剪 + RAG 注入，非 LLM 摘要）](#26-上下文管理)
 27. [LLM 失败切换 + 工具组织（`core.Registry`）](#27-llm-失败切换与工具组织)
-28. [事件驱动总线（谁订阅了什么）](#28-事件驱动总线)
+28. [事件驱动总线（谁订阅了什么 + 事件账本压缩 0.3.5）](#28-事件驱动总线)
 29. [HITL 审批门（0.3.3）](#29-hitl-审批门-033)
-30. [版本状态：0.3.4](#30-版本状态034)
+30. [版本状态：0.3.5](#30-版本状态035)
 
 ---
 
@@ -2209,6 +2209,29 @@ agent 钱包   = 【任务级】一个 agent 一生能烧多少 token/工具
 
 **实事求是的边界**：这 7 个主链订阅点里，多数是 `task.completed/failed` 家族（执行结果驱动蒸馏/GA/恢复），真正"多类型"的只有调度器（**5 类**）和恢复（4 类）。所以准确说法是"**以任务生命周期事件为主**"，不是"任意事件都能驱动"。
 
+### 28.3 事件账本压缩（Compactor）— 0.3.5 更新
+
+> 本节专门记录 0.3.5 针对 `internal/ares_events/compactor.go` 与
+> `compactable_store.go` 的压缩算法优化。完整讲解见
+> `docs/articles/zh/08-event-system-deep-dive.md` 第四/五章，此处只列改动点。
+
+| 优化点 | 位置 | 要点 |
+|---|---|---|
+| 有界候选读取 | `compactStream`（`compactor.go`） | 旧版 `Read` 无 `ToVersion` 上界，O(n) 拉全流进内存；新版用 `ReadOptions{ToVersion: version - KeepRecent}` 只读候选窗口，长流防 OOM；裁剪过的流上精确定位（前缀删除只移最早版本，上界自然跳过缺失段） |
+| `MaxSummariesPerStream` 实际 enforce | `pruneSummaries`（`compactor.go`） | 旧版配置字段只写了文档但从未实现，摘要无限堆积；新版在摘要落库后按 `StartVersion`/`EndVersion`/`CreatedAt` 三级排序，删最旧超额摘要（best-effort，删除失败只记日志继续） |
+| 配置消毒 | `NewCompactor`（`compactor.go`） | `Threshold <= 0` 或 `KeepRecent < 0` 时直接替换成 `DefaultCompactionConfig()`，防止负数 `KeepRecent` 导致 `events[:total-KeepRecent]` 越界 panic 杀死进程 |
+| `SummaryTTL <= 0` 语义修复 | `CleanupOldSummaries`（`compactor.go`） | 旧版零值流入 `time.Now().Add(-SummaryTTL)` 会把全部摘要一次删光；新版 `SummaryTTL <= 0` 明确为"禁用清理"，返回 `(0, nil)` |
+| rune-safe 截断 | `buildSummary` / `DefaultSummarizer`（`compactor.go`） | 旧版按字节截断劈 CJK 多字节字符产生 invalid UTF-8，PG `text` 列拒写导致压缩永久失败；改用 `internal/truncate.WithEllipsis`（按 `[]rune` 截断） |
+| 多 Agent 窗口归因 | `buildSummary`（`compactor.go`） | 后续事件携带不同 `agent_id` 时标记为 `"multi"`，不再静默归因给第一个 agent |
+| 读路径摘要回退 v2 | `CompactableEventStore.Read`（`compactable_store.go`） | 旧版只在底层返回空时查摘要；新版窗口延伸到裁剪区也触发摘要查询；新增 `applyReadOptions`（方向/分页/版本窗口感知）、`dropOverlappingSummaries`（重叠摘要丢弃）、`mergeSyntheticWithLive`（方向感知拼接） |
+| `archiveInflight` 独占 CAS | `archivePendingRoundsOnce`（`compactable_store.go`） | 旧版边界检查非独占，两个 goroutine 可双写归档；新版在 `archiveMu` 下 CAS `archiveInflight[streamID]`，同 stream 只能一个 in-flight claimant |
+| `maxArchiveRoundEvents = 50000` | `archivePendingRoundsOnce`（`compactable_store.go`） | 旧版无单轮事件总量上限，长终态流会把整条流物化进内存；新版达到 50000 立即返回错误（不静默 defer），`maybeCompact` 推迟压缩 |
+| drain cap 耗尽是硬错误 | `drainPendingRounds`（`compactable_store.go`） | 旧版跑满 1000 轮返回 `nil`，`maybeCompact` 误认为归档完成、trim 掉未归档事件；新版返回错误，压缩推迟到后续窗口 |
+| 流 bookkeeping TTL sweep（24h） | `maybeSweepBookkeepingLocked`（`compactable_store.go`） | 四个 per-stream map（`lastChecked`/`lastTouched`/`roundCounter`/`lastArchivedVersion`）随长驻进程无界增长；新版在 `maybeCompact` 入口以 24h 空闲 TTL + 1min sweep 间隔清除；锁序固定 `mu → archiveMu` |
+| `Close()` 安全停机 | `CompactableEventStore.Close()`（`compactable_store.go`） | `lctx` 取消 → `wg.Wait`（有 `compactionTimeout + 5s` 兜底）→ 底层 `Close`；`Append` 在 `mu` 下检查 `closed` 标志防 Add-after-Wait |
+
+> 注：`ReadOptions` 新增 `ToVersion` 字段（`types.go`），压缩路径与读路径共用。
+
 ---
 
 ## 附：0.2.x → 0.3.x 改动结论
@@ -2264,20 +2287,20 @@ workflow step 可通过 YAML `interrupt: { message: "..." }` 或 Go 侧
 > 源码定位说明：本文行号基于 v0.3.2 快照，随 dev 分支演进可能漂移；
 > 函数名/文件路径比行号更稳定，定位时以符号为准。
 
-## 30. 版本状态：0.3.4
+## 30. 版本状态：0.3.5
 
-**0.3.4 收口（AKG↔GA 三条缺口，台账口径 2026-10-17/18）**：
+**0.3.5（把三条"半条证据"补成生产接线 + 进化可观测性收口，台账口径 2026-10-17/20）**：
 
 | 项 | 内容 | 状态 |
 |---|---|---|
-| M2.5 关系门 | `FilterRelations` + `FindRelationConflicts`（只用词表自带 `contradicts`，**只标记不丢弃**），`DistillBridge.extractRelations` 先过门再写 | ✅ 已接线 |
-| M4 构建可观测/增量 | `DistillConversationWithReport` 真 producer（7 计数器来自本次运行）；`persistAndPromote` 按 ContentFingerprint 跳过未变对象 | ✅ 已关闭 |
-| M6 三级检索 | `TieredRetriever`（有界 lexicon 扫描、截断判定确定性修正）+ `knowledge.tiered_retrieval` **opt-in**（替换不叠加，避免同一语料注入两次） | ✅ 已关闭（2026-10-17，opt-in） |
+| **M8b ApplyGate** | 在**同时持有 coordinator 与 lifecycle** 的装配点安装；只拒"策略正被人工审批挂起"的 patch；**无归因 patch 放行**、**无 hold 时全放行**（默认行为不变）。顺带修 `ProfileExecutor.Apply` 的 rollback patch 丢 `StrategyID`（回滚后策略永久不可比），改为继承 | ✅ 已接线 |
+| **M9 维度映射** | 收敛为单一执行路径：维度打分下沉到 `genome.Population.ScoreAgentsWithDimensions`（标量后接维度），service 三打分分支与 in-process `EvolveAfterScoring` **两条循环共用**；`MapCandidateDimensions` 只取候选可比来源，缺样本省略、不写 0 | ✅ 已接线 |
+| **M9-③ latency/cost 证据** | `WindowResult.Metrics` **独立指标通道**（不进加权均值、不进 `Count`——staging 门不得被无人启用的通道背书）；observer 写惩罚补值证据（0=最快/最省，与 `Minimize` 同向）；未完成任务不写度量 | ✅ 已落 |
+| **P1 MCP 治理边界（补洞）** | `setupMCP` 启动只 `RegisteredTools()` 拷贝一次，从不挂 change handler ⇒ 服务器重连后增/删/改的工具到不了 `internalReg`/公开工具表。新增 `cmd/ares/mcp_tool_bridge.go`（按名持有、只删自己注册的项、内置 first-wins），`setupMCP` 启动同步后挂 `mcpMgr.SetToolChangeHandler(bridge.Sync)`；顺带修 `MCPTool.Tags()` 从 `Description()`（含 health 附注）派生 `cap_*` 的漂移，改为读原始 `toolDef.Description`；删掉零调用的 `ares_bootstrap.SetupMCP`（`ProvideMCP` 仍是唯一构造入口） | ✅ 已接线 |
+| **P3 恢复观测点** | `aresrecovery.RecoveryObserver` + `arena.NewRecoveryAdapter`，`peer_assembly.go` 接到 `kernel.arenaMetrics`；chaos 面板报真实复活耗时而非恒 0；`Service.RecoveryObserver()` 零调用死面已删 | ✅ 已接线 |
+| **P4 一致性观测点（新做）** | `DataConsistencyRate` 不再无生产者：`taskfabric.Fabric.WithConsistencyObserver` + `Fabric.DecodeCheckpoint` 逐次上报成功/失败，`arena.NewConsistencyAdapter` 写 `RecordConsistency(ok bool)`；窗口 FIFO 上限 1000，`ConsistencySamples >= 20` 才发布比率；`calcConsistency` 改按样本数判断，能表达全失败的真实 0%（不再被 `>0` 当成"未测量"）；chaos 面板 `RecoveryMetrics` 新增 `data_consistency_rate`/`consistency_samples`/`consistency_measured` | ✅ 已落 |
 
-**0.3.4**：M8b 接线与 M9 维度映射**均已完成**。维度打分落在
-`genome.Population.ScoreAgentsWithDimensions`，两条进化路径共用；`latency` 与 `cost` 作为
-Minimize 目标采在**独立指标通道**上，不进入 fitness 均值（否则"慢但正确"的策略会被平均掉）。
-归因 bug 与 Q2 拍板记录见 `docs/defects/00-INDEX.md` 修订日志。
+**压缩算法（`ares_events` Compactor，详见 §28.3）**：0.3.5 这一轮对事件账本压缩做了 12 处优化——有界候选读取（防长流 OOM）、`MaxSummariesPerStream` 实际 enforce、`NewCompactor` 配置消毒、`SummaryTTL<=0` 语义修复、rune-safe 截断、多 Agent 归因、读路径摘要回退 v2（方向/分页感知）、`archiveInflight` 独占 CAS、单轮事件上限、drain cap 硬错误、流 bookkeeping TTL sweep、`Close()` 安全停机。
 
 **仍待拍板（5 项，详见 `docs/defects/00-INDEX.md`"全量登记"块）**：
 P0-1 定时真跑评测（成本决策）/ P2-1 绝对线 0.7 的口径 / P2-7 孤儿级联退役

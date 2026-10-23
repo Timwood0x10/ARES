@@ -21,7 +21,7 @@
 | 区域 | 状态 |
 |---|---|
 | Kernel / task fabric / SDK | 端到端可用、有回归锁定；**尚不是加固过的 runtime** |
-| GA 进化 + patch 管线 | 端到端可跑；apply gate **已安装**（`bootstrap_evolution.go`），两条进化路径共用 NSGA-II 维度打分 |
+| GA 进化 + patch 管线 | 端到端可跑；**`evolution.objective` 默认 `strategy`**，要用 runtime patch 必须同时设 `objective=runtime\|both` 与 `runtime_patches.allow_live=true`；apply gate 已安装，两条进化路径共用 NSGA-II 维度打分 |
 | **AKG**（自适应知识图谱） | **API 已冻结（0.3.4）、schema 已版本化、tiered retrieval 可选** |
 
 下面「已知不足」一节列出这份 README 明知不能宣称的内容；在相信任何数字或能力之前请先读它。
@@ -138,7 +138,7 @@ make examples          # 构建全部示例
 
 - **租户隔离不是端到端的。** experience/蒸馏库按**列**隔离；知识侧按 **namespace** 隔离且依赖调用方传入；AKG 蒸馏出的事实全部落在 `"default"` namespace。真多租户必须在鉴权层绑定租户，不能信任请求体——见上文「租户模型」与 `SECURITY.md` → Tenancy。
 - **`WithMaxTokens` 是"peer 生命周期总量"，不是单次 run 上限。** 0.3.1 起它**已生效**（不再是静默 no-op）：桥接进 runtime 的 governance 预算（`sdk/sdk.go:441`），调度器 `budgetOK` 会在**量子边界**拦下 `tokenUsed` 已达 `TokenBudget` 的 agent。两个注意点：预算是 **L2 peer 的生命周期总量**（第一个正值生效，后续 agent 无法收紧）；执行是**协作式**的（量子边界让出，不打断进行中的 LLM 调用）（`sdk/options.go:703-717`）。`<= 0` 表示不限。
-- **`ask_agent` 是 fire-and-forget**：目标回复只写日志、不回写给提问方（`internal/agentsyscall/syscall.go`：*"the reply is currently FIRE-AND-FORGET"*）；serve 接线下拿不到 `Status: "delivered"`。
+- **`ask_agent` 不等回答就返回，但回答不会丢**：调用返回 `{status: "pending"}`；目标回复时，回复会作为**任务**投递给提问方，payload 里带 `ask_reply`（from/topic/reply），提问方在**后续回合**读取。"fire-and-forget" 描述的是旧路径——那时回复只写日志然后丢弃。
 - **多目标 GA 未接线**：没有任何代码写 `DimensionScores`，`"nsga2"`/`"nondominated"` 会静默回退单目标 tournament；`ScoreAgentsMulti`/`ParetoFrontStrategy()` 已废弃、零生产调用。
 - **GA apply gate 未在生产安装**：patch 路径按自身 fitness 阈值决策——这正是该类型叫 `UngatedPatcher` 的原因。
 - **调度是协作式的**：只在 ReAct 轮边界让出；单个失控的 LLM 调用靠超时兜底，不会被切片抢占。

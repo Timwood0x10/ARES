@@ -127,7 +127,7 @@ type EventStore interface {
 Key semantics (consistent across both implementations):
 
 - `Append(expectedVersion)`: `>0` must match the stream's current version or it returns `ErrVersionConflict`; `<=0` means "append after the current version, no conflict check." Both implementations do this via lock/transaction.
-- `ReadOptions`: `FromVersion` (inclusive), `Limit` (0 = no limit), `Direction` (Ascending/Descending), `Since`.
+- `ReadOptions`: `FromVersion` (inclusive), `ToVersion` (inclusive, 0 = no cap), `Limit` (0 = no limit), `Direction` (Ascending/Descending), `Since`. `ToVersion` is the version upper bound shared by the bounded compaction read (4.3) and the summary-merge read path (4.5).
 - `EventAppender` is a narrow one-method interface used by `Emit`. `Emit(ctx, store, streamID, type, moduleName, payload)` is the canonical publish entry; on failure it only logs a warning and returns false.
 
 ---
@@ -202,6 +202,8 @@ func DefaultCompactionConfig() CompactionConfig {
 
 `CompactableEventStore` is an **auto-compacting wrapper** (`compactable_store.go`): it embeds `EventStore`, overrides `Append`, and asynchronously checks whether the stream needs compaction after the write.
 
+> **`SummaryTTL` semantic fix**: `CleanupOldSummaries` now explicitly handles `SummaryTTL <= 0` — the pre-fix let the zero value flow straight into `threshold := time.Now().Add(-SummaryTTL)`, so the first cleanup pass would delete *every* summary ever created (zero TTL was indistinguishable from "disable cleanup"). The new code returns `(0, nil)` when `SummaryTTL <= 0`, treating it as "cleanup disabled."
+
 ### 4.2 Auto-Trigger + Debounce
 
 `Append` only writes synchronously; the real compaction work is **async** (one goroutine per batch, derived from the store's own lifecycle context `lctx` rather than the caller's, so short-lived requests can't cancel it — each run is still bounded by `compactionTimeout = 30s`):
@@ -223,16 +225,24 @@ graph TD
     E -->|yes| F[CheckAndCompact]
     F --> G{version <= Threshold ?}
     G -->|yes| Z
-    G -->|no| H[Read all events ascending]
-    H --> I[candidates = all except most recent KeepRecent]
-    I --> J[buildSummary<br/>rule-based aggregation]
-    J --> K[repo.Save summary]
-    K --> L{EnableTrimming && trimStore wired?}
+    G -->|no| H[Read bounded candidates<br/>ToVersion = version-KeepRecent]
+    H --> I[buildSummary<br/>rule-based aggregation]
+    I --> K[repo.Save summary]
+    K --> K2{MaxSummariesPerStream > 0 ?}
+    K2 -->|yes| K3[pruneSummaries<br/>delete oldest beyond cap]
+    K2 -->|no| L
+    K3 --> L{EnableTrimming && trimStore wired?}
     L -->|yes| M[TrimBefore trims raw events]
     L -->|no| Z
 ```
 
-Key point: **the summary is saved first, trimming happens after** — the trim boundary is the summary's `EndVersion`, so every trimmed event is already captured in a summary. `Compactor` also exposes `ForceCompact` (compact regardless of threshold) and `CleanupOldSummaries` (delete expired summaries per `SummaryTTL`).
+Key points:
+
+- **Summary is saved before trimming.** The trim boundary is the summary's `EndVersion`, so every trimmed event is already captured in a summary.
+- **The candidate read is bounded.** `compactStream` uses `ReadOptions{Direction: Ascending, ToVersion: version - KeepRecent}` to read only the candidate window instead of the entire stream. The pre-fix unbounded read pulled every event of the stream into memory — O(n) on very long streams, and the keep-recent tail was never a compaction candidate anyway. The bound is exact even on trimmed streams (prefix deletions only shift the earliest version; the version cap naturally skips the missing prefix).
+- **`MaxSummariesPerStream` is now actually enforced.** After the summary is persisted, `pruneSummaries` lists all existing summaries for the stream, sorts them (by `StartVersion` / `EndVersion` / `CreatedAt` three-way tie-break, not trusting the repo's ordering contract), and deletes the oldest ones beyond the cap. Best-effort: a failed delete is logged and the loop continues. The pre-fix documented the field ("older summaries are merged or pruned when this limit is exceeded") but never implemented it — summaries accumulated without bound.
+- **Config sanitisation:** `NewCompactor` replaces a non-positive `Threshold` or negative `KeepRecent` with the defaults. A negative `KeepRecent` would turn `events[:total-KeepRecent]` into a slice past the end, panicking inside the store's background worker and killing the whole process, not just the request.
+- `Compactor` also exposes `ForceCompact` (compact regardless of threshold) and `CleanupOldSummaries` (delete expired summaries per `SummaryTTL`).
 
 ### 4.4 DefaultSummarizer: Rule-Based
 
@@ -244,13 +254,51 @@ Agent stream-1, ran 1 task(s) [task-42], called 2 tool(s) [search, calculator], 
 
 (Tools capped at 5, tasks at 3, request snippet at 120 chars, errors at 3 — hard limits to keep summaries bounded.)
 
-### 4.5 Summary Fallback on Read
+Two details worth calling out:
 
-If the raw events were trimmed, `CompactableEventStore.Read` falls back: underlying `Read` returns empty → look up `SummaryRepository` → emit the summaries as synthetic `"event.summary"` events. This keeps ReplaySession from breaking after compaction, but note it's a **degradation**: you get summaries, not raw events.
+- **Rune-safe truncation**: both `RequestSummary` (in `buildSummary`) and the `DefaultSummarizer` request snippet use `internal/truncate.WithEllipsis` (truncates on `[]rune`, appends `"..."` keeping total length ≤ `maxLen`). Byte-level truncation can split a multi-byte CJK character in the middle, producing invalid UTF-8 that PostgreSQL `text` columns reject — one such character in the first 200 bytes permanently failed compaction while the stream kept growing. This is a bug that actually hit in production.
+- **Multi-agent window attribution**: `buildSummary` tracks the first non-empty agent ID across all events in the window; if a later event carries a *different* agent ID, the summary is marked `"multi"` rather than silently attributing everything to the first agent. `"unknown"` is the fallback when no event carries an `agent_id`.
+
+### 4.5 Summary Fallback on Read (v2)
+
+The v2 read path is substantially richer than the pre-fix version (which only looked up summaries when the underlying `Read` returned **empty**):
+
+1. **Wider trigger**: after the underlying `Read`, if the caller's `FromVersion` falls below the oldest live event (i.e. the requested window reaches into the trimmed head), `SummaryRepository` is also consulted. A partially trimmed stream with a live tail no longer skips the summary lookup just because "there are results."
+2. **Synthetic events honour `ReadOptions`**: `applyReadOptions` filters and orders synthetic `event.summary` events by `FromVersion` / `ToVersion` (inclusive) / `Since` / `Direction` / `Limit`. The pre-fix fallback ignored all of these — a paged `Limit` call got an unbounded summary list, and `DESC` callers got ascending order.
+3. **Overlap dropping**: `dropOverlappingSummaries` removes synthetic summaries whose range reaches into the live events' version span. Concurrent compaction rounds can leave a summary covering 1–15 while a later trim only removed up to 11, leaving live events 12–14 *inside* the summary's range; splicing such a summary before the live tail would break the version-ordered merge contract. Dropping the overlap is lossless for replay semantics. The summary range endpoint is read from each synthetic event's own payload (accepting `int64`, `int`, and `float64` to cover PG JSON round-trips); a decode failure defaults to `MaxInt64` (conservative: drop rather than splice out of order).
+4. **Direction-aware merge**: `mergeSyntheticWithLive` places summaries before live events in ascending reads and after them in descending reads (summary versions are always ≤ the trim point < every live version). `Limit` applies to the merged slice.
+
+Note: this is still a **degradation** — you get summaries (`event.summary`), not the originals.
 
 ### 4.6 ArchiveSink: Round Archiving
 
-`compactable_store.go` lets you attach an `ArchiveSink` (function type in `archive_hook.go`) via `WithArchiveSink`. Its job is to archive the record of one "round" (from the previous terminal event to `task.completed`/`task.failed`) **before** compaction trims the raw events, so a durable copy exists for the context-compression strategy. Archiving runs on terminal hits or before compaction, via `drainPendingRounds` paging (500/page, up to 1000 rounds); sink failures are best-effort — logged, never failing append or compaction.
+`compactable_store.go` lets you attach an `ArchiveSink` (function type in `archive_hook.go`) via `WithArchiveSink`. Its job is to archive the record of one "round" (from the previous terminal event to `task.completed`/`task.failed`) **before** compaction trims the raw events, so a durable copy exists for the context-compression strategy. Archiving runs on terminal hits (detected synchronously, executed in the async goroutine) or before compaction, via `drainPendingRounds` paging (`archiveReadLimit = 500`/page, up to `maxArchiveDrainRounds = 1000` rounds). Three layers of defence in the new version:
+
+- **Exclusive claim (`archiveInflight`)**: the pre-fix boundary check alone (`lastArchivedVersion` comparison) was not a true claim — two goroutines could both observe the same `lastArchivedVersion` before either wrote anything, both pass the boundary check, and both invoke the sink for the same round (archived twice). The new logic CASes `archiveInflight[streamID] = true` under `archiveMu` first; only one in-flight claimant per stream is allowed. The claim is released by a single `defer releaseClaim` on every return path (success, failure, nothing-to-archive), so no explicit release call can accidentally strip a concurrent drainer's freshly acquired claim and re-open the double-archive window.
+- **Per-round event cap (`maxArchiveRoundEvents = 50000`)**: the pre-fix bounded single page (500) and single drain round-count (1000), but had **no cap on the total events accumulated per round** — a long-lived terminal-less stream would materialize the entire stream into memory on first compaction. The new logic returns an error (not a quiet defer) when `roundEvents` reaches 50000; `maybeCompact` receives this error and **defers compaction to the next window** instead of trimming raw events from an un-archived window.
+- **Drain cap exhaustion is a hard error**: `drainPendingRounds` returning past 1000 rounds now returns an error, not `nil`. The pre-fix `nil` told `maybeCompact` the archive was flushed, so it trimmed raw events whose RoundRecord was never written — permanent loss. Under the new logic, compaction is deferred to a later window.
+
+`archiveSink` write failure is best-effort: the boundary does **not** advance, so the next drain re-scans the same window and retries the sink (the pre-fix advanced the boundary *before* the durable write; one I/O error permanently lost the round record).
+
+### 4.7 Per-Stream Bookkeeping TTL Sweep (New)
+
+The four per-stream maps (`lastChecked`, `lastTouched`, `roundCounter`, `lastArchivedVersion`) persist for the life of the process. `serve` mints one event stream per conversation, so in a long-lived process each conversation leaves a permanent set of entries that grow unboundedly.
+
+The new sweep runs opportunistically inside `maybeCompact` (`streamBookkeepingTTL = 24h` idle → clear; `streamBookkeepingSweepInterval = 1min` frequency cap, no dedicated goroutine): removes stale `lastChecked` and `lastTouched` entries, and under `archiveMu` removes the corresponding `roundCounter` and `lastArchivedVersion` entries. Resetting an idle stream's bookkeeping is safe by existing design: `lastChecked` is a pure debounce cache (reset just costs one extra I/O check), and `roundCounter` already restarts at 1 after every process restart (in-memory only).
+
+Lock order is fixed as `mu → archiveMu` (`maybeSweepBookkeepingLocked` is the only path that holds `mu` while taking `archiveMu`); the archive path never holds `mu` while taking `archiveMu`, so inversion is impossible.
+
+### 4.8 `Close()` Safe Shutdown (New)
+
+`CompactableEventStore`'s `lctx` (derived from `context.Background()`, cancelled by `Close`) is the lifecycle context for background compaction workers, decoupled from any `Append` caller's ctx — a per-request ctx is cancelled as soon as that request returns, but `lctx` lets compaction outlive short-lived requests. Each run is still bounded by `compactionTimeout = 30s`.
+
+`Close()` runs a three-step shutdown sequence:
+
+1. Set `closed = true` (under `mu`) and call `lcancel()`;
+2. Wait for in-flight workers (`wg.Wait()`, guarded by a `compactionTimeout + 5s` fallback so the wait never blocks indefinitely);
+3. If the underlying `EventStore` implements `io.Closer`, call its `Close()`.
+
+`Append` checks the `closed` flag under `mu`: if `Close` has already begun, it skips the launch (avoiding a WaitGroup Add-after-Wait); if `Append` wins the race, `Close`'s `wg.Wait` covers that worker.
 
 ---
 
@@ -329,8 +377,8 @@ Reason: these are **in-place rewrites** (`SetDependencies` moves one task instea
 1. **Not every lifecycle event lands in the durable store.** Ready/Started/Yielded/Stolen are observability-only; `EventTaskUpdated` never touches the store. Cross-restart rebuild relies on the five must-persist types + recompiling the DAG.
 2. **Postgres subscribe is a 1-second poll**, not a real-time push. Streaming to a Dashboard means layering your own SSE on top — the event layer doesn't provide it.
 3. **It records what happened, not replayable side effects.** Tool side effects (send email, write DB) are recorded after the fact; the store won't undo or replay external effects.
-4. **Read fallback after compaction is a degradation** — you get synthetic `event.summary` events, not the originals. For originals you need the archive/pre-trim copies.
-5. **Write path is non-blocking**: compaction and archiving are async best-effort; failures are only logged. The `dropped_events` counter is for monitoring — it does not guarantee no loss.
+4. **Read fallback after compaction is a degradation** — you get synthetic `event.summary` events, not the originals. For originals you need the archive/pre-trim copies. The new fallback correctly honours the caller's `ReadOptions` (version window / direction / limit) and drops summaries that overlap the live event version span (`dropOverlappingSummaries`); it's no longer an unbounded ascending list.
+5. **Write path is non-blocking**: compaction and archiving are async best-effort; failures are only logged. The `dropped_events` counter is for monitoring — it does not guarantee no loss. However, drain cap exhaustion in archiving is now a **hard error** (`drainPendingRounds` returns an error, not `nil`), so `maybeCompact` defers compaction rather than trimming raw events whose RoundRecord was never written.
 
 ---
 
@@ -371,12 +419,15 @@ Agent resurrection (two-phase recovery, snapshot-first, event-stream fallback) i
 |---------|----------|---------|
 | Append-only event log | `types.go` | Immutable log with per-stream versions |
 | Optimistic concurrency | `Append(expectedVersion)` | `>0` must match current version; conflict → `ErrVersionConflict` |
-| CQRS (degraded) | EventStore (hot) + SummaryRepository | Read falls back to summaries after compaction |
+| CQRS (degraded) | EventStore (hot) + SummaryRepository | Read falls back to summaries, direction/paging aware (`applyReadOptions`) |
 | Observer / subscribe | `Subscribe(EventFilter)` | Memory: non-blocking broadcast; PG: 1s poll |
 | Strategy | `EventSummarizer` function type | Pluggable summarizer (default rule-based) |
 | Decorator | `CompactableEventStore` wraps `EventStore` | Transparent auto-compaction, unchanged Append API |
-| Debounce | `lastChecked` + `threshold/4` | Fewer redundant compaction checks on hot streams |
+| Debounce + TTL sweep | `lastChecked` + `threshold/4`; `streamBookkeepingTTL` | Fewer redundant compaction checks on hot streams; unbounded growth guard for per-stream bookkeeping maps in long-lived processes |
+| CAS exclusive claim | `archiveInflight` (under `archiveMu`) | Per-stream round-archiving deduplication, prevents double-archive |
 | Two-phase write decoupling | `recordLocked` (locked) + `flushAppends` (off-lock) | Durable writes never block the fabric state machine |
+| Bounded read | `ReadOptions.ToVersion` (`compactStream` candidate window) | Compaction reads only the candidate segment, not the whole stream; prevents OOM on very long streams |
+| Safe shutdown | `CompactableEventStore.Close()` | `lctx` cancel → `wg.Wait` (bounded) → underlying `Close` |
 
 ### Key Data Flow
 
@@ -386,15 +437,18 @@ graph TB
         F[taskfabric\nrecordLocked] -->|pendingAppend| FE[flushAppends off-lock serialized]
         FE -->|Append| CES[CompactableEventStore]
         CES -->|write hot store| ES[EventStore]
-        CES -->|async| CP[Compactor]
+        CES -->|async lctx| CP[Compactor]
+        CP -->|bounded read ToVersion| ES
         CP -->|buildSummary| SR[(SummaryRepository)]
+        CP -->|pruneSummaries oldest beyond cap| SR
         CP -->|optional trim| TS[TrimBefore]
     end
 
     subgraph "Read Path"
         FL[ReplaySession / describe] -->|Read| CES
         CES -->|raw events present?| ES
-        CES -->|empty? fallback summaries| SR
+        CES -->|window reaches trimmed head? fetch summaries| SR
+        CES -->|dropOverlappingSummaries +\nmergeSyntheticWithLive| FL
     end
 ```
 

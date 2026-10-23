@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/Timwood0x10/ares/internal/causalchain"
 	"github.com/Timwood0x10/ares/internal/core/models"
 	"github.com/Timwood0x10/ares/internal/fabric/task"
 	"github.com/Timwood0x10/ares/internal/fabric/task/workflow/engine"
@@ -13,12 +14,82 @@ import (
 	"github.com/Timwood0x10/ares/internal/truncate"
 )
 
+// historyMode selects how much of each observation the rebuilt history carries.
+//
+// The two callers need different halves of the same chain, so they get
+// different budgets rather than one compromised middle:
+//
+//   - the PLANNER decides the next action, so it needs the causal chain
+//     (why → did → saw) at a cost it can afford on every quantum: observations
+//     over the verbatim budget (defaultObservationRawBudgetRunes unless
+//     ObservationReplayPolicy says otherwise) are normalized to a replayable
+//     minimum.
+//   - the ANSWER synthesizer writes the answer FROM the observations, so it
+//     keeps them verbatim — normalizing there would be compression that
+//     destroys its own input.
+type historyMode int
+
+const (
+	// historyPlanning is the planner's causal view.
+	historyPlanning historyMode = iota
+	// historyEvidence is the answer synthesizer's verbatim view.
+	historyEvidence
+)
+
+// defaultObservationRawBudgetRunes is how much of a tool output the planner's
+// history keeps verbatim before switching to the normalized form. Chosen as a
+// product decision: large enough that ordinary results (a grep hit, a short
+// file, an exit code block) arrive intact, small enough that reading a whole
+// source file cannot dominate ten quanta of history.
+const defaultObservationRawBudgetRunes = 2000
+
+// observationBudgetDefault is the PlannerDeps spelling of "use
+// defaultObservationRawBudgetRunes". It is the ONLY place the deps-side zero
+// needs a name: the renderer's "never normalize" case is
+// causalchain.ObservationBudgetVerbatim and the evidence view uses that same
+// constant, so no bare 0 stands for two meanings any more.
+const observationBudgetDefault = 0
+
+// ObservationReplayPolicy says how much of each observation the planner's
+// rebuilt history replays verbatim.
+//
+// It is a struct rather than one int because the knob has two independent
+// meanings — "how big is the verbatim window" and "is there a window at all" —
+// and encoding the second as a negative number made a mistyped budget flip
+// compression off silently. Here each meaning has its own field, and the zero
+// value stays the useful default.
+type ObservationReplayPolicy struct {
+	// RawRunes is the verbatim budget per observation, in runes. 0 = the
+	// package default (defaultObservationRawBudgetRunes). Only positive values
+	// are meaningful: there is no negative sentinel — use Verbatim.
+	RawRunes int
+	// Verbatim disables normalization entirely: every output is replayed
+	// exactly as it came back. Explicit, so no policy is selected by the value
+	// of a number.
+	Verbatim bool
+}
+
+// BudgetRunes resolves the policy into the budget causalchain.RenderObservation
+// expects: a positive rune count, or ObservationBudgetVerbatim.
+func (p ObservationReplayPolicy) BudgetRunes() int {
+	if p.Verbatim {
+		return causalchain.ObservationBudgetVerbatim
+	}
+	if p.RawRunes > observationBudgetDefault {
+		return p.RawRunes
+	}
+	// Zero AND negatives land here: a negative budget is a wiring mistake, and
+	// silently reading it as "verbatim" is how a typo turned compression off.
+	// The explicit switch above is the only way to ask for verbatim.
+	return defaultObservationRawBudgetRunes
+}
+
 // assembleContext builds the LLM message list from the predecessor path:
 // the session prompt (root output) + the outputs of every tool node on the
 // path from root to this plan node. Outputs are read from the fabric task
 // envelopes by node ID = task ID join (nodes carry no Output of
 // their own).
-func (c *plannerCognition) assembleContext(ctx context.Context, task *models.Task, g *L2Graph) ([]*llmcore.LLMMessage, error) {
+func (c *plannerCognition) assembleContext(ctx context.Context, task *models.Task, g *L2Graph, mode historyMode) ([]*llmcore.LLMMessage, error) {
 	// Read the session prompt from the root task's envelope.
 	rootID := g.Root()
 	rootPrompt, err := c.readNodeOutput(rootID)
@@ -54,6 +125,20 @@ func (c *plannerCognition) assembleContext(ctx context.Context, task *models.Tas
 	// the model concludes.
 	chain := g.Ancestors(task.TaskID)
 	steps := g.DAG().StepIndex()
+	// The evidence view uses ObservationBudgetVerbatim: the answer is written
+	// FROM the outputs, so normalizing them would compress the answer's own
+	// input. Named, not a literal 0 — see observationRawBudget for why the same
+	// digit means something different in PlannerDeps.
+	observationBudget := causalchain.ObservationBudgetVerbatim
+	if mode == historyPlanning {
+		observationBudget = c.observationRawBudget()
+	}
+	// lastIntent collapses the repeats: one response's rationale is stamped on
+	// every action it grew (each node must be self-describing), but replaying
+	// the same why before each of its three calls would pay for it three times.
+	// The FIRST intent of a run survives; the repeats render as empty content,
+	// which is exactly what the provider saw on the original turn.
+	var lastIntent causalchain.Intent
 	for i := len(chain) - 1; i >= 0; i-- {
 		nodeID := chain[i]
 		step, ok := steps[nodeID]
@@ -70,7 +155,16 @@ func (c *plannerCognition) assembleContext(ctx context.Context, task *models.Tas
 			c.logger.Warn("planner: predecessor output unreadable; context has a hole",
 				"node", nodeID, "error", err)
 		case output != "":
-			messages = append(messages, toolHistoryPair(step, nodeID, output)...)
+			unit := historyUnit(step, nodeID)
+			unit.Observation = causalchain.Observe(unit.Action.Tool, unit.Action.Args, output, nodeID)
+			// The intent is replayed even when the observation is large: the
+			// why is cheap and irreplaceable, the observation is neither.
+			if unit.Intent != "" && unit.Intent == lastIntent {
+				unit.Intent = ""
+			} else if unit.Intent != "" {
+				lastIntent = unit.Intent
+			}
+			messages = append(messages, toolHistoryPair(unit, unit.Observation.RenderObservation(output, observationBudget))...)
 		}
 	}
 
@@ -185,7 +279,7 @@ func (c *plannerCognition) assembleAnswerMessages(ctx context.Context, task *mod
 			"session", task.SessionID, "task", task.TaskID, "error", err)
 		return nil, false
 	}
-	msgs, err := c.assembleContext(ctx, task, g)
+	msgs, err := c.assembleContext(ctx, task, g, historyEvidence)
 	if err != nil {
 		c.logger.Warn("answer synthesis: context assembly failed",
 			"session", task.SessionID, "task", task.TaskID, "error", err)
@@ -249,11 +343,44 @@ func renderExperiencePrior(v any) string {
 	}
 }
 
-// toolHistoryPair renders one executed tool node as the assistant+tool
-// message pair the Chat API requires: the assistant message carries the
-// original tool call (reconstructed from the node's arg.-namespaced
-// Metadata), and the tool message carries its envelope output, linked by
-// the node ID as the tool-call ID.
+// historyUnit reads one executed tool node back into the causal atom it was:
+// its stored intent (why), its call (what), and the edge to the node it
+// depended on. The observation is filled by the caller, which is the only place
+// holding the output bytes.
+func historyUnit(step *engine.Step, nodeID string) causalchain.Unit {
+	meta := make(map[string]any, len(step.Metadata))
+	for k, v := range step.Metadata {
+		meta[k] = v
+	}
+	unit := causalchain.Unit{
+		NodeID: nodeID,
+		Intent: causalchain.Intent(intentFromStep(step)),
+		Action: causalchain.Action{
+			Tool:   strings.TrimPrefix(step.AgentType, "tool/"),
+			CallID: nodeID,
+			Args:   argsFromPayload(meta),
+		},
+	}
+	if len(step.DependsOn) > 0 {
+		unit.Parent = step.DependsOn[0]
+	}
+	return unit
+}
+
+// toolHistoryPair renders one causal unit as the assistant+tool message pair the
+// Chat API requires: the assistant message carries the original tool call
+// (reconstructed from the node's arg.-namespaced Metadata) AND the intent that
+// produced it, and the tool message carries the observation, linked by the node
+// ID as the tool-call ID.
+//
+// Content is no longer hardcoded empty. That was the single point where the
+// model's thinking was discarded: the L2 graph rebuild replays actions, so an
+// assistant message with an empty body says "a call happened" and cannot say
+// why — and a successor quantum reading ten such pairs sees a sequence of
+// effects with no reasons, which is precisely the causal chain the system is
+// required to keep. The intent now rides the message it belongs to, in
+// execution order, instead of only arriving as one trailing system note about
+// the immediately preceding quantum.
 //
 // A bare tool message with no preceding assistant tool_call violates the
 // provider contract (OpenAI rejects orphan tool messages; lenient providers
@@ -262,31 +389,40 @@ func renderExperiencePrior(v any) string {
 // ReAct never has this problem because its history IS the live conversation
 // that produced the calls; the planner rebuilds history from the graph, so
 // it must rebuild the pairing too.
-func toolHistoryPair(step *engine.Step, nodeID, output string) []*llmcore.LLMMessage {
-	tool := strings.TrimPrefix(step.AgentType, "tool/")
-	meta := make(map[string]any, len(step.Metadata))
-	for k, v := range step.Metadata {
-		meta[k] = v
-	}
-	argsJSON, err := json.Marshal(argsFromPayload(meta))
-	if err != nil {
+func toolHistoryPair(unit causalchain.Unit, observation string) []*llmcore.LLMMessage {
+	// Args came out of a JSON decode, so a marshal failure here is theoretical
+	// (map keys are strings, values are decoded JSON). The "{}" fallback is a
+	// last resort, not a policy: an unrenderable argument set must not take the
+	// whole pair down, but it does mean this call loses its detail.
+	argsJSON, err := json.Marshal(unit.Action.Args)
+	if err != nil || len(unit.Action.Args) == 0 {
 		argsJSON = []byte("{}")
 	}
 	return []*llmcore.LLMMessage{
 		{
 			Role:    "assistant",
-			Content: "",
+			Content: string(unit.Intent),
 			ToolCalls: []llmcore.ToolCall{{
-				ID:   nodeID,
+				ID:   unit.Action.CallID,
 				Type: toolTypeFunction,
 				Function: llmcore.FunctionCall{
-					Name:      tool,
+					Name:      unit.Action.Tool,
 					Arguments: string(argsJSON),
 				},
 			}},
 		},
-		{Role: roleTool, Content: output, ToolCallID: nodeID},
+		{Role: roleTool, Content: observation, ToolCallID: unit.Action.CallID},
 	}
+}
+
+// observationRawBudget resolves the planner's configured replay policy. A nil
+// cognition (defensive: tests construct partial planners) falls back to the
+// zero policy, i.e. the package default.
+func (c *plannerCognition) observationRawBudget() int {
+	if c == nil {
+		return ObservationReplayPolicy{}.BudgetRunes()
+	}
+	return c.historyObservation.BudgetRunes()
 }
 
 // checkpointDecoder is the optional observed read-back surface. FabricReader

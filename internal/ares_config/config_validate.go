@@ -279,6 +279,18 @@ func (c *Config) validateEvolution() error {
 		return nil
 	}
 
+	switch c.Evolution.Objective {
+	case EvolutionObjectiveStrategy, EvolutionObjectiveRuntime, EvolutionObjectiveBoth:
+	case "":
+		return fmt.Errorf("evolution: objective must be one of strategy|runtime|both, got empty (defaults are applied before validation)")
+	default:
+		return fmt.Errorf("evolution: objective must be strategy|runtime|both, got %q", c.Evolution.Objective)
+	}
+	if c.Evolution.Objective != EvolutionObjectiveStrategy && !c.Evolution.RuntimePatches.AllowLive {
+		return fmt.Errorf("evolution: objective=%q applies runtime patches to a live system, so evolution.runtime_patches.allow_live must be true (set both deliberately, or use objective=%q)",
+			c.Evolution.Objective, EvolutionObjectiveStrategy)
+	}
+
 	if c.Evolution.PopulationSize < 2 {
 		return fmt.Errorf("evolution: population_size must be >= 2, got %d", c.Evolution.PopulationSize)
 	}

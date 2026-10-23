@@ -187,8 +187,12 @@ func (c *Client) chatOllama(ctx context.Context, messages []*llmcore.LLMMessage,
 
 	var ollamaResp struct {
 		Message struct {
-			Role      string `json:"role"`
-			Content   string `json:"content"`
+			Role    string `json:"role"`
+			Content string `json:"content"`
+			// Thinking is Ollama's reasoning trace (thinking models). Dropped
+			// before, which is how a tool-call turn with empty content lost the
+			// only statement of intent it had.
+			Thinking  string `json:"thinking"`
 			ToolCalls []struct {
 				ID       string `json:"id"`
 				Type     string `json:"type"`
@@ -210,7 +214,8 @@ func (c *Client) chatOllama(ctx context.Context, messages []*llmcore.LLMMessage,
 	}
 
 	respCore := &llmcore.GenerateResponse{
-		Content: ollamaResp.Message.Content,
+		Content:          ollamaResp.Message.Content,
+		ReasoningContent: ollamaResp.Message.Thinking,
 		Usage: llmcore.TokenUsage{
 			PromptTokens:     ollamaResp.PromptEvalCount,
 			CompletionTokens: ollamaResp.EvalCount,
@@ -306,9 +311,16 @@ func (c *Client) decodeOpenAIChatResponse(ctx context.Context, req *http.Request
 	var chatResp struct {
 		Choices []struct {
 			Message struct {
-				Role      string `json:"role"`
-				Content   string `json:"content"`
-				ToolCalls []struct {
+				Role    string `json:"role"`
+				Content string `json:"content"`
+				// reasoning_content is the OpenAI-compatible extension used by
+				// DeepSeek/vLLM-style reasoning models; "reasoning" is the
+				// OpenRouter spelling. Both are read because a deployment picks
+				// its endpoint, not this client — and on a tool-call turn the
+				// reasoning is usually the ONLY place the intent is stated.
+				ReasoningContent string `json:"reasoning_content"`
+				Reasoning        string `json:"reasoning"`
+				ToolCalls        []struct {
 					ID       string `json:"id"`
 					Type     string `json:"type"`
 					Function struct {
@@ -336,9 +348,14 @@ func (c *Client) decodeOpenAIChatResponse(ctx context.Context, req *http.Request
 	}
 
 	choice := chatResp.Choices[0]
+	reasoning := choice.Message.ReasoningContent
+	if reasoning == "" {
+		reasoning = choice.Message.Reasoning
+	}
 	respCore := &llmcore.GenerateResponse{
-		Content:      choice.Message.Content,
-		FinishReason: choice.FinishReason,
+		Content:          choice.Message.Content,
+		ReasoningContent: reasoning,
+		FinishReason:     choice.FinishReason,
 		Usage: llmcore.TokenUsage{
 			PromptTokens:     chatResp.Usage.PromptTokens,
 			CompletionTokens: chatResp.Usage.CompletionTokens,

@@ -116,12 +116,12 @@ type RegisterExecutorFn func(agentID string, executor Executor)
 // drain's wg.Wait() unblocks, and the scheduler is free to drain the target's
 // work.
 //
-// The reply is currently FIRE-AND-FORGET: it is logged but NOT written back
-// to the asker's cognitive state or task payload. A future iteration (C-1-a)
-// may deliver the reply through an event-store-triggered drain so the asker's
-// next quantum sees it; until then, AskAgent returns {Accepted: true,
-// Status: "pending"} — the LLM is explicitly told the answer is not available
-// yet and must be re-checked.
+// The reply does NOT come back in this call, but it is no longer dropped: C-1-a
+// delivers it to the asker as a TASK (DeliverAgentReply, wired in
+// cmd/ares/serve_peer.go), so the asking agent reads the answer from that task's
+// payload in a LATER turn. AskAgent therefore returns {Accepted: true,
+// Status: "pending"} and the model is told to keep working rather than wait.
+// "pending" describes THIS call, not the fate of the reply.
 //
 // Declared as a function (not an interface) so this package stays decoupled
 // from agentipc/aresrecovery; the function is set at the consumer.

@@ -15,6 +15,14 @@ type CleanOptions struct {
 	MaxAssistantLen int
 	MaxToolLen      int
 	MaxSystemLen    int
+	// MaxIntentLen bounds the assistant prose on a TOOL-CALL turn — the "why"
+	// that produced the call. It is separate from MaxToolLen (which bounds tool
+	// payloads) because the two are priced differently: a tool payload is bulk
+	// that can be re-read, the intent is the only record of the reasoning and
+	// cannot be recovered from anywhere. Bounding both with one 50-rune limit
+	// is exactly how a compressed transcript ends up with actions and no
+	// reasons. 0 falls back to MaxToolLen for hand-built options structs.
+	MaxIntentLen int
 
 	MaxRawToolResultLength int
 	MaxSummarizedTurns     int
@@ -29,6 +37,7 @@ func DefaultCleanOptions() CleanOptions {
 		MaxAssistantLen:        150,
 		MaxToolLen:             50,
 		MaxSystemLen:           500,
+		MaxIntentLen:           240,
 		MaxRawToolResultLength: 2000,
 		MaxSummarizedTurns:     0,
 		KeepRawToolDetails:     true,

@@ -77,6 +77,18 @@ type MemoryManager interface {
 	// the request's user before reading its messages.
 	SessionOwner(ctx context.Context, sessionID string) (string, error)
 
+	// GetArtifact resolves an artifact ref to the verbatim content it
+	// identifies — the read half of the chat path's replayable contract.
+	//
+	// The ref embeds its session id (context.ArtifactSessionID), so a caller
+	// handed a ref from an untrusted source verifies ownership with
+	// SessionOwner FIRST, exactly as it would for a session id.
+	//
+	// Returns context.ErrArtifactNotFound when the bytes are gone (expired
+	// session, byte-cap eviction) and context.ErrInvalidArtifactRef when the
+	// string is not a ref this store could have minted.
+	GetArtifact(ctx context.Context, ref string) (string, error)
+
 	// Start starts the memory manager and background workers.
 	Start(ctx context.Context) error
 

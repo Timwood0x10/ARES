@@ -269,6 +269,11 @@ type LifecycleState struct {
 // strategy. It owns the candidate state machine, the verify gates, and the
 // rollback watch loop.
 type StrategyLifecycle struct {
+	// postDeploy is the observation window opened by the most recent promotion (M3-5.5).
+	// Nil when no window is open — either nothing was promoted, or no experiment log is
+	// configured to record the result. Guarded by mu.
+	postDeploy *postDeployWatch
+
 	asm     *ActiveStrategyManager
 	agg     *RuntimeFitnessAggregator
 	shadow  *ShadowEvaluator

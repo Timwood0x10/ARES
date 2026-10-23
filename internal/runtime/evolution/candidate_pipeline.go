@@ -33,6 +33,12 @@ const ReleasePriority = 8
 // Only DecisionApply releases; DecisionReject/DecisionDrop keep the candidate
 // rejected. The coordinator's decision policy and the deployment thresholds
 // are outside candidate control (Ch.8 trust root isolation).
+//
+// Deprecated: this is the v2 pipeline and it has no production assembly — the GA
+// that actually runs lives in internal/runtime/ares_evolution. It is kept because its
+// trust-root boundary test (TestCandidatePipelineNotInProductionImportGraph) is what
+// proves the v1 gates cannot be bypassed, and deleting the type would delete that
+// proof. Do not add callers; removal is scheduled with the v2 line.
 type CandidatePipeline struct {
 	store        *CandidateStore
 	profileStore *ProfileStore

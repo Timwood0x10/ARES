@@ -65,6 +65,12 @@ func assembleGAConfig(ctx context.Context, cfg *ares_config.Config, comp *Compon
 	// M10: forward the configured experiment-log path. Empty stays empty, so a deployment that
 	// never sets it seals nothing and behaves exactly as before.
 	gaCfg.ExperimentLogPath = cfg.Evolution.ExperimentLogPath
+	// Single-path guarantee (M3): the objective decides whether a generation may submit runtime
+	// patches, strategies, or both. Forwarded here rather than defaulted in the wiring package so
+	// the config layer stays the only place the policy is chosen — and so a caller that forgets
+	// to pass it is visible in this one line instead of hidden behind a struct default.
+	gaCfg.Objective = cfg.Evolution.Objective
+	logEvolutionObjective(ctx, cfg.Evolution)
 	gaCfg.EnableDreamCycle = false
 	// EnableScheduler is now always true so the ticker path goes
 	// through scheduler.Tick (which applies shouldEvolve + guardrails).
@@ -985,4 +991,33 @@ func newPGStrategyStore(cfg *ares_config.Config) (evolution.StrategyStore, func(
 			log.Warn("pg strategy store: close db", "error", closeErr)
 		}
 	}, nil
+}
+
+// logEvolutionObjective states, once at startup, which evolution paths this process will take.
+//
+// It exists because the difference is invisible otherwise: a strategy-only deployment and a
+// runtime-both one behave identically until a patch lands on the live system, and by then the
+// operator is looking at the effect rather than at the configuration that allowed it.
+//
+// Keys follow the repository convention: the message stays a fixed phrase and everything variable
+// travels as a structured field (never concatenated), with module+method identifying the source.
+func logEvolutionObjective(ctx context.Context, ev ares_config.EvolutionConfig) {
+	objective := ev.Objective
+	if objective == "" {
+		// Defaults may not have run yet in tests and in callers that build the struct directly.
+		objective = ares_config.EvolutionObjectiveStrategy
+	}
+	if objective == ares_config.EvolutionObjectiveStrategy {
+		logEvolution.InfoContext(ctx, "runtime-patch path disabled",
+			"method", "assembleGAConfig",
+			"objective", objective,
+			"enable_with", "evolution.objective=runtime|both + evolution.runtime_patches.allow_live=true",
+		)
+		return
+	}
+	logEvolution.WarnContext(ctx, "runtime patches apply to the live system without review",
+		"method", "assembleGAConfig",
+		"objective", objective,
+		"allow_live", ev.RuntimePatches.AllowLive,
+	)
 }

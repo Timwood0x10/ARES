@@ -199,6 +199,10 @@ func (b *bootstrapBuilder) assembleExperience() error {
 	wireAKGDecay(comp, cfg)
 
 	subscribeDistillationEvents(bctx, comp)
+	// The chat path's observation producer: completed tool tasks become causal
+	// pairs (intent + call + observation) in their session's memory, which is
+	// what gives the compressed history a replayable ref to carry.
+	subscribeObservationRecorder(bctx, comp)
 
 	// 6. Dashboard
 	// The observability components (trajectory tracer, feedback

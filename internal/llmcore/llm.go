@@ -61,6 +61,20 @@ type LLMMessage struct {
 	ToolCallID string
 	// Name is an optional participant name (OpenAI v2+).
 	Name string
+	// ReasoningContent is the model's thinking for this turn, when the
+	// provider exposes one (reasoning_content on OpenAI-compatible
+	// endpoints, thinking on Ollama, thinking blocks on Anthropic).
+	//
+	// On tool-call turns this is often the ONLY statement of intent the model
+	// makes: the measured case is Content == "" with tool_calls present (see
+	// docs/defects/cognition-persistence.md). It is carried here so the
+	// reasoning survives the turn — a compressor that keeps Content and drops
+	// this drops the causal chain and keeps only the effect.
+	//
+	// It is NEVER replayed to the provider as a wire field: it is re-rendered
+	// as ordinary prose on the assistant message it belongs to (see
+	// agentfabric/planner_context), which every provider accepts.
+	ReasoningContent string
 }
 
 // ToolCall represents a tool/function call.
@@ -133,6 +147,14 @@ type FunctionDefinition struct {
 type GenerateResponse struct {
 	// Content is the generated text content.
 	Content string
+	// ReasoningContent is the model's thinking for this turn — what it
+	// concluded BEFORE deciding to act. Empty when the provider exposes none.
+	//
+	// Read by the planner's rationale capture as the PREFERRED source of a
+	// quantum's intent: a reasoning model states why it is calling a tool in
+	// its thinking, not in Content (which is frequently empty on tool-call
+	// turns). Dropping this field is exactly how a system loses the "why".
+	ReasoningContent string
 	// FinishReason is the reason the generation finished.
 	FinishReason string
 	// Usage contains token usage information.

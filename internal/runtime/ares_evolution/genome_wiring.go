@@ -40,10 +40,13 @@ type GenomePopulationAdapter struct {
 	// running reports whether Run() is mid-generation; probed by the
 	// live-chaos pause gate. See GenerationActive.
 	running atomic.Bool
-	pop     *genome.Population
-	mutator genome.MutatorInterface
-	crosser genome.CrossoverInterface
-	scorer  func(*mutation.Strategy) float64
+	// objective decides which submission path Run() may take ("strategy"|"runtime"|"both").
+	// Set by NewWiredEvolutionSystem from the same normalised value the system carries.
+	objective string
+	pop       *genome.Population
+	mutator   genome.MutatorInterface
+	crosser   genome.CrossoverInterface
+	scorer    func(*mutation.Strategy) float64
 
 	// Scoring infrastructure for cost-controlled evaluation (optional).
 	// When set via WithAdapterTieredScoring, Run() uses TieredScorer pipeline
@@ -132,7 +135,7 @@ type GenomePopulationAdapter struct {
 
 	// Coordinator bridge — when set, Run() submits evolution results
 	// to the new system's coordinator for decision and deployment.
-	coordinator *coordinator.UngatedPatcher
+	coordinator runtimePatchCoordinator
 	diffReg     *diff.Registry
 	genomeReg   *evogenome.Registry
 
@@ -437,4 +440,29 @@ func (a *GenomePopulationAdapter) PopulationGeneration() int {
 		return 0
 	}
 	return a.pop.Stats().Generation
+}
+
+// runtimeObjective reports whether this adapter may submit runtime patches.
+func (a *GenomePopulationAdapter) runtimeObjective() bool {
+	return normalizeObjective(a.objective) != EvolutionObjectiveStrategy
+}
+
+// strategyObjective reports whether this adapter may submit strategies.
+func (a *GenomePopulationAdapter) strategyObjective() bool {
+	return normalizeObjective(a.objective) != EvolutionObjectiveRuntime
+}
+
+// runtimePatchCoordinator is the slice of the coordinator this package drives: submit proposals,
+// read the policy, read decisions, and ask it to evaluate.
+//
+// The field used to be *coordinator.UngatedPatcher. Narrowing it costs nothing at runtime and
+// buys an honest test: constructing a real patcher needs a PolicyGenome and a patch registry, so
+// a test could only observe "no proposals" by never reaching the code that submits. With this
+// interface a test records submissions and can therefore tell "the gate held" from "the fixture
+// produced nothing".
+type runtimePatchCoordinator interface {
+	Submit(proposal coordinator.PatchProposal)
+	Policy() coordinator.PolicyGenome
+	DecisionHistory() []coordinator.PatchDecision
+	Evaluate(ctx context.Context)
 }

@@ -34,6 +34,13 @@ type PrometheusMetrics struct {
 	EvolutionRollbackTotal   *prometheus.CounterVec
 	EvolutionGateRejectTotal *prometheus.CounterVec
 
+	// Experiment-log audit counters (M3-6). They answer "how many experiments, how were the
+	// gates decided, and did the runtime patch land" without reading the JSONL on the host.
+	EvolutionExperimentsTotal          *prometheus.CounterVec // {outcome}
+	EvolutionExperimentSealErrorsTotal *prometheus.CounterVec // {reason}
+	EvolutionGateDecisionsTotal        *prometheus.CounterVec // {gate,decision}
+	EvolutionRuntimePatchesTotal       *prometheus.CounterVec // {result}
+
 	// Gate-absence accounting + runtime attribution/residency gauges.
 	EvolutionGateSkippedTotal *prometheus.CounterVec
 	EvolutionWindowSamples    *prometheus.GaugeVec
@@ -184,6 +191,34 @@ func NewPrometheusMetrics() (*PrometheusMetrics, error) {
 			},
 			[]string{"gate"},
 		),
+		EvolutionExperimentsTotal: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "ARES_evolution_experiments_total",
+				Help: "Total experiment records sealed, by outcome",
+			},
+			[]string{"outcome"},
+		),
+		EvolutionExperimentSealErrorsTotal: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "ARES_evolution_experiment_seal_errors_total",
+				Help: "Total failures to seal an experiment record, by reason",
+			},
+			[]string{"reason"},
+		),
+		EvolutionGateDecisionsTotal: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "ARES_evolution_gate_decisions_total",
+				Help: "Total gate verdicts recorded, by gate and decision",
+			},
+			[]string{"gate", "decision"},
+		),
+		EvolutionRuntimePatchesTotal: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "ARES_evolution_runtime_patches_total",
+				Help: "Total runtime patches the coordinator applied, by result",
+			},
+			[]string{"result"},
+		),
 		EvolutionShadowWinRate: prometheus.NewGauge(
 			prometheus.GaugeOpts{
 				Name: "ARES_evolution_shadow_win_rate",
@@ -247,6 +282,10 @@ func NewPrometheusMetrics() (*PrometheusMetrics, error) {
 		m.EvolutionPromoteTotal,
 		m.EvolutionRollbackTotal,
 		m.EvolutionGateRejectTotal,
+		m.EvolutionExperimentsTotal,
+		m.EvolutionExperimentSealErrorsTotal,
+		m.EvolutionGateDecisionsTotal,
+		m.EvolutionRuntimePatchesTotal,
 		m.EvolutionShadowWinRate,
 		m.EvolutionGateSkippedTotal,
 		m.EvolutionActiveDuration,
@@ -580,4 +619,41 @@ func RegisterMetricsRouter(mux *http.ServeMux) {
 	mux.HandleFunc("GET /metrics", func(w http.ResponseWriter, r *http.Request) {
 		MetricsHTTPHandler().ServeHTTP(w, r)
 	})
+}
+
+// RecordEvolutionExperiment counts one sealed experiment record by outcome.
+//
+// It is the denominator for the seal-error counter: "3 failures" means nothing without "of how
+// many", and the two must be readable side by side on the same dashboard.
+func (m *PrometheusMetrics) RecordEvolutionExperiment(outcome string) {
+	if m == nil {
+		return
+	}
+	m.EvolutionExperimentsTotal.WithLabelValues(outcome).Inc()
+}
+
+// RecordEvolutionExperimentSealError counts a failure to persist an experiment record.
+func (m *PrometheusMetrics) RecordEvolutionExperimentSealError(reason string) {
+	if m == nil {
+		return
+	}
+	m.EvolutionExperimentSealErrorsTotal.WithLabelValues(reason).Inc()
+}
+
+// RecordEvolutionGateDecision counts one gate verdict. Both passes and failures are counted:
+// EvolutionGateRejectTotal already tracks refusals, but a gate that never rejects and a gate that
+// never runs look identical without the denominator.
+func (m *PrometheusMetrics) RecordEvolutionGateDecision(gate, decision string) {
+	if m == nil {
+		return
+	}
+	m.EvolutionGateDecisionsTotal.WithLabelValues(gate, decision).Inc()
+}
+
+// RecordEvolutionRuntimePatch counts one runtime-patch apply attempt by result.
+func (m *PrometheusMetrics) RecordEvolutionRuntimePatch(result string) {
+	if m == nil {
+		return
+	}
+	m.EvolutionRuntimePatchesTotal.WithLabelValues(result).Inc()
 }

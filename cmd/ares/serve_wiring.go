@@ -629,6 +629,9 @@ func startServeHTTPAndHooks(
 		chaosStopToken: cfg.Kernel.Chaos.StopToken,
 		// Runtime introspection panel (monitoring.md): UI + read API.
 		intro: peerKernel.intro,
+		// Experiment log audit surface (GET /api/evolution/experiments): a reader over the
+		// same append-only file the GA seals into, nil when no path is configured.
+		experiments: evolutionQueryFor(cfg.Evolution.ExperimentLogPath),
 		// Evolution manual-approval gate (POST /api/evolution/approve).
 		// Nil when the evolution pipeline is not wired — the endpoint then
 		// reports 503 instead of silently swallowing approvals.

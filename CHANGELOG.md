@@ -2,6 +2,108 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.5] — causal history, one evolution path, an auditable GA
+
+Compressed history keeps the reason a call was made, the GA stops being able to do two things per
+generation, and every experiment is now readable through an API instead of a JSONL file on the
+host. Defaults stay narrow: a deployment that sets nothing new behaves as it did before.
+
+> **Upgrade notes**
+> - `evolution.objective` defaults to **`strategy`**. Runtime patches now require BOTH
+>   `objective=runtime|both` AND `evolution.runtime_patches.allow_live=true`; a config with one and
+>   not the other fails validation, naming both keys.
+> - A process started with the default objective logs `runtime-patch path disabled`; setting a
+>   wider objective logs a warning, because patches then reach a running system without review.
+> - `GET /api/evolution/experiments` only exists when `evolution.experiment_log_path` is set; with
+>   no path the route answers 404 rather than an empty page.
+> - `RunScenario` and `internal/evoapi` are gone (see Removed) — both had no production caller.
+
+### Highlights — compression preserves the causal chain
+
+The history compressor used to keep the **effect** and drop the **cause**: a compressed turn left
+an assistant message with no reasons, so a later quantum read a sequence of tool calls with no
+statement of intent. That is now fixed on both history paths.
+
+**Intent survives compression.** `llmcore` no longer discards `reasoning_content` / `reasoning` /
+`thinking` at the provider boundary — on a tool-call turn that trace is often the only statement of
+intent, because `content` is frequently empty. The intent rides the assistant message that carries
+the call, is stamped on every action node the round grows (a bare `intent` key, so it never reaches
+`CallTool` as an undeclared argument), and is replayed once per decision rather than once per call.
+
+**`internal/causalchain` prices the three components differently.** Intent is normalised prose
+(whitespace and fences collapsed, cut at a sentence boundary that does not split `v3.14`); an
+observation is shape + size in the budget's unit + `sha256` + ref; the edge stays in the record
+although the prompt encodes order by position.
+
+**Observations replay verbatim while they fit, and are normalised only above the line.** A small
+result is already replayable, and the answer synthesizer keeps observations verbatim because it
+writes the answer *from* them. The knob is an explicit `ObservationReplayPolicy` (`RawRunes` +
+`Verbatim`), not a zero-or-negative sentinel.
+
+**The token budget drops causal UNITS, not messages.** A unit is a call plus every result answering
+it, so a trim can no longer leave an observation whose action is gone.
+
+**Chat history can be replayable too.** The session store retains a tool result's verbatim bytes at
+write time and stamps an `artifact://` ref; `artifact_read` resolves it under an ownership check
+that fails closed on both sides. Three properties keep the ref honest rather than decorative: it is
+minted at write time (a compressing reader holds no bytes and cannot mint one), artifacts live
+inside `SessionData` so their lifetime *is* the session's, and the cleaner only ever copies a ref.
+
+**Silent field loss fixed.** The cleaner rebuilt messages field by field and dropped `EventKind`,
+`ParentID` and `ArtifactRefs`; it now copies whole. A tool-call turn's intent survives within
+`MaxIntentLen` instead of a 50-rune gist, and a cut tool result carries an identity marker so it
+stays verifiable. The SDK now records a completed tool task as intent + call + observation into the
+session that owns it, off the `task.completed` stream, with one session identity end to end (it used
+to submit under `sess-auto-N` while its transcript lived under `session_<agent>_<nano>`, so every
+recorded observation missed its store).
+
+### Added
+
+- **`evolution.objective`** (`strategy` | `runtime` | `both`) governs which paths a generation may
+  take, and `evolution.runtime_patches.allow_live` is the second key required to widen it.
+- **`ExperimentQuery`**: filtered reads of the append-only log with a bounded scan (10,000 records),
+  a `Truncated` flag when the cap is hit, and a corrupt line reported with its number instead of
+  being skipped. `Generation` is a pointer so generation 0 is a real filter rather than "any".
+- **Audit API**: `GET /api/evolution/experiments` (limit / generation / outcome / candidate /
+  proposal_key / since) and `GET /api/evolution/experiments/{proposal_key}`, which returns the
+  proposal, the decisions that decided it, and the post-deploy observation.
+- **Post-deploy producer**: acceptance opens an observation window on the existing watch tick
+  (3 cycles or 24h, whichever first) and seals one further record joined by the same `ProposalKey`.
+- **Audit metrics**: `experiments_total{outcome}` (incremented before the append attempt, so a
+  failing sink reads as "N attempts, N errors" rather than an empty log),
+  `experiment_seal_errors_total{reason}`, `gate_decisions_total{gate,decision}` (passes counted as
+  well as refusals) and `runtime_patches_total{result}`.
+- `StrategyOutcome` gains `LatencyCost` / `SpendCost`, the normalised `[0,1]` values the metrics
+  channel actually stores; `LatencyMs` is left unset rather than derived from them.
+
+### Changed
+
+- A generation takes **one** path. `Run` and `RunIdleEvolution` are both gated, and the adapter's
+  coordinator became a narrow interface so a test can count submissions instead of inferring them.
+- `make lint` mirrors the CI lint job step for step (format, freeze, anchors, vet, staticcheck,
+  golangci). It previously ran two of the six, which is how a staticcheck failure reached the
+  pipeline after a green local run.
+- CI now runs on pushes to `dev` as well as `main`; `.githooks/pre-push` runs the freeze and anchor
+  checks locally (enable with `git config core.hooksPath .githooks`).
+
+### Removed
+
+- `internal/evoapi` and its two `_internal` demo programs: a facade over `ares_evolution` whose
+  `Population` interface did not map onto `genome.Population`, with no production importer.
+- `RunScenario`: a deprecated wrapper that logged a warning on every call and existed for four
+  tests, which now assert on `ScenarioReport.Results`.
+
+### Known gaps
+
+- The idle path has no end-to-end test: `WiredEvolutionSystem.Coordinator` must stay a concrete
+  `*UngatedPatcher` (bootstrap calls `SetDeployer`/`SetApplyGate` on it), so only its predicate is
+  covered. Gating `Run` and forgetting idle would go unnoticed.
+- `ObservationReplayPolicy`'s default is not benchmarked, so the verbatim-vs-normalised split in
+  production is unmeasured.
+- `internal/evoapi`'s removal is reflected in the freeze manifest; `detector` remains listed there
+  and is reported as a planned removal (INFO, not a failure).
+- `/api/insights` is still a permanent 501, and three Postgres packages remain under 30% coverage.
+
 ## [0.3.4] — AKG out of beta; evolution becomes observable and safe
 
 AKG is frozen and stable, the GA loop records what it proposed and what the gates did with it,

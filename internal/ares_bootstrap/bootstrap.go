@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"golang.org/x/sync/errgroup"
@@ -127,6 +128,12 @@ type Components struct {
 	// subscriber, GA evolution ticker, LLM suggestion ticker) via errgroup
 	// (no bare goroutines). WaitBackground blocks on it during shutdown.
 	bgGroup errgroup.Group
+	// startedBackground records the name of every worker handed to GoBackground, in start
+	// order. Without it the only trace of a background worker is a log line, so a test (or
+	// an operator) cannot ask "which workers are running in this process" — and a contract
+	// that says "no evolution ticker when evolution is off" cannot be stated precisely.
+	startedBackgroundMu sync.Mutex
+	startedBackground   []string
 }
 
 // ObservabilityComponents groups the shared observability surfaces, constructed
@@ -155,6 +162,10 @@ type ObservabilityComponents struct {
 // dead for the rest of the process while looking healthy. The loop stops
 // only when ctx is cancelled or fn returns nil (a clean, intentional exit).
 func (c *Components) GoBackground(ctx context.Context, name string, fn func(ctx context.Context) error) {
+	c.startedBackgroundMu.Lock()
+	c.startedBackground = append(c.startedBackground, name)
+	c.startedBackgroundMu.Unlock()
+
 	c.bgGroup.Go(func() (err error) {
 		const (
 			initialBackoff = time.Second
@@ -482,4 +493,15 @@ func wireLegacyEvolution(
 		// judge scores exactly as before and persists nothing.
 		WithEvalEvidenceStore(comp.EvidenceStore),
 	)
+}
+
+// StartedBackground returns the names of the background workers registered since bootstrap, in
+// start order. It is a copy: callers inspect it, they do not append to it.
+func (c *Components) StartedBackground() []string {
+	if c == nil {
+		return nil
+	}
+	c.startedBackgroundMu.Lock()
+	defer c.startedBackgroundMu.Unlock()
+	return append([]string(nil), c.startedBackground...)
 }
