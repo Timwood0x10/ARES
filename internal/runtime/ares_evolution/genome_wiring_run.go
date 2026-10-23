@@ -770,6 +770,15 @@ func (a *GenomePopulationAdapter) submitToCoordinator(ctx context.Context) {
 				continue
 			}
 			logCoordinatorDecision(ctx, d, policy, fitness)
+			if a.metrics != nil && d.Decision == coordinator.DecisionApply {
+				// Applied and failed are counted separately: a patch path that "ran" is not the
+				// same claim as a patch path that changed anything.
+				result := "applied"
+				if d.ApplyError != nil {
+					result = "failed"
+				}
+				a.metrics.RecordEvolutionRuntimePatch(result)
+			}
 		}
 	}
 }

@@ -285,9 +285,25 @@ func (l *StrategyLifecycle) sealRecord(ctx context.Context, candidate *mutation.
 	if resolve != nil {
 		rec.ProposalKey = resolve(candidate.ID)
 	}
+	if l.metrics != nil {
+		// Counted BEFORE the append attempt so a failing sink still has a denominator: with the
+		// record counter only incremented on success, "0 sealed, 5 errors" would read as "the log
+		// is empty" rather than "every write failed".
+		l.metrics.RecordEvolutionExperiment(string(outcome))
+		for _, v := range verdict {
+			decision := "reject"
+			if v.Passed {
+				decision = "pass"
+			}
+			l.metrics.RecordEvolutionGateDecision(v.Gate, decision)
+		}
+	}
 	if err := logSink.Append(ctx, rec); err != nil {
 		log.WarnContext(ctx, "lifecycle: seal decision record", "method", "sealDecision",
 			"candidate", candidate.ID, "outcome", outcome, "error", err)
+		if l.metrics != nil {
+			l.metrics.RecordEvolutionExperimentSealError("append")
+		}
 	}
 }
 
