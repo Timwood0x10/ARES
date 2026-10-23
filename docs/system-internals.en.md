@@ -51,9 +51,9 @@
 25. [Checkpoint & Recovery (fields + 7 steps + two modes)](#25-checkpoint--recovery)
 26. [Context Management (sliding-window truncation + rule-based cleaning + RAG injection, NOT LLM summarization)](#26-context-management)
 27. [LLM Failover + Tool Organization (`core.Registry`)](#27-llm-failover--tool-organization)
-28. [Event-Driven Bus (who subscribes to what)](#28-event-driven-bus)
+28. [Event-Driven Bus (who subscribes + event-ledger compaction, 0.3.5)](#28-event-driven-bus)
 29. [HITL Approval Gate (0.3.3)](#29-hitl-approval-gate-033)
-30. [Version Status: 0.3.4](#30-version-status-034)
+30. [Version Status: 0.3.5](#30-version-status-035)
 
 ---
 
@@ -2600,6 +2600,31 @@ recovery); only the scheduler (**5** types) and recovery (4 types) are truly
 "multi-type". So the accurate phrasing is "**driven primarily by task
 lifecycle events**", not "any event drives anything".
 
+### 28.3 Event-Ledger Compaction (Compactor) — 0.3.5 updates
+
+> This section records the 0.3.5 compression-algorithm optimisations to
+> `internal/ares_events/compactor.go` and `compactable_store.go`. For the
+> full walkthrough see `docs/articles/en/08-event-system-deep-dive.md`
+> (sections 4–5); here we only list the changes.
+
+| Optimisation | Where | What changed |
+|---|---|---|
+| Bounded candidate read | `compactStream` (`compactor.go`) | Pre-fix `Read` had no `ToVersion` cap, pulling the whole stream O(n) into memory; now `ReadOptions{ToVersion: version - KeepRecent}` reads only the candidate window — no OOM on very long streams; exact even on trimmed streams (prefix deletion only shifts the earliest version; the cap naturally skips the missing prefix) |
+| `MaxSummariesPerStream` now enforced | `pruneSummaries` (`compactor.go`) | Pre-fix the field was documented but never implemented, so summaries grew without bound; now, after the summary is saved, existing summaries are sorted by `StartVersion`/`EndVersion`/`CreatedAt` and the oldest beyond the cap are pruned (best-effort; a failed delete is logged and the loop continues) |
+| Config sanitisation | `NewCompactor` (`compactor.go`) | `Threshold <= 0` or `KeepRecent < 0` is replaced with `DefaultCompactionConfig()`, so a negative `KeepRecent` can no longer push `events[:total-KeepRecent]` out of range and panic the whole process |
+| `SummaryTTL <= 0` semantic fix | `CleanupOldSummaries` (`compactor.go`) | Pre-fix the zero value flowed into `time.Now().Add(-SummaryTTL)` and the first pass deleted *every* summary; now `SummaryTTL <= 0` means "cleanup disabled" and returns `(0, nil)` |
+| Rune-safe truncation | `buildSummary` / `DefaultSummarizer` (`compactor.go`) | Pre-fix byte truncation could split a multi-byte CJK character, producing invalid UTF-8 that the PG `text` column rejects (compaction then failed permanently); now `internal/truncate.WithEllipsis` (truncates on `[]rune`) |
+| Multi-agent attribution | `buildSummary` (`compactor.go`) | if a later event carries a different `agent_id`, the summary is marked `"multi"` instead of silently attributing everything to the first agent |
+| Read-fallback v2 | `CompactableEventStore.Read` (`compactable_store.go`) | Pre-fix summaries were only consulted when the underlying read was *empty*; now a window reaching into the trimmed head also triggers the lookup. New `applyReadOptions` (direction / paging / version-window aware), `dropOverlappingSummaries` (drops summaries overlapping the live span), `mergeSyntheticWithLive` (direction-aware splice) |
+| `archiveInflight` exclusive CAS | `archivePendingRoundsOnce` (`compactable_store.go`) | Pre-fix the boundary check was not a true claim — two goroutines could both archive the same round; now `archiveInflight[streamID]` is CASed under `archiveMu`, one in-flight claimant per stream |
+| `maxArchiveRoundEvents = 50000` | `archivePendingRoundsOnce` (`compactable_store.go`) | Pre-fix there was no cap on total events per round — a long terminal-less stream would materialise the whole stream in memory; now hitting 50000 returns an error (not a quiet defer) and `maybeCompact` defers compaction |
+| Drain cap exhaustion is a hard error | `drainPendingRounds` (`compactable_store.go`) | Pre-fix returning past 1000 rounds returned `nil`, so `maybeCompact` trimmed events whose RoundRecord was never written; now it returns an error and compaction is deferred |
+| Per-stream bookkeeping TTL sweep (24h) | `maybeSweepBookkeepingLocked` (`compactable_store.go`) | the four per-stream maps (`lastChecked`/`lastTouched`/`roundCounter`/`lastArchivedVersion`) grew without bound in a long-lived process; now swept opportunistically in `maybeCompact` on a 24h idle TTL with a 1-minute cadence; lock order fixed as `mu → archiveMu` |
+| `Close()` safe shutdown | `CompactableEventStore.Close()` (`compactable_store.go`) | cancels `lctx` → `wg.Wait` (bounded by `compactionTimeout + 5s`) → underlying `Close`; `Append` checks the `closed` flag under `mu` to prevent WaitGroup Add-after-Wait |
+
+> Note: `ReadOptions` gained a `ToVersion` field (`types.go`), shared by the
+> compaction and read paths.
+
 ---
 
 ## Appendix: 0.2.x → 0.3.x Verdict
@@ -2669,21 +2694,20 @@ persists byte-for-byte identically to 0.3.2/0.3.3 — pinned by
 > the dev branch moves. Function names / file paths are more stable than line
 > numbers — locate by symbol when in doubt.
 
-## 30. Version Status: 0.3.4
+## 30. Version Status: 0.3.5
 
-**0.3.4 close-out (the AKG↔GA three gaps; ledger wording 2026-10-17/18)**:
+**0.3.5 (turning three "half-evidences" into production wiring + closing evolution observability; ledger wording 2026-10-17/20)**:
 
 | Item | What | Status |
 |---|---|---|
-| M2.5 relation gate | `FilterRelations` + `FindRelationConflicts` (uses only the vocabulary's own `contradicts`; **marks, never drops**); `DistillBridge.extractRelations` runs through the gate before writing | ✅ wired |
-| M4 build observability / incremental | `DistillConversationWithReport` real producer (7 counters from this run); `persistAndPromote` skips unchanged objects by ContentFingerprint | ✅ closed |
-| M6 tiered retrieval | `TieredRetriever` (bounded lexicon scan, deterministic truncation check) + `knowledge.tiered_retrieval` **opt-in** (replaces, does not stack — one corpus, one injection) | ✅ closed (2026-10-17, opt-in) |
+| **M8b ApplyGate** | installed at the assembly point that **holds both the coordinator and the lifecycle**; rejects only patches whose strategy is currently held for human approval; unattributed patches pass, and with no hold everything passes (default behaviour unchanged). Also fixed `ProfileExecutor.Apply`'s rollback patch dropping `StrategyID` (which made a strategy permanently incomparable after a rollback) — now inherited | ✅ wired |
+| **M9 dimension mapping** | converged to a single execution path: dimension scoring lives on `genome.Population.ScoreAgentsWithDimensions` (dimensions after the scalar pass); the service's three scoring branches **and** in-process `EvolveAfterScoring` share it; `MapCandidateDimensions` takes only candidate-comparable sources, omits missing samples rather than writing 0 | ✅ wired |
+| **M9-③ latency/cost evidence** | `WindowResult.Metrics` is a **separate metrics channel** (stays out of the weighted mean and out of `Count` — the staging gate must not be backed by a channel nobody enables); the observer writes penalty-complement evidence (0 = fastest/cheapest, aligned with `Minimize`); incomplete tasks write no metric | ✅ done |
+| **P1 MCP governance boundary (closing the hole)** | `setupMCP` copied `RegisteredTools()` once at startup and never installed a change handler ⇒ tools added/removed/updated after a server reconnect never reached `internalReg` / the public tool table. Added `cmd/ares/mcp_tool_bridge.go` (held by name, removes only what it registered, builtins first-wins); `setupMCP` now wires `mcpMgr.SetToolChangeHandler(bridge.Sync)` after the startup sync. Also fixed `MCPTool.Tags()` deriving `cap_*` from `Description()` (which carries health notes — an `http/api` health reason could add `cap_network` to an unrelated tool); it now reads the raw `toolDef.Description`. Removed the zero-caller `ares_bootstrap.SetupMCP` (`ProvideMCP` remains the only constructor entry) | ✅ wired |
+| **P3 recovery observation point** | `aresrecovery.RecoveryObserver` + `arena.NewRecoveryAdapter`, wired from `peer_assembly.go` into `kernel.arenaMetrics`; the chaos panel now reports real revival durations instead of a permanent zero; the zero-caller `Service.RecoveryObserver()` dead face was removed | ✅ wired |
+| **P4 consistency observation point (new)** | `DataConsistencyRate` no longer has no producer: `taskfabric.Fabric.WithConsistencyObserver` + `Fabric.DecodeCheckpoint` report success/failure per read-back; `arena.NewConsistencyAdapter` writes `RecordConsistency(ok bool)`; a FIFO window capped at 1000, and the rate is only published with `ConsistencySamples >= 20`; `calcConsistency` now judges by sample count so a genuine all-failure 0% is expressible (no longer swallowed as "unmeasured" by the `>0` test); the chaos panel's `RecoveryMetrics` gains `data_consistency_rate`/`consistency_samples`/`consistency_measured` | ✅ done |
 
-**0.3.4**: M8b wiring and M9 dimension mapping are **done**. Dimension scoring lives on
-`genome.Population.ScoreAgentsWithDimensions` and both evolution loops use it; `latency` and
-`cost` are collected as Minimize objectives on a separate metrics channel that stays out of the
-fitness mean (so a slow-but-correct strategy is not averaged away). The attribution bug and the
-Q2 decision are recorded in the `docs/defects/00-INDEX.md` revision log.
+**Compression algorithm (`ares_events` Compactor, see §28.3)**: this 0.3.5 round made 12 optimisations to the event-ledger compaction — bounded candidate read (guards against long-stream OOM), real `MaxSummariesPerStream` enforcement, `NewCompactor` config sanitisation, the `SummaryTTL<=0` semantic fix, rune-safe truncation, multi-agent attribution, read-fallback v2 (direction/paging aware), `archiveInflight` exclusive CAS, the per-round event cap, the drain-cap hard error, the per-stream bookkeeping TTL sweep, and `Close()` safe shutdown.
 
 **Still pending a decision (5, see the "full registry" block in
 `docs/defects/00-INDEX.md`)**: P0-1 timed real-eval runs (a cost decision) /
