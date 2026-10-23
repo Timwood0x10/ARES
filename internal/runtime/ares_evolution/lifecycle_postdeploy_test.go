@@ -146,3 +146,51 @@ func TestOpenPostDeployWatch_WithoutAJoinKeyOpensNothing(t *testing.T) {
 
 	assert.Nil(t, l.postDeploy)
 }
+
+// TestPromote_OpensTheWindowAndSealsTheObservation is the end-to-end claim the unit tests could
+// not make: promote() itself (not a direct call to openPostDeployWatch) opens the window, and the
+// closing tick seals a record that joins the verdict by the same proposal key.
+//
+// It also pins the ordering: the verdict record exists immediately after promotion and carries NO
+// post-deploy, because at that moment nothing has been observed yet. A record that guessed "fine"
+// at promote time would be indistinguishable from one that measured it.
+func TestPromote_OpensTheWindowAndSealsTheObservation(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now()
+
+	asm, err := NewActiveStrategyManager(NewMemoryStrategyStore(10), NewRollbackPolicy())
+	require.NoError(t, err)
+
+	evStore := evidence.NewMemoryStore()
+	seedScopedValue(t, evStore, latencyMetricSource, evidence.KindFitness, "s-e2e", "", floatPtr(0.35), now.Add(-time.Second))
+	seedScopedValue(t, evStore, costMetricSource, evidence.KindFitness, "s-e2e", "", floatPtr(0.2), now.Add(-time.Second))
+	seedScopedValue(t, evStore, "fitness", evidence.KindFitness, "s-e2e", "", floatPtr(0.9), now.Add(-time.Second))
+
+	log := &capturingLog{}
+	l := &StrategyLifecycle{
+		asm:           asm,
+		agg:           NewRuntimeFitnessAggregator(evStore, DefaultAggregatorConfig()),
+		experimentLog: log,
+		proposalKey:   func(string) string { return "proposal-e2e" },
+	}
+
+	l.promote(ctx, &mutation.Strategy{ID: "s-e2e", Score: 70}, false)
+
+	require.NotNil(t, l.postDeploy, "acceptance must open the observation window")
+	assert.Equal(t, "s-e2e", l.postDeploy.candidate.ID)
+	require.Len(t, log.recs, 1, "the verdict is sealed at promotion time")
+	assert.Nil(t, log.recs[0].PostDeploy, "the verdict cannot carry an outcome that has not been observed yet")
+
+	for i := 0; i < postDeployCycles; i++ {
+		l.tickPostDeploy(ctx)
+	}
+
+	require.Len(t, log.recs, 2, "closing the window seals exactly one further record")
+	post := log.recs[1]
+	require.NotNil(t, post.PostDeploy)
+	assert.Equal(t, "proposal-e2e", post.ProposalKey, "the observation joins the verdict it belongs to")
+	assert.Equal(t, "s-e2e", post.PostDeploy.StrategyID)
+	assert.InDelta(t, 0.35, post.PostDeploy.LatencyCost, 1e-9)
+	assert.InDelta(t, 0.2, post.PostDeploy.SpendCost, 1e-9)
+	assert.Nil(t, l.postDeploy)
+}
