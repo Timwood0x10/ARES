@@ -7,7 +7,7 @@
 // The workload churns the goroutine-spawning paths the leak program hardened
 // (event store subscriptions, the workflow reloader's fsnotify loop, the
 // load tracker, fabric task lifecycle, the evolution experiment log and the
-// checkpoint decode observer) and samples goroutine count, file
+// checkpoint decode observer, the kernel scheduling pump) and samples goroutine count, file
 // descriptors and GC'd heap once per second. A stable process shows a flat
 // last third; a leak shows monotonic growth the assertions reject.
 package soak
@@ -20,10 +20,13 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/Timwood0x10/ares/internal/agents/sub"
 	"github.com/Timwood0x10/ares/internal/ares_events"
+	"github.com/Timwood0x10/ares/internal/core/models"
 	taskfabric "github.com/Timwood0x10/ares/internal/fabric/task"
 	"github.com/Timwood0x10/ares/internal/fabric/task/workflow/engine"
 	"github.com/Timwood0x10/ares/internal/kernel"
@@ -42,6 +45,26 @@ type sample struct {
 type soakDecodeObserver struct{}
 
 func (soakDecodeObserver) OnCheckpointDecode(bool) {}
+
+// soakExecutor is a minimal quantum executor that spends a fixed amount of time per step, so the
+// scheduler has something slow enough to make a batch exceed its budget.
+type soakExecutor struct {
+	work     time.Duration
+	executed *atomic.Int64
+}
+
+func (e soakExecutor) ID() string             { return "soak-executor" }
+func (e soakExecutor) Type() models.AgentType { return "soak" }
+
+func (e soakExecutor) ExecuteStep(ctx context.Context, _ *models.Task) (*sub.StepOutcome, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-time.After(e.work):
+	}
+	e.executed.Add(1)
+	return &sub.StepOutcome{Done: true}, nil
+}
 
 // fdCount counts open file descriptors for the current process.
 func fdCount(t *testing.T) int {
@@ -261,6 +284,38 @@ func TestSoakSteadyStateUnderMixedLoad(t *testing.T) {
 		}
 	}()
 
+	// --- workload 7: kernel scheduling pump ---
+	//
+	// This is the path the M2 work changed: admission, the process-wide budget, and the release of
+	// a slot when a quantum finishes. Without it the soak would certify a scheduler it never ran.
+	//
+	// A burst every few seconds is deliberate: the steady rate stays inside the budget, while a
+	// burst exceeds it, so the "refuse and leave it READY for the next tick" path is exercised
+	// instead of only the happy one.
+	schedFabric := taskfabric.NewFabric()
+	var schedExecuted atomic.Int64
+	sched := kernel.New(schedFabric, map[string]kernel.CapabilityExecutor{
+		"soak": soakExecutor{work: 40 * time.Millisecond, executed: &schedExecuted},
+	}, kernel.NewLoadTracker())
+	go sched.Run(ctx)
+	go func() {
+		for i := 0; ; i++ {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(100 * time.Millisecond):
+			}
+			burst := 1
+			if i%50 == 0 {
+				burst = 8
+			}
+			for j := 0; j < burst; j++ {
+				id := fmt.Sprintf("soak-sched-%d-%d", i, j)
+				_ = schedFabric.Create(&taskfabric.Task{ID: id, Capability: "soak"})
+			}
+		}
+	}()
+
 	// --- sampling + assertions ---
 	// Warm-up: let every loop start and allocate its steady-state set, then
 	// take the first-third baseline. Tolerances absorb jitter (a stray
@@ -274,6 +329,13 @@ func TestSoakSteadyStateUnderMixedLoad(t *testing.T) {
 		time.Sleep(1 * time.Second)
 	}
 	cancel()
+
+	// The scheduler workload must have actually dispatched work: a pump that never admits is
+	// indistinguishable from one that leaked nothing, and this soak exists to certify the path
+	// that was changed.
+	if schedExecuted.Load() == 0 {
+		t.Fatalf("the scheduling workload executed nothing, so its stability says nothing")
+	}
 
 	third := len(samples) / 3
 	if third < 2 {
