@@ -16,6 +16,22 @@ import (
 )
 
 // WiredEvolutionSystem holds a fully wired autonomous evolution system.
+// patchCoordinator is the surface both bootstrap and this package drive on the coordinator.
+//
+// The field used to be *coordinator.UngatedPatcher. Constructing one needs a PolicyGenome and a
+// patch registry, so a test could not observe "the idle loop submitted nothing" — it could only
+// observe that the fixture never produced a patch, which is true for every objective and therefore
+// proves nothing. Narrowing it here is what lets RunIdleEvolution's gate be tested end to end
+// instead of only by its predicate.
+type patchCoordinator interface {
+	Submit(proposal coordinator.PatchProposal)
+	Policy() coordinator.PolicyGenome
+	DecisionHistory() []coordinator.PatchDecision
+	Evaluate(ctx context.Context)
+	SetDeployer(d coordinator.PatchDeployer)
+	SetApplyGate(g coordinator.ApplyGate)
+}
+
 type WiredEvolutionSystem struct {
 	// Objective is the normalised objective for this system ("strategy"|"runtime"|"both").
 	// See SystemConfig.Objective for why empty normalises to strategy.
@@ -48,9 +64,9 @@ type WiredEvolutionSystem struct {
 
 	// Diff Engine + Coordinator for graph structure evolution.
 	// When set, each generation's mutation is diffed and patches submitted.
-	DiffReg     *diff.Registry              `json:"-"`
-	Coordinator *coordinator.UngatedPatcher `json:"-"`
-	GenomeReg   *evogenome.Registry         `json:"-"`
+	DiffReg     *diff.Registry      `json:"-"`
+	Coordinator patchCoordinator    `json:"-"`
+	GenomeReg   *evogenome.Registry `json:"-"`
 
 	// AfterGeneration is called after each idle evolution generation with
 	// the generation index and the system. When non-nil, it receives the
@@ -530,8 +546,7 @@ func (s *WiredEvolutionSystem) RuntimeObjective() bool {
 	if s == nil {
 		return false
 	}
-	o := normalizeObjective(s.Objective)
-	return o == EvolutionObjectiveRuntime || o == EvolutionObjectiveBoth
+	return objectiveAllowsRuntimePatches(s.Objective)
 }
 
 // StrategyObjective reports whether this system may submit strategies.
@@ -542,6 +557,31 @@ func (s *WiredEvolutionSystem) StrategyObjective() bool {
 	if s == nil {
 		return false
 	}
-	o := normalizeObjective(s.Objective)
+	return objectiveAllowsStrategy(s.Objective)
+}
+
+// ShouldSubmitRuntimePatches is the single gate both submission paths consult.
+//
+// Run and RunIdleEvolution previously each spelled out "objective AND coordinator AND registries"
+// separately, which is two chances to fix one and forget the other — the exact drift the
+// single-path promise is supposed to exclude. The dependency half lives here so a missing registry
+// closes BOTH paths, not just the one that was edited.
+func (s *WiredEvolutionSystem) ShouldSubmitRuntimePatches() bool {
+	if s == nil {
+		return false
+	}
+	return objectiveAllowsRuntimePatches(s.Objective) &&
+		s.Coordinator != nil && s.DiffReg != nil && s.GenomeReg != nil
+}
+
+// objectiveAllowsRuntimePatches is the one definition of "this objective permits runtime patches".
+func objectiveAllowsRuntimePatches(objective string) bool {
+	o := normalizeObjective(objective)
+	return o == EvolutionObjectiveRuntime || o == EvolutionObjectiveBoth
+}
+
+// objectiveAllowsStrategy is the strategy half of the same mapping.
+func objectiveAllowsStrategy(objective string) bool {
+	o := normalizeObjective(objective)
 	return o == EvolutionObjectiveStrategy || o == EvolutionObjectiveBoth
 }
