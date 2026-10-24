@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/sync/errgroup"
@@ -19,7 +20,9 @@ import (
 	"github.com/Timwood0x10/ares/internal/aresrecovery"
 	"github.com/Timwood0x10/ares/internal/fabric/task/workflow/engine"
 	"github.com/Timwood0x10/ares/internal/introspect"
+	"github.com/Timwood0x10/ares/internal/logger"
 	"github.com/Timwood0x10/ares/internal/runtime"
+	evolution "github.com/Timwood0x10/ares/internal/runtime/ares_evolution"
 	memory "github.com/Timwood0x10/ares/internal/runtime/memory"
 	"github.com/Timwood0x10/ares/internal/runtime/protocol/ahp"
 	core_tools "github.com/Timwood0x10/ares/internal/tools/resources/core"
@@ -104,7 +107,7 @@ func createAndServeAgents(
 	// read enabled/budget/prior at L2 growth time. The L1 graph is NOT
 	// compiled into taskfabric — it is a capability catalog, not an
 	// execution plan (L1 ≠ L2).
-	injectToolClassDAG(comp, toolBinder)
+	injectToolClassDAG(ctx, comp, toolBinder)
 
 	subAgents, peerKernel, err := createPeerAgents(
 		ctx, cfg, comp, chatClient, toolBinder,
@@ -531,20 +534,30 @@ func setupPeerRegistry(
 // createPeerAgents when the DAG gate is open) can read enabled/budget/prior
 // at L2 growth time. The L1 graph is NOT compiled into taskfabric — it is a
 // capability catalog, not an execution plan (L1 ≠ L2).
-func injectToolClassDAG(comp *ares_bootstrap.Components, toolBinder sub.ToolBinder) {
+func injectToolClassDAG(ctx context.Context, comp *ares_bootstrap.Components, toolBinder toolSchemaSource) {
 	if comp.NewEvolution == nil {
 		return
 	}
 	l1DAG, err := buildToolClassDAG(toolBinder.GetToolSchemas())
-	switch {
-	case err == nil:
-		comp.NewEvolution.SetToolClassDAG(l1DAG)
-		log.InfoContext(context.Background(), "serve: L1 ToolClass DAG injected into evolution (nodes)", "count", len(l1DAG.Steps()))
-	case errors.Is(err, errNoToolSchemas):
-		log.InfoContext(context.Background(), "serve: no tool schemas; L1 ToolClass DAG skipped (constraints default to permissive)")
-	default:
-		log.WarnContext(context.Background(), "serve: L1 ToolClass DAG build failed (constraints default to permissive)", "err", err)
+	if err != nil {
+		// Zero tools at boot is NOT a reason to stay unwired: a deployment that attaches its tools
+		// later (an MCP server connecting after startup) would otherwise keep a nil L1 graph for
+		// the life of the process — which is exactly the case the reconciler exists to cover.
+		emptyDAG, derr := engine.NewMutableDAG(nil)
+		if derr != nil {
+			log.WarnContext(ctx, "serve: L1 ToolClass DAG could not be created (constraints default to permissive)",
+				"method", "injectToolClassDAG", "error", derr)
+			return
+		}
+		l1DAG = emptyDAG
+		log.InfoContext(ctx, "serve: no tool schemas at boot; empty L1 graph injected for the reconciler to fill",
+			"method", "injectToolClassDAG", "reason", err)
+	} else {
+		log.InfoContext(ctx, "serve: L1 ToolClass DAG injected into evolution",
+			"method", "injectToolClassDAG", "nodes", len(l1DAG.Steps()))
 	}
+	comp.NewEvolution.SetToolClassDAG(l1DAG)
+	startToolClassReconciler(ctx, comp, l1DAG, toolBinder)
 }
 
 // errNoLiveAgentDAG is returned when no peers are configured: the caller
@@ -657,12 +670,13 @@ func declaredOrDefault(declared, fallback string) string {
 	return declared
 }
 
-func buildToolClassDAG(schemas []core_tools.ToolSchema) (*engine.MutableDAG, error) {
-	if len(schemas) == 0 {
-		return nil, errNoToolSchemas
-	}
-
-	steps := make([]*engine.Step, 0, len(schemas))
+// toolClassSpecs maps tool schemas onto the L1 declaration.
+//
+// ONE mapping, used by both the boot-time builder and the periodic reconciler: a schema that
+// appears at runtime must be described exactly like one that existed at startup, or the two paths
+// drift and the graph stops meaning anything.
+func toolClassSpecs(schemas []core_tools.ToolSchema) []evolution.ToolClassSpec {
+	specs := make([]evolution.ToolClassSpec, 0, len(schemas))
 	seen := make(map[string]bool, len(schemas))
 	for _, s := range schemas {
 		if s.Name == "" {
@@ -673,39 +687,134 @@ func buildToolClassDAG(schemas []core_tools.ToolSchema) (*engine.MutableDAG, err
 			continue // defensive: same tool+shape deduplicated
 		}
 		seen[nodeID] = true
-		step := &engine.Step{
-			ID:        nodeID,
-			Name:      s.Name,
-			AgentType: "tool/" + s.Name,
-			Input:     s.Description,
+		specs = append(specs, evolution.ToolClassSpec{
+			NodeID:      nodeID,
+			Name:        s.Name,
+			AgentType:   "tool/" + s.Name,
+			Description: s.Description,
 			Metadata: map[string]string{
 				// Declared, like prior, with the permissive default when nothing is declared.
 				//
-				// Why a declaration and not a feedback loop: this graph is REBUILT at every
-				// boot from the tool schemas (injectToolClassDAG -> buildToolClassDAG), so a
-				// writer that mutated it in memory would have its decisions discarded on the
-				// next restart — the fake-loop shape this repository keeps closing. Opening
-				// the "GA writes enabled/budget/prior into L1" loop requires the decisions to
-				// live in durable storage that this builder reads, which is a separate design.
+				// Why a declaration and not a feedback loop: the planner reads these values to
+				// decide whether a tool may be used at all, and an optimisation loop that could
+				// set enabled="false" would raise the measured score by removing the work it
+				// cannot do — the loss (tasks the system can no longer attempt) is invisible to a
+				// fitness window. So the inputs here are the tool's own tags, never fitness.
 				l1MetaEnabled: declaredOrDefault(s.Tags[l1MetaEnabledTag], "true"),
 				l1MetaBudget:  declaredOrDefault(s.Tags[l1MetaBudgetTag], "0"), // 0 = unlimited
-				// A DECLARED prior, copied from the tool's own tags: the author says "this tool
-				// is usually the right one for this class of work", and the planner surfaces it
-				// as a hint. It is deliberately not a measurement — nothing observes per-tool
-				// outcomes today, and a number we invented would be indistinguishable in the
-				// prompt from one we measured. A future writer can overwrite it.
+				// A DECLARED prior: the author says "this tool is usually the right one for this
+				// class of work". Deliberately not a measurement — nothing observes per-tool
+				// outcomes for this value, and an invented number would be indistinguishable in
+				// the prompt from a measured one.
 				l1MetaPrior: s.Tags[l1MetaPriorTag],
 			},
-		}
-		steps = append(steps, step)
+		})
 	}
-	if len(steps) == 0 {
+	return specs
+}
+
+// buildToolClassDAG materialises the declared specs as the L1 capability graph.
+func buildToolClassDAG(schemas []core_tools.ToolSchema) (*engine.MutableDAG, error) {
+	specs := toolClassSpecs(schemas)
+	if len(specs) == 0 {
 		return nil, errNoToolSchemas
 	}
-
+	steps := make([]*engine.Step, 0, len(specs))
+	for _, spec := range specs {
+		steps = append(steps, &engine.Step{
+			ID:        spec.NodeID,
+			Name:      spec.Name,
+			AgentType: spec.AgentType,
+			Input:     spec.Description,
+			Metadata:  spec.Metadata,
+		})
+	}
 	dag, err := engine.NewMutableDAG(steps)
 	if err != nil {
 		return nil, fmt.Errorf("build toolclass DAG: %w", err)
 	}
 	return dag, nil
+}
+
+// toolClassReconcileInterval is how often the L1 catalogue is re-derived from the tool schemas.
+//
+// The graph used to be built exactly once, at startup: a tool registered later (an MCP server
+// attached at runtime) was absent from L1. That is fail-open — an unknown node is permissive — so
+// nothing broke, but the governance surface silently stopped describing the system.
+// A fixed interval, not a config knob yet: the value is a deliberate compromise (frequent enough
+// that a runtime-attached tool is governed quickly, rare enough that the diff is normally empty).
+// Making it configurable means a new YAML key with its own validation and default, which is a
+// separate change; the plan says so rather than claiming a knob that does not exist.
+const toolClassReconcileInterval = 5 * time.Minute
+
+// toolSchemaSource is the sliver of the tool binder the reconciler needs.
+//
+// Narrow on purpose: sub.ToolBinder carries seven methods, and demanding all of them here would
+// force every test to fake execution, idempotency and planner bridging just to publish a schema
+// list — which is how a seam stops being testable.
+type toolSchemaSource interface {
+	GetToolSchemas() []core_tools.ToolSchema
+}
+
+// startToolClassReconciler keeps L1 aligned with the tool registry for the life of the process.
+//
+// The worker is tied to ctx (it exits on cancellation) and reconciles declarations only: the specs
+// come from the tool schemas' own tags, never from fitness. Letting an optimiser write this surface
+// would let it raise its score by disabling the tools it fails with.
+func startToolClassReconciler(ctx context.Context, comp *ares_bootstrap.Components, dag *engine.MutableDAG, src toolSchemaSource) *evolution.ToolClassReconciler {
+	return startToolClassReconcilerWithInterval(ctx, comp, dag, src, toolClassReconcileInterval)
+}
+
+// startToolClassReconcilerWithInterval starts the worker and returns it (nil when there is nothing
+// to reconcile). The interval is a parameter so a test can drive the loop without waiting minutes
+// for the first tick.
+//
+// The worker runs under comp.GoBackground: that supervisor owns the panic boundary and restarts a
+// failed worker, and it participates in the shutdown wait. A bare goroutine here would leave the
+// graph frozen after a panic and leak past shutdown.
+func startToolClassReconcilerWithInterval(ctx context.Context, comp *ares_bootstrap.Components, dag *engine.MutableDAG, src toolSchemaSource, interval time.Duration) *evolution.ToolClassReconciler {
+	if dag == nil || src == nil {
+		return nil
+	}
+	rec := evolution.NewToolClassReconciler(dag,
+		func(context.Context) ([]evolution.ToolClassSpec, error) {
+			return toolClassSpecs(src.GetToolSchemas()), nil
+		},
+		interval,
+		logger.Module("ares.serve.toolclass"),
+	)
+	setToolRegistryChangeHook(rec.Trigger)
+	if comp == nil {
+		// No supervisor available (unit assembly, tests): run the loop behind its own recover
+		// boundary rather than returning a reconciler that never runs — a bare goroutine would let
+		// a panic take the process down instead of the worker.
+		go rec.RunUnsupervised(ctx)
+		return rec
+	}
+	comp.GoBackground(ctx, "toolclass-reconciler", func(ctx context.Context) error {
+		rec.Run(ctx)
+		return nil
+	})
+	return rec
+}
+
+// toolRegistryChangeHook is invoked when the tool registry changes (an MCP server connecting or
+// dropping tools), so the L1 catalogue can be re-derived immediately instead of waiting for the
+// next interval tick. Without it a newly attached tool with enabled="false" would stay permissive
+// (absent from L1 = permissive) for up to one interval.
+var toolRegistryChangeHook atomic.Pointer[func()]
+
+// setToolRegistryChangeHook installs the callback fired on registry changes.
+func setToolRegistryChangeHook(fn func()) {
+	if fn == nil {
+		return
+	}
+	toolRegistryChangeHook.Store(&fn)
+}
+
+// notifyToolRegistryChanged asks the reconciler for an immediate pass, if one is wired.
+func notifyToolRegistryChanged() {
+	if fn := toolRegistryChangeHook.Load(); fn != nil {
+		(*fn)()
+	}
 }

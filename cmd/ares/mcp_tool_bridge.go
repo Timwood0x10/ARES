@@ -39,7 +39,13 @@ type mcpToolChangeNotifier interface {
 func installMCPToolBridge(source mcpToolSource, notifier mcpToolChangeNotifier, internal *core.Registry, public *api_tools.Registry) *mcpToolBridge {
 	bridge := newMCPToolBridge(source, internal, public)
 	if notifier != nil {
-		notifier.SetToolChangeHandler(bridge.Sync)
+		// Mirror first, then ask the L1 catalogue to re-derive: a tool that appears with
+		// enabled="false" must stop being advertised now, not after the next reconciliation interval.
+		// Until the graph knows the node, the planner treats it as permissive.
+		notifier.SetToolChangeHandler(func() {
+			bridge.Sync()
+			notifyToolRegistryChanged()
+		})
 	}
 	bridge.Sync()
 	return bridge
