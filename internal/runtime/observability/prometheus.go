@@ -56,6 +56,16 @@ type PrometheusMetrics struct {
 	LLMCallDuration   *prometheus.HistogramVec
 	AgentStepDuration *prometheus.HistogramVec
 
+	// Scheduler histograms (M0 baseline). These answer the three
+	// structural questions about the scheduling loop:
+	//   - how long after a task becomes READY does it get dispatched?
+	//   - when a slow quantum is in flight, how long before an idle agent
+	//     picks up OTHER ready work (the work-conserving gap)?
+	//   - how old is a task when it finally gets dispatched (fairness/aging)?
+	SchedulerReadyToDispatchSeconds   *prometheus.HistogramVec
+	SchedulerWorkConservingGapSeconds *prometheus.HistogramVec
+	SchedulerReadyAgeSeconds          *prometheus.HistogramVec
+
 	// Gauges
 	ActiveAgents        prometheus.Gauge
 	LLMTokensTotal      *prometheus.GaugeVec
@@ -117,6 +127,30 @@ func NewPrometheusMetrics() (*PrometheusMetrics, error) {
 				Buckets: []float64{0.1, 0.5, 1, 2.5, 5, 10, 30, 60},
 			},
 			[]string{"phase"},
+		),
+		SchedulerReadyToDispatchSeconds: prometheus.NewHistogramVec(
+			prometheus.HistogramOpts{
+				Name:    "ARES_scheduler_ready_to_dispatch_seconds",
+				Help:    "Time from task becoming READY to scheduler Acquire",
+				Buckets: []float64{0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30},
+			},
+			[]string{},
+		),
+		SchedulerWorkConservingGapSeconds: prometheus.NewHistogramVec(
+			prometheus.HistogramOpts{
+				Name:    "ARES_scheduler_work_conserving_gap_seconds",
+				Help:    "Delay dispatching new READY work while a slow quantum is in flight (work-conserving gap)",
+				Buckets: []float64{0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30},
+			},
+			[]string{},
+		),
+		SchedulerReadyAgeSeconds: prometheus.NewHistogramVec(
+			prometheus.HistogramOpts{
+				Name:    "ARES_scheduler_ready_age_seconds",
+				Help:    "Task age (since READY) at dispatch time",
+				Buckets: []float64{0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60},
+			},
+			[]string{},
 		),
 		ActiveAgents: prometheus.NewGauge(
 			prometheus.GaugeOpts{
@@ -272,6 +306,9 @@ func NewPrometheusMetrics() (*PrometheusMetrics, error) {
 		m.AgentErrorsTotal,
 		m.LLMCallDuration,
 		m.AgentStepDuration,
+		m.SchedulerReadyToDispatchSeconds,
+		m.SchedulerWorkConservingGapSeconds,
+		m.SchedulerReadyAgeSeconds,
 		m.ActiveAgents,
 		m.LLMTokensTotal,
 		m.CostUSDTotal,
@@ -586,6 +623,33 @@ func (m *PrometheusMetrics) SetEvolutionCompileCount(count uint64) {
 		return
 	}
 	m.EvolutionCompileCount.Set(float64(count))
+}
+
+// RecordSchedulerReadyToDispatch observes the time from a task becoming READY
+// to the scheduler acquiring it. nil-safe: a no-op when metrics are not wired.
+func (m *PrometheusMetrics) RecordSchedulerReadyToDispatch(seconds float64) {
+	if m == nil {
+		return
+	}
+	m.SchedulerReadyToDispatchSeconds.WithLabelValues().Observe(seconds)
+}
+
+// RecordSchedulerWorkConservingGap observes the delay in dispatching new READY
+// work while a slow quantum is in flight. nil-safe.
+func (m *PrometheusMetrics) RecordSchedulerWorkConservingGap(seconds float64) {
+	if m == nil {
+		return
+	}
+	m.SchedulerWorkConservingGapSeconds.WithLabelValues().Observe(seconds)
+}
+
+// RecordSchedulerReadyAge observes a task's age (since it became READY) at the
+// moment it is dispatched. nil-safe.
+func (m *PrometheusMetrics) RecordSchedulerReadyAge(seconds float64) {
+	if m == nil {
+		return
+	}
+	m.SchedulerReadyAgeSeconds.WithLabelValues().Observe(seconds)
 }
 
 // RecordCost observes a cost value for a model and session.

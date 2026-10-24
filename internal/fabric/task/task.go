@@ -99,6 +99,24 @@ type Task struct {
 	CreatedAt time.Time
 	// UpdatedAt is the last state transition or quantum boundary time.
 	UpdatedAt time.Time
+	// ReadyAt is the instant this task last entered StateReady. It is set
+	// on Create and on every transition INTO READY (requeue, preempt,
+	// release, lease-expiry), and cleared when the task leaves READY
+	// (Acquire). It serves two purposes:
+	//   - M0: the scheduler records ready_to_dispatch and ready_age
+	//     observability metrics from it;
+	//   - M1: ReadyTasks/ResumableTasks sort by (priority DESC, ReadyAt ASC,
+	//     id ASC) for deterministic dispatch order.
+	// Guarded by f.mu like every other Task field.
+	ReadyAt time.Time
+	// PreemptRequested is set by Preempt to signal that a cooperative
+	// preemption was requested at a quantum boundary (M5). A multi-step
+	// quantum checks this between steps: when set, the quantum stops
+	// dispatching further steps and hands the task back to READY with its
+	// checkpoint preserved. The in-flight LLM call is NOT cancelled (see
+	// PLAN-0.3.6-scheduling §5.1) — it completes naturally and its result
+	// is discarded by the fencing token. Guarded by f.mu.
+	PreemptRequested bool
 
 	// --- HITL approval gate ---
 	//

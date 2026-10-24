@@ -51,6 +51,14 @@ var (
 	// them made a governance budget that was simply too small for the LLM look
 	// exactly like a missing executor.
 	ErrNoAffordableCandidate = errors.New("taskfabric: no affordable candidate")
+	// ErrReadyQueueFull: Create was rejected because the fabric's READY task
+	// count has reached the configured max (WithMaxReadyTasks). The task was
+	// NOT created. Callers should retry or apply flow control.
+	//
+	// It is its own sentinel rather than a wrap of errors.ErrQueueFull: that one means "message
+	// queue is full", and matching it here would let a caller handle task admission as if it were
+	// transport backpressure. Callers match on THIS value with errors.Is.
+	ErrReadyQueueFull = errors.New("taskfabric: ready queue full")
 	// ErrTaskIDRequired: Create was called without an id.
 	ErrTaskIDRequired = errors.New("taskfabric: task id required")
 	// ErrAgentIDRequired: Acquire was called without an owning agent id.
@@ -133,6 +141,13 @@ type Fabric struct {
 	// deliberate fabric-wide "wait forever" choice.
 	defaultApprovalSLA time.Duration
 
+	// maxReadyTasks caps how many READY tasks the fabric holds at once (M4
+	// backpressure). Zero (the default) means unlimited — preserving the
+	// existing behavior so a deployment that does not set it is unaffected.
+	// A positive value rejects new task creation with ErrQueueFull when the
+	// READY count would exceed the cap. Guarded by mu.
+	maxReadyTasks int
+
 	// decodeObserver receives one notification per checkpoint read-back that
 	// goes through Fabric.DecodeCheckpoint. Atomic because the scheduler and
 	// await paths read it without f.mu; nil means observation is off. Set once
@@ -184,6 +199,17 @@ func (f *Fabric) WithDefaultApprovalSLA(d time.Duration) *Fabric {
 	if d > 0 {
 		f.defaultApprovalSLA = d
 	}
+	return f
+}
+
+// WithMaxReadyTasks sets the READY task capacity cap (M4 backpressure).
+// Zero (the default) means unlimited — preserving the existing behavior.
+// A positive value rejects new task creation with ErrQueueFull when the
+// READY count would exceed the cap. Returns the fabric for chaining.
+func (f *Fabric) WithMaxReadyTasks(n int) *Fabric {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.maxReadyTasks = n
 	return f
 }
 

@@ -135,6 +135,34 @@ type Scheduler struct {
 	// architecture red line forbids kernelscheduler importing runtime
 	// (TestSchedulerMustNotImportRuntime).
 	recoveryHint func(taskID string)
+	// metrics is the optional scheduling-loop observability sink (M0
+	// baseline). Nil keeps a no-op sink so an unwired scheduler behaves
+	// exactly as before. Guarded by execMu alongside the executor registry
+	// so a runtime WithSchedulerMetrics call cannot race with the drain
+	// loop reading the field.
+	metrics SchedulerMetrics
+	// inflight tracks every quantum goroutine spawned by the drain pump
+	// (M2 work-conserving). The pump launches goroutines and returns
+	// immediately — the scheduling loop is no longer blocked by the
+	// slowest quantum in a batch. Run()'s shutdown path calls
+	// inflight.Wait() so the scheduler does not report stopped while
+	// goroutines still hold leases and mutate fabric state (the honesty
+	// contract previously enforced by drain's own wg.Wait). Guarded by
+	// inflightMu: Add/Done/Wait are already thread-safe, but the mu
+	// serializes the pump's Add against a concurrent Wait in shutdown so
+	// a late pump after ctx.Done cannot Add after Wait has returned.
+	inflightMu sync.Mutex
+	inflight   sync.WaitGroup
+
+	// quantumMu guards inflightQuanta and oldestInflightAt.
+	//
+	// The admission budget is PROCESS-WIDE, not per pump. While the pump waited for its batch one
+	// drain ran at a time, so a per-drain semaphore was accidentally a global cap; once the pump
+	// stops waiting, overlapping pumps would each admit a full limit and WithMaxConcurrent would
+	// stop being a cap at all.
+	quantumMu        sync.Mutex
+	inflightQuanta   int
+	oldestInflightAt time.Time
 }
 
 // Running reports whether the scheduler's drain loop is currently running.
@@ -188,6 +216,7 @@ func New(fabric *taskfabric.Fabric, executors map[string]CapabilityExecutor, tra
 		PollInterval:   500 * time.Millisecond,
 		ttl:            5 * time.Minute,
 		decisions:      newDecisionRecorder(),
+		metrics:        noOpSchedulerMetrics{},
 	}
 }
 
@@ -350,6 +379,14 @@ func (s *Scheduler) Run(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
+			// M2: wait for every in-flight quantum before reporting stopped.
+			// The pump returns immediately, so the loop exits while goroutines
+			// may still hold leases — inflight.Wait is the honesty gate that
+			// replaces drain's former wg.Wait. The mu ensures a late pump
+			// cannot Add after we begin waiting.
+			s.inflightMu.Lock()
+			s.inflight.Wait()
+			s.inflightMu.Unlock()
 			return
 		case <-ticker.C:
 			s.safeDrain(ctx)
@@ -375,6 +412,33 @@ func (s *Scheduler) Run(ctx context.Context) {
 func (s *Scheduler) WithEventStore(store ares_events.EventStore) *Scheduler {
 	s.eventStore = store
 	return s
+}
+
+// WithSchedulerMetrics wires the scheduling-loop observability sink (M0
+// baseline). Nil restores the no-op sink. Returns the scheduler for chaining.
+func (s *Scheduler) WithSchedulerMetrics(m SchedulerMetrics) *Scheduler {
+	s.execMu.Lock()
+	defer s.execMu.Unlock()
+	if m == nil {
+		s.metrics = noOpSchedulerMetrics{}
+	} else {
+		s.metrics = m
+	}
+	return s
+}
+
+// metricsOf snapshots the currently wired metrics sink under execMu so a
+// runtime WithSchedulerMetrics call cannot race with the drain loop.
+func (s *Scheduler) metricsOf() SchedulerMetrics {
+	s.execMu.RLock()
+	defer s.execMu.RUnlock()
+	if s.metrics == nil {
+		// A nil INTERFACE is not a nil receiver: calling a method on it panics, unlike the no-op
+		// value the constructor installs. A zero-value Scheduler (tests, future call sites) must
+		// still be safe to drain.
+		return noOpSchedulerMetrics{}
+	}
+	return s.metrics
 }
 
 // SchedulerSnapshot is a point-in-time, read-only view of the scheduler's

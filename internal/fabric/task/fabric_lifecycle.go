@@ -148,6 +148,26 @@ func (f *Fabric) createLocked(t *Task, strategyID string, pending *[]*pendingApp
 	if _, exists := f.tasks[t.ID]; exists {
 		return ErrTaskExists
 	}
+	// M4 backpressure: reject if the OUTSTANDING count would exceed the configured cap. Zero means
+	// unlimited (the default). The check runs under f.mu so a concurrent Create cannot slip past
+	// the cap.
+	//
+	// Outstanding is READY plus SUSPENDED, not READY alone: a suspended task is scheduled again by
+	// the next drain (ResumableTasks), so a workload that yields between steps would otherwise
+	// bypass the cap entirely. Terminal tasks (COMPLETED/FAILED) do not count — they are not
+	// schedulable and will be reaped.
+	if f.maxReadyTasks > 0 {
+		readyCount := 0
+		for _, existing := range f.tasks {
+			if existing.State == StateReady || existing.State == StateSuspended {
+				readyCount++
+			}
+		}
+		if readyCount >= f.maxReadyTasks {
+			return fmt.Errorf("taskfabric: ready queue full (depth %d, max %d): %w",
+				readyCount, f.maxReadyTasks, ErrReadyQueueFull)
+		}
+	}
 	// Copy the caller's *Task so the fabric owns an isolated instance —
 	// the caller keeping (or reusing) its *t cannot then race the fabric's
 	// snapshot/state reads. `cp := *t` isolates every scalar field; the
@@ -167,6 +187,7 @@ func (f *Fabric) createLocked(t *Task, strategyID string, pending *[]*pendingApp
 	cp.Lease = nil
 	cp.CreatedAt = f.now()
 	cp.UpdatedAt = cp.CreatedAt
+	cp.ReadyAt = cp.CreatedAt
 	// HITL SLA safety net: a RequiresApproval task created without its own
 	// ApprovalTimeout inherits the fabric default. This is the single choke
 	// point for EVERY create path (direct Create AND CompilePlan, which both
@@ -281,6 +302,9 @@ func (f *Fabric) Acquire(id, agentID string, ttl time.Duration) (uint64, error) 
 	if err := t.transition(StateLeased); err != nil {
 		return 0, err
 	}
+	// M5: clear the preemption flag on re-acquire — the task is starting a
+	// fresh quantum and should not be treated as preempted.
+	t.PreemptRequested = false
 	t.Owner = agentID
 	t.Lease = &lease
 	pending = append(pending, f.recordLocked(t, EventTaskAcquired))
@@ -413,6 +437,7 @@ func (f *Fabric) Fail(id, agentID string, epoch uint64, cause error) error {
 		if err := t.transition(StateReady); err != nil {
 			return err
 		}
+		t.ReadyAt = f.now()
 		// Schedule the next attempt before recording: task.failed is the
 		// must-persist carrier of NextAttemptAt (task.ready is
 		// observability-only), so the restore fold recovers the due time from it
@@ -589,6 +614,7 @@ func (f *Fabric) ReleaseReason(id, agentID string, epoch uint64, reason string) 
 	if err := t.transition(StateReady); err != nil {
 		return err
 	}
+	t.ReadyAt = f.now()
 	// Record the released event while the releasing agent is still
 	// attached (provenance), then clear ownership so the task is unowned.
 	if reason == "" {
@@ -630,6 +656,7 @@ func (f *Fabric) CheckExpiredLeases() []string {
 		if err := t.transition(StateReady); err != nil {
 			continue
 		}
+		t.ReadyAt = now
 		// The work is now continued rather than started (defect A6): the task
 		// keeps its checkpoint but lost its owner, so whoever acquires it next
 		// resumes someone else's progress. The task.expired event below is what

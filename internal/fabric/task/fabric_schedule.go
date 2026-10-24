@@ -90,6 +90,13 @@ func (f *Fabric) Preempt(taskID, agentID string, epoch uint64, reason string) er
 	if err := t.transition(StateReady); err != nil {
 		return err
 	}
+	t.ReadyAt = f.now()
+	// M5: mark that this was a cooperative preemption so a multi-step
+	// quantum checking the flag at its next step boundary stops dispatching
+	// further steps. The task is already READY (above), so a stale holder's
+	// late Complete/Yield/Fail is rejected by the fencing token — this flag
+	// is the forward-looking signal for quanta that check between steps.
+	t.PreemptRequested = true
 	// Record BEFORE clearing ownership, the same discipline Release / Fail /
 	// CheckExpiredLeases follow: recordLocked reads t.Owner for the event's
 	// AgentID, so clearing first made every task.preempted event anonymous and

@@ -86,6 +86,33 @@ func (f *Fabric) RunQuantum(taskID, agentID string, epoch uint64, step QuantumSt
 	f.mu.Unlock()
 
 	checkpoint, done, stepErr := runStepRecovered(step)
+
+	// M5: step-boundary preemption check. If Preempt was requested while
+	// the step was in flight, the task is already StateReady (Preempt
+	// transitions it). We must NOT proceed to Complete/Yield/Fail — those
+	// require ownership, which was cleared by Preempt. The step's result
+	// (checkpoint or error) is deliberately discarded: the in-flight LLM
+	// call completed naturally (not cancelled), but its result is fenced
+	// out. Log and return without a state transition — the task is already
+	// READY and will be re-acquired by the next drain.
+	f.mu.Lock()
+	preempted := false
+	if t, ok := f.tasks[taskID]; ok && t.PreemptRequested {
+		preempted = true
+		// Clear the flag so the next quantum (after re-acquire) starts
+		// fresh — the preemption has been honored.
+		t.PreemptRequested = false
+	}
+	f.mu.Unlock()
+	if preempted {
+		// The step may have produced a checkpoint or an error — both are
+		// discarded. The task's previous checkpoint (from before this
+		// quantum) is preserved by Preempt (it only transitions state +
+		// clears ownership). Return nil so the scheduler does not log a
+		// spurious failure; the task is READY and will resume.
+		return nil
+	}
+
 	if stepErr != nil {
 		if isCancellation(stepErr) {
 			// Release hands the task back to READY unowned and leaves the

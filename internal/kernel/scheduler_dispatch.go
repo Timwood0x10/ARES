@@ -3,7 +3,6 @@ package kernel
 import (
 	"context"
 	"sort"
-	"sync"
 	"time"
 
 	taskfabric "github.com/Timwood0x10/ares/internal/fabric/task"
@@ -31,13 +30,24 @@ func (s *Scheduler) safeDrain(ctx context.Context) {
 	s.drain(ctx)
 }
 
-// drain executes every currently ready task. When the scheduler is configured
-// for concurrency (WithMaxConcurrent), ready tasks run in parallel (bounded by
-// maxConcurrent) so multiple agents pick up work at the same time — the
-// work-stealing substrate at the scheduler side. Panics from one task's
-// execution are recovered so a single bad step cannot kill the loop.
+// drain pumps every currently ready task into execution without waiting
+// for the batch to finish (M2 work-conserving). Each quantum runs in its
+// own goroutine registered on the inflight tracker; drain returns as soon as
+// it has launched all candidates, so the scheduling loop can pump again on
+// the next tick or event while the previous batch is still running — an
+// idle agent can pick up new READY work within one poll interval instead of
+// waiting for the slowest quantum in the previous batch.
+//
+// The inflight tracker (s.inflight) replaces the per-drain WaitGroup. Run()
+// calls inflight.Wait() on shutdown so the honesty contract is preserved:
+// the scheduler does not report stopped while goroutines still hold leases.
+//
+// Concurrency safety: maxConcurrentPerAgent=1 is enforced by the lease/
+// tracker.TryBegin admission gate in executeWithCandidates, NOT by drain
+// waiting for a batch to finish. A second pump will find the agent's slot
+// occupied and skip it, so the pump cannot double-dispatch to one agent.
 // TODO(tech-debt): the per-agent local ready-queue design
-// (taskfabric.AgentQueue/Steal) was removed as unused; the shared ReadyTasks()
+// (taskfabric.AgentQueue/StealCircuit) was removed as unused; the shared ReadyTasks()
 // queue drained concurrently by bounded goroutines IS the stealing substrate.
 // Re-introduce per-agent queues only if profiling shows contention.
 func (s *Scheduler) drain(ctx context.Context) {
@@ -68,33 +78,39 @@ func (s *Scheduler) drain(ctx context.Context) {
 	// between quanta. (The background sweeper in Run may additionally preempt
 	// mid-quantum; that is safe by fencing — see PreemptLowerPriority.)
 	s.PreemptLowerPriority(tasks)
-	sem := make(chan struct{}, s.drainLimit())
-	var wg sync.WaitGroup
+	limit := s.drainLimit()
 drainLoop:
-	for _, taskID := range tasks {
+	for i, taskID := range tasks {
 		select {
 		case <-ctx.Done():
-			// Stop spawning new quanta, but never abandon the ones already in
-			// flight: Run() clears s.running as soon as drain returns, so a bare
-			// return here would let shutdown complete while goroutines still hold
-			// leases and mutate fabric state. The wg.Wait() below is what makes
-			// shutdown honest. (break alone would only exit the select.)
+			// Stop spawning new quanta. The inflight tracker ensures Run()
+			// does not report stopped while already-launched goroutines
+			// still hold leases — the honesty contract that wg.Wait
+			// previously enforced at the batch boundary is now enforced
+			// at the shutdown boundary.
 			break drainLoop
 		default:
 		}
-		// The semaphore send must also select on ctx cancellation: with every
-		// slot held by a stuck quantum, a bare send parks this loop forever
-		// even though shutdown was requested — wg.Wait would then block
-		// shutdown on executors that never return.
-		select {
-		case sem <- struct{}{}:
-		case <-ctx.Done():
+		// Non-blocking admission. Parking here until a slot frees would
+		// reproduce the batch barrier this pump removed: the scheduling loop
+		// would stop reading events for as long as the slowest quantum runs,
+		// which is exactly the work-conservation failure M2 is about. The
+		// tasks left over stay READY and are picked up by the next tick.
+		if !s.admitQuantum(limit) {
+			s.observeWorkConservingGap(len(tasks) - i)
 			break drainLoop
 		}
-		wg.Add(1)
+		// Register on the inflight tracker under the mu so a concurrent
+		// Wait in Run()'s shutdown path cannot return before this Add
+		// completes. Once Add returns, the goroutine's deferred Done is
+		// guaranteed to release Wait.
+		s.inflightMu.Lock()
+		s.inflight.Add(1)
+		s.inflightMu.Unlock()
+		s.observeDispatch(taskID)
 		go func(id string) {
-			defer wg.Done()
-			defer func() { <-sem }()
+			defer s.releaseQuantum()
+			defer s.inflight.Done()
 			defer func() {
 				if recover() != nil {
 					log.Error(ctx, "drain", "kernel scheduler: panic executing task, continuing", nil, "task_id", id)
@@ -105,7 +121,6 @@ drainLoop:
 			}
 		}(taskID)
 	}
-	wg.Wait()
 }
 
 // drainLimit computes how many ready tasks one drain may run in parallel.
@@ -323,4 +338,74 @@ func capableForAny(required []string, have []string) bool {
 		}
 	}
 	return false
+}
+
+// admitQuantum reserves one of the limit process-wide quantum slots.
+//
+// Returns false when the budget is full; the caller must then leave the remaining tasks READY
+// rather than wait, so the scheduling loop keeps serving events and the next tick can admit as
+// soon as a slot frees.
+func (s *Scheduler) admitQuantum(limit int) bool {
+	s.quantumMu.Lock()
+	defer s.quantumMu.Unlock()
+	if s.inflightQuanta >= limit {
+		return false
+	}
+	s.inflightQuanta++
+	if s.inflightQuanta == 1 {
+		s.oldestInflightAt = time.Now()
+	}
+	return true
+}
+
+// releaseQuantum returns a slot reserved by admitQuantum.
+func (s *Scheduler) releaseQuantum() {
+	s.quantumMu.Lock()
+	defer s.quantumMu.Unlock()
+	if s.inflightQuanta > 0 {
+		s.inflightQuanta--
+	}
+	if s.inflightQuanta == 0 {
+		s.oldestInflightAt = time.Time{}
+	}
+}
+
+// observeDispatch records how long one task waited before it was admitted.
+//
+// ready_to_dispatch and ready_age answer different questions and are kept apart on purpose:
+// ready_to_dispatch is the latency of work that RAN, ready_age is the age seen when the scheduler
+// looked at the queue (including work it had to defer), which is the starvation signal.
+func (s *Scheduler) observeDispatch(taskID string) {
+	tk, err := s.fabric.Task(taskID)
+	if err != nil || tk.ReadyAt.IsZero() {
+		return
+	}
+	age := time.Since(tk.ReadyAt).Seconds()
+	if age < 0 {
+		age = 0
+	}
+	m := s.metricsOf()
+	m.RecordReadyToDispatch(age)
+	m.RecordReadyAge(age)
+}
+
+// observeWorkConservingGap records that deferred work was blocked behind a running quantum.
+//
+// remaining is the number of tasks this pump had to leave READY. It is reported only when such
+// work exists: a zero would claim "no work waited" and hide the case the metric exists for.
+func (s *Scheduler) observeWorkConservingGap(remaining int) {
+	if remaining <= 0 {
+		return
+	}
+	s.quantumMu.Lock()
+	since := s.oldestInflightAt
+	s.quantumMu.Unlock()
+	if since.IsZero() {
+		return
+	}
+	gap := time.Since(since).Seconds()
+	if gap < 0 {
+		gap = 0
+	}
+	s.metricsOf().RecordWorkConservingGap(gap)
 }
