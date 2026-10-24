@@ -25,7 +25,10 @@ import (
 // budget incident — the one an operator must act on, because the fix is a
 // bigger budget, not a new agent — was suppressed for as long as the other
 // kept firing.
-func (s *Scheduler) logFailure(taskID string, err error) {
+// logFailure reports an execution failure. ctx is the drain's context, not Background: the logger
+// attaches module and method itself, but the caller's context carries the values/trace that make
+// the line attributable, and passing Background silently dropped them.
+func (s *Scheduler) logFailure(ctx context.Context, taskID string, err error) {
 	// errors.Is, not ==: both paths return their sentinel wrapped in an
 	// apperrors.Kernel attribution (see executeWithCandidates), so an identity
 	// comparison never matches and the throttle silently dies.
@@ -46,7 +49,7 @@ func (s *Scheduler) logFailure(taskID string, err error) {
 		s.lastNoCandidateLog = now
 	}
 	s.noCandidateMu.Unlock()
-	log.Error(context.Background(), "logFailure",
+	log.Error(ctx, "logFailure",
 		"kernel scheduler: execute task failed", err, "task_id", taskID)
 }
 

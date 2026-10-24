@@ -116,8 +116,8 @@ drainLoop:
 					log.Error(ctx, "drain", "kernel scheduler: panic executing task, continuing", nil, "task_id", id)
 				}
 			}()
-			if err := s.execute(ctx, id); err != nil {
-				s.logFailure(id, err)
+			if err := s.execute(ctx, id); err != nil && shouldReportExecutionFailure(ctx) {
+				s.logFailure(ctx, id, err)
 			}
 		}(taskID)
 	}
@@ -408,4 +408,15 @@ func (s *Scheduler) observeWorkConservingGap(remaining int) {
 		gap = 0
 	}
 	s.metricsOf().RecordWorkConservingGap(gap)
+}
+
+// shouldReportExecutionFailure reports whether an execution error is a task failure rather than the
+// scheduler aborting the quantum because it is shutting down.
+//
+// The distinction matters more since the pump stopped waiting for its batch: cancel() can catch
+// many quanta in flight at once, and reporting each of them at ERROR turns every orderly shutdown
+// into a burst of apparent failures on the operator's dashboard. A live context means the error
+// came from the task's own run, which is a real failure and stays reported.
+func shouldReportExecutionFailure(ctx context.Context) bool {
+	return ctx.Err() == nil
 }
