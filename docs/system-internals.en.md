@@ -2100,8 +2100,8 @@ flowchart TB
    with session work-orders and every session gets a copy.
 2. **Evolution safety**: **in-flight L2 sessions are unaffected by an L1 metadata change**
    (their nodes are already grown; the change only governs "next time"). One caveat worth
-   stating: nothing in production writes L1 metadata yet — the only two `SetNodeMetadata` call
-   sites target the workflow DAG and the live-task (L2) DAG — so this is what the separation
+   stating: L1 metadata is written by a reconciler that re-derives it from the tool registry
+   (0.3.6), not by the GA — so this is what the separation
    guarantees *once* a writer exists, not something observable today.
 3. **Cadence**: L1 is stable (occasionally evolved), L2 is volatile
    (growing every quantum). One object = broken locking.

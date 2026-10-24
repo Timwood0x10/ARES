@@ -164,17 +164,42 @@ internal/fabric/task/workflow/engine/dag_patcher.go:198    dag.SetNodeMetadata(.
 | **不做** | 不取消在飞的 provider 请求（见 §5.1） |
 | 反证 | 去掉 `quantum.go` 的 `preempted` 分支 ⇒ 被抢占任务仍跑完全部步骤，测试必失败 |
 
-### M6 · L1 metadata 写入方（2d）
+### M6 · L1 的写入方：周期性的声明式 reconciler（2d）
+
+**决定（2026-10-24）：GA 不参与 L1。**
+
+理由不是"太复杂"，而是**目标函数与损失不对称**：GA 优化的是测出来的 fitness，而 `enabled=false` 会让一个工具
+**从规划器视野消失**（`planner_cognition.go:921`），于是"做砸的活"从样本里消失、平均分上升——而 GA 看不见
+"那类任务从此再也做不了"。L1 是**进程级共享**的一份图（`peer_assembly.go:322`），一键改全体，且没有影子评估、
+没有能力不退化约束、没有回归回滚。让它去 diff 能力面 = 教会它"少做少错"。
+
+**现状修正（评审发现，先前的描述是错的）**：L1 metadata **有写入方**，就是启动时的
+`buildToolClassDAG`（`cmd/ares/serve_peer.go:660`），它从 **tool schema 的 tags** 派生：
+
+```go
+enabled: declaredOrDefault(s.Tags["enabled"], "true")
+budget:  declaredOrDefault(s.Tags["budget"],  "0")   // 0 = 不限
+prior:   s.Tags["prior"]
+```
+
+也就是说 L1 已经是**声明式**的，不是测出来的。**缺的不是写入方，而是"只写一次"**——它只在 serve 启动时构建，
+运行期新增的工具（例如后来接上的 MCP server）不会进 L1。该函数的注释里已经写明这一点，并指出"打开
+GA 写 L1 的环需要决策落在持久存储里"，那是另一个设计。
 
 | 项 | 内容 |
 |---|---|
-| 现状 | 规划器读 L1（`enabled`/`budget`/`prior`），但**没有生产写入方**；`PatchSetNodeMetadata` 的 executor 只作用于它持有的 DAG |
-| 设计 | 新增 **L1 patch executor**：把 GA 的 `PatchSetNodeMetadata` 应用到 `peer_assembly.go:331` 注入的那个 `*engine.MutableDAG`；沿用 `UngatedPatcher` 的决策链与 `ProposalKey` 审计 |
-| 落点修正（评审发现） | patch registry 的 **fallback 已绑定 live DAG**（`provide_new_evolution.go:468-480`，`c.dagExec.SetDAG(dag)`），所以问题不是"没有 executor"，而是**L1 节点没有归属**：一个 targeting L1 节点 ID 的 patch 会被 fallback 打到工作流 DAG 上并因 target 不存在而失败。M6 要补的是**按 target 路由到 L1 executor**，而不是再加一个 fallback |
-| 前提 | 必须与 0.3.5 的 `objective=runtime|both` + `allow_live` 门保持一致：**默认 `strategy` 下这条路径不存在** |
-| 回滚 | patch 自带 `Rollback`（已有字段）；写入前快照旧值 |
-| 验收 | 一次 L1 patch ⇒ 下一个量子广告集合变化；审计 API 能按 `ProposalKey` 找到它；`grep SetNodeMetadata` 出现**第三个**调用点（L1） |
-| 反证 | 去掉 executor 接线 ⇒ 广告集合不变（今天的现状），测试必失败 |
+| 设计 | **抽取 + 周期性重建**：把 `schemas → []ToolClassSpec` 的映射从 serve 里抽成可复用函数，新增 `ReconcileToolClassDAG(dag, specs)`，对同一份 L1 DAG 做增量对齐（新增/删除节点、更新 metadata），返回 diff |
+| 输入（只有两个） | ① **工具注册表**（ToolClass 存在性 → 节点增删）② **schema tags**（`enabled`/`budget`/`prior` 的声明值） |
+| 触发 | **启动即对齐一次** + **固定 5 分钟**（`toolClassReconcileInterval`，配置入口留待后续）+ 工具注册表变化（MCP 变更回调 `notifyToolRegistryChanged`）；幂等，重复 reconcile 结果相同 |
+| **绝不做** | 不读 fitness；不根据分数改任何键。否则就是 GA 的软形态，同一个 Goodhart 问题 |
+| 可观测 | 每次 reconcile 输出 **diff**（added / removed / metadata changed），走 `module=ares.serve.toolclass` + `method=reconcileToolClassDAG`；**无变化时不打日志**（否则周期任务会淹没日志） |
+| 回滚 | L1 是**派生数据**：回滚 = 用上一份 spec 再 reconcile 一次，不需要独立的 undo |
+| 人工覆盖 | **本里程碑不做**。理由是 `buildToolClassDAG` 的注释已经指出：内存里的写入会在下次重启被重建覆盖，除非覆盖值落进持久存储。持久化 pin 与"尊重 pin 的 reconciler"属 M6b（0.4） |
+| 验收 | 启动后注册一个新工具 schema ⇒ 一次 reconcile 后 L1 出现对应节点（无需重启）；移除 schema ⇒ 节点消失；tags 变化 ⇒ metadata 更新；重复 reconcile ⇒ diff 为空且不打日志 |
+| 反证 | 去掉周期性调用 ⇒ 新工具永远不出现在 L1（今天的现状），测试必失败 |
+
+**M6b（0.4，独立设计，不在本计划内）**：若将来要人工/策略改能力面，需要 ① 覆盖值持久化 ② reconciler 尊重
+pin ③ 变更审计 + 回滚演练。**`enabled=false` 永远只走人工批准**，GA 最多"建议"。
 
 ---
 
@@ -247,5 +272,5 @@ M0 基线 ──> M1 确定性 ──> M2 pump ──> M3 fairness
 
 - 0.3.5 的运营性计划 v2 已把 **M1（调度）/ M2（可观测）整块移入 0.3.6**（该文件本身已随 0.3.5 收尾删除，口径见 CHANGELOG 的 0.3.5 段），本计划是那两块的具体化；
 - 0.3.5 已落地的 `objective` 单路径、审计 API、PostDeploy 观测窗、四个审计计数器，
-  是 M6 与 M0 的**直接前置**（审计链已存在，只差 L1 executor 与调度指标）；
+  是 M6 与 M0 的**直接前置**（审计链已存在，只差 L1 reconciler 与调度指标）；
 - 本计划**不**触碰 0.3.5 已冻结的语义（`objective` 默认值、`allow_live` 双键、审计响应形状）。

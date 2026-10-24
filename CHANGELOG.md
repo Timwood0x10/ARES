@@ -200,8 +200,11 @@ unchanged: the token budget, the tool filter and the experiment log are all opt-
 
 ### Known gaps
 
-- **L1 metadata has no production writer**: `enabled`/`budget`/`prior` come from tool
-  declarations, not from the GA loop — a GA-to-L1 patch executor does not exist yet.
+- **L1 metadata is declared, and deliberately not learned.** `enabled`/`budget`/`prior` come from
+  the tool's own tags and are re-derived periodically from the tool registry (a reconciler, added in
+  0.3.6). Nothing writes them from fitness, and nothing should: the planner reads them to decide
+  whether a tool may be used at all, so a loop that could disable a ToolClass would raise its
+  measured score by removing the work it cannot do.
 - `internal/evoapi` still has no importers; removal is scheduled for 0.5.0.
 
 ## [0.3.3]
