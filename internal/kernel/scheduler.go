@@ -528,3 +528,21 @@ func (s *Scheduler) Snapshot() SchedulerSnapshot {
 	}
 	return snap
 }
+
+// HasSchedulerMetrics reports whether a real observation sink is installed.
+//
+// It exists so production wiring can be asserted: the three ARES_scheduler_* histograms are
+// registered whether or not anything feeds them, and an empty histogram reads on a dashboard as
+// "no slow dispatches" rather than "nobody is measuring".
+func (s *Scheduler) HasSchedulerMetrics() bool {
+	if s == nil {
+		return false
+	}
+	s.execMu.RLock()
+	defer s.execMu.RUnlock()
+	if s.metrics == nil {
+		return false
+	}
+	_, noop := s.metrics.(noOpSchedulerMetrics)
+	return !noop
+}
