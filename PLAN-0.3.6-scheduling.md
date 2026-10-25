@@ -145,6 +145,12 @@ internal/fabric/task/workflow/engine/dag_patcher.go:198    dag.SetNodeMetadata(.
 | 验收 | 会话 A 有 100 个 ready、B 有 1 个、`drainLimit=N` ⇒ **B 的 `ready_age` 不超过 `ceil(2 × K)` 个派发周期**（K 为会话数，界由 aging 权重推导，不写死"5 次"） |
 | 反证 | 改回纯 FIFO/纯 priority ⇒ B 的 `ready_age` 持续增长（断言其 p99 超过阈值） |
 
+> **M3 验收以"顺序"形式落地**（`TestAgingPreventsSessionStarvation`：B 必须排在首位），而不是直接断言
+> `ready_age` 的数值上界。原因是观测接口不带 task 标签——`RecordReadyAge(seconds)` 无法把某个样本归因到
+> 某个会话，硬加标签会让直方图基数随任务数增长。顺序蕴含上界（B 首位 ⇒ 下一次派发就是它），但这句话只在
+> "派发及时"成立时有效，而后者由 M2 的 gap 测试与 goleak 各管一半。**不把两者合并成一个断言，是刻意的**：
+> 合成一条会掩盖"顺序对但泵停了"的退化。
+
 ### M4 · 提交侧背压（1d）
 
 | 项 | 内容 |
@@ -259,12 +265,17 @@ M0 基线 ──> M1 确定性 ──> M2 pump ──> M3 fairness
 
 ---
 
-## 7. 需要先拍板的三件事
+## 7. 已拍板的三件事（2026-10-25）
 
-1. **背压策略**：拒绝 / 延迟 / 降级？（建议：拒绝 + 默认不限，保持现有行为）
-2. **公平目标**：aging 调参 vs DRR？（建议：先 aging，参数可配，用 `ready_age_p99` 判定）
-3. **L1 写入方的开关**：是否复用 `objective=runtime|both`，还是需要一个独立的
-   `evolution.l1_patches.enabled`？（建议复用 `objective` + `allow_live`，避免出现第二个"绕不过去"的门）
+原先这里列着三个待定项。实现过程中三个都定了，写下来是为了让下一个人不必再从代码里反推：
+
+| 项 | 结论 | 代码事实 |
+|---|---|---|
+| **背压策略** | **拒绝**，且**默认不限**（`max_ready_tasks=0`） | `fabric_lifecycle.go` 返回 `ErrReadyQueueFull`，错误体带 `depth` 与 `max`；默认 0 时不进判定，现有部署行为不变 |
+| **公平方式** | **aging**，权重**固定 0.01/秒**，暂不做 DRR、不做可配 | `dag.go` 的 `agingWeight` 是常量；`TestAgingPreventsSessionStarvation` 用"低优先级但更老"的夹具钉住它承重 |
+| **L1 写入方** | **不用 `objective`，也不给 GA 开关**：写的是**声明式 reconciler**（工具注册表 + schema tags） | `toolclass_reconcile.go` + `serve_peer.go` 的接线；GA 路径被明确排除（`enabled=false` 会让工具从规划器视野消失，而 GA 的 fitness 看不见"任务从此做不了"） |
+
+**仍未定、且明确留待后续**：`grace`（当前 3 次）与 `interval`（当前 5 分钟）都没有 YAML 入口——做成配置项需要新的键、默认值与校验，属独立一次改动。
 
 ---
 
