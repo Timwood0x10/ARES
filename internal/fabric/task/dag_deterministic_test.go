@@ -89,7 +89,7 @@ func TestReadyTasksDeterministicAcrossInsertOrders(t *testing.T) {
 
 	// Now rebuild 50 times with scrambled insertion orders and verify the
 	// output is always the same.
-	for iter := 0; iter < 50; iter++ {
+	for iter := 0; iter < 100; iter++ {
 		f := NewFabric()
 		f.WithClock(func() time.Time { return clock })
 		// Rotate the insertion order by a different offset each time.
