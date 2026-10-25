@@ -61,7 +61,7 @@ func (a *peerAssembly) assembleFabric() error {
 	// Assemble the Kernel: Task Fabric + Agent Fabric + scheduler. This
 	// mirrors flipKernelToTaskFabric but runs directly at startup (no
 	// legacy path to flip from).
-	kernel.fabric = taskfabric.NewFabric()
+	kernel.fabric = newKernelFabric(a.cfg)
 	// HITL approval SLA safety net: a positive kernel.approval_sla makes every
 	// RequiresApproval task that carries no per-step timeout inherit it, so a
 	// forgotten gate expires instead of stalling the plan forever. Empty or
@@ -664,4 +664,18 @@ func (a *peerAssembly) startLoops() {
 	})
 	kernel.recoveryStop = recCancel
 	kernel.recoveryDone = recDone
+}
+
+// newKernelFabric builds the task fabric the scheduler drains.
+//
+// It is a named function rather than an inline NewFabric() so the admission cap can be asserted:
+// WithMaxReadyTasks had no production caller at all, which meant backpressure existed only in unit
+// tests — the surface was implemented, configured by nobody, and therefore never on.
+func newKernelFabric(cfg *ares_config.Config) *taskfabric.Fabric {
+	fabric := taskfabric.NewFabric()
+	if cfg == nil {
+		return fabric
+	}
+	// 0 (the default) leaves admission unlimited, so an existing deployment is unaffected.
+	return fabric.WithMaxReadyTasks(cfg.Kernel.MaxReadyTasks)
 }

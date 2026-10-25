@@ -79,6 +79,15 @@ type KernelConfig struct {
 	// executable fabric agents). A negative is a config error, rejected by
 	// Validate.
 	MaxConcurrent int `yaml:"max_concurrent"`
+	// MaxReadyTasks caps how much outstanding work the task fabric admits. 0 (the default) means
+	// unlimited, so an existing deployment is unaffected.
+	//
+	// Outstanding is READY plus SUSPENDED: a task that yields between steps is scheduled again by
+	// the next drain, so counting READY alone would let a workload that yields between every step
+	// bypass the cap entirely. Over the cap, Create fails with taskfabric.ErrReadyQueueFull, which
+	// carries the current depth and the cap — a rejection a caller can report, rather than a queue
+	// that grows until the process dies.
+	MaxReadyTasks int `yaml:"max_ready_tasks"`
 	// Resources is the resource budget applied to the Agent Fabric
 	// (name → max total across live agents, e.g. {"cpu": 8, "memory": 8192}).
 	// Spawn rejects claims that exceed the remaining budget

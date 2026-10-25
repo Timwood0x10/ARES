@@ -348,6 +348,10 @@ func (c *Config) validateKernel() error {
 		return fmt.Errorf("kernel: max_concurrent must be non-negative (0 = auto), got %d",
 			c.Kernel.MaxConcurrent)
 	}
+	if c.Kernel.MaxReadyTasks < 0 {
+		return fmt.Errorf("kernel: max_ready_tasks must be non-negative (0 = unlimited), got %d",
+			c.Kernel.MaxReadyTasks)
+	}
 	if c.Kernel.DAGExecution.MaxPlanDepth < 0 {
 		return fmt.Errorf("kernel: dag_execution.max_plan_depth must be non-negative (0 = planner default), got %d",
 			c.Kernel.DAGExecution.MaxPlanDepth)
