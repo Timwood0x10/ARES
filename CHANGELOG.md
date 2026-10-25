@@ -2,6 +2,107 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.6] — a scheduler that keeps working, and an L1 that keeps itself true
+
+The scheduling loop no longer waits for its slowest quantum before considering new work, dispatch
+order is defined rather than sampled from a map, and the L1 capability catalogue is re-derived from
+the tool registry instead of being written once at boot. No configuration changes are required.
+
+> **Upgrade notes**
+> - `VERSION` is 0.3.6. Nothing in the config schema changed; existing `ares.yaml` files keep
+>   working, and `evolution.objective` still defaults to `strategy`.
+> - The three `ARES_scheduler_*` histograms were registered in 0.3.5 and never recorded. They are
+>   now fed by the production scheduler, so a dashboard that showed them as permanently empty will
+>   start reporting.
+> - Backpressure stays **off by default** (`kernel.max_ready_tasks: 0` = unlimited). A deployment
+>   that wants a cap sets it; one that does not behaves exactly as before.
+> - No public API was removed in this release. `internal/evoapi` and `RunScenario` were removed in
+>   0.3.5.
+
+### Highlights — the scheduling loop stops paying for its slowest task
+
+**One slow quantum no longer stalls dispatch.** `drain` used to end with `wg.Wait()`, and `Run`
+called it synchronously: a single 30-second quantum held the scheduling loop, so an idle agent
+could not pick up work that arrived meanwhile, and the event branch could not run either. The pump
+now launches and returns; the wait moved to a process-wide in-flight tracker that shutdown uses.
+
+**Admission is a budget, not a parking space.** The first version of the pump kept a per-drain
+semaphore and blocked on it when the batch exceeded capacity — the batch barrier, relocated. It is
+now a process-wide counter that *refuses* and leaves the rest READY for the next tick, so the loop
+keeps serving events. The budget is process-wide on purpose: with pumps overlapping, a per-pump
+limit lets N pumps each admit N quanta and `WithMaxConcurrent` stops being a cap.
+
+**Shutdown still waits, and says so honestly.** `maxConcurrentPerAgent=1` used to be implied by the
+batch barrier. It is now enforced by the lease, and a quantum the scheduler aborts at shutdown is no
+longer logged as a task failure — with pumps overlapping, `cancel()` can catch many at once, and an
+orderly shutdown used to look like a burst of errors.
+
+### Highlights — dispatch order is defined, and old work ages
+
+- Ready tasks are ordered by `(priority DESC, ready_since ASC, id ASC)`. All three keys are load
+  bearing: without the id key the order of tasks equal on the first two comes from Go's randomised
+  map iteration.
+- A task's effective priority grows with the time it has waited (`+0.01` per second, fixed), so a
+  session with one task is not starved behind another session's hundred. The aging weight is small
+  enough to cross one priority band, not to invert the ranking.
+
+### Highlights — L1 is reconciled, never learned
+
+`enabled` / `budget` / `prior` decide whether the planner may use a tool at all. They are derived
+from the tool schema's own tags and re-applied on a timer, on a registry change, and once at start;
+a tool attached at runtime now enters the catalogue without a restart.
+
+The reconciler is **declarative and transactional**: a failure part-way is rolled back to the
+snapshot taken on entry, removal waits for three consecutive misses (a registry that briefly returns
+fewer tools is indistinguishable from a deletion), an empty catalogue is reported rather than
+applied, and no path reads fitness. A fitness loop that could set `enabled=false` would raise its
+measured score by removing the work it cannot do — and the loss, tasks the system can no longer
+attempt, is invisible to it.
+
+### Added
+
+- `ARES_scheduler_ready_to_dispatch_seconds`, `ARES_scheduler_work_conserving_gap_seconds`,
+  `ARES_scheduler_ready_age_seconds`, now recorded by the production scheduler through a thin
+  adapter (`PrometheusMetrics` and the kernel interface used different method names, which is why no
+  caller could implement the interface before).
+- **`kernel.max_ready_tasks`** caps outstanding work, and reaches the fabric the scheduler actually
+  drains (the option existed since 0.3.5 with no caller, so it could only be set from a test). Over
+  the cap, `Create` fails with `ErrReadyQueueFull` carrying the current depth and the cap. READY
+  **and** SUSPENDED count as outstanding — a task that yields is scheduled again, so counting READY
+  alone would let a yielding workload bypass the cap.
+- `Components.StartedBackground()` lists the background workers a process started, in order. A
+  worker's only trace used to be a log line, so "no evolution ticker when evolution is off" could
+  not be stated as an assertion.
+
+### Changed
+
+- The soak workload now includes the scheduling pump, the experiment log (append + bounded query)
+  and checkpoint decoding with both outcomes. The previous four workloads all exercised code this
+  cycle did not touch.
+- `make lint`'s local gate and the CI lint job were already aligned in 0.3.5; the scheduler work
+  added no new lint surface.
+
+### Removed
+
+- `L1PatchExecutor`: written during this cycle and deleted before release. It was unreachable (no
+  differ emits an L1-targeted patch, and the registry dispatches by component name rather than node
+  id) and it would have been a second writer of one surface — the reconciler resets metadata from
+  the tags every interval, so a patch it wrote would be overwritten. Nothing shipped, so nothing
+  breaks.
+
+### Known gaps
+
+- **Fairness is asserted as an order, not as a bound.** The milestone asked for `ready_age` to stay
+  under a number of dispatch cycles; the observation interface carries no task label, and adding one
+  would scale histogram cardinality with the task count. Ordering implies a bound only while
+  dispatch is prompt, which the work-conserving test covers separately.
+- **`grace` and the reconciliation interval are not configurable** (three misses, five minutes).
+  Making them so needs a YAML key with its own default and validation.
+- The idle evolution path still has predicate coverage only: `WiredEvolutionSystem.Coordinator` must
+  stay concrete for `SetDeployer`/`SetApplyGate`, so a fake cannot be injected there.
+- `internal/evoapi` removal, the `ObservationReplayPolicy` default, the idle-path gap and the three
+  sub-30% Postgres packages carry over from 0.3.5 unchanged.
+
 ## [0.3.5] — causal history, one evolution path, an auditable GA
 
 Compressed history keeps the reason a call was made, the GA stops being able to do two things per
