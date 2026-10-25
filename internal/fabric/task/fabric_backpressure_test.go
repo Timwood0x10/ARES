@@ -1,8 +1,10 @@
 package taskfabric
 
 import (
+	"fmt"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -105,4 +107,31 @@ func TestBackpressure_CountsSuspendedWork(t *testing.T) {
 	require.Error(t, err)
 	require.ErrorIs(t, err, ErrReadyQueueFull)
 	require.Contains(t, err.Error(), "depth 2")
+}
+
+// TestBackpressure_CapIsWhatBoundsGrowth is the counter-evidence the milestone asks for.
+//
+// The existing test shows the eleventh task is rejected; this one shows WHY that matters: without a
+// cap the same loop keeps a thousand tasks READY, so the bound comes from the cap and not from some
+// other limit in the fabric. A test that only checked rejection could pass for a fabric that
+// happened to refuse the 11th for an unrelated reason.
+func TestBackpressure_CapIsWhatBoundsGrowth(t *testing.T) {
+	const submissions = 1000
+
+	capped := NewFabric().WithMaxReadyTasks(10)
+	accepted := 0
+	for i := 0; i < submissions; i++ {
+		if err := capped.Create(&Task{ID: fmt.Sprintf("c-%d", i)}); err == nil {
+			accepted++
+		}
+	}
+	assert.Equal(t, 10, accepted, "the cap, not the fabric, decides how much work is admitted")
+	assert.Len(t, capped.ReadyTasks(), 10, "READY depth stays at the cap")
+
+	uncapped := NewFabric() // WithMaxReadyTasks(0) is the default: unlimited
+	for i := 0; i < submissions; i++ {
+		require.NoError(t, uncapped.Create(&Task{ID: fmt.Sprintf("u-%d", i)}))
+	}
+	assert.Len(t, uncapped.ReadyTasks(), submissions,
+		"without a cap the depth grows with submissions, which is the behaviour the cap exists to stop")
 }
