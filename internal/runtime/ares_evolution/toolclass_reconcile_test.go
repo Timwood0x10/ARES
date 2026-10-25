@@ -139,9 +139,13 @@ func TestReconcileToolClassDAG_FailureRollsBack(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Declares only a NEW node, so every existing node is a removal candidate — and removing the
-	// one with a dependent fails.
-	_, err = ReconcileToolClassDAG(ctx, dag, []ToolClassSpec{spec("fresh#3", map[string]string{"enabled": "true"})}, &ReconcileState{}, 0)
+	// dep#2 is DECLARED on purpose. With both nodes undeclared, either could be removed first, and
+	// removing the dependent first would make the parent's removal legal — the failure this test
+	// needs would then be a coin flip on map iteration order.
+	_, err = ReconcileToolClassDAG(ctx, dag, []ToolClassSpec{
+		spec("dep#2", map[string]string{"enabled": "true"}),
+		spec("fresh#3", map[string]string{"enabled": "true"}),
+	}, &ReconcileState{}, 0)
 	require.Error(t, err, "the removal of a depended-on node must fail")
 
 	for _, id := range []string{"gone#1", "dep#2"} {
