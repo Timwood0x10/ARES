@@ -141,7 +141,10 @@ func (s *Scheduler) drainLimit() int {
 		// registry while fabric agents remain idle — taking the registry count
 		// alone would collapse parallelism to 1 for the binding's lifetime,
 		// so auto mode is the MAX of both.
-		limit = max(s.ExecutorCount(), s.fabricCandidateCount())
+		// Capacity, not idleness: this number is compared against inflightQuanta, which counts
+		// running quanta. Using idle agents here made the limit shrink as work started, so a
+		// partly-busy deployment throttled itself below its own size.
+		limit = max(s.ExecutorCount(), s.fabricCapacity())
 	}
 	if limit <= 0 {
 		limit = 1
@@ -157,6 +160,26 @@ func (s *Scheduler) drainLimit() int {
 // to decide whether any candidate exists. O(n) scan of the live population
 // per drain; n is small. Returns 0 when no agent fabric is wired (static
 // registry only, e.g. tests and the SDK path).
+// fabricCapacity is how many agents this deployment can occupy at once: every schedulable agent,
+// busy or not. Paused and retired agents are excluded — they are not capacity.
+//
+// It is not the same number as fabricCandidateCount, which answers "who can take work right now".
+// Confusing the two is what S01/S02 in the 0.3.6 plan are about: a limit computed from idle agents
+// gets compared against all in-flight quanta, so two busy agents make a three-agent deployment
+// refuse work while a third agent sits idle.
+func (s *Scheduler) fabricCapacity() int {
+	if s.agents == nil {
+		return 0
+	}
+	count := 0
+	for _, id := range s.agents.Agents() {
+		if a, err := s.agents.Get(id); err == nil && a != nil && a.IsSchedulable() {
+			count++
+		}
+	}
+	return count
+}
+
 func (s *Scheduler) fabricCandidateCount() int {
 	if s.agents == nil {
 		return 0
@@ -198,10 +221,10 @@ func (s *Scheduler) fabricCandidateCount() int {
 // the fencing token, so no quantum is ever double-applied — its in-flight
 // work is simply discarded and resumed later.
 func (s *Scheduler) PreemptLowerPriority(ready []string) {
-	// The guard must also check fabric agents, not just static executors.
-	// In production mode (agent fabric wired), the static executor count may
-	// be 0 while fabric agents are the real candidate source.
-	hasCandidates := s.ExecutorCount() > 0 || s.fabricCandidateCount() > 0
+	// The guard must ask "does this deployment HAVE executors", not "is one free right now":
+	// all-busy is precisely when preemption is the only way a high-priority task can start, so
+	// gating on idle agents skipped preemption in the one situation it exists for.
+	hasCandidates := s.ExecutorCount() > 0 || s.fabricCapacity() > 0
 	if !hasCandidates || len(ready) == 0 {
 		return
 	}

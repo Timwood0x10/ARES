@@ -266,6 +266,22 @@ func (a *Agent) TryBeginQuantum() bool {
 
 // IsBusy reports whether the agent is currently executing a quantum (R4
 // bridge). Thread-safe; reads under the agent lock.
+// IsSchedulable reports whether the agent can be assigned work — now, or as soon as its current
+// quantum finishes.
+//
+// It is deliberately not IsIdle: a busy agent is still capacity (the scheduler's admission budget
+// is compared against in-flight quanta, so counting only idle agents made the budget shrink as work
+// started), while a paused or retired agent is not capacity at all. State is read under the agent
+// lock; callers outside this package must not read the field directly.
+func (a *Agent) IsSchedulable() bool {
+	if a == nil {
+		return false
+	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.State == StateIdle && a.cognition != nil
+}
+
 func (a *Agent) IsBusy() bool {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
