@@ -164,8 +164,10 @@ func (f *Fabric) createLocked(t *Task, strategyID string, pending *[]*pendingApp
 			}
 		}
 		if readyCount >= f.maxReadyTasks {
-			return fmt.Errorf("taskfabric: ready queue full (depth %d, max %d): %w",
-				readyCount, f.maxReadyTasks, ErrReadyQueueFull)
+			// Typed rather than a formatted %w: the HTTP layer needs depth and cap as VALUES to
+			// answer 429 with a retry hint, and parsing them back out of a message is how a
+			// refactor silently starts reporting the wrong number.
+			return &ReadyQueueFullError{Depth: readyCount, Max: f.maxReadyTasks}
 		}
 	}
 	// Copy the caller's *Task so the fabric owns an isolated instance —

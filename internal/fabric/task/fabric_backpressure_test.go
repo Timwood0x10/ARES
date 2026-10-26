@@ -135,3 +135,25 @@ func TestBackpressure_CapIsWhatBoundsGrowth(t *testing.T) {
 	assert.Len(t, uncapped.ReadyTasks(), submissions,
 		"without a cap the depth grows with submissions, which is the behaviour the cap exists to stop")
 }
+
+// TestBackpressure_ErrorCarriesStructuredFields: the HTTP layer needs the depth and the cap as
+// values. Recovering them by parsing the message works until someone rewords the message, and then
+// the response starts reporting a number nobody noticed was wrong.
+func TestBackpressure_ErrorCarriesStructuredFields(t *testing.T) {
+	f := NewFabric().WithMaxReadyTasks(2)
+	require.NoError(t, f.Create(&Task{ID: "t-1"}))
+	require.NoError(t, f.Create(&Task{ID: "t-2"}))
+
+	err := f.Create(&Task{ID: "t-3"})
+
+	var full *ReadyQueueFullError
+	require.ErrorAs(t, err, &full, "the error must be readable as a value, not only as a string")
+	assert.Equal(t, 2, full.Depth)
+	assert.Equal(t, 2, full.Max)
+	assert.ErrorIs(t, err, ErrReadyQueueFull, "the sentinel must survive the typed form")
+
+	// The caller that wraps it (agentruntime does, with %w) must not lose the value.
+	wrapped := fmt.Errorf("agentruntime: create task: %w", err)
+	require.ErrorAs(t, wrapped, &full)
+	assert.Equal(t, 2, full.Max)
+}

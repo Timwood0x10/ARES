@@ -2,6 +2,7 @@ package taskfabric
 
 import (
 	"errors"
+	"fmt"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -59,6 +60,10 @@ var (
 	// queue is full", and matching it here would let a caller handle task admission as if it were
 	// transport backpressure. Callers match on THIS value with errors.Is.
 	ErrReadyQueueFull = errors.New("taskfabric: ready queue full")
+	// ReadyQueueFullError carries WHY the queue is full. The sentinel says "rejected"; the fields
+	// say "at depth N of M", which is what an HTTP layer needs to answer 429 with a retry hint
+	// instead of parsing the message.
+	//
 	// ErrTaskIDRequired: Create was called without an id.
 	ErrTaskIDRequired = errors.New("taskfabric: task id required")
 	// ErrAgentIDRequired: Acquire was called without an owning agent id.
@@ -554,3 +559,22 @@ func (f *Fabric) TaskSnapshot() []TaskView {
 	sort.Slice(out, func(i, j int) bool { return out[i].TaskID < out[j].TaskID })
 	return out
 }
+
+// ReadyQueueFullError is returned by Create when outstanding work has reached the configured cap.
+//
+// Depth is the count that tripped the cap; Max is the cap itself. Both are the values the caller
+// would otherwise have to recover by parsing the message — and a caller that parses an error string
+// is one refactor away from reporting the wrong number.
+type ReadyQueueFullError struct {
+	Depth int
+	Max   int
+}
+
+// Error renders the same shape the sentinel-based message had, so log-based tooling and the
+// existing assertions keep working.
+func (e *ReadyQueueFullError) Error() string {
+	return fmt.Sprintf("taskfabric: ready queue full (depth %d, max %d)", e.Depth, e.Max)
+}
+
+// Unwrap exposes the sentinel: errors.Is(err, ErrReadyQueueFull) stays true.
+func (e *ReadyQueueFullError) Unwrap() error { return ErrReadyQueueFull }
