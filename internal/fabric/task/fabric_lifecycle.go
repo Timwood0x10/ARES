@@ -439,7 +439,8 @@ func (f *Fabric) Fail(id, agentID string, epoch uint64, cause error) error {
 	// goes terminal even with budget left (see classifyFailure). Unclassified
 	// causes stay retryable, so tasks that never mark their causes keep 0.3.2
 	// behaviour exactly.
-	retryable := classifyFailure(cause)
+	level := failureLevel(cause)
+	retryable := level != LevelFatal
 	if retryable && t.CanRetry() {
 		if err := t.transition(StateReady); err != nil {
 			return err
@@ -452,7 +453,8 @@ func (f *Fabric) Fail(id, agentID string, epoch uint64, cause error) error {
 		// — a restart must not turn a pending backoff into an immediate retry.
 		// A zero delay leaves NextAttemptAt zero: immediately runnable, exactly
 		// as before backoff existed.
-		t.NextAttemptAt = nextAttemptAt(f.now(), t.RetryPolicy.Attempts, t.BackoffBase, t.BackoffMax)
+		base, ceiling := backoffForLevel(level, t.BackoffBase, t.BackoffMax)
+		t.NextAttemptAt = nextAttemptAt(f.now(), t.RetryPolicy.Attempts, base, ceiling)
 		// A retry is a continuation too (defect A6): the next attempt may land on
 		// another agent, with only the checkpoint carried over. Durable via the
 		// task.failed event recorded just below (its retryable flag is the fold
@@ -462,7 +464,7 @@ func (f *Fabric) Fail(id, agentID string, epoch uint64, cause error) error {
 		// the terminal/requeue event must not lose the actor. Ownership is
 		// cleared only after the event is captured, so the following
 		// task.ready event reflects the unowned task.
-		pending = append(pending, f.failedEventLocked(t, retryable))
+		pending = append(pending, f.failedEventLocked(t, retryable, level))
 		t.Owner = ""
 		t.Lease = nil
 		// task.ready is observability-only (never folded), but it is the event an
@@ -480,7 +482,7 @@ func (f *Fabric) Fail(id, agentID string, epoch uint64, cause error) error {
 		f.logFailureVisibilityLocked(t, cause, retryable, false)
 		return nil
 	}
-	return f.failTerminalLocked(t, cause, retryable, &pending)
+	return f.failTerminalLocked(t, cause, retryable, level, &pending)
 }
 
 // logFailureVisibilityLocked writes the escalation line when an attempt ended in a
@@ -506,6 +508,7 @@ func (f *Fabric) logFailureVisibilityLocked(t *Task, cause error, retryable, ter
 		"attempts", t.RetryPolicy.Attempts,
 		"max_retries", t.RetryPolicy.MaxRetries,
 		"retryable", retryable,
+		"failure_class", failureLevel(cause).String(),
 		"terminal", terminal,
 		"cause", failureCauseText(cause))
 }
@@ -513,9 +516,10 @@ func (f *Fabric) logFailureVisibilityLocked(t *Task, cause error, retryable, ter
 // failedEventLocked records task.failed carrying the retry classification that
 // produced it, so the event stream alone answers "will this be retried?".
 // Caller must hold f.mu.
-func (f *Fabric) failedEventLocked(t *Task, retryable bool) *pendingAppend {
+func (f *Fabric) failedEventLocked(t *Task, retryable bool, level Level) *pendingAppend {
 	return f.recordWithExtrasLocked(t, EventTaskFailed, map[string]any{
-		payloadKeyRetryable: retryable,
+		payloadKeyRetryable:    retryable,
+		payloadKeyFailureClass: level.String(),
 	})
 }
 
@@ -528,7 +532,7 @@ func (f *Fabric) failedEventLocked(t *Task, retryable bool) *pendingAppend {
 // Caller must hold f.mu. Ownership deliberately stays attached (as before the
 // split): the terminal event must identify who held the task, and a FAILED task
 // can no longer be acquired, so the stale lease is inert provenance.
-func (f *Fabric) failTerminalLocked(t *Task, cause error, retryable bool, pending *[]*pendingAppend) error {
+func (f *Fabric) failTerminalLocked(t *Task, cause error, retryable bool, level Level, pending *[]*pendingAppend) error {
 	if err := t.transition(StateFailed); err != nil {
 		return err
 	}
@@ -536,7 +540,7 @@ func (f *Fabric) failTerminalLocked(t *Task, cause error, retryable bool, pendin
 	// readers of the previous envelope stay race-free — the fabric's
 	// documented checkpoint ownership rule.
 	t.Checkpoint = f.checkpointWithCause(t.Checkpoint, cause)
-	*pending = append(*pending, f.failedEventLocked(t, retryable))
+	*pending = append(*pending, f.failedEventLocked(t, retryable, level))
 	// Terminal failures are shared by Fail and ExpireDeadlines, so the escalation
 	// belongs here rather than at either call site: a budget that ran out on an
 	// unclassified cause must be visible whichever sweep ended the task.
@@ -717,7 +721,7 @@ func (f *Fabric) ExpireDeadlines() []string {
 		default:
 			continue
 		}
-		if err := f.failTerminalLocked(t, ErrTaskDeadlineExceeded, false, &pending); err != nil {
+		if err := f.failTerminalLocked(t, ErrTaskDeadlineExceeded, false, LevelFatal, &pending); err != nil {
 			// An illegal transition means the state moved under us in this
 			// tick (e.g. the holder completed): the deadline no longer applies,
 			// so skip this task instead of failing the whole sweep.
@@ -852,7 +856,7 @@ func (f *Fabric) resolveApprovalLocked(t *Task, decision, feedback, by string, p
 	t.ApprovalBy = by
 	t.ApprovalAt = f.now()
 	if decision == ApprovalDecisionRejected {
-		if err := f.failTerminalLocked(t, ErrInterruptRejected, false, pending); err != nil {
+		if err := f.failTerminalLocked(t, ErrInterruptRejected, false, LevelFatal, pending); err != nil {
 			t.ApprovalDecision, t.ApprovalFeedback = prevDecision, prevFeedback
 			t.ApprovalBy, t.ApprovalAt = prevBy, prevAt
 			return err
@@ -1082,7 +1086,7 @@ func (f *Fabric) ExpireApprovals() []string {
 		t.ApprovalFeedback = approvalTimeoutFeedback
 		t.ApprovalBy = approvalSLAPrincipal
 		t.ApprovalAt = now
-		if err := f.failTerminalLocked(t, ErrApprovalExpired, false, &pending); err != nil {
+		if err := f.failTerminalLocked(t, ErrApprovalExpired, false, LevelFatal, &pending); err != nil {
 			t.ApprovalDecision, t.ApprovalFeedback = "", ""
 			t.ApprovalBy, t.ApprovalAt = "", time.Time{}
 			continue

@@ -49,8 +49,12 @@ func (s *Scheduler) logFailure(ctx context.Context, taskID string, err error) {
 		s.lastNoCandidateLog = now
 	}
 	s.noCandidateMu.Unlock()
+	// The class travels with the line: "why did nobody retry this" is the first question an
+	// operator asks, and answering it by reading the cause text is how the wrong conclusion gets
+	// drawn. taskfabric owns the classification; the kernel only reports it.
 	log.Error(ctx, "logFailure",
-		"kernel scheduler: execute task failed", err, "task_id", taskID)
+		"kernel scheduler: execute task failed", err,
+		"task_id", taskID, "failure_class", taskfabric.LevelOf(err).String())
 }
 
 // Submission-time metadata (UserProfile + Payload + UsedExperienceID) rides in

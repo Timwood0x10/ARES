@@ -12,6 +12,10 @@ import (
 // no restore key (nothing folds it back into a task).
 const payloadKeyRetryable = "retryable"
 
+// payloadKeyFailureClass carries the severity level into the event stream, so a reader can answer
+// "was this killed on purpose or did it run out of budget" without parsing the cause text.
+const payloadKeyFailureClass = "failure_class"
+
 // ErrTaskDeadlineExceeded is the sentinel for a task that passed its absolute
 // Deadline (see ExpireDeadlines). It is the only deadline-shaped error the
 // fabric treats as terminal: a bare context.DeadlineExceeded from a single LLM
@@ -20,39 +24,81 @@ const payloadKeyRetryable = "retryable"
 // that used to be spent on recoverable slowness.
 var ErrTaskDeadlineExceeded = errors.New("task deadline exceeded")
 
-// permanentError marks a failure that must not be retried even when retry
-// budget remains. It is created by MarkPermanent and never escapes the fabric:
-// callers reach it through errors.As inside classifyFailure.
-type permanentError struct{ err error }
-
-// Error implements error.
-func (e *permanentError) Error() string { return e.err.Error() }
-
-// Unwrap exposes the wrapped cause so errors.Is/errors.As keep working through
-// the marker.
-func (e *permanentError) Unwrap() error { return e.err }
-
-// retryableError marks a failure as worth retrying even when the error type
-// alone would not say so (e.g. an upstream 503 wrapped into a domain error). It
-// is created by MarkRetryable.
-type retryableError struct{ err error }
-
-// Error implements error.
-func (e *retryableError) Error() string { return e.err.Error() }
-
-// Unwrap exposes the wrapped cause so errors.Is/errors.As keep working through
-// the marker.
-func (e *retryableError) Unwrap() error { return e.err }
-
 // MarkPermanent wraps err so the fabric fails the task terminally on this cause,
 // whether or not retry budget remains. Use it when the producing layer knows
 // retrying cannot help (invalid input, unsupported tool, missing permission).
 // A nil err returns nil so call sites can wrap unconditionally.
 func MarkPermanent(err error) error {
+	return WithLevel(err, LevelFatal)
+}
+
+// Level is how a failure should be treated, not what it means. The distinction matters because the
+// scheduler has exactly three defensible reactions: stop, retry soon, retry later.
+//
+// The names are deliberately about handling rather than about error kinds: an HTTP 404 and a
+// malformed prompt are both fatal, and they get the same action (stop) even though they are nothing
+// alike.
+type Level int
+
+const (
+	// LevelUnclassified: no opinion was expressed and nothing in the cause matches a known class.
+	// Retryable with the task's own backoff settings — the pre-existing behaviour, kept exactly so
+	// that an error nobody has classified cannot start behaving differently.
+	LevelUnclassified Level = iota
+	// LevelFatal (L0): kill the task. No retry, regardless of remaining budget, because every further
+	// attempt reproduces the failure: the request or the referenced entity is wrong.
+	LevelFatal
+	// LevelTransient (L1): retry with exponential backoff. The classic IO/network case — the same
+	// call may succeed in a moment, but not necessarily now.
+	LevelTransient
+	// LevelThrottled (L2): retry, but wait longer. The failure says "too fast", so retrying at the
+	// transient rate is what caused it.
+	LevelThrottled
+)
+
+// String renders the level the way it appears in events and logs.
+func (l Level) String() string {
+	switch l {
+	case LevelFatal:
+		return "L0"
+	case LevelTransient:
+		return "L1"
+	case LevelThrottled:
+		return "L2"
+	default:
+		return "unclassified"
+	}
+}
+
+// levelError attaches a level to a cause.
+type levelError struct {
+	err   error
+	level Level
+}
+
+func (e *levelError) Error() string { return e.err.Error() }
+func (e *levelError) Unwrap() error { return e.err }
+
+// WithLevel wraps err with the handling decision the producing layer made.
+//
+// The producing layer is the only one that knows: a tool knows that a permission error will fail
+// identically next time, and that a connection reset may not. Nothing downstream can recover that
+// knowledge from the error text.
+func WithLevel(err error, level Level) error {
 	if err == nil {
 		return nil
 	}
-	return &permanentError{err: err}
+	return &levelError{err: err, level: level}
+}
+
+// LevelOf returns the level attached to err, if any. The OUTERMOST wrapper wins: a caller that
+// re-classifies a cause is correcting the inner layer, which is the whole point of wrapping.
+func LevelOf(err error) Level {
+	var le *levelError
+	if errors.As(err, &le) {
+		return le.level
+	}
+	return LevelUnclassified
 }
 
 // MarkRetryable wraps err so the fabric retries this cause even if a broader
@@ -60,10 +106,7 @@ func MarkPermanent(err error) error {
 // the failure is transient (a retryable upstream status). A nil err returns nil
 // so call sites can wrap unconditionally.
 func MarkRetryable(err error) error {
-	if err == nil {
-		return nil
-	}
-	return &retryableError{err: err}
+	return WithLevel(err, LevelTransient)
 }
 
 // permanentCauses are the sentinel errors that provably cannot be fixed by
@@ -129,27 +172,38 @@ func isKnownPermanent(cause error) bool {
 //  4. Everything else is retryable, which is exactly 0.3.2's behaviour: no
 //     cause that used to be retried becomes terminal merely because it is
 //     unclassified, and a bare context.DeadlineExceeded stays retryable.
-func classifyFailure(cause error) bool {
+//
+// failureLevel is the single classification point. Precedence is unchanged from classifyFailure,
+// with the two retry levels added: the levels answer "how long to wait", the old boolean answered
+// only "retry at all".
+func failureLevel(cause error) Level {
 	if cause == nil {
-		// Operator kills and recovery sweeps pass no cause; those paths have
-		// always retried within budget.
-		return true
+		// Operator kills and recovery sweeps pass no cause; those paths have always retried within
+		// budget, and a nil cause says nothing about permanence.
+		return LevelUnclassified
 	}
-	var perm *permanentError
-	if errors.As(cause, &perm) {
-		return false
-	}
-	var retry *retryableError
-	if errors.As(cause, &retry) {
-		return true
+	if lvl := LevelOf(cause); lvl != LevelUnclassified {
+		return lvl
 	}
 	if errors.Is(cause, ErrTaskDeadlineExceeded) {
-		return false
+		return LevelFatal
+	}
+	// A rate limit is not a broken request: the same call succeeds later, but retrying at the
+	// transient rate is what produced the limit in the first place.
+	if errors.Is(cause, apperrors.ErrRateLimitExceeded) {
+		return LevelThrottled
+	}
+	if errors.Is(cause, apperrors.ErrServiceUnavailable) {
+		return LevelTransient
 	}
 	if isKnownPermanent(cause) {
-		return false
+		return LevelFatal
 	}
-	return true
+	return LevelUnclassified
+}
+
+func classifyFailure(cause error) bool {
+	return failureLevel(cause) != LevelFatal
 }
 
 // retryEscalationAttempts is the attempt count at which an unclassified cause

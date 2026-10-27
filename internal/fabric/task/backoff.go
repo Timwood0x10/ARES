@@ -65,3 +65,41 @@ func backoffMillis(d time.Duration) int {
 	}
 	return 1
 }
+
+// Backoff defaults for failures that were CLASSIFIED as transient or throttled.
+//
+// They apply only when the task carries no backoff of its own, and never to unclassified failures:
+// those keep the historical "no delay" behaviour exactly, so introducing levels cannot change what
+// an unclassified error does.
+//
+// The numbers are a compromise, not a tuned value: 250ms is long enough that a retry is not a busy
+// loop against a struggling dependency, short enough that a two-attempt task still finishes inside a
+// second. Throttling starts eight times higher because the cause is "too fast" — waiting the
+// transient amount would reproduce it.
+const (
+	defaultTransientBackoff = 250 * time.Millisecond
+	defaultThrottledBackoff = 2 * time.Second
+	defaultBackoffCeiling   = 30 * time.Second
+)
+
+// backoffForLevel resolves the delay policy for one attempt.
+//
+// An explicit per-task backoff always wins: the task author may know something the level does not
+// (a step that takes minutes, a provider with a one-minute quota window).
+func backoffForLevel(level Level, base, ceiling time.Duration) (time.Duration, time.Duration) {
+	if base > 0 {
+		return base, ceiling
+	}
+	switch level {
+	case LevelTransient:
+		base = defaultTransientBackoff
+	case LevelThrottled:
+		base = defaultThrottledBackoff
+	default:
+		return 0, ceiling // unclassified: no delay, exactly as before levels existed
+	}
+	if ceiling <= 0 {
+		ceiling = defaultBackoffCeiling
+	}
+	return base, ceiling
+}
