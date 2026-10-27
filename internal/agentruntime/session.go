@@ -103,27 +103,70 @@ func (s *Sessions) lockAdmission(sessionID string) (unlock func()) {
 // turn's terminal tasks, so no caller ever returns from Admit into a fabric
 // that still holds a stale answer its wait loop could mistake for a result.
 func (s *Sessions) Admit(ctx context.Context, sessionID, prompt string) error {
+	_, err := s.AdmitFresh(ctx, sessionID, prompt)
+	return err
+}
+
+// AdmitFresh admits the session and reports whether THIS call created it.
+//
+// The answer is computed inside the per-session admission lock, so two concurrent submissions of a
+// new session cannot both believe they created it. Callers need the distinction to decide who owns
+// the cleanup when the rest of the submission fails: releasing a session someone else is using
+// would delete their live graph, while leaving one this call created orphans a READY root task.
+func (s *Sessions) AdmitFresh(ctx context.Context, sessionID, prompt string) (bool, error) {
 	if s == nil || sessionID == "" {
-		return nil
+		return false, nil
+	}
+	unlock := s.lockAdmission(sessionID)
+	defer unlock()
+	return s.admitFreshLocked(ctx, sessionID, prompt)
+}
+
+// AdmitAndDo admits the session and runs do while the per-session admission lock is held.
+//
+// The lock has to span the caller's work, not just the admission: ownership of the cleanup depends
+// on who created the session, and that fact is only useful if nobody can start using the session in
+// between. Without it two submissions of one session can interleave so that the one that OWNS the
+// session fails and tears it down, while the one that merely joined it is still creating its plan —
+// destroying work that had already been accepted.
+//
+// do receives created so it can decide whether a failure means "roll back what I made" or "leave
+// someone else's session alone". Holding the lock across a fabric Create is cheap (in-memory plus a
+// deferred flush) and only contends with submissions for the same session.
+func (s *Sessions) AdmitAndDo(ctx context.Context, sessionID, prompt string, do func(created bool) error) (bool, error) {
+	if s == nil || sessionID == "" || do == nil {
+		return false, nil
+	}
+	unlock := s.lockAdmission(sessionID)
+	defer unlock()
+	created, err := s.admitFreshLocked(ctx, sessionID, prompt)
+	if err != nil {
+		return false, err
+	}
+	return created, do(created)
+}
+
+// admitFreshLocked is AdmitFresh's body; the caller holds the per-session admission lock.
+func (s *Sessions) admitFreshLocked(ctx context.Context, sessionID, prompt string) (bool, error) {
+	if s == nil || sessionID == "" {
+		return false, nil
 	}
 	if s.Reg == nil {
-		return fmt.Errorf("agentruntime: cannot admit session %q without a session registry", sessionID)
+		return false, fmt.Errorf("agentruntime: cannot admit session %q without a session registry", sessionID)
 	}
 	// A "/" in the ID breaks the reaper keep-set (SessionIDFromNode
 	// reverse-parses at the first slash), so "a/b" would let the reaper
 	// harvest a LIVE session's history. Reject at the boundary.
 	if strings.Contains(sessionID, "/") {
-		return fmt.Errorf("agentruntime: session id %q must not contain a slash", sessionID)
+		return false, fmt.Errorf("agentruntime: session id %q must not contain a slash", sessionID)
 	}
-	unlock := s.lockAdmission(sessionID)
-	defer unlock()
 	if _, err := s.Reg.GetSession(sessionID); err == nil {
-		return nil
+		return false, nil // already live: this call did not create it
 	} else if !errors.Is(err, agentfabric.ErrSessionNotFound) {
-		return fmt.Errorf("agentruntime: look up session %q: %w", sessionID, err)
+		return false, fmt.Errorf("agentruntime: look up session %q: %w", sessionID, err)
 	}
 	if s.Compile == nil || s.Fabric == nil {
-		return fmt.Errorf("agentruntime: cannot admit session %q without compile coordinator and fabric", sessionID)
+		return false, fmt.Errorf("agentruntime: cannot admit session %q without compile coordinator and fabric", sessionID)
 	}
 
 	// InitSession wires the compile subscription on a context the registry
@@ -141,10 +184,10 @@ func (s *Sessions) Admit(ctx context.Context, sessionID, prompt string) error {
 		// and InitSession — re-check before failing.
 		if errors.Is(err, agentfabric.ErrSessionAlreadyExists) {
 			if _, err2 := s.Reg.GetSession(sessionID); err2 == nil {
-				return nil
+				return false, nil
 			}
 		}
-		return fmt.Errorf("agentruntime: init session %q: %w", sessionID, err)
+		return false, fmt.Errorf("agentruntime: init session %q: %w", sessionID, err)
 	}
 
 	// Compile the root task the planner's first quantum reads. An already
@@ -154,7 +197,7 @@ func (s *Sessions) Admit(ctx context.Context, sessionID, prompt string) error {
 	if _, err := s.Fabric.CompileNode(liveCtx, planprojection.ProjectStep(rootStep)); err != nil {
 		if !errors.Is(err, taskfabric.ErrTaskExists) {
 			s.ReleaseQuietly(sessionID)
-			return fmt.Errorf("agentruntime: compile session %q root: %w", sessionID, err)
+			return false, fmt.Errorf("agentruntime: compile session %q root: %w", sessionID, err)
 		}
 		// An existing TERMINAL root belongs to a previous session that
 		// already released under this same ID (client "continue the chat"),
@@ -169,13 +212,13 @@ func (s *Sessions) Admit(ctx context.Context, sessionID, prompt string) error {
 				"session_id", sessionID, "harvested", n)
 			if _, err := s.Fabric.CompileNode(liveCtx, planprojection.ProjectStep(rootStep)); err != nil {
 				s.ReleaseQuietly(sessionID)
-				return fmt.Errorf("agentruntime: recompile session %q root: %w", sessionID, err)
+				return false, fmt.Errorf("agentruntime: recompile session %q root: %w", sessionID, err)
 			}
 		}
 	}
 	slog.InfoContext(liveCtx, "agentruntime: admitted L2 session",
 		"session_id", sessionID, "root", g.Root())
-	return nil
+	return true, nil // created by this call
 }
 
 // SessionStalled reports whether a session can no longer produce an answer:

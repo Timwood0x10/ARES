@@ -195,27 +195,45 @@ func (s *Submitter) Submit(
 			payload["input"] = prompt
 		}
 	}
-	if err := s.sessions.Admit(ctx, sessionID, prompt); err != nil {
-		return "", sessionID, err
-	}
-	taskID = fmt.Sprintf("peer-plan-%d", s.seq.Add(1))
-
 	env := taskfabric.NewCheckpointEnvelope(payload)
 	// SessionID is always stamped (auto-admitted above), so the
 	// plannerCognition always finds a live per-session L2 graph.
 	env.SessionID = sessionID
 	env.TenantID = tenantID
-	task := &taskfabric.Task{
-		ID:         taskID,
-		Capability: capability,
-		// Origin stays "" — this is a root task (user-submitted work), no
-		// agent caller. Agent-created tasks get their Origin from the
-		// create_task syscall's tool context.
-		RetryPolicy: taskfabric.RetryPolicy{MaxRetries: 2},
-		Checkpoint:  env,
-	}
-	if err := s.sessions.Fabric.Create(task); err != nil {
-		return "", sessionID, fmt.Errorf("agentruntime: create task: %w", err)
+
+	// Admission and plan creation happen under ONE lock. Split apart, two submissions of the same
+	// session can interleave so that the one owning the session fails and rolls it back while the
+	// other is still creating its plan — tearing down work that was about to be accepted.
+	_, err = s.sessions.AdmitAndDo(ctx, sessionID, prompt, func(created bool) error {
+		taskID = fmt.Sprintf("peer-plan-%d", s.seq.Add(1))
+		task := &taskfabric.Task{
+			ID:         taskID,
+			Capability: capability,
+			// Origin stays "" — this is a root task (user-submitted work), no
+			// agent caller. Agent-created tasks get their Origin from the
+			// create_task syscall's tool context.
+			RetryPolicy: taskfabric.RetryPolicy{MaxRetries: 2},
+			Checkpoint:  env,
+		}
+		if err := s.sessions.Fabric.Create(task); err != nil {
+			if created {
+				// A rejected submission must not leave a half-admitted session behind: the root task
+				// Admit compiled is READY, so the scheduler would run it with no plan behind it, and
+				// it occupies an admission slot — the refusal would make the next attempt likelier to
+				// be refused as well.
+				//
+				// Only a session THIS call created is torn down. Releasing one the caller is
+				// continuing would delete the graph and tasks they are still using, which is a far
+				// worse failure than a leaked admission.
+				s.sessions.ReleaseQuietly(sessionID)
+				Harvest(s.sessions.Fabric, sessionID)
+			}
+			return fmt.Errorf("agentruntime: create task: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return "", sessionID, err
 	}
 	slog.InfoContext(ctx, "agentruntime: submitted task → READY", "task_id", taskID, "capability", capability)
 	return taskID, sessionID, nil
