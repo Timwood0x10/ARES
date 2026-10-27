@@ -91,6 +91,7 @@ func (f *Fabric) Preempt(taskID, agentID string, epoch uint64, reason string) er
 		return err
 	}
 	t.ReadyAt = f.now()
+	t.AttemptReadyAt = t.ReadyAt
 	// M5: mark that this was a cooperative preemption so a multi-step
 	// quantum checking the flag at its next step boundary stops dispatching
 	// further steps. The task is already READY (above), so a stale holder's

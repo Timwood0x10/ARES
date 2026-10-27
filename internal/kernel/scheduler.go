@@ -154,15 +154,34 @@ type Scheduler struct {
 	inflightMu sync.Mutex
 	inflight   sync.WaitGroup
 
-	// quantumMu guards inflightQuanta and oldestInflightAt.
+	// quantumMu guards inflightQuanta and busySince.
 	//
 	// The admission budget is PROCESS-WIDE, not per pump. While the pump waited for its batch one
 	// drain ran at a time, so a per-drain semaphore was accidentally a global cap; once the pump
 	// stops waiting, overlapping pumps would each admit a full limit and WithMaxConcurrent would
 	// stop being a cap at all.
-	quantumMu        sync.Mutex
-	inflightQuanta   int
-	oldestInflightAt time.Time
+	quantumMu      sync.Mutex
+	inflightQuanta int
+	// busySince is when the scheduler last went from having no quanta in flight to having one, and
+	// it is cleared only when the last quantum finishes. It is not "saturated": one quantum on a
+	// four-capacity machine starts the clock too.
+	//
+	// It is deliberately NOT "the start of the oldest quantum still running". With overlapping
+	// quanta the first to finish is often not the oldest, and the field keeps the saturation start:
+	// a chain of quanta that keeps the pipeline full measures as one continuous busy period, which
+	// is what the gap histogram reports. Per-task waiting is measured separately as ready_age.
+	busySince time.Time
+
+	// headSampleMu guards the queue-age sampling rate for a head that stays put.
+	//
+	// The queue is observed once per drain (500ms by default), so a task that waits 30s would
+	// contribute sixty identical samples to the age histogram while a task that dispatches at once
+	// contributes one. That is a time-weighted estimate of the queue's age, not a per-task wait
+	// distribution, and sampling every tick makes the two look the same. One sample per
+	// headSampleInterval keeps the estimate without letting a single stalled task dominate it.
+	headSampleMu  sync.Mutex
+	headSampledID string
+	headSampledAt time.Time
 }
 
 // Running reports whether the scheduler's drain loop is currently running.

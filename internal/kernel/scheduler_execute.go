@@ -315,8 +315,14 @@ func (s *Scheduler) executeWithCandidates(ctx context.Context, taskID string, ca
 		s.decisions.Record(d)
 	}
 	if err != nil {
+		// No claim, no dispatch sample: a task that never found an agent has not been "started".
+		// Sampling before the claim is what made this histogram describe attempts to run rather
+		// than runs.
 		return err
 	}
+	// Sampled after the lease and the agent exist: from here the task really is dispatched, and the
+	// wait it reports is the wait it actually served.
+	s.observeDispatchWait(taskID)
 	// When the fabric is wired, resolve the winner through the fabric
 	// FIRST — the fabric copy is the live, lifecycle-managed agent (kill/
 	// recovery affect it), so a same-id static registration must not shadow

@@ -36,6 +36,14 @@ func (r *recordingSchedulerMetrics) RecordReadyAge(s float64) {
 	r.ages = append(r.ages, s)
 }
 
+// dispatchSamples returns the recorded dispatch waits, for tests that need the values rather than
+// just the count.
+func (r *recordingSchedulerMetrics) dispatchSamples() []float64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]float64(nil), r.dispatch...)
+}
+
 func (r *recordingSchedulerMetrics) snapshot() (int, int, int) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -90,20 +98,27 @@ func TestObserveWorkConservingGap_OnlyWhenWorkWasDeferred(t *testing.T) {
 	assert.Equal(t, 1, gaps, "deferred work behind a running quantum is the case the metric exists for")
 }
 
-// TestObserveDispatch_RecordsBothLatencyAndAge: work that RAN contributes to both, because
-// ready_to_dispatch is its latency while ready_age is the queue-age sample the fairness signal
-// needs.
-func TestObserveDispatch_RecordsBothLatencyAndAge(t *testing.T) {
+// TestObservationPoints_AreRecordedSeparately pins the split the metrics needed: leaving the queue
+// and being dispatched are different events.
+//
+// They used to be one call, which meant a task that left the queue and then failed to find an agent
+// still counted as "started". Queue age now comes from the scheduler looking at the queue;
+// dispatch latency comes from the claim succeeding.
+func TestObservationPoints_AreRecordedSeparately(t *testing.T) {
 	m := &recordingSchedulerMetrics{}
 	f := taskfabric.NewFabric()
 	require.NoError(t, f.Create(&taskfabric.Task{ID: "t-1"}))
 	s := &Scheduler{fabric: f, metrics: m}
 
-	s.observeDispatch("t-1")
-
+	s.observeQueueAge("t-1")
 	dispatched, ages, _ := m.snapshot()
-	assert.Equal(t, 1, dispatched)
+	assert.Equal(t, 0, dispatched, "leaving the queue is not a dispatch")
 	assert.Equal(t, 1, ages)
+
+	s.observeDispatchWait("t-1")
+	dispatched, ages, _ = m.snapshot()
+	assert.Equal(t, 1, dispatched, "a successful claim is")
+	assert.Equal(t, 1, ages, "and it does not re-sample the queue age")
 }
 
 // TestMetricsOf_ZeroValueSchedulerIsSafe: a nil INTERFACE is not a nil receiver, so calling a

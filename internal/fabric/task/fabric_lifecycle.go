@@ -190,6 +190,7 @@ func (f *Fabric) createLocked(t *Task, strategyID string, pending *[]*pendingApp
 	cp.CreatedAt = f.now()
 	cp.UpdatedAt = cp.CreatedAt
 	cp.ReadyAt = cp.CreatedAt
+	cp.AttemptReadyAt = cp.CreatedAt
 	// HITL SLA safety net: a RequiresApproval task created without its own
 	// ApprovalTimeout inherits the fabric default. This is the single choke
 	// point for EVERY create path (direct Create AND CompilePlan, which both
@@ -346,6 +347,10 @@ func (f *Fabric) Yield(id, agentID string, epoch uint64, checkpoint any) error {
 	if err := t.transition(StateSuspended); err != nil {
 		return err
 	}
+	// The next quantum starts waiting now, not when the task first became READY: yielding must not
+	// charge the next attempt for this one's execution time. ReadyAt is left alone — fairness ages
+	// the task, and resetting it would let a yielding workload look perpetually fresh.
+	t.AttemptReadyAt = f.now()
 	// Only overwrite the checkpoint when the quantum provides a non-nil
 	// value. A nil Yield (progress pause without new data) must not erase
 	// the checkpoint saved by a previous quantum or commit envelope.
@@ -440,6 +445,7 @@ func (f *Fabric) Fail(id, agentID string, epoch uint64, cause error) error {
 			return err
 		}
 		t.ReadyAt = f.now()
+		t.AttemptReadyAt = t.ReadyAt
 		// Schedule the next attempt before recording: task.failed is the
 		// must-persist carrier of NextAttemptAt (task.ready is
 		// observability-only), so the restore fold recovers the due time from it
@@ -659,6 +665,7 @@ func (f *Fabric) CheckExpiredLeases() []string {
 			continue
 		}
 		t.ReadyAt = now
+		t.AttemptReadyAt = now
 		// The work is now continued rather than started (defect A6): the task
 		// keeps its checkpoint but lost its owner, so whoever acquires it next
 		// resumes someone else's progress. The task.expired event below is what

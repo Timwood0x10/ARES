@@ -97,6 +97,10 @@ drainLoop:
 		// which is exactly the work-conservation failure M2 is about. The
 		// tasks left over stay READY and are picked up by the next tick.
 		if !s.admitQuantum(limit) {
+			// The task at the head of the remaining queue is the one whose wait this tick is
+			// actually extending, so its age is the honest sample. Recording every deferred task
+			// would double-count the tail and hide how long the head has been waiting.
+			s.observeQueueHead(tasks[i:])
 			s.observeWorkConservingGap(len(tasks) - i)
 			break drainLoop
 		}
@@ -107,7 +111,7 @@ drainLoop:
 		s.inflightMu.Lock()
 		s.inflight.Add(1)
 		s.inflightMu.Unlock()
-		s.observeDispatch(taskID)
+		s.observeQueueAge(taskID)
 		go func(id string) {
 			defer s.releaseQuantum()
 			defer s.inflight.Done()
@@ -376,7 +380,7 @@ func (s *Scheduler) admitQuantum(limit int) bool {
 	}
 	s.inflightQuanta++
 	if s.inflightQuanta == 1 {
-		s.oldestInflightAt = time.Now()
+		s.busySince = time.Now()
 	}
 	return true
 }
@@ -389,27 +393,99 @@ func (s *Scheduler) releaseQuantum() {
 		s.inflightQuanta--
 	}
 	if s.inflightQuanta == 0 {
-		s.oldestInflightAt = time.Time{}
+		s.busySince = time.Time{}
 	}
 }
 
-// observeDispatch records how long one task waited before it was admitted.
+// observeQueueAge records how long a task had been READY when it left the queue.
 //
-// ready_to_dispatch and ready_age answer different questions and are kept apart on purpose:
-// ready_to_dispatch is the latency of work that RAN, ready_age is the age seen when the scheduler
-// looked at the queue (including work it had to defer), which is the starvation signal.
-func (s *Scheduler) observeDispatch(taskID string) {
+// This is the queue-age signal: it answers "how long did work sit", independently of whether the
+// claim later succeeded. A task that leaves the queue and then fails to find an agent still spent
+// that time waiting, and hiding it would make the queue look healthier than it is.
+func (s *Scheduler) observeQueueAge(taskID string) {
+	s.recordAge(taskID)
+}
+
+// observeQueueHead records the age of the task that will be dispatched next, for the case where
+// this tick could admit nothing.
+//
+// Without it, only work that eventually ran contributed to queue age, so a candidate that waits for
+// minutes and is then executed reports nothing about the minutes: the histogram would describe the
+// winners and stay silent about the backlog. Only the head is sampled — every deferred task would
+// multiply the same wait across the histogram and make the tail look like the norm.
+func (s *Scheduler) observeQueueHead(remaining []string) {
+	if len(remaining) == 0 {
+		return
+	}
+	head := remaining[0]
+	// Rate-limited per task: the head is re-observed every drain, and a stalled head would
+	// otherwise contribute one sample per poll forever.
+	s.headSampleMu.Lock()
+	if s.headSampledID == head && time.Since(s.headSampledAt) < headSampleInterval {
+		s.headSampleMu.Unlock()
+		return
+	}
+	s.headSampledID = head
+	s.headSampledAt = time.Now()
+	s.headSampleMu.Unlock()
+
+	s.recordAge(head)
+}
+
+// headSampleInterval bounds how often one stalled head contributes to the age histogram.
+//
+// Five seconds is a compromise: long enough that a 500ms poll does not turn a single wait into
+// hundreds of samples, short enough that a queue stuck for minutes keeps showing that it is stuck.
+const headSampleInterval = 5 * time.Second
+
+// recordAge is the shared sampling for the two queue-age call sites.
+func (s *Scheduler) recordAge(taskID string) {
+	if age, ok := s.taskAge(taskID); ok {
+		s.metricsOf().RecordReadyAge(age)
+	}
+}
+
+// taskAge returns how long the task has been READY, if that is knowable.
+//
+// A zero ReadyAt means the task predates the field (restored from an older store): its age is
+// unknown, and reporting 0 would claim it had just arrived.
+func (s *Scheduler) taskAge(taskID string) (float64, bool) {
 	tk, err := s.fabric.Task(taskID)
 	if err != nil || tk.ReadyAt.IsZero() {
-		return
+		return 0, false
 	}
 	age := time.Since(tk.ReadyAt).Seconds()
 	if age < 0 {
 		age = 0
 	}
-	m := s.metricsOf()
-	m.RecordReadyToDispatch(age)
-	m.RecordReadyAge(age)
+	return age, true
+}
+
+// observeDispatchWait records how long a task waited for a real claim, sampled AFTER the scheduler
+// has acquired a lease and chosen an agent.
+//
+// It used to be sampled at admission, before the claim, which reported a start for work that then
+// failed to find an agent — the metric counted attempts to run, not runs. It is now recorded only
+// once a claim exists, so "dispatched" means dispatched.
+func (s *Scheduler) observeDispatchWait(taskID string) {
+	tk, err := s.fabric.Task(taskID)
+	if err != nil {
+		return
+	}
+	// THIS attempt's waiting time, not the task's age: a resumed task carries the previous
+	// quantum's execution time in ReadyAt, and charging it again made a 0.4ms resume report 150ms.
+	since := tk.AttemptReadyAt
+	if since.IsZero() {
+		since = tk.ReadyAt // tasks created before the field existed, or restored from an old store
+	}
+	if since.IsZero() {
+		return
+	}
+	wait := time.Since(since).Seconds()
+	if wait < 0 {
+		wait = 0
+	}
+	s.metricsOf().RecordReadyToDispatch(wait)
 }
 
 // observeWorkConservingGap records that deferred work was blocked behind a running quantum.
@@ -421,7 +497,7 @@ func (s *Scheduler) observeWorkConservingGap(remaining int) {
 		return
 	}
 	s.quantumMu.Lock()
-	since := s.oldestInflightAt
+	since := s.busySince
 	s.quantumMu.Unlock()
 	if since.IsZero() {
 		return

@@ -131,7 +131,7 @@ func NewPrometheusMetrics() (*PrometheusMetrics, error) {
 		SchedulerReadyToDispatchSeconds: prometheus.NewHistogramVec(
 			prometheus.HistogramOpts{
 				Name:    "ARES_scheduler_ready_to_dispatch_seconds",
-				Help:    "Time from task becoming READY to scheduler Acquire",
+				Help:    "Wait of work that was actually dispatched: READY to lease acquired and agent chosen. A task that leaves the queue without a claim (no capable candidate, exhausted budget) contributes nothing, so this histogram describes runs, not attempts",
 				Buckets: []float64{0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30},
 			},
 			[]string{},
@@ -139,7 +139,7 @@ func NewPrometheusMetrics() (*PrometheusMetrics, error) {
 		SchedulerWorkConservingGapSeconds: prometheus.NewHistogramVec(
 			prometheus.HistogramOpts{
 				Name:    "ARES_scheduler_work_conserving_gap_seconds",
-				Help:    "Delay dispatching new READY work while a slow quantum is in flight (work-conserving gap)",
+				Help:    "Age of the scheduler's current continuously-busy interval when it had to leave READY work behind: the interval starts at the first quantum admitted after an empty pipeline and ends when the last one finishes. It is NOT saturation — capacity 4 running one long quantum still accumulates, so a deferral after that quantum reports the whole interval. Overlapping quanta count as one interval rather than restarting per completion. Records only deferrals: a zero would claim no work waited",
 				Buckets: []float64{0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30},
 			},
 			[]string{},
@@ -147,7 +147,7 @@ func NewPrometheusMetrics() (*PrometheusMetrics, error) {
 		SchedulerReadyAgeSeconds: prometheus.NewHistogramVec(
 			prometheus.HistogramOpts{
 				Name:    "ARES_scheduler_ready_age_seconds",
-				Help:    "Task age (since READY) at dispatch time",
+				Help:    "Queue age when the scheduler looked: once when a task leaves the queue, and at most once per five seconds for the head of a deferred queue. TIME-WEIGHTED — a stalled queue contributes repeatedly while a fast one contributes once per task, so this estimates how old the backlog is, not the wait of an average task. Includes work that was never dispatched",
 				Buckets: []float64{0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60},
 			},
 			[]string{},

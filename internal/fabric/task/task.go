@@ -109,6 +109,15 @@ type Task struct {
 	//     id ASC) for deterministic dispatch order.
 	// Guarded by f.mu like every other Task field.
 	ReadyAt time.Time
+	// AttemptReadyAt is when THIS attempt became eligible to run: creation, a retry after failure,
+	// a release or lease expiry, a preemption, or the yield that ended the previous quantum.
+	//
+	// It exists because ReadyAt answers a different question. ReadyAt is the task's age (fairness
+	// and aging depend on it, so it must NOT be reset when a task yields); AttemptReadyAt is the
+	// queueing delay of one attempt. Measuring dispatch latency from ReadyAt charged a resumed task
+	// for the time its previous quantum spent executing — a 150ms quantum followed by an immediate
+	// resume reported 150ms of "waiting" for a quantum that waited 0.4ms.
+	AttemptReadyAt time.Time
 	// PreemptRequested is set by Preempt to signal that a cooperative
 	// preemption was requested at a quantum boundary (M5). A multi-step
 	// quantum checks this between steps: when set, the quantum stops
