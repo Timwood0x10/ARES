@@ -486,7 +486,14 @@ func (c *toolCognition) ExecuteStep(ctx context.Context, task *models.Task) (*St
 
 	res, err := c.binder.CallTool(ctx, c.tool, argsFromPayload(task.Payload))
 	if err != nil {
-		return nil, fmt.Errorf("agentfabric: tool %q call: %w", c.tool, err)
+		// Classified HERE because this is the only place that knows both halves: which tool failed
+		// and whether that tool tolerates being called twice. A timeout from an idempotent read is
+		// worth retrying; the same timeout from an unmarked write may already have landed, and the
+		// fabric would otherwise retry it into a duplicate side effect.
+		return nil, taskfabric.ClassifyToolFailure(
+			fmt.Errorf("agentfabric: tool %q call: %w", c.tool, err),
+			c.binder.IsToolIdempotent(c.tool),
+		)
 	}
 	result := models.NewTaskResult(task.TaskID, task.AgentType)
 	result.SetSuccess([]*models.RecommendItem{{ItemID: task.TaskID, Content: stringify(res)}}, "tool "+c.tool+" completed")
