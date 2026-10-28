@@ -282,7 +282,7 @@ func (f *Fabric) Acquire(id, agentID string, ttl time.Duration) (uint64, error) 
 		// the task, but Acquire is a public grant point, so a direct caller must
 		// not be able to start the retry early either.
 		return 0, fmt.Errorf("task %s is in retry backoff until %s: %w",
-			t.ID, t.NextAttemptAt.UTC().Format(time.RFC3339), ErrTaskNotReady)
+			t.ID, t.NextAttemptAt.UTC().Format(time.RFC3339Nano), ErrTaskNotReady)
 	}
 	// HITL approval guard: placed after
 	// deadline and backoff so those errors take precedence (D3 decision: a
@@ -473,8 +473,12 @@ func (f *Fabric) Fail(id, agentID string, epoch uint64, cause error) error {
 		// so the default path keeps its exact payload.
 		var readyExtras map[string]any
 		if !t.NextAttemptAt.IsZero() {
+			// Nanoseconds, not seconds: the delay is jittered, so its sub-second part is real. A
+			// second-resolution carrier truncated it, and a restart then fired the retry up to a
+			// second early — a backoff that survives a crash only approximately is a backoff that
+			// can be defeated by restarting.
 			readyExtras = map[string]any{
-				restoreKeyNextAttemptAt: t.NextAttemptAt.UTC().Format(time.RFC3339),
+				restoreKeyNextAttemptAt: t.NextAttemptAt.UTC().Format(time.RFC3339Nano),
 			}
 		}
 		pending = append(pending, f.recordWithExtrasLocked(t, EventTaskReady, readyExtras))

@@ -82,11 +82,17 @@ func TestFail_BackoffDelaysTheRetryPastBothGates(t *testing.T) {
 	got, err := f.Task("t-backoff")
 	require.NoError(t, err)
 	require.Equal(t, StateReady, got.State, "a retryable failure still requeues")
-	assert.Equal(t, now.Add(time.Second), got.NextAttemptAt, "the first retry waits one base")
+	// The delay is jittered within [base/2, base]; what must hold is the window, not the exact
+	// instant. Exact doubling is what produces synchronised retries across tasks.
+	delay := got.NextAttemptAt.Sub(*now)
+	assert.GreaterOrEqual(t, delay, time.Second/2, "the first retry waits about one base")
+	assert.LessOrEqual(t, delay, time.Second)
+	assert.NotContains(t, f.ReadyTasks(), "t-backoff", "a pending retry is not schedulable yet")
 
-	// Operators read the schedule off the event stream: the ready event must say
-	// when the retry is due, not leave it looking stuck.
-	assert.Equal(t, now.Add(time.Second).UTC().Format(time.RFC3339),
+	// Operators read the schedule off the event stream: the ready event must say when the retry is
+	// due. It has to match the value the task actually carries, jitter included — otherwise the
+	// stream and the state disagree about the same retry.
+	assert.Equal(t, got.NextAttemptAt.UTC().Format(time.RFC3339Nano),
 		readyPayload(t, store, "t-backoff")[restoreKeyNextAttemptAt])
 
 	assert.NotContains(t, f.ResumableTasks(), "t-backoff", "the scheduler must not see it yet")
@@ -117,7 +123,9 @@ func TestFail_BackoffEscalatesPerAttempt(t *testing.T) {
 
 	got, err := f.Task("t-escalate")
 	require.NoError(t, err)
-	assert.Equal(t, now.Add(2*time.Second), got.NextAttemptAt, "the second retry waits two bases")
+	second := got.NextAttemptAt.Sub(*now)
+	assert.GreaterOrEqual(t, second, time.Second, "the second retry waits about two bases")
+	assert.LessOrEqual(t, second, 2*time.Second)
 	assert.Equal(t, 2, got.RetryPolicy.Attempts)
 
 	advance(now, 2*time.Second)
@@ -125,7 +133,9 @@ func TestFail_BackoffEscalatesPerAttempt(t *testing.T) {
 
 	got, err = f.Task("t-escalate")
 	require.NoError(t, err)
-	assert.Equal(t, now.Add(4*time.Second), got.NextAttemptAt, "the third retry waits four bases")
+	third := got.NextAttemptAt.Sub(*now)
+	assert.GreaterOrEqual(t, third, 2*time.Second, "the third retry waits about four bases")
+	assert.LessOrEqual(t, third, 4*time.Second)
 }
 
 // TestFail_BackoffRespectsCap pins the ceiling: escalation stops at BackoffMax
@@ -141,7 +151,10 @@ func TestFail_BackoffRespectsCap(t *testing.T) {
 
 	got, err := f.Task("t-cap")
 	require.NoError(t, err)
-	assert.Equal(t, now.Add(3*time.Second), got.NextAttemptAt, "the third retry is capped at BackoffMax")
+	// Jittered inside [cap/2, cap]: the ceiling still bounds the wait, which is the property.
+	capped := got.NextAttemptAt.Sub(*now)
+	assert.GreaterOrEqual(t, capped, 3*time.Second/2, "the third retry waits about BackoffMax")
+	assert.LessOrEqual(t, capped, 3*time.Second, "and never exceeds it")
 }
 
 // TestFail_ZeroBackoffKeepsLegacyImmediateRequeue is the 0.3.2 compatibility
@@ -191,7 +204,9 @@ func TestRestore_PreservesPendingRetryBackoff(t *testing.T) {
 
 	assert.NotContains(t, rebuilt.ResumableTasks(), "t-restore", "a restart must not retry early")
 
-	advance(&rebuiltClock, time.Second)
+	// Serve exactly the pending delay: with jitter the due time is not a fixed multiple of the base,
+	// so advancing by the base alone would assert against the jitter rather than against the restore.
+	advance(&rebuiltClock, before.NextAttemptAt.Sub(rebuiltClock))
 	assert.Contains(t, rebuilt.ResumableTasks(), "t-restore", "and it must return once the delay is served")
 }
 

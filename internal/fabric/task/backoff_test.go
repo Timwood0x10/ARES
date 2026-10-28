@@ -61,7 +61,29 @@ func TestNextAttemptAt(t *testing.T) {
 	now := time.Date(2026, 10, 10, 12, 0, 0, 0, time.UTC)
 
 	assert.True(t, nextAttemptAt(now, 1, 0, 0).IsZero(), "no backoff must leave the due time unset")
-	assert.Equal(t, now.Add(2*time.Second), nextAttemptAt(now, 2, time.Second, 0))
+
+	// Jittered: the second attempt waits somewhere in [base, 2·base]. The upper bound is the nominal
+	// ladder value; the lower bound is why jitter cannot become a busy loop.
+	got := nextAttemptAt(now, 2, time.Second, 0)
+	delay := got.Sub(now)
+	assert.GreaterOrEqual(t, delay, time.Second, "never earlier than the previous rung")
+	assert.LessOrEqual(t, delay, 2*time.Second, "never later than the nominal value")
+}
+
+// TestJitterDelay_SpreadsWithoutShortening pins the two properties the scheduler relies on: the
+// delay stays inside [d/2, d], and it is not the same value every time (a constant would be a
+// jitter that does nothing).
+func TestJitterDelay_SpreadsWithoutShortening(t *testing.T) {
+	const d = 4 * time.Second
+	seen := make(map[time.Duration]bool, 32)
+	for i := 0; i < 32; i++ {
+		got := jitterDelay(d)
+		assert.GreaterOrEqual(t, got, d/2)
+		assert.LessOrEqual(t, got, d)
+		seen[got] = true
+	}
+	assert.Greater(t, len(seen), 1, "a constant delay is not jitter")
+	assert.Equal(t, time.Duration(0), jitterDelay(0))
 }
 
 // TestBackoffMillis pins the persistence conversion: durations travel as whole

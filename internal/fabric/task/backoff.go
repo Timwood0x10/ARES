@@ -1,6 +1,9 @@
 package taskfabric
 
-import "time"
+import (
+	"math/rand/v2"
+	"time"
+)
 
 // overflowGuard is the largest delay this file will return from doubling: 2^62
 // nanoseconds is about 146 years, so a real policy never reaches it. Doubling
@@ -50,7 +53,26 @@ func nextAttemptAt(now time.Time, attempts int, base, max time.Duration) time.Ti
 	if delay <= 0 {
 		return time.Time{}
 	}
-	return now.Add(delay)
+	return now.Add(jitterDelay(delay))
+}
+
+// jitterDelay spreads a delay over the second half of its window: [d/2, d].
+//
+// Without it every task that failed at the same moment retries at the same moment, so a dependency
+// coming back up is hit by the whole backlog in one burst — the retry policy itself becomes the
+// outage. Half-open jitter (rather than ±20%) is chosen because it can never schedule a retry
+// EARLIER than half the intended wait, so it cannot turn backoff into a busy loop.
+//
+// Escalation therefore holds in expectation, not per sample: attempt N+1 draws from
+// [2^N·base/2, 2^N·base], which overlaps the window of attempt N. That is the intended trade —
+// exact doubling is what produces synchronised retries.
+func jitterDelay(d time.Duration) time.Duration {
+	if d <= 1 {
+		return d
+	}
+	half := d / 2
+	//nolint:gosec // scheduling jitter only: predictability costs a retry burst, not a secret
+	return half + time.Duration(rand.Int64N(int64(half)+1))
 }
 
 // backoffMillis converts a policy duration into the whole milliseconds stored in

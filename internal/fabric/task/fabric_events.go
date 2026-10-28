@@ -190,7 +190,7 @@ func (f *Fabric) recordWithExtrasLocked(t *Task, typ EventType, extras map[strin
 		// only when configured/pending, so the default path keeps its exact
 		// payload.
 		if !t.NextAttemptAt.IsZero() {
-			payload[restoreKeyNextAttemptAt] = t.NextAttemptAt.UTC().Format(time.RFC3339)
+			payload[restoreKeyNextAttemptAt] = t.NextAttemptAt.UTC().Format(time.RFC3339Nano)
 		}
 		if base := backoffMillis(t.BackoffBase); base > 0 {
 			payload[restoreKeyBackoffBaseMS] = base
