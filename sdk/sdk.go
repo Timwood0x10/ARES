@@ -357,7 +357,12 @@ func (r *Runtime) Close() {
 	if r.evidencePool != nil {
 		_ = r.evidencePool.Close()
 	}
-	r.llmSvc.Close()
+	// Guarded like every other optional subsystem above: New populates this late in construction,
+	// so a Runtime that failed before that point (or a zero value) must still Close cleanly. A nil
+	// interface call is a panic, not a no-op.
+	if r.llmSvc != nil {
+		r.llmSvc.Close()
+	}
 	if r.memMgr != nil {
 		stopCtx, stopCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer stopCancel()
