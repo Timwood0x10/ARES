@@ -35,14 +35,14 @@ func TestBudgetOK_TokenExhaustionStopsQuanta(t *testing.T) {
 
 	// Within budget: the agent is still affordable.
 	sched.consumeBudget("bounded", 40)
-	if ok, _ := sched.admissible("bounded"); !ok {
+	if ok, _ := sched.admissible(context.Background(), "bounded"); !ok {
 		t.Fatal("40/100 tokens used: agent must remain affordable")
 	}
 
 	// A quantum spends past the budget: consumption clamps to 100 and the
 	// gate must now refuse further work.
 	sched.consumeBudget("bounded", 80)
-	if ok, reason := sched.admissible("bounded"); ok {
+	if ok, reason := sched.admissible(context.Background(), "bounded"); ok {
 		t.Fatal("exhausted token budget (100/100) must block further quanta")
 	} else if reason != agentfabric.StopBudgetExhausted {
 		t.Fatalf("reason = %s, want %s", reason, agentfabric.StopBudgetExhausted)
@@ -77,7 +77,7 @@ func TestBudgetOK_UnlimitedStaysOpen(t *testing.T) {
 	sched.WithGovernance(agents)
 
 	sched.consumeBudget("unlimited", 1_000_000)
-	if ok, _ := sched.admissible("unlimited"); !ok {
+	if ok, _ := sched.admissible(context.Background(), "unlimited"); !ok {
 		t.Fatal("a zero-budget (unlimited) agent must never be blocked")
 	}
 }

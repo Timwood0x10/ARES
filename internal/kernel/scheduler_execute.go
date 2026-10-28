@@ -148,33 +148,33 @@ func (s *Scheduler) executeUnbound(ctx context.Context, taskID string) error {
 // Release is epoch-fenced (only the current holder can release) and
 // PRESERVES the checkpoint, so the "resume, don't restart" contract holds in
 // cases 1 and 2.
-func (s *Scheduler) handleStaleWinner(taskID, winner string, epoch uint64) error {
+func (s *Scheduler) handleStaleWinner(ctx context.Context, taskID, winner string, epoch uint64) error {
 	if s.HasCapableExecutor(taskID) {
 		if releaseErr := s.fabric.ReleaseReason(taskID, winner, epoch, agentfabric.StopUnfit.String()); releaseErr != nil {
-			log.Error(context.Background(), "handleStaleWinner",
+			log.Error(ctx, "handleStaleWinner",
 				"kernel scheduler: release for stale winner failed", releaseErr,
 				"task_id", taskID, "winner", winner)
 			return nil
 		}
-		log.Info(context.Background(), "handleStaleWinner",
+		log.Info(ctx, "handleStaleWinner",
 			"kernel scheduler: reclaimed task from a winner with no live executor; another capable executor will pick it up",
 			"task_id", taskID, "winner", winner, "reason", agentfabric.StopUnfit.String())
 		return nil
 	}
 	if s.hasRecoveryHint() {
 		if releaseErr := s.fabric.ReleaseReason(taskID, winner, epoch, agentfabric.StopUnfit.String()); releaseErr != nil {
-			log.Error(context.Background(), "handleStaleWinner",
+			log.Error(ctx, "handleStaleWinner",
 				"kernel scheduler: release for stale winner failed", releaseErr,
 				"task_id", taskID, "winner", winner)
 			return nil
 		}
-		log.Warn(context.Background(), "handleStaleWinner",
+		log.Warn(ctx, "handleStaleWinner",
 			"kernel scheduler: winner no longer executable; released to READY and nominated for recovery",
 			"winner", winner, "task_id", taskID, "reason", agentfabric.StopUnfit.String())
 		s.notifyRecovery(taskID)
 		return nil
 	}
-	log.Warn(context.Background(), "handleStaleWinner",
+	log.Warn(ctx, "handleStaleWinner",
 		"kernel scheduler: winner no longer executable and no capable replacement or recovery loop exists; task stays leased until TTL expiry",
 		"winner", winner, "task_id", taskID, "reason", agentfabric.StopUnfit.String())
 	return nil
@@ -258,7 +258,7 @@ func (s *Scheduler) executeWithCandidates(ctx context.Context, taskID string, ca
 	// filterBudgetAffordable — the post-acquire gate below releases the task
 	// back to READY, which with a sole exhausted candidate became a silent
 	// acquire/release livelock).
-	cands = s.filterBudgetAffordable(cands)
+	cands = s.filterBudgetAffordable(ctx, cands)
 	if len(cands) == 0 {
 		// Distinct code AND distinct sentinel for the admission-filtered empty
 		// pool: "every capable agent is budget/deadline/reserve-exhausted" and
@@ -299,7 +299,7 @@ func (s *Scheduler) executeWithCandidates(ctx context.Context, taskID string, ca
 			cands[i].Confidence = conf
 		}
 	}
-	winner, epoch, err := s.fabric.Schedule(taskID, cands, s.ttl)
+	winner, epoch, err := s.fabric.Schedule(taskID, cands, s.leaseTTL())
 	// Record the scheduling decision for the Observatory:
 	// candidate breakdown + winner. Recorded even on failure (e.g. no capable
 	// candidate) so the panel explains why a task stayed unscheduled.
@@ -334,7 +334,7 @@ func (s *Scheduler) executeWithCandidates(ctx context.Context, taskID string, ca
 	// mode, or a recovery-bound static executor) fall back to the registry.
 	executor, fallback := s.resolveExecutor(winner)
 	if executor == nil {
-		return s.handleStaleWinner(taskID, winner, epoch)
+		return s.handleStaleWinner(ctx, taskID, winner, epoch)
 	}
 	if fallback {
 		// N-3 observability: in peer mode the fabric had no live agent for the
@@ -379,7 +379,7 @@ func (s *Scheduler) executeWithCandidates(ctx context.Context, taskID string, ca
 	// boundary — the fabric's state machine (ReleaseReason→READY) drives the
 	// requeue. The checkpoint is preserved, so this is a hand-over, not a
 	// restart.
-	if ok, reason := s.admissible(winner); !ok {
+	if ok, reason := s.admissible(ctx, winner); !ok {
 		if releaseErr := s.fabric.ReleaseReason(taskID, winner, epoch, reason.String()); releaseErr != nil {
 			log.Error(ctx, "executeWithCandidates",
 				"kernel scheduler: reclaim for inadmissible winner failed", releaseErr,
@@ -474,7 +474,7 @@ func (s *Scheduler) executeWithCandidates(ctx context.Context, taskID string, ca
 	stopHeartbeat()
 	clearBusy()
 	s.afterQuantum(ctx, taskID, winner, err)
-	s.endQuantumOutcome(winner, tk.Capability, taskID, err, quantumLatency, retries)
+	s.endQuantumOutcome(ctx, winner, tk.Capability, taskID, err, quantumLatency, retries)
 	slotReleased = true
 	// Post-quantum bookkeeping: record the quantum's consumption (its LLM
 	// tokens + 1 tool round) so the next gate sees the new balance. Runs even
@@ -493,7 +493,7 @@ func (s *Scheduler) executeWithCandidates(ctx context.Context, taskID string, ca
 			s.Scheduled.Add(1)
 		}
 	}
-	s.unbindRecoveryExecutorAfterTerminal(taskID)
+	s.unbindRecoveryExecutorAfterTerminal(ctx, taskID)
 	return err
 }
 
@@ -517,7 +517,7 @@ func (s *Scheduler) startLeaseHeartbeat(ctx context.Context, taskID, winner stri
 		})
 	}
 	qg.Go(func() error {
-		interval := leaseHeartbeatInterval(s.ttl)
+		interval := leaseHeartbeatInterval(s.leaseTTL())
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
@@ -527,7 +527,7 @@ func (s *Scheduler) startLeaseHeartbeat(ctx context.Context, taskID, winner stri
 			case <-qgCtx.Done():
 				return nil
 			case <-ticker.C:
-				if rerr := s.fabric.Renew(taskID, winner, epoch, s.ttl); rerr != nil {
+				if rerr := s.fabric.Renew(taskID, winner, epoch, s.leaseTTL()); rerr != nil {
 					// Ownership was lost (preempted, requeued after expiry,
 					// finalized) or the lease already expired — either way the
 					// holder must stop renewing, so the error is terminal for

@@ -287,7 +287,12 @@ func (s *Scheduler) WithStaticPoolHybrid() *Scheduler {
 // (executor count, then live fabric candidates). Returns the scheduler for
 // chaining.
 func (s *Scheduler) WithMaxConcurrent(n int) *Scheduler {
+	// Guarded, not merely documented: the chain is fluent and the object is shared with a running
+	// loop, so "call before Run" is a convention nothing enforces. A concurrent call while draining
+	// would be a data race on a field the loop reads on every tick.
+	s.execMu.Lock()
 	s.maxConcurrent = n
+	s.execMu.Unlock()
 	return s
 }
 
@@ -297,7 +302,9 @@ func (s *Scheduler) WithMaxConcurrent(n int) *Scheduler {
 // scheduler for chaining.
 func (s *Scheduler) WithTTL(ttl time.Duration) *Scheduler {
 	if ttl > 0 {
+		s.execMu.Lock()
 		s.ttl = ttl
+		s.execMu.Unlock()
 	}
 	return s
 }
@@ -364,7 +371,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 							log.Error(ctx, "Run", "kernel scheduler: panic in preemption sweep, continuing", nil, "panic", r)
 						}
 					}()
-					s.PreemptLowerPriority(s.fabric.ResumableTasks())
+					s.PreemptLowerPriority(ctx, s.fabric.ResumableTasks())
 				}()
 			}
 		}
@@ -512,13 +519,14 @@ func (s *Scheduler) Snapshot() SchedulerSnapshot {
 	s.execMu.RLock()
 	execN := len(s.executors)
 	boundN := len(s.boundExecutors)
+	ttl, maxConcurrent := s.ttl, s.maxConcurrent
 	s.execMu.RUnlock()
 
 	snap := SchedulerSnapshot{
 		PollInterval:     s.preemptInterval(), // same guard/default as both tickers
 		PreemptInterval:  s.preemptInterval(),
-		TTL:              s.ttl,
-		MaxConcurrent:    s.maxConcurrent,
+		TTL:              ttl,
+		MaxConcurrent:    maxConcurrent,
 		EventDriven:      s.eventStore != nil,
 		Executors:        execN,
 		BoundExecutors:   boundN,
@@ -564,4 +572,14 @@ func (s *Scheduler) HasSchedulerMetrics() bool {
 	}
 	_, noop := s.metrics.(noOpSchedulerMetrics)
 	return !noop
+}
+
+// leaseTTL reads the lease duration under the same lock the setter takes.
+//
+// Every read goes through here rather than touching s.ttl directly: WithTTL used to be an
+// unguarded write, so a caller that set it while draining raced the Schedule path that reads it.
+func (s *Scheduler) leaseTTL() time.Duration {
+	s.execMu.RLock()
+	defer s.execMu.RUnlock()
+	return s.ttl
 }

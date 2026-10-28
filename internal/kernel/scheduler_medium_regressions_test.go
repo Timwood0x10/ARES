@@ -134,7 +134,7 @@ func TestEndQuantumOutcomeNeutralForNonExecutorConditions(t *testing.T) {
 			tracker.Begin("coder")
 			tracker.End("coder", true)
 
-			sched.endQuantumOutcome("coder", "code", "t-x", tc.err, time.Millisecond, 0)
+			sched.endQuantumOutcome(context.Background(), "coder", "code", "t-x", tc.err, time.Millisecond, 0)
 
 			if got := tracker.Confidence("coder"); got != 1.0 {
 				t.Fatalf("confidence must stay 1.0 (neutral outcome), got %v", got)
@@ -409,7 +409,7 @@ func TestReconcileForgetsDeadAgentTrackerEntries(t *testing.T) {
 	// yet) must survive the sweep.
 	tracker.SetPriority("cfg-peer", 7)
 
-	sched.reconcileFabricDeaths()
+	sched.reconcileFabricDeaths(context.Background())
 
 	snap := tracker.Snapshot()
 	for _, a := range snap.Agents {

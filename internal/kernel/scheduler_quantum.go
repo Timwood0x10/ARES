@@ -273,10 +273,10 @@ func quantumRetries(err error) int {
 // Score's confidence factor would make the preempted task permanently
 // unschedulable. Such rejections end NEUTRAL — load is released but no
 // success/failure enters the history, and attribution is skipped.
-func (s *Scheduler) endQuantumOutcome(winner, capability, taskID string, err error, latency time.Duration, retries int) {
+func (s *Scheduler) endQuantumOutcome(ctx context.Context, winner, capability, taskID string, err error, latency time.Duration, retries int) {
 	if errors.Is(err, taskfabric.ErrNotOwner) || errors.Is(err, taskfabric.ErrEpochMismatch) {
 		s.tracker.EndNeutral(winner)
-		log.Debug(context.Background(), "endQuantumOutcome",
+		log.Debug(ctx, "endQuantumOutcome",
 			"kernel scheduler: quantum ended by preemption fencing (benign); outcome not attributed",
 			"task_id", taskID, "winner", winner)
 		return
@@ -291,7 +291,7 @@ func (s *Scheduler) endQuantumOutcome(winner, capability, taskID string, err err
 	if errors.Is(err, taskfabric.ErrIllegalState) || errors.Is(err, taskfabric.ErrTaskNotFound) ||
 		errors.Is(err, context.Canceled) {
 		s.tracker.EndNeutral(winner)
-		log.Debug(context.Background(), "endQuantumOutcome",
+		log.Debug(ctx, "endQuantumOutcome",
 			"kernel scheduler: quantum ended by a non-executor condition; outcome not attributed",
 			"task_id", taskID, "winner", winner, "error", err)
 		return

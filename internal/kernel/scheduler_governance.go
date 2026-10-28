@@ -31,7 +31,7 @@ func (s *Scheduler) WithGovernance(g *agentfabric.Fabric) *Scheduler {
 // gate below call the SAME predicate, so a candidate can never pass one and
 // fail the other — the drift that once turned a sole exhausted candidate into
 // an acquire/release livelock.
-func (s *Scheduler) admissible(winner string) (bool, agentfabric.StopReason) {
+func (s *Scheduler) admissible(ctx context.Context, winner string) (bool, agentfabric.StopReason) {
 	if s.governance == nil {
 		return true, agentfabric.StopUnknown
 	}
@@ -40,7 +40,7 @@ func (s *Scheduler) admissible(winner string) (bool, agentfabric.StopReason) {
 		// Unknown agent (not spawned via the fabric) → don't block. Debug,
 		// not Error: an ungoverned candidate is a legitimate wiring mode
 		// (static SDK registry), not a fault.
-		log.Debug(context.Background(), "admissible",
+		log.Debug(ctx, "admissible",
 			"kernel scheduler: agent not governed by the fabric, admitting",
 			"agent", winner, "error", err)
 		return true, agentfabric.StopUnknown
@@ -49,7 +49,7 @@ func (s *Scheduler) admissible(winner string) (bool, agentfabric.StopReason) {
 		// The per-candidate detail behind the aggregated
 		// no_affordable_candidate line: WHICH agent was refused and WHY.
 		// Debug because this runs per candidate per drain.
-		log.Debug(context.Background(), "admissible",
+		log.Debug(ctx, "admissible",
 			"kernel scheduler: agent inadmissible for the next quantum",
 			"agent", winner, "reason", reason.String())
 	}
@@ -89,13 +89,13 @@ func (s *Scheduler) consumeBudget(winner string, tokens int) {
 // that could not run. Filtering first leaves the task in the throttled "no
 // admissible candidate" wait state until another agent appears or the excluded
 // one is replaced (budget counters reset only on respawn).
-func (s *Scheduler) filterBudgetAffordable(cands []taskfabric.Candidate) []taskfabric.Candidate {
+func (s *Scheduler) filterBudgetAffordable(ctx context.Context, cands []taskfabric.Candidate) []taskfabric.Candidate {
 	if s.governance == nil {
 		return cands
 	}
 	affordable := make([]taskfabric.Candidate, 0, len(cands))
 	for _, cand := range cands {
-		if ok, _ := s.admissible(cand.AgentID); ok {
+		if ok, _ := s.admissible(ctx, cand.AgentID); ok {
 			affordable = append(affordable, cand)
 		}
 	}

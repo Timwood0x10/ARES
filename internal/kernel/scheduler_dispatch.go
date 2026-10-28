@@ -59,7 +59,7 @@ func (s *Scheduler) drain(ctx context.Context) {
 	// each spawn. Every drain drops registrations whose fabric entry is gone,
 	// EXCEPT recovery-bound replacements (they are deliberately outside the
 	// fabric; they are unregistered at terminal state).
-	s.reconcileFabricDeaths()
+	s.reconcileFabricDeaths(ctx)
 
 	// Work source: READY tasks (new work) plus SUSPENDED tasks (a yielded
 	// quantum the scheduler continues via re-acquire — the SUSPENDED
@@ -77,7 +77,7 @@ func (s *Scheduler) drain(ctx context.Context) {
 	// drain-site call runs BEFORE this drain spawns its own goroutines —
 	// between quanta. (The background sweeper in Run may additionally preempt
 	// mid-quantum; that is safe by fencing — see PreemptLowerPriority.)
-	s.PreemptLowerPriority(tasks)
+	s.PreemptLowerPriority(ctx, tasks)
 	limit := s.drainLimit()
 drainLoop:
 	for i, taskID := range tasks {
@@ -137,7 +137,9 @@ drainLoop:
 // time while capable peers sat idle. The floor of 1 keeps the drain alive
 // before any agent exists; 32 caps goroutine fan-out per drain.
 func (s *Scheduler) drainLimit() int {
+	s.execMu.RLock()
 	limit := s.maxConcurrent
+	s.execMu.RUnlock()
 	if limit <= 0 {
 		// Auto mode: the STATIC registry and the fabric population are two
 		// different candidate sources, not a fallback chain. A recovery-bound
@@ -224,7 +226,7 @@ func (s *Scheduler) fabricCandidateCount() int {
 // checkpoint preserved) and the stale holder's late completion is rejected by
 // the fencing token, so no quantum is ever double-applied — its in-flight
 // work is simply discarded and resumed later.
-func (s *Scheduler) PreemptLowerPriority(ready []string) {
+func (s *Scheduler) PreemptLowerPriority(ctx context.Context, ready []string) {
 	// The guard must ask "does this deployment HAVE executors", not "is one free right now":
 	// all-busy is precisely when preemption is the only way a high-priority task can start, so
 	// gating on idle agents skipped preemption in the one situation it exists for.
@@ -292,7 +294,7 @@ func (s *Scheduler) PreemptLowerPriority(ready []string) {
 			continue
 		}
 		preempted++
-		log.Info(context.Background(), "PreemptLowerPriority",
+		log.Info(ctx, "PreemptLowerPriority",
 			"kernel scheduler: preempted for higher-priority work",
 			"task_id", rt.ID, "priority", rt.Priority, "max_ready", maxReady)
 	}

@@ -50,7 +50,7 @@ func TestReconcileFabricDeaths_UnregistersKilledAgent(t *testing.T) {
 		t.Fatalf("kill: %v", err)
 	}
 
-	sched.reconcileFabricDeaths()
+	sched.reconcileFabricDeaths(context.Background())
 	requireExecutorCount(t, sched, 0,
 		"killed agent's static registration must be unregistered")
 }
@@ -83,7 +83,7 @@ func TestReconcileFabricDeaths_KeepsLiveAndBound(t *testing.T) {
 	}
 	sched.RegisterExecutorForTask("t-recover", "recovery-x", boundExec)
 
-	sched.reconcileFabricDeaths()
+	sched.reconcileFabricDeaths(context.Background())
 
 	if _, ok := allIDs(sched)["live-1"]; !ok {
 		t.Fatal("live fabric agent's registration must survive reconciliation")
@@ -100,7 +100,7 @@ func TestReconcileFabricDeaths_NilFabricNoOp(t *testing.T) {
 	sched := New(fabric, map[string]CapabilityExecutor{}, NewLoadTracker())
 	sched.RegisterExecutor("solo", &reconcileProbe{id: "solo", typ: "code"})
 
-	sched.reconcileFabricDeaths() // must not panic
+	sched.reconcileFabricDeaths(context.Background()) // must not panic
 
 	requireExecutorCount(t, sched, 1)
 }
