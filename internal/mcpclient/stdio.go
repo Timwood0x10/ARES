@@ -4,11 +4,13 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
 	"time"
 )
 
@@ -32,11 +34,40 @@ func newStdioScanner(r io.Reader) *bufio.Scanner {
 }
 
 // stdioTransport implements JSON-RPC over stdin/stdout.
+//
+// Frames are read by ONE goroutine that dispatches responses to the waiting caller by id. The
+// earlier design started a scanner per call and relied on the client mutex for serialization —
+// which broke the moment a call timed out: the caller returned and released the mutex while its
+// scanner was still reading. To unblock that scanner the timeout path closed stdin, and closing it
+// is fatal (it is the child's input pipe): every later call failed to write, and there was no
+// reconnect, so one slow response retired that MCP server for the life of the process.
+//
+// A timeout now only removes the waiter. The frame arrives later, finds no waiter, and is dropped.
 type stdioTransport struct {
 	cmd    *exec.Cmd
 	stdin  io.WriteCloser
+	name   string
 	stdout *bufio.Scanner
+
+	mu      sync.Mutex
+	pending map[int]chan rpcResult
+	closed  bool
+
+	// writeMu serializes frame writes: roundTrip and notify can interleave, and a JSON-RPC line
+	// split across two writers would corrupt the stream.
+	writeMu      sync.Mutex
+	readerDone   chan struct{}
+	readerActive bool
 }
+
+// rpcResult is one response (or read error) delivered to a waiting call.
+type rpcResult struct {
+	resp *jsonrpcResponse
+	err  error
+}
+
+// errConnectionClosed is returned when the child's stdout reached EOF while a call was waiting.
+var errConnectionClosed = errors.New("connection closed")
 
 // ConnectStdio connects to an MCP server via stdio transport.
 //
@@ -49,8 +80,8 @@ type stdioTransport struct {
 // with "broken pipe" and WithMCP was unusable (F-02). A handshake failure
 // still kills the child here; after a successful connect, only Close does.
 func ConnectStdio(ctx context.Context, name, command string, args []string) (*Client, error) {
-	if !filepath.IsAbs(command) {
-		return nil, fmt.Errorf("command must be an absolute path, got: %s", command)
+	if err := ValidateStdioCommand(command); err != nil {
+		return nil, err
 	}
 
 	// Detached lifetime, bounded handshake: the process runs until Close,
@@ -62,7 +93,9 @@ func ConnectStdio(ctx context.Context, name, command string, args []string) (*Cl
 	// handshake stays bounded via initialize(ctx); the process is owned by
 	// Client.Close. IsAbs check above guards the binary path.
 	cmd := exec.Command(command, args...)
-	cmd.Stderr = os.Stderr
+	// Attributed and bounded: several MCP servers run at once, and a child that logs in a loop must
+	// not be able to bury the parent's structured log (see stderrDrain).
+	cmd.Stderr = newStderrDrain(name, os.Stderr)
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -78,10 +111,15 @@ func ConnectStdio(ctx context.Context, name, command string, args []string) (*Cl
 	}
 
 	tr := &stdioTransport{
-		cmd:    cmd,
-		stdin:  stdin,
-		stdout: newStdioScanner(stdout),
+		cmd:        cmd,
+		stdin:      stdin,
+		name:       name,
+		stdout:     newStdioScanner(stdout),
+		pending:    make(map[int]chan rpcResult),
+		readerDone: make(chan struct{}),
 	}
+	// start the reader BEFORE the handshake: initialize is a round-trip like any other.
+	tr.ensureReader()
 
 	c := &Client{
 		name:      name,
@@ -112,59 +150,130 @@ func frameID(raw []byte) (json.RawMessage, bool) {
 }
 
 func (tr *stdioTransport) roundTrip(ctx context.Context, req jsonrpcRequest) (*jsonrpcResponse, error) {
+	tr.ensureReader()
 	data, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	if _, err := fmt.Fprintf(tr.stdin, "%s\n", data); err != nil {
+	ch := make(chan rpcResult, 1)
+	tr.mu.Lock()
+	if tr.closed {
+		tr.mu.Unlock()
+		return nil, errConnectionClosed
+	}
+	tr.pending[req.ID] = ch
+	tr.mu.Unlock()
+	// The waiter leaves on every exit path, including a timeout: a late response then finds no
+	// entry and is discarded by the reader instead of blocking it.
+	defer func() {
+		tr.mu.Lock()
+		delete(tr.pending, req.ID)
+		tr.mu.Unlock()
+	}()
+
+	if err := tr.writeFrame(data); err != nil {
 		return nil, fmt.Errorf("write request: %w", err)
 	}
 
-	type result struct {
-		resp *jsonrpcResponse
-		err  error
-	}
-	ch := make(chan result, 1)
-	go func() {
-		// Keep scanning until a frame answers THIS request (#47): servers
-		// may push notifications (no id) or server-initiated requests
-		// (foreign ids) at any time, and the first frame on stdout is not
-		// necessarily the response. RoundTrips are serialized by the
-		// client mutex, so only one scan goroutine touches the scanner.
-		for tr.stdout.Scan() {
-			raw := tr.stdout.Bytes()
-			id, hasID := frameID(raw)
-			if !hasID {
-				continue // notification — not a response
-			}
-			var frameIDVal int
-			if err := json.Unmarshal(id, &frameIDVal); err != nil || frameIDVal != req.ID {
-				continue // response/request for another id — not ours
-			}
-			var resp jsonrpcResponse
-			if err := json.Unmarshal(raw, &resp); err != nil {
-				ch <- result{nil, err}
-				return
-			}
-			ch <- result{&resp, nil}
-			return
-		}
-		ch <- result{nil, fmt.Errorf("connection closed")}
-	}()
-
+	timer := time.NewTimer(requestTimeout)
+	defer timer.Stop()
 	select {
 	case r := <-ch:
 		return r.resp, r.err
 	case <-ctx.Done():
-		// Context cancelled — close stdin to unblock the scan goroutine.
-		_ = tr.stdin.Close()
+		// The caller gave up. The CONNECTION does not: the reader keeps running, so the next call
+		// works and the responses of both are still matched by id.
 		return nil, ctx.Err()
-	case <-time.After(30 * time.Second):
-		// Timeout — close stdin to unblock the scan goroutine, preventing leak.
-		_ = tr.stdin.Close()
+	case <-timer.C:
 		return nil, fmt.Errorf("timeout waiting for response")
+	case <-tr.readerDone:
+		return nil, errConnectionClosed
 	}
+}
+
+// requestTimeout bounds one round-trip when the caller's context has no deadline of its own.
+const requestTimeout = 30 * time.Second
+
+// writeFrame writes one JSON-RPC frame, bounded.
+//
+// The pipe write is a syscall on an *os.File, so it carries a deadline when the platform supports
+// one; that bounds the write without abandoning a goroutine and, crucially, without destroying the
+// connection. A wedged child is reported to the caller and the transport stays usable — the bytes
+// may be lost, but a server that stops draining its stdin is already misbehaving.
+func (tr *stdioTransport) writeFrame(frame []byte) error {
+	tr.writeMu.Lock()
+	defer tr.writeMu.Unlock()
+
+	frame = append(frame, '\n')
+	if deadline, ok := tr.stdin.(interface{ SetWriteDeadline(time.Time) error }); ok {
+		_ = deadline.SetWriteDeadline(time.Now().Add(requestTimeout))
+		defer func() { _ = deadline.SetWriteDeadline(time.Time{}) }()
+	}
+	if _, err := tr.stdin.Write(frame); err != nil {
+		return err
+	}
+	return nil
+}
+
+// ensureReader starts the single reader the first time it is needed.
+//
+// Idempotent so a transport built directly (tests) works the same as one built by ConnectStdio —
+// the reader is what matches responses to waiters, so a transport without it can only time out.
+func (tr *stdioTransport) ensureReader() {
+	tr.mu.Lock()
+	if tr.pending == nil {
+		tr.pending = make(map[int]chan rpcResult)
+	}
+	if tr.readerActive {
+		tr.mu.Unlock()
+		return
+	}
+	tr.readerActive = true
+	if tr.readerDone == nil {
+		tr.readerDone = make(chan struct{})
+	}
+	tr.mu.Unlock()
+	go tr.readLoop()
+}
+
+// readLoop owns stdout for the life of the transport: one reader, responses dispatched by id.
+func (tr *stdioTransport) readLoop() {
+	defer close(tr.readerDone)
+	for tr.stdout.Scan() {
+		raw := append([]byte(nil), tr.stdout.Bytes()...)
+		id, hasID := frameID(raw)
+		if !hasID {
+			continue // notification or server-initiated request: nothing to dispatch
+		}
+		var requestedID int
+		if err := json.Unmarshal(id, &requestedID); err != nil {
+			continue
+		}
+
+		tr.mu.Lock()
+		ch := tr.pending[requestedID]
+		tr.mu.Unlock()
+		if ch == nil {
+			// A response nobody is waiting for: the call timed out, and dropping the frame is the
+			// whole point of keeping the connection alive.
+			continue
+		}
+		var resp jsonrpcResponse
+		if err := json.Unmarshal(raw, &resp); err != nil {
+			ch <- rpcResult{nil, err}
+			continue
+		}
+		ch <- rpcResult{&resp, nil}
+	}
+	// EOF or a scan failure: every waiter learns the connection is gone.
+	tr.mu.Lock()
+	tr.closed = true
+	for id, ch := range tr.pending {
+		ch <- rpcResult{nil, errConnectionClosed}
+		delete(tr.pending, id)
+	}
+	tr.mu.Unlock()
 }
 
 func (tr *stdioTransport) notify(ctx context.Context, notif jsonrpcNotification) error {
@@ -177,33 +286,19 @@ func (tr *stdioTransport) notify(ctx context.Context, notif jsonrpcNotification)
 		return ctx.Err()
 	default:
 	}
-	// A wedged child process that stops draining stdin would block the pipe
-	// write forever while the client mutex is held. Bound the write: on ctx
-	// cancellation or timeout, close stdin to unblock the writer and return.
-	writeCh := make(chan error, 1)
-	go func() {
-		_, err := fmt.Fprintf(tr.stdin, "%s\n", data)
-		writeCh <- err
-	}()
-	select {
-	case err := <-writeCh:
-		if err != nil {
-			return fmt.Errorf("write notification: %w", err)
-		}
-		return nil
-	case <-ctx.Done():
-		_ = tr.stdin.Close()
-		return ctx.Err()
-	case <-time.After(30 * time.Second):
-		_ = tr.stdin.Close()
-		return fmt.Errorf("timeout writing notification")
+	if err := tr.writeFrame(data); err != nil {
+		return fmt.Errorf("write notification: %w", err)
 	}
+	return nil
 }
 
 func (tr *stdioTransport) close() error {
 	if tr.cmd == nil || tr.cmd.Process == nil {
 		return nil
 	}
+	tr.mu.Lock()
+	tr.closed = true
+	tr.mu.Unlock()
 	// Close stdin to signal the child to exit, then kill to force-terminate.
 	_ = tr.stdin.Close()
 	if err := tr.cmd.Process.Kill(); err != nil {
@@ -211,5 +306,23 @@ func (tr *stdioTransport) close() error {
 	}
 	// Wait reaps the child process, preventing zombies.
 	_ = tr.cmd.Wait()
+	return nil
+}
+
+// ValidateStdioCommand enforces the single rule both stdio call sites share.
+//
+// The command comes from configuration, not from a model, so this is not an injection boundary — it
+// is a consistency boundary. A relative command is resolved against the process working directory,
+// which means "./helper" silently means a different binary depending on where serve was started,
+// and "../bin/x" reaches outside the deployment. The SDK path has always required an absolute path;
+// the production transport did not, so the same ares.yaml behaved differently depending on which
+// code path opened the server.
+func ValidateStdioCommand(command string) error {
+	if command == "" {
+		return errors.New("command is required")
+	}
+	if !filepath.IsAbs(command) {
+		return fmt.Errorf("command must be an absolute path, got: %s", command)
+	}
 	return nil
 }

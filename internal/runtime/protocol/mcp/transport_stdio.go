@@ -12,6 +12,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/Timwood0x10/ares/internal/mcpclient"
 )
 
 // Max buffer size for reading subprocess stdout lines. MCP tool results can
@@ -69,8 +71,11 @@ func (t *StdioTransport) Start(ctx context.Context) error {
 		return errors.New("transport already started")
 	}
 
-	if t.config.Command == "" {
-		return errors.New("command is required")
+	// Same rule as the SDK's ConnectStdio, enforced at the shared helper rather than duplicated:
+	// a relative command is resolved against the process working directory, so the same config
+	// pointed at a different binary depending on how serve was launched.
+	if err := mcpclient.ValidateStdioCommand(t.config.Command); err != nil {
+		return err
 	}
 
 	t.cmd = exec.CommandContext(ctx, t.config.Command, t.config.Args...) // #nosec G204
