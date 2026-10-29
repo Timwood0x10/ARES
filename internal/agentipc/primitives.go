@@ -212,7 +212,11 @@ func (b *Bus) Request(ctx context.Context, from, to, topic string, payload any, 
 	// recovered by the caller's stack, so without this the whole process dies
 	// on one bad handler. Contained here, a panic fails exactly ONE request
 	// (ErrHandlerPanic), which is the same blast radius as a returned error.
-	go b.invokeHandler(reqCtx, h, req, corrID, from, to)
+	// handlerDone lets the timeout arm tell "the handler finished late" apart from "the handler is
+	// still running". A handler that ignores ctx keeps its goroutine alive for as long as it likes;
+	// the caller has already been answered, so without this the leak is invisible.
+	handlerDone := make(chan struct{})
+	go b.invokeHandler(reqCtx, h, req, corrID, from, to, handlerDone)
 
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
@@ -256,6 +260,15 @@ func (b *Bus) Request(ctx context.Context, from, to, topic string, payload any, 
 	case <-timer.C:
 		replyErr = ErrTimeout
 		outcome = feedback.OutcomeTimeout
+		// The caller is about to be told "timeout"; whether the handler stopped is a different
+		// question, and one nobody could answer before. A handler that ignores ctx keeps its
+		// goroutine (and whatever it holds) alive indefinitely, so make that visible instead of
+		// leaving it to a goroutine dump during the next incident.
+		select {
+		case <-handlerDone:
+		default:
+			b.warnStalledHandler(req, from, to)
+		}
 		return nil, ErrTimeout
 	}
 }
@@ -281,7 +294,8 @@ func (b *Bus) Request(ctx context.Context, from, to, topic string, payload any, 
 //   - corrID: the correlation id the reply must carry.
 //   - from: the initiator agent id (becomes the reply's To).
 //   - to: the target agent id (becomes the reply's From).
-func (b *Bus) invokeHandler(ctx context.Context, h Handler, req *Message, corrID, from, to string) {
+func (b *Bus) invokeHandler(ctx context.Context, h Handler, req *Message, corrID, from, to string, done chan struct{}) {
+	defer close(done)
 	defer func() {
 		r := recover()
 		if r == nil {
@@ -558,5 +572,47 @@ func (b *Bus) allocID() string {
 // allocNow returns the current time (thread-safe via atomic-less read of the
 // now closure; the closure is write-once at construction).
 func (b *Bus) allocNow() time.Time {
-	return b.now()
+	// WithClock writes this field; allocNow is called for every message from handler goroutines, so
+	// reading it bare was a data race that only -race would surface (construct-then-use makes it
+	// benign in production, which is exactly the kind of benign that stays until someone swaps the
+	// clock at runtime).
+	b.clockMu.RLock()
+	now := b.now
+	b.clockMu.RUnlock()
+	if now == nil {
+		return time.Now()
+	}
+	return now()
+}
+
+// stallWarnInterval bounds how often a stalled handler is reported.
+//
+// A handler that ignores cancellation would otherwise emit one warning per request, which is how a
+// log line stops being read. Per bus rather than per handler: the point is "something is stuck", and
+// the first line carries the identifying fields.
+const stallWarnInterval = time.Minute
+
+// warnStalledHandler reports a handler that outlived its caller's timeout, at most once a minute.
+func (b *Bus) warnStalledHandler(req *Message, from, to string) {
+	b.mu.RLock()
+	logger := b.logger
+	b.mu.RUnlock()
+	if logger == nil {
+		return
+	}
+	now := time.Now()
+	b.stallWarnMu.Lock()
+	if !b.stallWarnedAt.IsZero() && now.Sub(b.stallWarnedAt) < stallWarnInterval {
+		b.stallWarnMu.Unlock()
+		return
+	}
+	b.stallWarnedAt = now
+	b.stallWarnMu.Unlock()
+
+	logger.Warn("agentipc: handler still running after the request timed out",
+		"from", from,
+		"to", to,
+		"topic", req.Topic,
+		"message_id", req.ID,
+		"note", "the caller has been answered; the handler goroutine is still alive")
 }
