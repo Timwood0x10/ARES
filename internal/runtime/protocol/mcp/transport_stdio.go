@@ -72,13 +72,14 @@ func (t *StdioTransport) Start(ctx context.Context) error {
 	}
 
 	// Same rule as the SDK's ConnectStdio, enforced at the shared helper rather than duplicated:
-	// a relative command is resolved against the process working directory, so the same config
-	// pointed at a different binary depending on how serve was launched.
-	if err := mcpclient.ValidateStdioCommand(t.config.Command); err != nil {
-		return err
+	// a working-directory-relative command is refused, while a bare name is resolved through PATH and
+	// pinned, so the same configuration means the same binary in both paths.
+	resolved, resolveErr := mcpclient.ResolveStdioCommand(t.config.Command)
+	if resolveErr != nil {
+		return resolveErr
 	}
 
-	t.cmd = exec.CommandContext(ctx, t.config.Command, t.config.Args...) // #nosec G204
+	t.cmd = exec.CommandContext(ctx, resolved, t.config.Args...) // #nosec G204
 
 	if t.config.WorkDir != "" {
 		t.cmd.Dir = t.config.WorkDir

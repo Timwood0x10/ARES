@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -80,9 +81,11 @@ var errConnectionClosed = errors.New("connection closed")
 // with "broken pipe" and WithMCP was unusable (F-02). A handshake failure
 // still kills the child here; after a successful connect, only Close does.
 func ConnectStdio(ctx context.Context, name, command string, args []string) (*Client, error) {
-	if err := ValidateStdioCommand(command); err != nil {
+	resolvedCommand, err := ResolveStdioCommand(command)
+	if err != nil {
 		return nil, err
 	}
+	command = resolvedCommand
 
 	// Detached lifetime, bounded handshake: the process runs until Close,
 	// while initialize below still runs under the caller's ctx (deadline,
@@ -309,20 +312,46 @@ func (tr *stdioTransport) close() error {
 	return nil
 }
 
-// ValidateStdioCommand enforces the single rule both stdio call sites share.
+// ResolveStdioCommand turns a configured command into the absolute path to execute, applying the
+// single rule both stdio call sites share.
 //
 // The command comes from configuration, not from a model, so this is not an injection boundary — it
-// is a consistency boundary. A relative command is resolved against the process working directory,
-// which means "./helper" silently means a different binary depending on where serve was started,
-// and "../bin/x" reaches outside the deployment. The SDK path has always required an absolute path;
-// the production transport did not, so the same ares.yaml behaved differently depending on which
-// code path opened the server.
-func ValidateStdioCommand(command string) error {
+// is a consistency boundary, and the two halves of it are different:
+//
+//   - A path RELATIVE TO THE WORKING DIRECTORY ("./helper", "../bin/x", "bin/x") is refused. It
+//     silently means a different binary depending on where the process was started, which is the
+//     case that turns a configuration mistake into "we ran something else".
+//   - A BARE NAME ("codegraph") is resolved through PATH and the resolved absolute path is what
+//     gets executed. Refusing it would break real deployments: this repository's own example
+//     configuration and documentation use bare names, and Config.Validate only requires non-empty.
+//     Resolving pins the binary at start, so a later PATH change cannot swap it.
+//
+// The SDK path and the production transport both go through here, so the same ares.yaml behaves the
+// same way in both.
+func ResolveStdioCommand(command string) (string, error) {
 	if command == "" {
-		return errors.New("command is required")
+		return "", errors.New("command is required")
 	}
-	if !filepath.IsAbs(command) {
-		return fmt.Errorf("command must be an absolute path, got: %s", command)
+	if filepath.IsAbs(command) {
+		return command, nil
 	}
-	return nil
+	// Anything with a separator is a path, not a name: only names may be looked up, because a
+	// lookup of "./x" would resolve against the working directory.
+	if strings.ContainsRune(command, filepath.Separator) || strings.ContainsRune(command, '/') {
+		return "", fmt.Errorf("command must be an absolute path, got: %s", command)
+	}
+	resolved, err := exec.LookPath(command)
+	if err != nil {
+		return "", fmt.Errorf("command %q not found on PATH: %w", command, err)
+	}
+	if !filepath.IsAbs(resolved) {
+		// LookPath returns a path relative to the current directory when the match came from a
+		// relative PATH entry; make it absolute so the pin is real.
+		abs, absErr := filepath.Abs(resolved)
+		if absErr != nil {
+			return "", fmt.Errorf("command %q resolved to a relative path %q: %w", command, resolved, absErr)
+		}
+		resolved = abs
+	}
+	return resolved, nil
 }
