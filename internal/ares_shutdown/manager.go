@@ -158,7 +158,10 @@ func (m *Manager) executePhase(ctx context.Context, phase Phase) error {
 	onTimeout := handler.onTimeout
 	onPanic := handler.onPanic
 	phaseTimeout := handler.timeout
+	managerTimeout := m.timeout
 	m.mu.RUnlock()
+
+	phaseTimeout = resolvePhaseTimeout(phaseTimeout, managerTimeout)
 
 	if len(callbacks) == 0 {
 		return nil
@@ -335,3 +338,25 @@ func (m *Manager) IsShutdown() bool {
 	// Shutdown has started if we're past PhasePreShutdown
 	return m.currentPhase > PhasePreShutdown
 }
+
+// resolvePhaseTimeout picks the deadline for one phase.
+//
+// A phase registered without a timeout used to become context.WithTimeout(ctx, 0) — an
+// already-cancelled context, so the phase's callbacks were abandoned rather than bounded. The
+// manager's own timeout was the obvious fallback and was never consulted, which made it a setting
+// that appeared to work and did nothing.
+func resolvePhaseTimeout(phase, manager time.Duration) time.Duration {
+	if phase > 0 {
+		return phase
+	}
+	if manager > 0 {
+		return manager
+	}
+	return defaultPhaseTimeout
+}
+
+// defaultPhaseTimeout bounds a phase when neither the registration nor the manager specifies one.
+//
+// The alternative — an unbounded phase — is the failure this package exists to prevent: shutdown
+// that never finishes looks identical to a process that is hung.
+const defaultPhaseTimeout = 30 * time.Second

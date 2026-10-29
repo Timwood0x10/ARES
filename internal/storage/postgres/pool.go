@@ -44,7 +44,7 @@ func NewPool(cfg *Config) (*Pool, error) {
 	db.SetConnMaxLifetime(cfg.ConnMaxLifetime)
 	db.SetConnMaxIdleTime(cfg.ConnMaxIdleTime)
 
-	if err := db.PingContext(context.Background()); err != nil {
+	if err := pingStartup(db, pingTimeoutFor(cfg)); err != nil {
 		return nil, errors.Wrap(err, "failed to ping database")
 	}
 
@@ -443,3 +443,31 @@ func (p *Pool) Begin(ctx context.Context) (*sql.Tx, error) {
 // NOTE: This module uses the standard library's database/sql package
 // which already implements a connection pool. The Pool wrapper provides
 // additional statistics and the "get usage release" pattern.
+
+// defaultPingTimeout bounds the startup connectivity check when the configuration does not say
+// otherwise. Ten seconds is long enough for a slow TLS handshake on a cold connection pool, short
+// enough that a missing database does not look like a hung process.
+const defaultPingTimeout = 10 * time.Second
+
+// pingTimeoutFor resolves the deadline for the startup Ping.
+func pingTimeoutFor(cfg *Config) time.Duration {
+	if cfg != nil && cfg.QueryTimeout > 0 {
+		return cfg.QueryTimeout
+	}
+	return defaultPingTimeout
+}
+
+// pingStartup checks connectivity with a deadline.
+//
+// Every caller of NewPool is a startup or assembly path, so an unreachable database must fail fast
+// and let that layer apply its "best-effort skip" policy. Without a deadline the Ping inherits only
+// the driver's own dial behaviour, and a network black hole turns one missing dependency into a
+// serve that never finishes starting.
+//
+// Separated from NewPool so the deadline can be tested with a driver that blocks until its context
+// is cancelled — the behaviour that matters, rather than the constant that configures it.
+func pingStartup(db *sql.DB, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	return db.PingContext(ctx)
+}
