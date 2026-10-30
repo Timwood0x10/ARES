@@ -804,6 +804,15 @@ func (c *plannerCognition) growToolNodes(
 			continue
 		}
 
+		// The registry is the only authority on what EXISTS. Growth used to trust the model's tool
+		// name: an unknown name has no L1 node (which reads as "permissive"), so it grew a node for a
+		// capability no executor claims — a task that is compiled and then never runs. Refusing here
+		// keeps a hallucinated name from becoming work.
+		if !c.isToolRegistered(toolName) {
+			c.logger.Warn("planner: tool is not registered; skipping",
+				"tool", toolName, "session", sessionID)
+			continue
+		}
 		// Check L1 constraints before growing the node.
 		if !c.isToolEnabled(toolName) {
 			c.logger.Warn("planner: tool disabled by L1 constraint; skipping",
@@ -922,6 +931,22 @@ func (c *plannerCognition) growToolNodes(
 		grown = 1
 	}
 	return grown, rationales, nil
+}
+
+// isToolRegistered reports whether the binder actually exposes this tool.
+//
+// A nil binder keeps the historical permissive behaviour (unit fixtures that never wired one); the
+// production planner always has one, and there the schema list is what the model was advertised.
+func (c *plannerCognition) isToolRegistered(toolName string) bool {
+	if c.binder == nil {
+		return true
+	}
+	for _, schema := range c.binder.GetToolSchemas() {
+		if schema.Name == toolName {
+			return true
+		}
+	}
+	return false
 }
 
 // isToolEnabled reads the L1 ToolClass graph's "enabled" metadata for the
