@@ -5,6 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
+	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -24,6 +27,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/runtime"
 	evolution "github.com/Timwood0x10/ares/internal/runtime/ares_evolution"
 	memory "github.com/Timwood0x10/ares/internal/runtime/memory"
+	"github.com/Timwood0x10/ares/internal/runtime/observability"
 	"github.com/Timwood0x10/ares/internal/runtime/protocol/ahp"
 	core_tools "github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
@@ -107,6 +111,11 @@ func createAndServeAgents(
 	// read enabled/budget/prior at L2 growth time. The L1 graph is NOT
 	// compiled into taskfabric — it is a capability catalog, not an
 	// execution plan (L1 ≠ L2).
+	// Install the operator's per-tool declarations BEFORE the catalogue is built: the boot builder
+	// and the reconciler share one spec function, so both must see the same overrides.
+	if cfg.Kernel.L1 != nil {
+		setToolClassOverrides(cfg.Kernel.L1.Tools)
+	}
 	injectToolClassDAG(ctx, comp, toolBinder)
 
 	subAgents, peerKernel, err := createPeerAgents(
@@ -538,6 +547,10 @@ func injectToolClassDAG(ctx context.Context, comp *ares_bootstrap.Components, to
 	if comp.NewEvolution == nil {
 		return
 	}
+	// Reported before the build: an unmatched entry is a configuration statement about a tool this
+	// process does not have, which is true whether or not the catalogue can be built at all.
+	reportUnmatchedToolClassOverrides(ctx, toolBinder.GetToolSchemas())
+
 	l1DAG, err := buildToolClassDAG(toolBinder.GetToolSchemas())
 	if err != nil {
 		// Zero tools at boot is NOT a reason to stay unwired: a deployment that attaches its tools
@@ -639,6 +652,10 @@ const (
 	l1MetaEnabled = "enabled"
 	l1MetaBudget  = "budget"
 	l1MetaPrior   = "prior"
+	// l1MetaMaxAttempts bounds retries of this tool's task (includes the first attempt).
+	l1MetaMaxAttempts = "max_attempts"
+	// l1MetaTaskTimeout is the total budget of one task of this tool, from creation to completion.
+	l1MetaTaskTimeout = "task_timeout"
 	// Tool-side declaration tags for the other two metadata fields. They exist so all three
 	// have a value today; none of them is a measurement.
 	l1MetaEnabledTag = "enabled"
@@ -668,6 +685,95 @@ func declaredOrDefault(declared, fallback string) string {
 		return fallback
 	}
 	return declared
+}
+
+// toolClassOverrides holds kernel.l1.tools for this process.
+//
+// Set once during wiring and only read afterwards, which is why it is a package-level value: the
+// spec builder is called from the boot path AND from the reconciler, both of which are wired before
+// the loop starts, and threading a config through five wiring signatures would put the same value in
+// five places with nothing keeping them equal. setToolRegistryChangeHook in this file is the same
+// shape for the same reason.
+var toolClassOverrides atomic.Pointer[map[string]ares_config.L1ToolOverride]
+
+// setToolClassOverrides installs the operator's per-tool declarations.
+//
+// The map is copied: the caller's configuration may be mutated by a reload, and the L1 catalogue must
+// describe one coherent declaration for the life of a reconcile pass.
+func setToolClassOverrides(overrides map[string]ares_config.L1ToolOverride) {
+	if len(overrides) == 0 {
+		toolClassOverrides.Store(nil)
+		return
+	}
+	copied := make(map[string]ares_config.L1ToolOverride, len(overrides))
+	for name, o := range overrides {
+		copied[name] = o
+	}
+	toolClassOverrides.Store(&copied)
+}
+
+// reportUnmatchedToolClassOverrides makes unmatched declarations impossible to miss.
+//
+// Two channels on purpose: the log line names them for whoever reads startup output, and the gauge is
+// what a dashboard can alert on — a warning nobody has open at 3am is not a signal. The gauge is set
+// on every call, including zero, so "healthy" and "not reported" stay distinguishable.
+func reportUnmatchedToolClassOverrides(ctx context.Context, schemas []core_tools.ToolSchema) {
+	missing := unmatchedToolClassOverrides(schemas)
+	observability.SetL1UnmatchedOverrides(len(missing))
+	if len(missing) == 0 {
+		return
+	}
+	log.WarnContext(ctx, "serve: kernel.l1.tools entries match no registered tool; kept but inactive",
+		"method", "injectToolClassDAG",
+		"tools", strings.Join(missing, ","),
+		"count", len(missing))
+}
+
+// unmatchedToolClassOverrides returns the configured tool names that no registered schema describes.
+//
+// A typo in kernel.l1.tools ("ripgrep" for "rg") is otherwise indistinguishable from a declaration
+// that is being honoured: the entry is accepted, validated, and then silently never applied because
+// nothing by that name exists. Reported at startup and sorted, so the line is stable across runs.
+func unmatchedToolClassOverrides(schemas []core_tools.ToolSchema) []string {
+	overrides := toolClassOverrides.Load()
+	if overrides == nil || len(*overrides) == 0 {
+		return nil
+	}
+	known := make(map[string]bool, len(schemas))
+	for _, s := range schemas {
+		known[s.Name] = true
+	}
+	var missing []string
+	for name := range *overrides {
+		if !known[name] {
+			missing = append(missing, name)
+		}
+	}
+	sort.Strings(missing)
+	return missing
+}
+
+// applyToolClassOverride merges one tool's declaration over the schema-derived metadata.
+//
+// Field by field, and only when the operator filled it in: an absent field keeps what the schema
+// declared (or its default), so declaring one field cannot silently reset the others. This is the
+// same rule the plan states as "schema declarations first, explicit configuration second".
+func applyToolClassOverride(metadata map[string]string, override ares_config.L1ToolOverride) {
+	if override.Enabled != nil {
+		metadata[l1MetaEnabled] = strconv.FormatBool(*override.Enabled)
+	}
+	if override.Budget != nil {
+		metadata[l1MetaBudget] = strconv.Itoa(*override.Budget)
+	}
+	if override.Prior != nil {
+		metadata[l1MetaPrior] = *override.Prior
+	}
+	if override.MaxAttempts != nil {
+		metadata[l1MetaMaxAttempts] = strconv.Itoa(*override.MaxAttempts)
+	}
+	if override.TaskTimeout != "" {
+		metadata[l1MetaTaskTimeout] = override.TaskTimeout
+	}
 }
 
 // toolClassSpecs maps tool schemas onto the L1 declaration.
@@ -709,6 +815,9 @@ func toolClassSpecs(schemas []core_tools.ToolSchema) []evolution.ToolClassSpec {
 				l1MetaPrior: s.Tags[l1MetaPriorTag],
 			},
 		})
+		if overrides := toolClassOverrides.Load(); overrides != nil {
+			applyToolClassOverride(specs[len(specs)-1].Metadata, (*overrides)[s.Name])
+		}
 	}
 	return specs
 }

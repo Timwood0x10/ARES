@@ -348,6 +348,9 @@ func (c *Config) validateKernel() error {
 		return fmt.Errorf("kernel: max_concurrent must be non-negative (0 = auto), got %d",
 			c.Kernel.MaxConcurrent)
 	}
+	if err := c.validateKernelL1(); err != nil {
+		return err
+	}
 	if c.Kernel.MaxReadyTasks < 0 {
 		return fmt.Errorf("kernel: max_ready_tasks must be non-negative (0 = unlimited), got %d",
 			c.Kernel.MaxReadyTasks)
@@ -384,6 +387,39 @@ func (c *Config) validateKernel() error {
 	// silent total outage configurable by one typo. Reject it at load.
 	if r := c.Kernel.AgentBudget.ReserveRatio; r < 0 || r > 1 {
 		return fmt.Errorf("kernel: agent_budget.reserve_ratio must be within [0,1] (0 = disabled), got %g", r)
+	}
+	return nil
+}
+
+// validateKernelL1 rejects overrides that cannot mean what the operator wrote.
+//
+// The point of validating here rather than at the first use: a typo in `max_attempts: 0` or a
+// malformed duration would otherwise be discovered only when the tool is first invoked, deep inside
+// a quantum, and would present as "retries did not happen" rather than as a configuration error.
+func (c *Config) validateKernelL1() error {
+	if c.Kernel.L1 == nil {
+		return nil
+	}
+	for name, o := range c.Kernel.L1.Tools {
+		if name == "" {
+			return errors.New("kernel.l1.tools: tool name must not be empty")
+		}
+		if o.Budget != nil && *o.Budget < 0 {
+			return fmt.Errorf("kernel.l1.tools.%s.budget must not be negative, got %d", name, *o.Budget)
+		}
+		if o.MaxAttempts != nil && *o.MaxAttempts < 1 {
+			return fmt.Errorf("kernel.l1.tools.%s.max_attempts includes the first attempt and must be at least 1, got %d",
+				name, *o.MaxAttempts)
+		}
+		if o.TaskTimeout != "" {
+			d, err := time.ParseDuration(o.TaskTimeout)
+			if err != nil {
+				return fmt.Errorf("kernel.l1.tools.%s.task_timeout: %w", name, err)
+			}
+			if d <= 0 {
+				return fmt.Errorf("kernel.l1.tools.%s.task_timeout must be positive, got %s", name, o.TaskTimeout)
+			}
+		}
 	}
 	return nil
 }

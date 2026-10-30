@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/core/models"
@@ -280,6 +281,25 @@ const tenantMetadataKey = "tenant_id"
 //   - dependsOn: the node this instance depends on (output feeding into it);
 //     empty means no predecessor.
 func (g *L2Graph) AddToolNode(ctx context.Context, id, tool string, args map[string]any, dependsOn string) error {
+	return g.AddToolNodeWithPolicy(ctx, id, tool, args, dependsOn, StepPolicy{})
+}
+
+// StepPolicy carries the execution constraints the L1 catalogue declares for a tool.
+//
+// Zero values mean "nothing declared", which is exactly what every tool had before the catalogue
+// could carry these fields: no explicit retry policy (the fabric default applies) and no deadline.
+type StepPolicy struct {
+	// MaxAttempts includes the first execution: 1 means never retry. 0 means undeclared.
+	MaxAttempts int
+	// Timeout is the total budget for the task, resolved to an absolute deadline at compile time.
+	Timeout time.Duration
+}
+
+// AddToolNodeWithPolicy is AddToolNode with the tool's declared constraints attached.
+//
+// The planner fills them from the L1 node, which is the only place they are visible: the model
+// cannot influence them, and a caller that has no declaration passes the zero StepPolicy.
+func (g *L2Graph) AddToolNodeWithPolicy(ctx context.Context, id, tool string, args map[string]any, dependsOn string, policy StepPolicy) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
@@ -299,6 +319,15 @@ func (g *L2Graph) AddToolNode(ctx context.Context, id, tool string, args map[str
 	}
 	if strings.TrimSpace(dependsOn) != "" {
 		step.DependsOn = []string{dependsOn}
+	}
+	// max_attempts counts the first execution; the engine's field is the number of RETRIES that may
+	// follow it (Task.CanRetry compares Attempts < MaxRetries). Translating here keeps the
+	// operator-facing number the one that appears in configuration and in events.
+	if policy.MaxAttempts >= 1 {
+		step.RetryPolicy = &engine.RetryPolicy{MaxAttempts: policy.MaxAttempts - 1}
+	}
+	if policy.Timeout > 0 {
+		step.Timeout = policy.Timeout
 	}
 	if err := g.dag.AddNode(ctx, step); err != nil {
 		return fmt.Errorf("agentfabric: add tool node %q: %w", id, err)

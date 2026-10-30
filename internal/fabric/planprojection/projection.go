@@ -91,18 +91,21 @@ func ProjectStep(s *engine.Step) taskfabric.PlanStep {
 	}
 
 	return taskfabric.PlanStep{
-		ID:           s.ID,
-		Capability:   s.AgentType,
-		DependsOn:    deps,
-		MaxRetries:   maxRetries,
-		BackoffBase:  backoffBase,
-		BackoffMax:   backoffMax,
-		Deadline:     s.Timeout,
-		AllowPartial: s.AllowPartial,
-		Priority:     parsePriority(s.Metadata),
-		Payload:      payload,
-		SessionID:    parseSessionID(s.Metadata),
-		TenantID:     parseTenantID(s.Metadata),
+		ID:          s.ID,
+		Capability:  s.AgentType,
+		DependsOn:   deps,
+		MaxRetries:  maxRetries,
+		BackoffBase: backoffBase,
+		BackoffMax:  backoffMax,
+		Deadline:    s.Timeout,
+		// A step that carries a retry policy is stating one, including "no retries"; one that does
+		// not is unset and keeps CompilePlan's default.
+		MaxRetriesSet: s.RetryPolicy != nil,
+		AllowPartial:  s.AllowPartial,
+		Priority:      parsePriority(s.Metadata),
+		Payload:       payload,
+		SessionID:     parseSessionID(s.Metadata),
+		TenantID:      parseTenantID(s.Metadata),
 		// HITL approval gate
 		RequiresApproval: requiresApproval,
 		ApprovalMessage:  approvalMessage,

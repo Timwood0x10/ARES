@@ -96,6 +96,11 @@ type KernelConfig struct {
 	// MaxRestarts bounds agent restart attempts after a crash in the
 	// event-driven recovery loop (0 = aresrecovery default of 5).
 	MaxRestarts int `yaml:"max_restarts"`
+	// L1 carries the operator's per-tool declarations for the L1 tool catalogue. It overrides what
+	// a tool's own schema tags say, field by field, and nothing else: an absent field keeps the
+	// schema's value (or its default), so adding this section to an existing configuration cannot
+	// change behaviour for tools it does not mention.
+	L1 *L1Config `yaml:"l1"`
 	// QuotaApplyInterval is how often the evolution-aware quota manager
 	// pushes the resource budget into the Agent Fabric (default "1m").
 	// Parsed with time.ParseDuration; empty/invalid falls back to the default.
@@ -268,3 +273,31 @@ func Load(path string) (*Config, error) {
 // LoadFromEnv override layer (SERVER_*/LLM_*/DB_*/ARES_* variables) was
 // removed so behavior can never differ between "works on my machine via
 // export" and the checked-in config.
+
+// L1Config is the operator's declaration of how the L1 tool catalogue should describe tools.
+//
+// It exists because the catalogue is otherwise built from the tools' own schema tags: a deployment
+// that wants a different retry budget for one tool had no way to say so without editing the tool.
+type L1Config struct {
+	// Tools is keyed by the tool's exact registry name. Different argument shapes of the same tool
+	// share one entry: the overrides describe the RESOURCE, not a particular call.
+	Tools map[string]L1ToolOverride `yaml:"tools"`
+}
+
+// L1ToolOverride is one tool's declaration. Every field is optional and independent: nil means
+// "keep what the schema declared", which is why they are pointers rather than zero values — an
+// explicit `enabled: false` and an absent `enabled` must not be the same thing.
+type L1ToolOverride struct {
+	// Enabled gates whether the planner may grow a node for this tool at all.
+	Enabled *bool `yaml:"enabled"`
+	// Budget caps how many nodes of this tool class one session may grow. 0 means unlimited.
+	Budget *int `yaml:"budget"`
+	// Prior is planning guidance shown to the model. It is a hint, not a validated constraint.
+	Prior *string `yaml:"prior"`
+	// MaxAttempts includes the first attempt: 1 means "never retry". It bounds retries of this
+	// tool's task only; agent restarts (kernel.max_restarts) and LLM client retries are separate.
+	MaxAttempts *int `yaml:"max_attempts"`
+	// TaskTimeout is the total budget for one tool task, from creation to completion, including
+	// queueing, backoff and execution. Parsed with time.ParseDuration.
+	TaskTimeout string `yaml:"task_timeout"`
+}

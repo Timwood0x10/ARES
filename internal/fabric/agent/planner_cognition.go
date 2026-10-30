@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/Timwood0x10/ares/internal/agents"
 	"github.com/Timwood0x10/ares/internal/core/models"
@@ -236,6 +237,11 @@ const (
 	l1MetaEnabled = "enabled"
 	l1MetaBudget  = "budget"
 	l1MetaPrior   = "prior"
+	// l1MetaMaxAttempts and l1MetaTaskTimeout are the execution constraints the catalogue may carry
+	// for a tool. They are read at growth time and written into the L2 Step, never taken from the
+	// model's arguments.
+	l1MetaMaxAttempts = "max_attempts"
+	l1MetaTaskTimeout = "task_timeout"
 )
 
 // l1ToolClassID builds the L1 ToolClass node ID for a tool: toolName + "#" +
@@ -860,7 +866,7 @@ func (c *plannerCognition) growToolNodes(
 			metadata[intentKey] = roundRationale
 		}
 
-		if err := g.AddToolNode(ctx, nodeID, toolName, metadata, prev); err != nil {
+		if err := g.AddToolNodeWithPolicy(ctx, nodeID, toolName, metadata, prev, c.toolStepPolicy(toolName)); err != nil {
 			return grown, rationales, fmt.Errorf("add tool node %s: %w", nodeID, err)
 		}
 		// Chain sequential tools within the same round: the next tool depends on
@@ -991,6 +997,33 @@ func (c *plannerCognition) toolBudgetRemaining(g *L2Graph, toolName string) bool
 	}
 	count := g.CountToolClass(toolName)
 	return count < budget
+}
+
+// toolStepPolicy reads the L1 node's execution constraints for this tool.
+//
+// Unset, unparseable or out-of-range values are treated as "not declared" rather than clamped: a
+// configuration error is reported by Config.Validate at startup, and silently substituting a guess
+// here would make the deployment behave in a way nothing announced.
+func (c *plannerCognition) toolStepPolicy(toolName string) StepPolicy {
+	if c.l1 == nil {
+		return StepPolicy{}
+	}
+	md, ok := c.l1.NodeMetadata(c.l1ToolClassID(toolName))
+	if !ok {
+		return StepPolicy{}
+	}
+	var policy StepPolicy
+	if v, ok := md[l1MetaMaxAttempts]; ok && v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 1 {
+			policy.MaxAttempts = n
+		}
+	}
+	if v, ok := md[l1MetaTaskTimeout]; ok && v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			policy.Timeout = d
+		}
+	}
+	return policy
 }
 
 // l1ToolPrior returns the L1 ToolClass "prior" hint for the given tool.

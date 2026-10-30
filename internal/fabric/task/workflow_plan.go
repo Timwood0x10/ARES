@@ -30,9 +30,16 @@ type PlanStep struct {
 	// Priority drives preemption (higher wins); 0 = normal.
 	Priority int
 	// MaxRetries counts TOTAL attempts (taskfabric.CanRetry semantics).
-	// <= 0 means "unset": CompilePlan resolves it to planDefaultMaxRetries
-	// (2), it never reaches the fabric as a literal zero.
+	// <= 0 with MaxRetriesSet=false means "unset": CompilePlan resolves it to
+	// planDefaultMaxRetries (2), it never reaches the fabric as a literal zero.
 	MaxRetries int
+	// MaxRetriesSet says the caller MEANT the value, including zero.
+	//
+	// Without it, "never retry" is unexpressible: zero already means "unset", so a step that
+	// configured max_attempts=1 would be silently upgraded to the two retries of the default. An L1
+	// declaration is explicit by construction, so the projection sets this whenever it carried a
+	// retry policy at all.
+	MaxRetriesSet bool
 	// AllowPartial lets this step run when a dependency fails permanently: the
 	// failed predecessor is recorded as a degraded input instead of failing the
 	// step. False (zero value) is strict — a failed dependency fails this step.
@@ -171,8 +178,11 @@ func (f *Fabric) CompilePlan(ctx context.Context, steps []PlanStep) ([]string, e
 		// documented plan contract: an unset step gets 2 total attempts
 		// (first try + one retry), same as a directly submitted task.
 		maxRetries := s.MaxRetries
-		if maxRetries <= 0 {
+		if !s.MaxRetriesSet && maxRetries <= 0 {
 			maxRetries = planDefaultMaxRetries
+		}
+		if maxRetries < 0 {
+			maxRetries = 0
 		}
 		t := &Task{
 			ID:           s.ID,

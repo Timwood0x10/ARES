@@ -51,6 +51,13 @@ type PrometheusMetrics struct {
 	EvolutionGeneration   prometheus.Gauge
 	EvolutionDAGVersion   prometheus.Gauge
 	EvolutionCompileCount prometheus.Gauge
+	// L1UnmatchedOverrides counts kernel.l1.tools entries that match no registered tool.
+	//
+	// A declaration for a name nobody registered is accepted, validated and then never applied — a
+	// typo ("ripgrep" for "rg") is indistinguishable from a working configuration unless something
+	// reports it. Zero is a valid, healthy value, so the gauge is always SET rather than left absent:
+	// an absent series and a zero one look identical on a dashboard only if you know which to expect.
+	L1UnmatchedOverrides prometheus.Gauge
 
 	// Histograms
 	LLMCallDuration   *prometheus.HistogramVec
@@ -297,6 +304,12 @@ func NewPrometheusMetrics() (*PrometheusMetrics, error) {
 				Help: "Total number of CompilePlan calls since startup",
 			},
 		),
+		L1UnmatchedOverrides: prometheus.NewGauge(
+			prometheus.GaugeOpts{
+				Name: "ARES_l1_unmatched_overrides",
+				Help: "kernel.l1.tools entries whose tool name is not registered in this process; kept in configuration but inactive",
+			},
+		),
 	}
 
 	// Register all collectors with the default Prometheus registry.
@@ -330,6 +343,7 @@ func NewPrometheusMetrics() (*PrometheusMetrics, error) {
 		m.EvolutionGeneration,
 		m.EvolutionDAGVersion,
 		m.EvolutionCompileCount,
+		m.L1UnmatchedOverrides,
 	}
 	for _, c := range collectors {
 		if err := prometheus.Register(c); err != nil {
@@ -720,4 +734,17 @@ func (m *PrometheusMetrics) RecordEvolutionRuntimePatch(result string) {
 		return
 	}
 	m.EvolutionRuntimePatchesTotal.WithLabelValues(result).Inc()
+}
+
+// SetL1UnmatchedOverrides publishes how many kernel.l1.tools entries matched no registered tool.
+//
+// Best-effort: a metrics failure must never stop the wiring, so an unavailable instance is silent.
+// Called on every L1 (re)build, not only at boot — a tool that appears later through MCP makes an
+// entry match, and the gauge has to be able to say so.
+func SetL1UnmatchedOverrides(count int) {
+	m, err := NewPrometheusMetrics()
+	if err != nil || m == nil {
+		return
+	}
+	m.L1UnmatchedOverrides.Set(float64(count))
 }
