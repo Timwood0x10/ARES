@@ -65,3 +65,13 @@ func TestValidateKernelL1(t *testing.T) {
 		})
 	}
 }
+
+// TestValidateKernelL1_AbsentSectionIsValid: a configuration with no kernel.l1 block must behave
+// exactly as before the field existed. "No declaration" is not an error and must not be normalised
+// into a default that the operator never wrote.
+func TestValidateKernelL1_AbsentSectionIsValid(t *testing.T) {
+	cfg := &Config{Kernel: KernelConfig{L1: nil}}
+	if err := cfg.validateKernelL1(); err != nil {
+		t.Fatalf("an absent kernel.l1 must be accepted: %v", err)
+	}
+}

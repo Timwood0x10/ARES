@@ -60,3 +60,27 @@ func TestToolClassSpecs_ExplicitFalseIsNotAbsent(t *testing.T) {
 	require.Len(t, specs, 1)
 	assert.Equal(t, "false", specs[0].Metadata[l1MetaEnabled])
 }
+
+// TestToolClassSpecs_IsStableAcrossReconcilePasses is acceptance item 7: the reconciler rebuilds the
+// spec set on every pass, so two consecutive passes must produce identical metadata. A merge that
+// depended on the node's current state (or on iteration order) would rewrite the catalogue on each
+// tick, and "the override stays applied" would be true only sometimes.
+func TestToolClassSpecs_IsStableAcrossReconcilePasses(t *testing.T) {
+	t.Cleanup(func() { setToolClassOverrides(nil) })
+
+	attempts := 3
+	budget := 8
+	setToolClassOverrides(map[string]ares_config.L1ToolOverride{
+		"rg": {Budget: &budget, MaxAttempts: &attempts, TaskTimeout: "45s"},
+	})
+	schemas := []core_tools.ToolSchema{{Name: "rg"}, {Name: "git"}}
+
+	first := toolClassSpecs(schemas)
+	second := toolClassSpecs(schemas)
+
+	require.Len(t, second, len(first))
+	for i := range first {
+		assert.Equal(t, first[i].Metadata, second[i].Metadata,
+			"reconcile pass %d must describe %s exactly as the previous pass did", i+1, first[i].Name)
+	}
+}
