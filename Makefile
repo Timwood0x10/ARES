@@ -395,6 +395,8 @@ test-eval:  ## Run evaluation tests
 # reading five files — catalogue metadata -> planner read -> L2 step -> projection -> task deadline
 # and retry budget — plus what happens to a declaration that matches no registered tool.
 demo-l1:
+	@echo "── a resource, its declaration, and the result it produces"
+	@go test ./internal/fabric/agent/ -run 'TestS10_Demo_ResourceToExecutedResult' -count=1 -v
 	@echo "── kernel.l1.tools -> task (deadline + retry budget)"
 	@go test ./internal/fabric/agent/ -run 'TestS10_DeclarationReachesTheTask' -count=1 -v
 	@echo "── kernel.l1.tools entries that match no registered tool"
