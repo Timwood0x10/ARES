@@ -320,11 +320,12 @@ func (g *L2Graph) AddToolNodeWithPolicy(ctx context.Context, id, tool string, ar
 	if strings.TrimSpace(dependsOn) != "" {
 		step.DependsOn = []string{dependsOn}
 	}
-	// max_attempts counts the first execution; the engine's field is the number of RETRIES that may
-	// follow it (Task.CanRetry compares Attempts < MaxRetries). Translating here keeps the
-	// operator-facing number the one that appears in configuration and in events.
+	// Same unit on both sides: the engine's MaxAttempts and the catalogue's max_attempts both count
+	// TOTAL attempts including the first (Task.CanRetry compares Attempts < MaxRetries, and Attempts
+	// increments per failure, so MaxRetries=N allows exactly N executions). Subtracting one here
+	// would make "max_attempts: 2" run once — measured, not assumed.
 	if policy.MaxAttempts >= 1 {
-		step.RetryPolicy = &engine.RetryPolicy{MaxAttempts: policy.MaxAttempts - 1}
+		step.RetryPolicy = &engine.RetryPolicy{MaxAttempts: policy.MaxAttempts}
 	}
 	if policy.Timeout > 0 {
 		step.Timeout = policy.Timeout

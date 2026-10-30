@@ -12,10 +12,12 @@ import (
 	resources "github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
 
-// TestAddToolNodeWithPolicy_TranslatesMaxAttempts pins the one arithmetic conversion in this path:
-// configuration counts ATTEMPTS (the first execution included), while the engine's field is the
-// number of RETRIES that may follow it. Getting this wrong by one is invisible until a tool is
-// retried once more (or once fewer) than the operator declared.
+// TestAddToolNodeWithPolicy_KeepsMaxAttemptsInTheSameUnit pins the arithmetic in this path, which is
+// deliberately none: both numbers count TOTAL attempts including the first, because the fabric's
+// CanRetry allows a retry while Attempts < MaxRetries and Attempts increments per failure.
+//
+// This used to subtract one ("engine counts retries"), which made max_attempts: 2 execute once. The
+// execution-count test in fabric/task is what caught it; keeping a table here stops it coming back.
 func TestAddToolNodeWithPolicy_TranslatesMaxAttempts(t *testing.T) {
 	cases := []struct {
 		name        string
@@ -24,9 +26,9 @@ func TestAddToolNodeWithPolicy_TranslatesMaxAttempts(t *testing.T) {
 		wantTimeout time.Duration
 	}{
 		{"undeclared leaves the default", StepPolicy{}, nil, 0},
-		{"one attempt means no retry", StepPolicy{MaxAttempts: 1}, intPtr(0), 0},
-		{"three attempts means two retries", StepPolicy{MaxAttempts: 3}, intPtr(2), 0},
-		{"timeout is carried as the step budget", StepPolicy{MaxAttempts: 2, Timeout: 30 * time.Second}, intPtr(1), 30 * time.Second},
+		{"one attempt means no retry", StepPolicy{MaxAttempts: 1}, intPtr(1), 0},
+		{"three attempts means three executions", StepPolicy{MaxAttempts: 3}, intPtr(3), 0},
+		{"timeout is carried as the step budget", StepPolicy{MaxAttempts: 2, Timeout: 30 * time.Second}, intPtr(2), 30 * time.Second},
 	}
 
 	for _, tc := range cases {

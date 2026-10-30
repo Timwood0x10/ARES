@@ -56,9 +56,11 @@ func TestS10_DeclarationReachesTheTask(t *testing.T) {
 	task, err := fabric.Task(plan.ID)
 	require.NoError(t, err)
 
-	assert.Zero(t, task.RetryPolicy.MaxRetries,
-		"max_attempts: 1 must reach the task as no retries, not as the plan default")
-	assert.False(t, task.CanRetry(), "and the task must actually stop after the first failure")
+	assert.Equal(t, 1, task.RetryPolicy.MaxRetries,
+		"max_attempts: 1 must reach the task as one total attempt, not as the plan default of two")
+	// CanRetry is deliberately not asserted here: it answers "may another attempt follow a failure",
+	// so it is true before the first one regardless of the budget. The count itself is asserted where
+	// executions can be driven — TestPlanMaxAttempts_BoundsActualExecutions in fabric/task.
 
 	// The deadline is resolved at compile time from the relative budget. Asserting the window rather
 	// than an exact instant keeps the test independent of the fabric clock implementation.
