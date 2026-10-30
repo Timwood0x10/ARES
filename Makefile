@@ -1,6 +1,6 @@
 # Makefile for ARES — Agent Runtime & Evolution System
 
-.PHONY: all lint lint-vet lint-staticcheck lint-doc-anchors test test-race check check-core check-tools help clean install install-cli ci ci-freeze benchmark quickstart examples cover cover-html ci-test ci-test-race ci-test-race-short ci-test-integration
+.PHONY: all lint lint-vet lint-staticcheck lint-doc-anchors test test-race check check-core check-tools help clean install install-cli ci ci-freeze benchmark quickstart examples cover cover-html ci-test ci-test-race ci-test-race-short ci-test-integration demo-l1 demo-mcp
 
 # Default target
 all: lint test
@@ -388,6 +388,18 @@ test-eval:  ## Run evaluation tests
 	@go test -count=1 -timeout=300s ./examples/_fixtures/evaluation/...
 	@echo "✅ Evaluation tests complete"
 
+# Demo: one tool's L1 declaration travelling to the task it creates.
+# Usage: make demo-l1
+#
+# Deterministic and offline: it asserts the same chain an operator would have to reconstruct by
+# reading five files — catalogue metadata -> planner read -> L2 step -> projection -> task deadline
+# and retry budget — plus what happens to a declaration that matches no registered tool.
+demo-l1:
+	@echo "── kernel.l1.tools -> task (deadline + retry budget)"
+	@go test ./internal/fabric/agent/ -run 'TestS10_DeclarationReachesTheTask' -count=1 -v
+	@echo "── kernel.l1.tools entries that match no registered tool"
+	@go test ./cmd/ares/ -run 'TestUnmatchedToolClassOverrides' -count=1 -v
+
 # Demo: MCP service registry (discovery + lifecycle walkthrough)
 # Usage: make demo-mcp
 demo-mcp:
@@ -469,6 +481,7 @@ help:
 	@echo "  demo-up       - Start demo services (pgvector:5432)"
 	@echo "  demo-down     - Stop and clean up demo services"
 	@echo "  demo-test     - Run integration tests against demo services"
+	@echo "  demo-l1       - L1 tool declaration -> task (offline, deterministic)"
 	@echo "  demo-logs     - Tail demo service logs"
 	@echo "  demo-smoke    - Quick check that pgvector is running"
 	@echo ""
