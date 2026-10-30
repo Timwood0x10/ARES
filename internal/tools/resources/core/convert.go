@@ -27,14 +27,24 @@ func ParameterSchemaToMap(schema *ParameterSchema) map[string]interface{} {
 	if schema == nil {
 		return nil
 	}
+	// JSON Schema requires an object at the parameters root, and a provider validates the TOOL LIST,
+	// not each tool in isolation: one schema with "type": "" makes the whole request fail with a 400,
+	// which takes every LLM call down rather than the one tool. Empty therefore means "object" here,
+	// which is what a tool's parameters always are.
 	result := map[string]interface{}{
-		"type": schema.Type,
+		"type": "object",
+	}
+	if strings.TrimSpace(schema.Type) != "" {
+		result["type"] = schema.Type
 	}
 	if len(schema.Properties) > 0 {
 		props := make(map[string]interface{}, len(schema.Properties))
 		for name, p := range schema.Properties {
-			prop := map[string]interface{}{
-				"type": p.Type,
+			prop := map[string]interface{}{}
+			// An unset property type is omitted rather than sent as "": the metaschema rejects the
+			// empty string, and a subset of JSON Schema without a type is still a valid declaration.
+			if strings.TrimSpace(p.Type) != "" {
+				prop["type"] = p.Type
 			}
 			if p.Description != "" {
 				prop["description"] = p.Description
