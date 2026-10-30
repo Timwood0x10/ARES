@@ -193,16 +193,26 @@ type LLMFileConfig struct {
 // LoadConfigFile reads, parses and validates a YAML config file.
 // Returns an error if the file cannot be read, parsed, or fails validation.
 //
+// The path is NOT confined to a directory: this is a library entry point, and the caller decides
+// what it may read. The `ares serve` binary is stricter on purpose — it calls
+// ares_config.SetAllowedConfigDir so a configuration file it was pointed at can only reach files
+// under its own directory — because there the path can come from an operator flag or an external
+// integration. An application embedding the SDK that accepts a path from an untrusted source must
+// apply that confinement itself (ares_config.SetAllowedConfigDir) before calling this.
+//
 // Args:
 //
-//	path - filesystem path to the YAML file, must be non-empty.
+//	path - filesystem path to the YAML file, must be non-empty; trusted as given (see above).
 //
 // Returns:
 //
 //	cfg - a fully validated configuration, never nil on success.
 //	err - a read, parse or validation error with context wrapping.
 func LoadConfigFile(path string) (*ConfigFile, error) {
-	data, err := os.ReadFile(path) //nolint:gosec // path comes from user flag, safe
+	// The path is supplied by the embedding application, not by this package: treating it as
+	// untrusted here would break the documented contract without protecting anybody, since the
+	// caller can always read the file itself.
+	data, err := os.ReadFile(path) //nolint:gosec // caller-supplied path, documented contract
 	if err != nil {
 		return nil, fmt.Errorf("read config: %w", err)
 	}

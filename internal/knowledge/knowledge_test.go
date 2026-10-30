@@ -77,6 +77,11 @@ func TestMergeConfidence(t *testing.T) {
 		{"both_max_clamps_to_one", 1.0, 1.0, 1.0},
 		{"high_plus_high_clamps", 0.95, 0.95, 1.0},
 		{"unequal_prefers_higher", 0.8, 0.5, 0.85},
+		// The documented limitation, pinned so the comment cannot silently become wrong: one
+		// confident source and two agreeing ones rank identically once the clamp applies.
+		{"one_strong_one_weak_matches_two_strong", 1.0, 0.5, 1.0},
+		// The lower clamp: the formula is symmetric but only the >1 side used to be exercised.
+		{"negative_inputs_clamp_to_zero", -0.5, -0.5, 0.0},
 		{"equal_low_no_clamp", 0.4, 0.4, 0.44},
 		{"zero_inputs_stays_zero", 0.0, 0.0, 0.0},
 	}
