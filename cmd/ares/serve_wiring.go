@@ -94,8 +94,11 @@ func wiringServeSignalWatch(
 		// Wait for Bootstrap's background goroutines (distillation subscriber,
 		// GA evolution ticker, LLM suggestion ticker) to exit after the
 		// context is cancelled, so none outlives the graceful shutdown.
-		comp.WaitBackground()
-		return nil
+		//
+		// Bounded: this runs AFTER the kernel and SystemRuntime have spent their own budgets, so an
+		// unbounded wait here re-opens the exact hole they closed — the process reported a finished
+		// shutdown and then sat in this call indefinitely.
+		return finishBackgroundWait(ctx, comp, backgroundExitBudget)
 	})
 }
 
@@ -682,4 +685,29 @@ func shutdownSystemRuntime(compPtr *atomic.Pointer[ares_bootstrap.Components], c
 	if err := comp.SystemRuntime.Shutdown(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "system_runtime shutdown error: %v\n", err)
 	}
+}
+
+// backgroundExitBudget bounds the final wait for Bootstrap's background goroutines.
+//
+// Ten seconds is the last item in a shutdown sequence that already spent 30s on the shutdown phases
+// and 15s on SystemRuntime; it exists to keep a single uncooperative worker from making the whole
+// budget meaningless, not to give that worker more time.
+const backgroundExitBudget = 10 * time.Second
+
+// finishBackgroundWait is the CLI's last shutdown step, bounded and reported.
+//
+// The error is RETURNED, not only printed: printing alone let the caller's errgroup finish with nil,
+// so a shutdown whose background workers never exited was reported as clean — the same false success
+// the kernel side was fixed for. A normal Ctrl-C reaches here with every worker gone and still gets
+// nil; the error describes a teardown that did not finish, not the fact that a signal arrived.
+func finishBackgroundWait(ctx context.Context, comp *ares_bootstrap.Components, budget time.Duration) error {
+	bgCtx, cancel := context.WithTimeout(context.Background(), budget)
+	defer cancel()
+	if err := comp.WaitBackgroundContext(bgCtx); err != nil {
+		fmt.Fprintf(os.Stderr, "graceful shutdown: background goroutines did not exit: %v\n", err)
+		log.Warn(ctx, "wiringServeSignalWatch",
+			"serve: background goroutines still running at exit", "error", err)
+		return fmt.Errorf("serve: background goroutines did not exit: %w", err)
+	}
+	return nil
 }
