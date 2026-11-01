@@ -23,9 +23,11 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/sync/errgroup"
 
+	sub "github.com/Timwood0x10/ares/internal/agents/sub"
 	"github.com/Timwood0x10/ares/internal/ares_bootstrap"
 	"github.com/Timwood0x10/ares/internal/ares_config"
 	"github.com/Timwood0x10/ares/internal/ares_shutdown"
+	agentfabric "github.com/Timwood0x10/ares/internal/fabric/agent"
 	"github.com/Timwood0x10/ares/internal/logger"
 )
 
@@ -160,12 +162,12 @@ func runServe() error {
 	// Whether it is USED is decided by evolution.gates.regression_runtime_replay (default
 	// off; the gate refuses an enabled flag with no provider rather than downgrading
 	// silently).
-	comp.Evolution.CandidateReplayProvider = func() (*ares_bootstrap.CandidateReplayFactory, error) {
-		return ares_bootstrap.NewCandidateReplayFactory(ares_bootstrap.CandidateReplayConfig{
-			ChatClient: chatClient,
-			ToolBinder: toolBinder,
-		})
-	}
+	// comp.Evolution is nil under the minimal setup (--llm-url, no evolution config), and this used
+	// to be an unconditional field assignment on it: `ares serve --llm-url ...` — the path the CLI
+	// documents as needing no config file — panicked with a nil dereference before it could listen.
+	// The provider only matters to the regression-replay gate, which is off by default, so skipping
+	// the install is the correct behaviour rather than a degraded one.
+	installCandidateReplayProvider(ctx, comp, chatClient, toolBinder)
 
 	// --- Peer registry: enable direct agent-to-agent messaging ---
 	// setupPeerRegistry builds the registry; the kernel handle powers
@@ -394,4 +396,31 @@ func portOf(addr string) int {
 		return 0
 	}
 	return port
+}
+
+// installCandidateReplayProvider attaches the replay factory when there is an evolution subsystem to
+// attach it to.
+//
+// It returns whether the provider was installed, because "not installed" is a normal state: the
+// minimal setup (--llm-url, no config file) wires no evolution components, and the replay gate that
+// consumes this provider is off by default. Assigning unconditionally on such a run is a nil
+// dereference before the server ever listens — which is exactly what it used to do.
+func installCandidateReplayProvider(
+	ctx context.Context,
+	comp *ares_bootstrap.Components,
+	chatClient sub.ChatClient,
+	toolBinder agentfabric.ToolBinder,
+) bool {
+	if comp == nil || comp.Evolution == nil {
+		log.InfoContext(ctx, "serve: evolution components absent (minimal setup); candidate-replay provider not installed",
+			"method", "runServe")
+		return false
+	}
+	comp.Evolution.CandidateReplayProvider = func() (*ares_bootstrap.CandidateReplayFactory, error) {
+		return ares_bootstrap.NewCandidateReplayFactory(ares_bootstrap.CandidateReplayConfig{
+			ChatClient: chatClient,
+			ToolBinder: toolBinder,
+		})
+	}
+	return true
 }
