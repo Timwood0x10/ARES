@@ -158,3 +158,42 @@ func TestAuditFailedCompleteMustNotUnlockDependent(t *testing.T) {
 	require.NoError(t, gateErr)
 	assert.False(t, ready, "the dependency gate must still report not-ready")
 }
+
+// TestFail_ReportsAnUndurableFailure: Fail advanced the state (READY for a retry, FAILED for a
+// terminal cause) and returned nil while the append's outcome was ignored, so a caller was told the
+// failure was recorded when it was not.
+//
+// The state is deliberately NOT rolled back here — see the comment on Fail: the cascade has already
+// run, and reverting only the task would leave dependents failed for a predecessor that is running
+// again. What must change is the report.
+func TestFail_ReportsAnUndurableFailure(t *testing.T) {
+	store := &selectiveStubStore{failOn: string(EventTaskFailed), err: errors.New("disk full")}
+	f := NewFabric().WithEventStore(store)
+
+	require.NoError(t, f.Create(newTask("rt01-fail")))
+	epoch, err := f.Acquire("rt01-fail", "agent-a", time.Minute)
+	require.NoError(t, err)
+	require.NoError(t, f.Start("rt01-fail", "agent-a", epoch))
+
+	err = f.Fail("rt01-fail", "agent-a", epoch, errors.New("tool exploded"))
+
+	require.Error(t, err, "a failure the store refused must not be reported as recorded")
+	assert.Contains(t, err.Error(), "not persisted")
+}
+
+// TestDelete_KeepsTheTaskWhenTheTombstoneIsNotDurable: removing the task locally while the store has
+// no tombstone means a restart resurrects something this process reported as gone.
+func TestDelete_KeepsTheTaskWhenTheTombstoneIsNotDurable(t *testing.T) {
+	store := &selectiveStubStore{failOn: string(EventTaskDeleted), err: errors.New("disk full")}
+	f := NewFabric().WithEventStore(store)
+
+	require.NoError(t, f.Create(newTask("rt01-del")))
+
+	err := f.Delete("rt01-del")
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not persisted")
+
+	_, taskErr := f.Task("rt01-del")
+	assert.NoError(t, taskErr, "the task must still be there: its tombstone was never written")
+}

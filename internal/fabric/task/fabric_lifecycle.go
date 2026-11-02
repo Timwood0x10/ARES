@@ -479,10 +479,23 @@ func (f *Fabric) CompleteWithCheckpoint(id, agentID string, epoch uint64, checkp
 // Terminal failure cascades to every transitive READY dependent: a FAILED
 // predecessor can never satisfy the dependency gate again, so the downstream
 // subgraph would otherwise sit unschedulable forever.
-func (f *Fabric) Fail(id, agentID string, epoch uint64, cause error) error {
+func (f *Fabric) Fail(id, agentID string, epoch uint64, cause error) (err error) {
 	pending := make([]*pendingAppend, 0, 1)
 	f.mu.Lock()
-	defer f.flushAppends(&pending)
+	// The outcome is reported but the state is NOT rolled back, and that asymmetry with Complete is
+	// deliberate. Complete's undo is a single field: the task goes back to RUNNING and its dependents
+	// stay blocked, which is exactly the pre-call state. A failed Fail has already cascaded to every
+	// READY dependent and stamped the cause into the checkpoint; locally reverting the task alone
+	// would leave dependents FAILED for a predecessor that is RUNNING again — a different lie, and a
+	// harder one to notice. The honest report is "this failure is not durable", and the store is the
+	// one that can settle it (reconcile by event id).
+	defer func() {
+		outcome := f.flushAppends(&pending)
+		if outcome == CommitCommitted || outcome == CommitSkipped {
+			return
+		}
+		err = errors.Join(err, commitError(outcome, id))
+	}()
 	defer f.mu.Unlock()
 	t, err := f.ownerLocked(id, agentID, epoch)
 	if err != nil {
@@ -1176,12 +1189,35 @@ func (f *Fabric) ExpireApprovals() []string {
 // store is attached: the store already holds the task's task.created, so
 // without a tombstone RestoreFromStore folds the deleted task back and the
 // discarded work becomes READY again and re-executes after a restart.
-func (f *Fabric) Delete(id string) error {
+func (f *Fabric) Delete(id string) (err error) {
 	pending := make([]*pendingAppend, 0, 1)
+	var removed *Task
 	f.mu.Lock()
-	defer f.flushAppends(&pending)
+	defer func() {
+		outcome := f.flushAppends(&pending)
+		if outcome == CommitCommitted || outcome == CommitSkipped {
+			return
+		}
+		// The tombstone is not durable, so the deletion did not happen: put the task back. Leaving
+		// it removed would mean a restart resurrects a task this process reported as gone, and the
+		// caller has no way to tell the difference.
+		if removed != nil {
+			f.mu.Lock()
+			f.tasks[removed.ID] = removed
+			f.mu.Unlock()
+		}
+		err = errors.Join(err, commitError(outcome, id))
+	}()
 	defer f.mu.Unlock()
-	return f.deleteWithTombstoneLocked(id, &pending)
+	t, ok := f.tasks[id]
+	if !ok {
+		return ErrTaskNotFound
+	}
+	if err := f.deleteWithTombstoneLocked(id, &pending); err != nil {
+		return err
+	}
+	removed = t
+	return nil
 }
 
 // deleteWithTombstoneLocked records the tombstone for id and removes the task.
