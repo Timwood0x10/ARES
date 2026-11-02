@@ -383,12 +383,26 @@ func (f *Fabric) Yield(id, agentID string, epoch uint64, checkpoint any) error {
 // Complete finalizes a RUNNING task owned by agentID (at the fenced epoch) as
 // COMPLETED. The task's Checkpoint is preserved as-is: a quantum may have
 // written progress (or a worker result) into it before completing.
-func (f *Fabric) Complete(id, agentID string, epoch uint64) error {
+func (f *Fabric) Complete(id, agentID string, epoch uint64) (err error) {
 	pending := make([]*pendingAppend, 0, 1)
+	var t *Task
 	f.mu.Lock()
-	defer f.flushAppends(&pending)
+	defer func() {
+		outcome := f.flushAppends(&pending)
+		if outcome == CommitCommitted || outcome == CommitSkipped {
+			return
+		}
+		// The completion is not durable, so the task is not completed: revert it before anyone can
+		// observe a state no store knows about. Left as-is, dependents become eligible on the
+		// strength of a completion the restart will never see, and they run work whose predecessor
+		// will be replayed.
+		f.mu.Lock()
+		f.revertCompletionLocked(t, StateRunning)
+		f.mu.Unlock()
+		err = errors.Join(err, commitError(outcome, id))
+	}()
 	defer f.mu.Unlock()
-	t, err := f.ownerLocked(id, agentID, epoch)
+	t, err = f.ownerLocked(id, agentID, epoch)
 	if err != nil {
 		return err
 	}
@@ -397,6 +411,17 @@ func (f *Fabric) Complete(id, agentID string, epoch uint64) error {
 	}
 	pending = append(pending, f.recordLocked(t, EventTaskCompleted))
 	return nil
+}
+
+// revertCompletionLocked puts a task back to the state it had before a completion that could not be
+// persisted. The completion is the one transition that releases dependents, so this is where an
+// unacknowledged write does the most damage.
+func (f *Fabric) revertCompletionLocked(t *Task, previous TaskState) {
+	if t == nil {
+		return
+	}
+	t.State = previous
+	t.UpdatedAt = f.now()
 }
 
 // CompleteWithCheckpoint finalizes a RUNNING task as COMPLETED while storing
@@ -412,15 +437,28 @@ func (f *Fabric) Complete(id, agentID string, epoch uint64) error {
 // fails with ErrIllegalState and keeps its previous checkpoint — writing the
 // checkpoint first and failing the transition afterwards left a
 // never-completed task with the completed run's result embedded in it.
-func (f *Fabric) CompleteWithCheckpoint(id, agentID string, epoch uint64, checkpoint any) error {
+func (f *Fabric) CompleteWithCheckpoint(id, agentID string, epoch uint64, checkpoint any) (err error) {
 	pending := make([]*pendingAppend, 0, 1)
+	var t *Task
+	var previousCheckpoint any
 	f.mu.Lock()
-	defer f.flushAppends(&pending)
+	defer func() {
+		outcome := f.flushAppends(&pending)
+		if outcome == CommitCommitted || outcome == CommitSkipped {
+			return
+		}
+		f.mu.Lock()
+		f.revertCompletionLocked(t, StateRunning)
+		t.Checkpoint = previousCheckpoint
+		f.mu.Unlock()
+		err = errors.Join(err, commitError(outcome, id))
+	}()
 	defer f.mu.Unlock()
-	t, err := f.ownerLocked(id, agentID, epoch)
+	t, err = f.ownerLocked(id, agentID, epoch)
 	if err != nil {
 		return err
 	}
+	previousCheckpoint = t.Checkpoint
 	if err := t.transition(StateCompleted); err != nil {
 		return err
 	}

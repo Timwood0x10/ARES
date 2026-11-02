@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -91,4 +92,69 @@ func TestAuditCreateUnknownMustNotReportSuccessAndMustNotRetry(t *testing.T) {
 	_, taskErr := f.Task("rt01-unknown")
 	assert.Error(t, taskErr, "an undetermined create must not leave an executable task behind")
 	assert.True(t, strings.Contains(err.Error(), "rt01-unknown"))
+}
+
+// selectiveStubStore fails only appends whose event type matches, so a test can let the creates
+// through and refuse exactly the completion.
+type selectiveStubStore struct {
+	failOn string
+	err    error
+}
+
+func (s *selectiveStubStore) Append(_ context.Context, _ string, events []*ares_events.Event, _ int64) error {
+	for _, ev := range events {
+		if string(ev.Type) == s.failOn {
+			return s.err
+		}
+	}
+	return nil
+}
+func (s *selectiveStubStore) Read(context.Context, string, ares_events.ReadOptions) ([]*ares_events.Event, error) {
+	return nil, nil
+}
+func (s *selectiveStubStore) ReadAll(context.Context, ares_events.ReadOptions) ([]*ares_events.Event, error) {
+	return nil, nil
+}
+func (s *selectiveStubStore) Subscribe(context.Context, ares_events.EventFilter) (<-chan *ares_events.Event, error) {
+	return nil, nil
+}
+func (s *selectiveStubStore) StreamVersion(context.Context, string) (int64, error) { return 0, nil }
+
+// TestAuditFailedCompleteMustNotUnlockDependent is the RT-01 counterexample for completion: when the
+// task.completed append is refused, the task must NOT stay COMPLETED, because that is what makes its
+// dependents eligible. A dependent running on the strength of a completion no store saw is work whose
+// predecessor will be replayed after a restart.
+func TestAuditFailedCompleteMustNotUnlockDependent(t *testing.T) {
+	store := &selectiveStubStore{failOn: string(EventTaskCompleted), err: errors.New("disk full")}
+	f := NewFabric().WithEventStore(store)
+
+	predecessor := newTask("rt01-pred")
+	require.NoError(t, f.Create(predecessor))
+	dependent := newTask("rt01-dep")
+	dependent.Dependencies = []string{"rt01-pred"}
+	require.NoError(t, f.Create(dependent))
+
+	epoch, err := f.Acquire("rt01-pred", "agent-a", time.Minute)
+	require.NoError(t, err)
+	require.NoError(t, f.Start("rt01-pred", "agent-a", epoch))
+
+	err = f.Complete("rt01-pred", "agent-a", epoch)
+
+	require.Error(t, err, "a completion the store refused must not be reported as success")
+	assert.Contains(t, err.Error(), "not persisted")
+
+	pred, err := f.Task("rt01-pred")
+	require.NoError(t, err)
+	assert.NotEqual(t, StateCompleted, pred.State,
+		"the task must not remain COMPLETED: that state is what releases its dependents")
+
+	// Readiness — not Acquire — is where a dependency gate is evaluated: Acquire only checks the
+	// task's own state, so the dependent must still be missing from ReadyTasks.
+	assert.NotContains(t, f.ReadyTasks(), "rt01-dep",
+		"the dependent must not become ready on an unpersisted completion")
+
+	// And the same holds through the explicit gate the scheduler consults.
+	ready, gateErr := f.IsReady("rt01-dep")
+	require.NoError(t, gateErr)
+	assert.False(t, ready, "the dependency gate must still report not-ready")
 }
