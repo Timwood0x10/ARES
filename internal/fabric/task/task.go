@@ -73,6 +73,12 @@ type Task struct {
 	//
 	// Guarded by f.mu like every other Task field.
 	Requeued bool
+
+	// PendingDelete marks a task whose tombstone could not be confirmed either way: the store may have
+	// written it and the answer did not come back. The task is kept for reconciliation but must not
+	// run — executing work the durable log already considers deleted is worse than a task that needs
+	// an operator.
+	PendingDelete bool
 	// AllowPartial is the creation-time policy that lets this task run when a
 	// dependency fails permanently, instead of being failed by the cascade. The
 	// gap is not hidden: the failed predecessor's ID is recorded in

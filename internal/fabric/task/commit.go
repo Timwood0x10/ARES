@@ -52,6 +52,13 @@ func (o CommitOutcome) String() string {
 // transition — that is how a duplicate execution is born.
 var ErrCommitUnknown = errors.New("taskfabric: commit outcome unknown")
 
+// ErrCommitRefused reports a state change the store definitely refused.
+//
+// Distinct from ErrCommitUnknown so callers can act on the difference: a refusal is safe to retry
+// with a new event, an unknown is not. Both are storage outcomes, not execution failures — a caller
+// that counts them as one pollutes whatever it uses to judge the executor.
+var ErrCommitRefused = errors.New("taskfabric: commit refused")
+
 // worse returns the more severe of two outcomes, so a batch reports its least reassuring member.
 //
 // Precedence: unknown outranks not-committed, which outranks committed, which outranks skipped. A
@@ -84,7 +91,7 @@ func commitError(outcome CommitOutcome, taskID string) error {
 	case CommitUnknown:
 		return fmt.Errorf("%w: task %q may or may not be durable; reconcile by event id before retrying", ErrCommitUnknown, taskID)
 	case CommitNotCommitted:
-		return fmt.Errorf("taskfabric: task %q was not persisted; the change was refused by the store", taskID)
+		return fmt.Errorf("%w: task %q was not persisted; the change was refused by the store", ErrCommitRefused, taskID)
 	default:
 		return nil
 	}

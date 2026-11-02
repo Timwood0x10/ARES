@@ -286,6 +286,11 @@ func (f *Fabric) Acquire(id, agentID string, ttl time.Duration) (uint64, error) 
 	if t.State != StateReady && t.State != StateSuspended {
 		return 0, ErrTaskNotReady
 	}
+	if t.PendingDelete {
+		// A tombstone that may or may not have been written: running this would duplicate work the
+		// durable log might already consider deleted.
+		return 0, fmt.Errorf("task %s is pending deletion confirmation: %w", id, ErrTaskNotReady)
+	}
 	if !t.Deadline.IsZero() && f.now().After(t.Deadline) {
 		// Race guard for ExpireDeadlines: the scan runs on the recovery tick, so
 		// a task can pass its deadline between two ticks. Granting it a lease
@@ -1191,48 +1196,48 @@ func (f *Fabric) ExpireApprovals() []string {
 // discarded work becomes READY again and re-executes after a restart.
 func (f *Fabric) Delete(id string) (err error) {
 	pending := make([]*pendingAppend, 0, 1)
-	var removed *Task
+	var target *Task
 	f.mu.Lock()
 	defer func() {
 		outcome := f.flushAppends(&pending)
-		if outcome == CommitCommitted || outcome == CommitSkipped {
+		switch outcome {
+		case CommitCommitted, CommitSkipped:
+			// Remove only now. The task was never absent from the map, so no Create could have
+			// reused this id in the meantime — which is what made the previous "put it back by id"
+			// rollback capable of clobbering a NEWER task with the same id.
+			f.mu.Lock()
+			if current, ok := f.tasks[id]; ok && current == target {
+				delete(f.tasks, id)
+			}
+			f.mu.Unlock()
+			return
+		case CommitUnknown:
+			// The tombstone may have been written. Restoring a schedulable state would run work the
+			// durable log may already consider deleted, so the task stays visible only for
+			// reconciliation and is excluded from scheduling.
+			f.mu.Lock()
+			if current, ok := f.tasks[id]; ok && current == target {
+				current.PendingDelete = true
+				current.UpdatedAt = f.now()
+			}
+			f.mu.Unlock()
+			err = errors.Join(err, commitError(outcome, id))
+			return
+		default:
+			// Definitely refused: the deletion did not happen, and the task stays exactly as it was.
+			err = errors.Join(err, commitError(outcome, id))
 			return
 		}
-		// The tombstone is not durable, so the deletion did not happen: put the task back. Leaving
-		// it removed would mean a restart resurrects a task this process reported as gone, and the
-		// caller has no way to tell the difference.
-		if removed != nil {
-			f.mu.Lock()
-			f.tasks[removed.ID] = removed
-			f.mu.Unlock()
-		}
-		err = errors.Join(err, commitError(outcome, id))
 	}()
 	defer f.mu.Unlock()
 	t, ok := f.tasks[id]
 	if !ok {
 		return ErrTaskNotFound
 	}
-	if err := f.deleteWithTombstoneLocked(id, &pending); err != nil {
-		return err
-	}
-	removed = t
-	return nil
-}
-
-// deleteWithTombstoneLocked records the tombstone for id and removes the task.
-// Callers MUST hold f.mu and flush the returned pending appends.
-func (f *Fabric) deleteWithTombstoneLocked(id string, pending *[]*pendingAppend) error {
-	t, ok := f.tasks[id]
-	if !ok {
-		return ErrTaskNotFound
-	}
 	switch t.State {
 	case StateReady, StateCompleted, StateFailed:
-		// Record while the task is still attached so the tombstone carries the
-		// same provenance payload every other must-persist event does.
-		*pending = append(*pending, f.recordLocked(t, EventTaskDeleted))
-		delete(f.tasks, id)
+		pending = append(pending, f.recordLocked(t, EventTaskDeleted))
+		target = t
 		return nil
 	default:
 		return ErrTaskUndeletable

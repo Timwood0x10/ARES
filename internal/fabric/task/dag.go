@@ -26,7 +26,7 @@ func (f *Fabric) IsReady(id string) (bool, error) {
 	if !ok {
 		return false, ErrTaskNotFound
 	}
-	if t.State != StateReady {
+	if t.State != StateReady || t.PendingDelete {
 		return false, nil
 	}
 	return depsSatisfiedLocked(f.tasks, t), nil
@@ -51,6 +51,10 @@ func (f *Fabric) ReadyTasks() []string {
 			continue
 		}
 		if !approvalCleared(t) {
+			continue
+		}
+		if t.PendingDelete {
+			// Awaiting reconciliation: the store may already consider it deleted.
 			continue
 		}
 		if depsSatisfiedLocked(f.tasks, t) {

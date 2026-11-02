@@ -197,3 +197,45 @@ func TestDelete_KeepsTheTaskWhenTheTombstoneIsNotDurable(t *testing.T) {
 	_, taskErr := f.Task("rt01-del")
 	assert.NoError(t, taskErr, "the task must still be there: its tombstone was never written")
 }
+
+// TestDelete_RefusedTombstoneLeavesTheTaskSchedulable: a definitively refused tombstone means the
+// deletion did not happen, so the task stays exactly as it was — and, because it was never removed
+// from the map, a Create that reused its id could not have been clobbered by a later rollback.
+func TestDelete_RefusedTombstoneLeavesTheTaskSchedulable(t *testing.T) {
+	store := &selectiveStubStore{failOn: string(EventTaskDeleted), err: errors.New("disk full")}
+	f := NewFabric().WithEventStore(store)
+
+	require.NoError(t, f.Create(newTask("rt01-refused")))
+	err := f.Delete("rt01-refused")
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrCommitRefused))
+
+	task, taskErr := f.Task("rt01-refused")
+	require.NoError(t, taskErr)
+	assert.False(t, task.PendingDelete, "a refusal is not an unknown: nothing to reconcile")
+	assert.Contains(t, f.ReadyTasks(), "rt01-refused", "the task is still runnable, as before the attempt")
+}
+
+// TestDelete_UnknownTombstoneBlocksExecution: when the tombstone may have been written, restoring a
+// schedulable state would run work the durable log may already consider deleted.
+func TestDelete_UnknownTombstoneBlocksExecution(t *testing.T) {
+	store := &selectiveStubStore{failOn: string(EventTaskDeleted), err: context.DeadlineExceeded}
+	f := NewFabric().WithEventStore(store)
+
+	require.NoError(t, f.Create(newTask("rt01-unknown-del")))
+	err := f.Delete("rt01-unknown-del")
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrCommitUnknown))
+
+	task, taskErr := f.Task("rt01-unknown-del")
+	require.NoError(t, taskErr)
+	assert.True(t, task.PendingDelete, "the task must be held for reconciliation")
+
+	assert.NotContains(t, f.ReadyTasks(), "rt01-unknown-del", "it must not be scheduled again")
+	_, acquireErr := f.Acquire("rt01-unknown-del", "agent-a", time.Minute)
+	assert.Error(t, acquireErr, "and it must not be acquirable")
+
+	ready, isReadyErr := f.IsReady("rt01-unknown-del")
+	require.NoError(t, isReadyErr)
+	assert.False(t, ready)
+}

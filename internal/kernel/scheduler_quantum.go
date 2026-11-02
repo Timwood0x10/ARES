@@ -261,6 +261,12 @@ func quantumRetries(err error) int {
 		errors.Is(err, taskfabric.ErrTaskNotFound) {
 		return 0
 	}
+	// A storage outcome is not an executor failure. The quantum SUCCEEDED and the completion could
+	// not be made durable; counting that as a retry both inflates the scorer's retry component and
+	// attributes the failure to an agent that did nothing wrong.
+	if errors.Is(err, taskfabric.ErrCommitUnknown) || errors.Is(err, taskfabric.ErrCommitRefused) {
+		return 0
+	}
 	return 1
 }
 
