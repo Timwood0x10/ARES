@@ -288,6 +288,19 @@ func (f *Fabric) settleBatchCommit(created []string, results []appendResult) ([]
 		return nil, errors.Join(fmt.Errorf("%w: refused=%v", ErrBatchNotCommitted, refused), rollbackErr)
 	}
 
+	// Refused and unknown members stay in memory for reconciliation but must not run: their own
+	// durable record is not settled, so executing them duplicates work the store may already hold.
+	// Keeping the record and allowing execution are two different decisions, and this is where they
+	// are separated.
+	f.mu.Lock()
+	for _, id := range append(append([]string(nil), refused...), unknown...) {
+		if t, ok := f.tasks[id]; ok {
+			t.CommitUnconfirmed = true
+			t.UpdatedAt = f.now()
+		}
+	}
+	f.mu.Unlock()
+
 	return committed, &PartialCommitError{Committed: committed, Refused: refused, Unknown: unknown}
 }
 

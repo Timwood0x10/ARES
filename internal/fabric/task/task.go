@@ -79,6 +79,11 @@ type Task struct {
 	// run — executing work the durable log already considers deleted is worse than a task that needs
 	// an operator.
 	PendingDelete bool
+
+	// CommitUnconfirmed marks a task whose own durable record is not settled: it belongs to a batch
+	// that was only partially committed, or to an append whose fate is unknown. The task is kept for
+	// reconciliation but must not run, because running it duplicates work the store may already hold.
+	CommitUnconfirmed bool
 	// AllowPartial is the creation-time policy that lets this task run when a
 	// dependency fails permanently, instead of being failed by the cascade. The
 	// gap is not hidden: the failed predecessor's ID is recorded in
@@ -193,4 +198,13 @@ func (t *Task) transition(to TaskState) error {
 	}
 	t.State = to
 	return nil
+}
+
+// schedulable reports whether this task may be handed to an executor.
+//
+// One predicate for every scheduling entry point (ReadyTasks, ResumableTasks, IsReady, Acquire), so a
+// new gate cannot be added to one of them and forgotten in the others — the failure mode that let a
+// PendingDelete task drive preemption after ReadyTasks had started filtering it.
+func (t *Task) schedulable() bool {
+	return t != nil && !t.PendingDelete && !t.CommitUnconfirmed
 }

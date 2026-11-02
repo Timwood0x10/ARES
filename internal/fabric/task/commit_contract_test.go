@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -340,4 +341,143 @@ func TestExpireDeadlines_ReportsAnUndurableExpiry(t *testing.T) {
 	task, taskErr := f.Task("exp-1")
 	require.NoError(t, taskErr)
 	assert.Equal(t, StateFailed, task.State)
+}
+
+// TestClassifyBatch_PerTaskAndMustPersistOnly: one transition can emit several events (an approval
+// adds an observational interrupt.created). Classifying per event reported the same task as committed
+// AND refused, and let an observability failure downgrade a durable commit.
+func TestClassifyBatch_PerTaskAndMustPersistOnly(t *testing.T) {
+	// acceptance-a: its created event landed; the observability-only task.ready did not. That must not
+	// downgrade the task — nobody recovers a task from a task.ready line.
+	committed, refused, unknown := classifyBatch([]appendResult{
+		{TaskID: "acceptance-a", Outcome: CommitCommitted, Type: EventTaskCreated},
+		{TaskID: "acceptance-a", Outcome: CommitNotCommitted, Type: EventTaskReady},
+		{TaskID: "acceptance-b", Outcome: CommitCommitted, Type: EventTaskCreated},
+	})
+
+	assert.Equal(t, []string{"acceptance-a", "acceptance-b"}, committed,
+		"an observational failure must not downgrade a durable commit")
+	assert.Empty(t, refused, "and must not report the task as refused")
+	assert.Empty(t, unknown)
+
+	// interrupt.created is must-persist BY DESIGN (the approval gate has to survive a restart), so a
+	// failure there does count — but once, for the task, not once per event.
+	committed, refused, _ = classifyBatch([]appendResult{
+		{TaskID: "approval-a", Outcome: CommitCommitted, Type: EventTaskCreated},
+		{TaskID: "approval-a", Outcome: CommitNotCommitted, Type: EventType(ares_events.EventInterruptCreated)},
+	})
+	assert.Empty(t, committed, "one task cannot be both committed and refused")
+	assert.Equal(t, []string{"approval-a"}, refused)
+
+	// With no duplicate and a real must-persist failure, the task is refused exactly once.
+	committed, refused, _ = classifyBatch([]appendResult{
+		{TaskID: "x", Outcome: CommitCommitted, Type: EventTaskCreated},
+		{TaskID: "x", Outcome: CommitNotCommitted, Type: EventTaskCompleted},
+	})
+	assert.Empty(t, committed)
+	assert.Equal(t, []string{"x"}, refused)
+}
+
+// blockingStore blocks Append until released, so a test can observe the window while a commit is in
+// flight.
+type blockingStore struct {
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (s *blockingStore) Append(context.Context, string, []*ares_events.Event, int64) error {
+	s.once.Do(func() { close(s.entered) })
+	<-s.release
+	return nil
+}
+func (s *blockingStore) Read(context.Context, string, ares_events.ReadOptions) ([]*ares_events.Event, error) {
+	return nil, nil
+}
+func (s *blockingStore) ReadAll(context.Context, ares_events.ReadOptions) ([]*ares_events.Event, error) {
+	return nil, nil
+}
+func (s *blockingStore) Subscribe(context.Context, ares_events.EventFilter) (<-chan *ares_events.Event, error) {
+	return nil, nil
+}
+func (s *blockingStore) StreamVersion(context.Context, string) (int64, error) { return 0, nil }
+
+// TestDelete_ClosesAdmissionBeforeTheAppend: a task whose deletion is in flight must not be handed a
+// lease. The delete used to gate only AFTER an unknown outcome arrived, so an acquire during the
+// append succeeded and the subsequent delete removed the task under the running quantum.
+func TestDelete_ClosesAdmissionBeforeTheAppend(t *testing.T) {
+	store := &blockingStore{entered: make(chan struct{}), release: make(chan struct{})}
+	f := NewFabric().WithEventStore(store)
+
+	// Create goes through the same blocking store, so release it once first.
+	createDone := make(chan error, 1)
+	go func() { createDone <- f.Create(newTask("del-block")) }()
+	<-store.entered
+	close(store.release)
+	require.NoError(t, <-createDone)
+
+	// Now a second blocking append, for the tombstone.
+	store2 := &blockingStore{entered: make(chan struct{}), release: make(chan struct{})}
+	f = f.WithEventStore(store2)
+
+	deleteDone := make(chan error, 1)
+	go func() { deleteDone <- f.Delete("del-block") }()
+	<-store2.entered // the tombstone append is in flight
+
+	// Released on a timer, not after the assertion: with the gate closed Acquire returns immediately,
+	// and WITHOUT it Acquire blocks on the durable-append barrier rather than returning — a hang would
+	// report nothing, while a bounded release turns that case into the plain assertion failure it is.
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		close(store2.release)
+	}()
+
+	_, acquireErr := f.Acquire("del-block", "agent-a", time.Minute)
+	assert.Error(t, acquireErr, "admission must be closed while the delete is in flight")
+
+	require.NoError(t, <-deleteDone)
+
+	_, taskErr := f.Task("del-block")
+	assert.Error(t, taskErr, "after a confirmed delete the task is gone")
+}
+
+// TestDelete_UnknownBlocksEverySchedulingEntry: filtering only ReadyTasks left the PREEMPTION scan
+// (ResumableTasks) seeing a task that may already be deleted, so it could preempt healthy work.
+func TestDelete_UnknownBlocksEverySchedulingEntry(t *testing.T) {
+	store := &selectiveStubStore{failOn: string(EventTaskDeleted), err: context.DeadlineExceeded}
+	f := NewFabric().WithEventStore(store)
+	require.NoError(t, f.Create(newTask("del-unknown")))
+
+	require.Error(t, f.Delete("del-unknown"))
+
+	assert.NotContains(t, f.ReadyTasks(), "del-unknown")
+	assert.NotContains(t, f.ResumableTasks(), "del-unknown",
+		"the drain and the preemption scan use this queue, not ReadyTasks")
+	_, acquireErr := f.Acquire("del-unknown", "agent-a", time.Minute)
+	assert.Error(t, acquireErr)
+}
+
+// TestCompilePlan_UnsettledMembersAreNotExecutable: keeping a refused member in memory for
+// reconciliation and allowing it to run are two decisions. The partial branch used to conflate them,
+// leaving every member READY and acquirable after the caller had been told the batch was not clean.
+func TestCompilePlan_UnsettledMembersAreNotExecutable(t *testing.T) {
+	store := &selectiveStubStore{failOn: string(EventTaskCreated), failTaskID: "batch-c", err: errors.New("disk full")}
+	f := NewFabric().WithEventStore(store)
+
+	_, err := f.CompilePlan(context.Background(), []PlanStep{
+		{ID: "batch-a", Capability: "code"},
+		{ID: "batch-b", Capability: "code"},
+		{ID: "batch-c", Capability: "code"},
+	})
+	require.Error(t, err)
+
+	if _, acquireErr := f.Acquire("batch-a", "agent-a", time.Minute); acquireErr != nil {
+		t.Fatalf("a committed member must stay runnable: %v", acquireErr)
+	}
+	_, refusedErr := f.Acquire("batch-c", "agent-a", time.Minute)
+	assert.Error(t, refusedErr, "a refused member must not be handed to an executor")
+
+	task, taskErr := f.Task("batch-c")
+	require.NoError(t, taskErr, "but it is kept for reconciliation")
+	assert.True(t, task.CommitUnconfirmed)
 }

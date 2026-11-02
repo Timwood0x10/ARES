@@ -142,14 +142,31 @@ var ErrBatchNotCommitted = errors.New("taskfabric: batch not committed")
 
 // classifyBatch groups per-append results into the three buckets the contract distinguishes.
 func classifyBatch(results []appendResult) (committed, refused, unknown []string) {
+	// Per task, not per event: one transition can emit several events, and a task whose created event
+	// landed but whose observational interrupt.created did not is committed, full stop.
+	worst := make(map[string]CommitOutcome, len(results))
+	order := make([]string, 0, len(results))
 	for _, r := range results {
-		switch r.Outcome {
+		// Observability-only events never decide durability. Their failure is worth a log line, not a
+		// verdict on whether the task exists.
+		if !isMustPersistEvent(r.Type) {
+			continue
+		}
+		if prev, seen := worst[r.TaskID]; seen {
+			worst[r.TaskID] = worse(prev, r.Outcome)
+			continue
+		}
+		worst[r.TaskID] = r.Outcome
+		order = append(order, r.TaskID)
+	}
+	for _, id := range order {
+		switch worst[id] {
 		case CommitCommitted, CommitSkipped:
-			committed = append(committed, r.TaskID)
+			committed = append(committed, id)
 		case CommitNotCommitted:
-			refused = append(refused, r.TaskID)
+			refused = append(refused, id)
 		default:
-			unknown = append(unknown, r.TaskID)
+			unknown = append(unknown, id)
 		}
 	}
 	return committed, refused, unknown

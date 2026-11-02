@@ -287,10 +287,10 @@ func (f *Fabric) Acquire(id, agentID string, ttl time.Duration) (uint64, error) 
 	if t.State != StateReady && t.State != StateSuspended {
 		return 0, ErrTaskNotReady
 	}
-	if t.PendingDelete {
-		// A tombstone that may or may not have been written: running this would duplicate work the
-		// durable log might already consider deleted.
-		return 0, fmt.Errorf("task %s is pending deletion confirmation: %w", id, ErrTaskNotReady)
+	if !t.schedulable() {
+		// A tombstone that may or may not have been written, or a record whose own append is not
+		// settled: running this duplicates work the durable log may already hold.
+		return 0, fmt.Errorf("task %s is awaiting commit reconciliation: %w", id, ErrTaskNotReady)
 	}
 	if !t.Deadline.IsZero() && f.now().After(t.Deadline) {
 		// Race guard for ExpireDeadlines: the scan runs on the recovery tick, so
@@ -1249,7 +1249,14 @@ func (f *Fabric) Delete(id string) (err error) {
 			err = errors.Join(err, commitError(outcome, id))
 			return
 		default:
-			// Definitely refused: the deletion did not happen, and the task stays exactly as it was.
+			// Definitely refused: the deletion did not happen, so admission reopens — the task is
+			// exactly as it was before the attempt.
+			f.mu.Lock()
+			if current, ok := f.tasks[id]; ok && current == target {
+				current.PendingDelete = false
+				current.UpdatedAt = f.now()
+			}
+			f.mu.Unlock()
 			err = errors.Join(err, commitError(outcome, id))
 			return
 		}
@@ -1261,6 +1268,10 @@ func (f *Fabric) Delete(id string) (err error) {
 	}
 	switch t.State {
 	case StateReady, StateCompleted, StateFailed:
+		// Close admission BEFORE the append, not after a failure. Otherwise a task whose deletion is
+		// in flight can be handed a lease during the append; the delete then succeeds and removes the
+		// task out from under a running quantum (Start → ErrTaskNotFound).
+		t.PendingDelete = true
 		pending = append(pending, f.recordLocked(t, EventTaskDeleted))
 		target = t
 		return nil

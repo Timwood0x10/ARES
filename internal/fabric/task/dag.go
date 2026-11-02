@@ -26,7 +26,7 @@ func (f *Fabric) IsReady(id string) (bool, error) {
 	if !ok {
 		return false, ErrTaskNotFound
 	}
-	if t.State != StateReady || t.PendingDelete {
+	if t.State != StateReady || !t.schedulable() {
 		return false, nil
 	}
 	return depsSatisfiedLocked(f.tasks, t), nil
@@ -53,8 +53,9 @@ func (f *Fabric) ReadyTasks() []string {
 		if !approvalCleared(t) {
 			continue
 		}
-		if t.PendingDelete {
-			// Awaiting reconciliation: the store may already consider it deleted.
+		if !t.schedulable() {
+			// Awaiting reconciliation: the store may already hold the tombstone, or the task's own
+			// record may not be durable.
 			continue
 		}
 		if depsSatisfiedLocked(f.tasks, t) {
@@ -83,6 +84,12 @@ func (f *Fabric) ResumableTasks() []string {
 	defer f.mu.Unlock()
 	var out []string
 	for id, t := range f.tasks {
+		if !t.schedulable() {
+			// This is the queue the drain and the PREEMPTION scan actually use. Filtering only
+			// ReadyTasks left a task that may already be deleted in the store driving preemption of
+			// healthy lower-priority work.
+			continue
+		}
 		switch t.State {
 		case StateReady:
 			if !f.retryDueLocked(t) {

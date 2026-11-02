@@ -310,6 +310,10 @@ func (f *Fabric) flushAppends(pending *[]*pendingAppend) CommitOutcome {
 type appendResult struct {
 	TaskID  string
 	Outcome CommitOutcome
+	// Type is needed because a task can emit more than one event for one transition (approval adds an
+	// observational interrupt.created). Classifying per EVENT reported the same task as committed and
+	// refused at once, and let an observability failure downgrade a durable commit.
+	Type EventType
 }
 
 // flushAppendsDetailed is flushAppends with the per-append results preserved.
@@ -384,7 +388,11 @@ func (f *Fabric) flushAppendsDetailed(pending *[]*pendingAppend) []appendResult 
 		f.flushCond.L.Unlock()
 		f.flushCond.Broadcast()
 		if p.store != nil {
-			results = append(results, appendResult{TaskID: p.taskID, Outcome: classifyAppendError(appendErr)})
+			results = append(results, appendResult{
+				TaskID:  p.taskID,
+				Outcome: classifyAppendError(appendErr),
+				Type:    p.typ,
+			})
 		}
 		if appendErr != nil {
 			if isMustPersistEvent(p.typ) {
