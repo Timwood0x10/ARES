@@ -99,13 +99,19 @@ func TestAuditCreateUnknownMustNotReportSuccessAndMustNotRetry(t *testing.T) {
 type selectiveStubStore struct {
 	failOn string
 	err    error
+	// failTaskID narrows it further, so a batch test can fail exactly one member.
+	failTaskID string
 }
 
 func (s *selectiveStubStore) Append(_ context.Context, _ string, events []*ares_events.Event, _ int64) error {
 	for _, ev := range events {
-		if string(ev.Type) == s.failOn {
-			return s.err
+		if string(ev.Type) != s.failOn {
+			continue
 		}
+		if s.failTaskID != "" && ev.StreamID != s.failTaskID {
+			continue
+		}
+		return s.err
 	}
 	return nil
 }
@@ -238,4 +244,75 @@ func TestDelete_UnknownTombstoneBlocksExecution(t *testing.T) {
 	ready, isReadyErr := f.IsReady("rt01-unknown-del")
 	require.NoError(t, isReadyErr)
 	assert.False(t, ready)
+}
+
+// TestCompilePlan_PartialCommitIsReportedAsPartial is the batch boundary: three of five created events
+// land, and reporting that as "the plan was not committed" would make the caller retry all five and
+// duplicate the three that are already durable.
+func TestCompilePlan_PartialCommitIsReportedAsPartial(t *testing.T) {
+	store := &selectiveStubStore{
+		failOn:     string(EventTaskCreated),
+		failTaskID: "plan-c",
+		err:        errors.New("disk full"),
+	}
+	f := NewFabric().WithEventStore(store)
+
+	ids, err := f.CompilePlan(context.Background(), []PlanStep{
+		{ID: "plan-a", Capability: "code"},
+		{ID: "plan-b", Capability: "code"},
+		{ID: "plan-c", Capability: "code"},
+	})
+
+	require.Error(t, err, "a partially committed batch must not be reported as success")
+	assert.True(t, errors.Is(err, ErrPartialCommit), "the class must say partial, not total failure")
+
+	var partial *PartialCommitError
+	require.True(t, errors.As(err, &partial))
+	assert.ElementsMatch(t, []string{"plan-a", "plan-b"}, partial.Committed)
+	assert.Equal(t, []string{"plan-c"}, partial.Refused)
+	assert.Empty(t, partial.Unknown)
+
+	assert.ElementsMatch(t, []string{"plan-a", "plan-b"}, ids, "returns what is durable")
+
+	// The durable members stay usable, and the refused one is kept too: nothing is rolled back when
+	// part of the batch landed, because deleting a committed task loses work.
+	for _, id := range []string{"plan-a", "plan-b", "plan-c"} {
+		_, taskErr := f.Task(id)
+		assert.NoError(t, taskErr, "task %s must still be present", id)
+	}
+}
+
+// TestCompilePlan_AllRefusedRollsBack is the other end: nothing durable, so the all-or-nothing promise
+// still holds and no task is left behind.
+func TestCompilePlan_AllRefusedRollsBack(t *testing.T) {
+	store := &selectiveStubStore{failOn: string(EventTaskCreated), err: errors.New("disk full")}
+	f := NewFabric().WithEventStore(store)
+
+	ids, err := f.CompilePlan(context.Background(), []PlanStep{{ID: "plan-x", Capability: "code"}})
+
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrBatchNotCommitted))
+	assert.Empty(t, ids)
+	_, taskErr := f.Task("plan-x")
+	assert.Error(t, taskErr, "a batch nothing persisted must leave no task behind")
+}
+
+// TestCompilePlan_UnknownIsNotRolledBack: an undetermined append may have landed, so the task stays
+// (an unverified rollback is forbidden) and the caller is told to reconcile rather than retry.
+func TestCompilePlan_UnknownIsNotRolledBack(t *testing.T) {
+	store := &selectiveStubStore{failOn: string(EventTaskCreated), err: context.DeadlineExceeded}
+	f := NewFabric().WithEventStore(store)
+
+	ids, err := f.CompilePlan(context.Background(), []PlanStep{{ID: "plan-u", Capability: "code"}})
+
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrPartialCommit))
+
+	var partial *PartialCommitError
+	require.True(t, errors.As(err, &partial))
+	assert.Equal(t, []string{"plan-u"}, partial.Unknown)
+
+	_, taskErr := f.Task("plan-u")
+	assert.NoError(t, taskErr, "an unknown outcome must not delete the task: the event may exist")
+	assert.Empty(t, ids)
 }

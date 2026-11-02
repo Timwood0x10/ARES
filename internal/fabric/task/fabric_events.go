@@ -297,7 +297,24 @@ func (f *Fabric) recordWithExtrasLocked(t *Task, typ EventType, extras map[strin
 // The outcome is now the caller's to interpret — committed, refused, or unknown — because those three
 // lead to different behaviour and only the caller knows which state change is at stake.
 func (f *Fabric) flushAppends(pending *[]*pendingAppend) CommitOutcome {
-	outcome := CommitSkipped
+	out := CommitSkipped
+	for _, r := range f.flushAppendsDetailed(pending) {
+		out = worse(out, r.Outcome)
+	}
+	return out
+}
+
+// appendResult is one pending event's fate, kept per member so a batch can report WHICH of its tasks
+// landed. Aggregating a batch into a single outcome is what turns "three of five committed" into
+// either a false success or a false total failure.
+type appendResult struct {
+	TaskID  string
+	Outcome CommitOutcome
+}
+
+// flushAppendsDetailed is flushAppends with the per-append results preserved.
+func (f *Fabric) flushAppendsDetailed(pending *[]*pendingAppend) []appendResult {
+	results := make([]appendResult, 0, len(*pending))
 	for _, p := range *pending {
 		if p == nil {
 			continue
@@ -367,7 +384,7 @@ func (f *Fabric) flushAppends(pending *[]*pendingAppend) CommitOutcome {
 		f.flushCond.L.Unlock()
 		f.flushCond.Broadcast()
 		if p.store != nil {
-			outcome = worse(outcome, classifyAppendError(appendErr))
+			results = append(results, appendResult{TaskID: p.taskID, Outcome: classifyAppendError(appendErr)})
 		}
 		if appendErr != nil {
 			if isMustPersistEvent(p.typ) {
@@ -377,7 +394,7 @@ func (f *Fabric) flushAppends(pending *[]*pendingAppend) CommitOutcome {
 			}
 		}
 	}
-	return outcome
+	return results
 }
 
 // discardAppends claims pending durable-append sequence numbers that will

@@ -254,8 +254,41 @@ func (f *Fabric) CompilePlan(ctx context.Context, steps []PlanStep) ([]string, e
 		created = append(created, s.ID)
 	}
 	f.mu.Unlock()
-	f.flushAppends(&pending)
-	return created, nil
+
+	return f.settleBatchCommit(created, f.flushAppendsDetailed(&pending))
+}
+
+// settleBatchCommit decides what a compiled batch means once its durable appends are known.
+//
+// Extracted from CompilePlan for the complexity limit, and worth reading on its own: the three
+// branches are the contract.
+//
+//   - nothing failed: the batch is committed.
+//   - nothing durable: roll back in memory, because all-or-nothing still holds.
+//   - anything else (partial, or any unknown): keep every task and report which id is in which
+//     state. Deleting a task whose event landed loses work, and removing one whose fate is unknown
+//     is an unverified rollback — the event may exist and the task would be resurrected on restart.
+func (f *Fabric) settleBatchCommit(created []string, results []appendResult) ([]string, error) {
+	committed, refused, unknown := classifyBatch(results)
+	if len(refused) == 0 && len(unknown) == 0 {
+		return created, nil
+	}
+
+	if len(committed) == 0 && len(unknown) == 0 {
+		var rollbackErr error
+		f.mu.Lock()
+		for _, id := range created {
+			// Only READY tasks can be removed and the batch has not been drained yet, so this cannot
+			// bounce; failures are collected rather than ignored.
+			if delErr := f.deleteLocked(id); delErr != nil {
+				rollbackErr = errors.Join(rollbackErr, fmt.Errorf("rollback %q: %w", id, delErr))
+			}
+		}
+		f.mu.Unlock()
+		return nil, errors.Join(fmt.Errorf("%w: refused=%v", ErrBatchNotCommitted, refused), rollbackErr)
+	}
+
+	return committed, &PartialCommitError{Committed: committed, Refused: refused, Unknown: unknown}
 }
 
 // CompileNode compiles a single PlanStep into exactly one task. It is the

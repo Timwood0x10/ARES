@@ -110,3 +110,47 @@ func classifyAppendError(err error) CommitOutcome {
 	}
 	return CommitNotCommitted
 }
+
+// PartialCommitError reports a batch whose members did not all reach the same fate.
+//
+// It exists because a batch is not a single write: reporting "the plan was not committed" when three
+// of five task.created events landed is as wrong as reporting success, and it is the more dangerous
+// of the two — the caller retries the whole plan and creates duplicates of the ones that did commit.
+type PartialCommitError struct {
+	// Committed lists the ids whose events are durable (or were skipped because no store is wired).
+	Committed []string
+	// Refused lists the ids the store definitely rejected: they are absent and may be retried.
+	Refused []string
+	// Unknown lists the ids whose fate could not be established. Not retryable: reconcile by event id.
+	Unknown []string
+}
+
+// Error implements error, naming all three groups.
+func (e *PartialCommitError) Error() string {
+	return fmt.Sprintf("%s: plan partially committed — committed=%v refused=%v unknown=%v",
+		ErrPartialCommit.Error(), e.Committed, e.Refused, e.Unknown)
+}
+
+// Is reports the class of every instance: ErrPartialCommit.
+func (e *PartialCommitError) Is(target error) bool { return target == ErrPartialCommit }
+
+// ErrPartialCommit is the class of a batch that ended in more than one state.
+var ErrPartialCommit = errors.New("taskfabric: batch partially committed")
+
+// ErrBatchNotCommitted is the class of a batch where nothing reached the store.
+var ErrBatchNotCommitted = errors.New("taskfabric: batch not committed")
+
+// classifyBatch groups per-append results into the three buckets the contract distinguishes.
+func classifyBatch(results []appendResult) (committed, refused, unknown []string) {
+	for _, r := range results {
+		switch r.Outcome {
+		case CommitCommitted, CommitSkipped:
+			committed = append(committed, r.TaskID)
+		case CommitNotCommitted:
+			refused = append(refused, r.TaskID)
+		default:
+			unknown = append(unknown, r.TaskID)
+		}
+	}
+	return committed, refused, unknown
+}
