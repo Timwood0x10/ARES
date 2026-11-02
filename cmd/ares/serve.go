@@ -104,7 +104,10 @@ func runServe() error {
 	// atomic.Store/Load so the goroutine never races with the Bootstrap
 	// assignment on the main goroutine.
 	var compPtr atomic.Pointer[ares_bootstrap.Components]
-	wiringServeSignalWatch(g, sigCh, ctx, cancel, shutdownMgr, &compPtr)
+	// Shutdown failures are kept outside the errgroup: Wait() returns only the first error, and
+	// during Ctrl-C that first error is the cancellation itself — which is then normalized to nil.
+	failures := &shutdownFailures{}
+	wiringServeSignalWatch(g, sigCh, ctx, cancel, shutdownMgr, &compPtr, failures)
 
 	// --- EventStore + Bootstrap ---
 	comp, store, mgr, err := wiringServeEventStore(ctx, cfg)
@@ -224,12 +227,30 @@ func runServe() error {
 	// A context cancellation (SIGINT/SIGTERM → graceful shutdown) surfaces as
 	// context.Canceled from the errgroup; that is a NORMAL exit, not an error —
 	// normalized to nil so `ares serve` exits 0 on Ctrl-C.
-	return normalizeShutdownErr(g.Wait())
+	return finalShutdownError(g.Wait(), failures)
 }
 
 // normalizeShutdownErr treats context cancellation (graceful shutdown) as a
 // clean exit: Ctrl-C is not a failure. Extracted so runServe stays within the
 // cyclomatic-complexity limit.
+// finalShutdownError combines the errgroup result with the shutdown failures recorded outside it.
+//
+// This is the bug the split exists for: on Ctrl-C the errgroup's FIRST error is the cancellation, so
+// Wait() reports context.Canceled; normalizing that to nil then discarded whatever a later shutdown
+// step had failed with. A recorded failure therefore wins over the cancellation, and both are kept
+// when they are different problems.
+func finalShutdownError(waitErr error, failures *shutdownFailures) error {
+	normalized := normalizeShutdownErr(waitErr)
+	recorded := failures.err()
+	if recorded == nil {
+		return normalized
+	}
+	if normalized == nil {
+		return recorded
+	}
+	return errors.Join(normalized, recorded)
+}
+
 func normalizeShutdownErr(err error) error {
 	if errors.Is(err, context.Canceled) {
 		return nil

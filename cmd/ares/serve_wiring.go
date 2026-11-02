@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -30,6 +32,39 @@ import (
 	core_tools "github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
 
+// shutdownFailures collects teardown failures that an errgroup cannot report.
+//
+// errgroup.Wait returns only the FIRST error, and during a normal Ctrl-C that first error is usually
+// context.Canceled from a watcher exiting — so a real failure from a later step was both masked by
+// the cancellation and then normalized away as "Ctrl-C is fine". These are recorded separately and
+// joined by the caller.
+type shutdownFailures struct {
+	mu   sync.Mutex
+	errs []error
+}
+
+func (f *shutdownFailures) add(err error) {
+	if f == nil || err == nil {
+		return
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.errs = append(f.errs, err)
+}
+
+// err returns the joined failures, or nil when the teardown was clean.
+func (f *shutdownFailures) err() error {
+	if f == nil {
+		return nil
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.errs) == 0 {
+		return nil
+	}
+	return errors.Join(f.errs...)
+}
+
 // wiringServeSignalWatch starts the signal-handling goroutine on the errgroup
 // (M-C2 segment extraction: body moved verbatim from runServe). compPtr is
 // the atomic slot the Bootstrap assignment publishes to.
@@ -40,6 +75,7 @@ func wiringServeSignalWatch(
 	cancel context.CancelFunc,
 	shutdownMgr *ares_shutdown.Manager,
 	compPtr *atomic.Pointer[ares_bootstrap.Components],
+	failures *shutdownFailures,
 ) {
 	g.Go(func() error {
 		select {
@@ -77,7 +113,7 @@ func wiringServeSignalWatch(
 			// FlightRecorder Stop, leaking goroutines and connections.
 			sysRuntimeCtx, sysRuntimeCancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer sysRuntimeCancel()
-			shutdownSystemRuntime(compPtr, sysRuntimeCtx)
+			failures.add(shutdownSystemRuntime(compPtr, sysRuntimeCtx))
 			cancel()
 		case <-ctx.Done():
 		}
@@ -98,7 +134,9 @@ func wiringServeSignalWatch(
 		// Bounded: this runs AFTER the kernel and SystemRuntime have spent their own budgets, so an
 		// unbounded wait here re-opens the exact hole they closed — the process reported a finished
 		// shutdown and then sat in this call indefinitely.
-		return finishBackgroundWait(ctx, comp, backgroundExitBudget)
+		bgErr := finishBackgroundWait(ctx, comp, backgroundExitBudget)
+		failures.add(bgErr)
+		return bgErr
 	})
 }
 
@@ -677,14 +715,19 @@ func startServeHTTPAndHooks(
 // reverse topological order; nil guards keep this safe on the bootstrap-failure
 // path. Extracted from runServe to keep its cyclomatic complexity within lint
 // limits.
-func shutdownSystemRuntime(compPtr *atomic.Pointer[ares_bootstrap.Components], ctx context.Context) {
+func shutdownSystemRuntime(compPtr *atomic.Pointer[ares_bootstrap.Components], ctx context.Context) error {
 	comp := compPtr.Load()
 	if comp == nil || comp.SystemRuntime == nil {
-		return
+		return nil
 	}
 	if err := comp.SystemRuntime.Shutdown(ctx); err != nil {
+		// Printed AND returned. Printing alone left the CLI reporting a clean exit after a Runtime
+		// whose components failed to stop — the caller has no way to see the difference between
+		// "stopped" and "we tried".
 		fmt.Fprintf(os.Stderr, "system_runtime shutdown error: %v\n", err)
+		return fmt.Errorf("serve: system runtime shutdown: %w", err)
 	}
+	return nil
 }
 
 // backgroundExitBudget bounds the final wait for Bootstrap's background goroutines.

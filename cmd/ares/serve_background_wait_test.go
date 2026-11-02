@@ -2,6 +2,9 @@ package main
 
 import (
 	"context"
+	"errors"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -9,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/Timwood0x10/ares/internal/ares_bootstrap"
+	"github.com/Timwood0x10/ares/internal/kernel"
 )
 
 // TestFinishBackgroundWait_ReportsTimeout: the CLI used to print this failure and then return nil, so
@@ -40,4 +44,92 @@ func TestFinishBackgroundWait_CleanExitStaysNil(t *testing.T) {
 	stopWorker()
 
 	require.NoError(t, finishBackgroundWait(context.Background(), comp, 2*time.Second))
+}
+
+// TestFinalShutdownError_CancellationDoesNotMaskAFailure is the exact report: on Ctrl-C the errgroup's
+// first error is the cancellation, Wait returns context.Canceled, and normalizing it to nil discarded
+// the shutdown step that had failed. The recorded failure must survive.
+func TestFinalShutdownError_CancellationDoesNotMaskAFailure(t *testing.T) {
+	cases := []struct {
+		name        string
+		waitErr     error
+		recorded    error
+		wantErr     error
+		wantContain string
+	}{
+		{name: "clean shutdown", waitErr: context.Canceled},
+		{name: "a real failure is kept", waitErr: errors.New("kaboom"), wantContain: "kaboom"},
+		{
+			name:        "cancellation does not mask a deadline",
+			waitErr:     context.Canceled,
+			recorded:    context.DeadlineExceeded,
+			wantContain: "deadline exceeded",
+		},
+		{
+			name:        "both are reported when they differ",
+			waitErr:     errors.New("kaboom"),
+			recorded:    context.DeadlineExceeded,
+			wantContain: "kaboom",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			failures := &shutdownFailures{}
+			failures.add(tc.recorded)
+
+			err := finalShutdownError(tc.waitErr, failures)
+
+			if tc.wantContain == "" {
+				if err != nil {
+					t.Fatalf("expected a clean exit, got %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantContain) {
+				t.Fatalf("want an error containing %q, got %v", tc.wantContain, err)
+			}
+		})
+	}
+}
+
+// stopFailingComp is a component whose Stop reports failure.
+type stopFailingComp struct{ name string }
+
+func (c *stopFailingComp) Name() string                { return c.name }
+func (c *stopFailingComp) Dependencies() []string      { return nil }
+func (c *stopFailingComp) Start(context.Context) error { return nil }
+func (c *stopFailingComp) Ready(context.Context) error { return nil }
+func (c *stopFailingComp) Stop(context.Context) error {
+	return errors.New("stop failed: flush incomplete")
+}
+
+// TestShutdownSystemRuntime_PropagatesFailure: this used to print and return nothing, so a Runtime
+// whose components failed to stop still ended with a nil CLI error whenever the last background wait
+// happened to succeed.
+func TestShutdownSystemRuntime_PropagatesFailure(t *testing.T) {
+	reg := kernel.NewRegistry()
+	require.NoError(t, reg.Register(&stopFailingComp{name: "store"}, kernel.ModeRequired))
+
+	orc := kernel.NewOrchestrator(reg, context.Background())
+	require.NoError(t, orc.Start(context.Background()))
+
+	var ptr atomic.Pointer[ares_bootstrap.Components]
+	ptr.Store(&ares_bootstrap.Components{SystemRuntime: orc})
+
+	err := shutdownSystemRuntime(&ptr, context.Background())
+
+	require.Error(t, err, "a Runtime that did not stop cleanly must not be reported as success")
+	assert.Contains(t, err.Error(), "system runtime shutdown")
+	assert.Contains(t, err.Error(), "flush incomplete", "the component's own reason must stay reachable")
+}
+
+// TestShutdownSystemRuntime_NilIsSafe keeps the bootstrap-failure path working: no components means
+// nothing to shut down, not a panic.
+func TestShutdownSystemRuntime_NilIsSafe(t *testing.T) {
+	var ptr atomic.Pointer[ares_bootstrap.Components]
+	require.NoError(t, shutdownSystemRuntime(&ptr, context.Background()))
+
+	ptr.Store(&ares_bootstrap.Components{})
+	require.NoError(t, shutdownSystemRuntime(&ptr, context.Background()))
 }
