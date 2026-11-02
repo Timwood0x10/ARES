@@ -99,23 +99,14 @@ func wiringServeSignalWatch(
 				fmt.Fprintln(os.Stderr, "\nSecond signal received: forcing immediate exit")
 				os.Exit(1)
 			}()
-			// Run the registered shutdown phases (HTTP → MCP → runtime) with a
-			// bounded overall timeout. cancel() afterwards stops background
-			// goroutines (event bridge, task submission) that wait on ctx.
-			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer shutdownCancel()
-			if err := shutdownMgr.StartShutdown(shutdownCtx); err != nil {
-				fmt.Fprintf(os.Stderr, "graceful shutdown error: %v\n", err)
-			}
-			// Give SystemRuntime Shutdown its own 15s budget so it
-			// is not starved by phase callbacks that consumed the shared
-			// 30s shutdownCtx. An expired context would skip MCP/Runtime/
-			// FlightRecorder Stop, leaking goroutines and connections.
-			sysRuntimeCtx, sysRuntimeCancel := context.WithTimeout(context.Background(), 15*time.Second)
-			defer sysRuntimeCancel()
-			failures.add(shutdownSystemRuntime(compPtr, sysRuntimeCtx))
-			cancel()
+			runServeTeardown(ctx, cancel, shutdownMgr, compPtr, failures)
 		case <-ctx.Done():
+			// A background failure (config watcher, event bridge, a submitted task) cancels the
+			// group's context WITHOUT a signal. This case used to do nothing: the phases never ran,
+			// SystemRuntime was never asked to stop, and the HTTP listener — which does not follow
+			// the context by itself — kept accepting requests, so g.Wait() blocked on a server
+			// nothing had asked to close. Both paths run the same sequence; only the trigger differs.
+			runServeTeardown(ctx, cancel, shutdownMgr, compPtr, failures)
 		}
 		comp := compPtr.Load()
 		if comp == nil {
@@ -736,6 +727,46 @@ func shutdownSystemRuntime(compPtr *atomic.Pointer[ares_bootstrap.Components], c
 // and 15s on SystemRuntime; it exists to keep a single uncooperative worker from making the whole
 // budget meaningless, not to give that worker more time.
 const backgroundExitBudget = 10 * time.Second
+
+// runServeTeardown stops the registered phases, then the SystemRuntime, then releases the process
+// context.
+//
+// Extracted so the signal path and the failure path cannot drift apart — they were one branch and one
+// empty case, and the empty case skipped the entire teardown.
+//
+// Each step carries its own budget because they run in sequence: a phase that consumed the shared
+// deadline would leave the later stops with an expired context, and they skip themselves, leaking
+// goroutines and connections.
+func runServeTeardown(
+	ctx context.Context,
+	cancel context.CancelFunc,
+	shutdownMgr *ares_shutdown.Manager,
+	compPtr *atomic.Pointer[ares_bootstrap.Components],
+	failures *shutdownFailures,
+) {
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), shutdownPhaseBudget)
+	defer shutdownCancel()
+	if err := shutdownMgr.StartShutdown(shutdownCtx); err != nil {
+		// Printed AND collected: an HTTP drain that ran out of budget is a failed teardown, and
+		// printing it while returning success is how a hung shutdown reads as a clean one.
+		fmt.Fprintf(os.Stderr, "graceful shutdown error: %v\n", err)
+		failures.add(fmt.Errorf("serve: shutdown phases: %w", err))
+	}
+
+	sysRuntimeCtx, sysRuntimeCancel := context.WithTimeout(context.Background(), sysRuntimeShutdownBudget)
+	defer sysRuntimeCancel()
+	failures.add(shutdownSystemRuntime(compPtr, sysRuntimeCtx))
+
+	// Stops background goroutines (event bridge, task submission) that wait on ctx.
+	cancel()
+}
+
+// shutdownPhaseBudget bounds the registered phase callbacks (HTTP → MCP → runtime).
+const shutdownPhaseBudget = 30 * time.Second
+
+// sysRuntimeShutdownBudget bounds the SystemRuntime's own teardown, separate from the phases so it
+// cannot be starved by callbacks that used up the shared deadline.
+const sysRuntimeShutdownBudget = 15 * time.Second
 
 // finishBackgroundWait is the CLI's last shutdown step, bounded and reported.
 //
