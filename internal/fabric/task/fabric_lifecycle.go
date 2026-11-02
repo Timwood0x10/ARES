@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/ares_events"
@@ -779,13 +780,37 @@ func (f *Fabric) CheckExpiredLeases() []string {
 //   - Owner/Lease stay attached for provenance; the holder's next
 //     Complete/Yield/Fail is rejected by ownerLocked, so a late writer cannot
 //     race the expiry.
+//
+// ExpireDeadlines is the ids-only shape kept for callers that predate the commit contract.
+//
+// It discards the outcome, which is exactly what the contract forbids for a caller that can act on
+// it: prefer ExpireDeadlinesWithOutcome. This wrapper exists because the deadline sweep has MANY test
+// callers and, until it is wired into a dispatch loop, no production one — see the note on the
+// scheduler side about where that error has to go, which is a decision rather than a log line.
 func (f *Fabric) ExpireDeadlines() []string {
+	expired, _ := f.ExpireDeadlinesWithOutcome()
+	return expired
+}
+
+// ExpireDeadlinesWithOutcome fails every task whose absolute deadline has passed and reports what is
+// known about the durability of those failures.
+//
+// The expired ids are returned even when the report carries an error: the tasks ARE failed in memory
+// and their dependents have been cascaded, so hiding them would be a second incorrect statement. The
+// error says the durable side is not settled — a refusal may be retried, an unknown must be
+// reconciled by event id — and nothing is rolled back, for the same reason Fail does not roll back.
+func (f *Fabric) ExpireDeadlinesWithOutcome() (expired []string, err error) {
 	pending := make([]*pendingAppend, 0, 1)
 	f.mu.Lock()
-	defer f.flushAppends(&pending)
+	defer func() {
+		outcome := f.flushAppends(&pending)
+		if outcome == CommitCommitted || outcome == CommitSkipped {
+			return
+		}
+		err = commitError(outcome, strings.Join(expired, ","))
+	}()
 	defer f.mu.Unlock()
 	now := f.now()
-	var expired []string
 	for _, t := range f.tasks {
 		if t.Deadline.IsZero() || !now.After(t.Deadline) {
 			continue
@@ -805,7 +830,7 @@ func (f *Fabric) ExpireDeadlines() []string {
 		}
 		expired = append(expired, t.ID)
 	}
-	return expired
+	return expired, nil
 }
 
 // ApprovalDecisionApproved and ApprovalDecisionRejected are the two allowed

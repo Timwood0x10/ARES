@@ -316,3 +316,28 @@ func TestCompilePlan_UnknownIsNotRolledBack(t *testing.T) {
 	assert.NoError(t, taskErr, "an unknown outcome must not delete the task: the event may exist")
 	assert.Empty(t, ids)
 }
+
+// TestExpireDeadlines_ReportsAnUndurableExpiry: the sweep failed tasks in memory and reported the ids
+// while the durability of those failures went unexamined — the same gap Create and Complete had.
+//
+// The ids are still returned when the report carries an error: the tasks ARE failed and their
+// dependents HAVE been cascaded, so withholding them would be a second incorrect statement. What
+// changes is that the caller now learns the durable side is unsettled.
+func TestExpireDeadlines_ReportsAnUndurableExpiry(t *testing.T) {
+	store := &selectiveStubStore{failOn: string(EventTaskFailed), err: errors.New("disk full")}
+	f := NewFabric().WithEventStore(store)
+
+	now := time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)
+	withClock(f, &now)
+
+	require.NoError(t, f.Create(&Task{ID: "exp-1", State: StateReady, Deadline: now.Add(-time.Second)}))
+
+	expired, err := f.ExpireDeadlinesWithOutcome()
+
+	require.Error(t, err, "an expiry the store refused must not be reported as recorded")
+	assert.Contains(t, expired, "exp-1", "the task is failed in memory and must be named")
+
+	task, taskErr := f.Task("exp-1")
+	require.NoError(t, taskErr)
+	assert.Equal(t, StateFailed, task.State)
+}
