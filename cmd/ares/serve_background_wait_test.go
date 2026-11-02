@@ -202,3 +202,42 @@ func TestWiringServeSignalWatch_NonSignalCancellationRunsTeardown(t *testing.T) 
 	assert.True(t, comp.stopped.Load(),
 		"a non-signal cancellation must run the same teardown as Ctrl-C")
 }
+
+// TestServeShutdownPath_SignalCollectsFailuresIntoTheFinalResult is the end-to-end shape the helper
+// tests cannot give: signal → watch goroutine → teardown → collector → final result. Both a failing
+// phase and a failing Runtime must survive normalization, and the CLI must not report success.
+func TestServeShutdownPath_SignalCollectsFailuresIntoTheFinalResult(t *testing.T) {
+	// A phase callback that fails, like an HTTP drain that ran out of budget.
+	mgr := ares_shutdown.NewManager(time.Second)
+	mgr.RegisterPhase(ares_shutdown.PhaseGraceful, 0)
+	require.NoError(t, mgr.AddCallback(ares_shutdown.PhaseGraceful, func(context.Context) error {
+		return context.DeadlineExceeded
+	}))
+
+	// A Runtime whose component fails to stop.
+	reg := kernel.NewRegistry()
+	require.NoError(t, reg.Register(&stopFailingComp{name: "store"}, kernel.ModeRequired))
+	orc := kernel.NewOrchestrator(reg, context.Background())
+	require.NoError(t, orc.Start(context.Background()))
+
+	var ptr atomic.Pointer[ares_bootstrap.Components]
+	ptr.Store(&ares_bootstrap.Components{SystemRuntime: orc})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sigCh := make(chan os.Signal, 1)
+	failures := &shutdownFailures{}
+
+	var g errgroup.Group
+	wiringServeSignalWatch(&g, sigCh, ctx, cancel, mgr, &ptr, failures)
+
+	sigCh <- os.Interrupt // the real trigger
+	waitErr := g.Wait()
+
+	final := finalShutdownError(waitErr, failures)
+
+	require.Error(t, final, "a shutdown whose phase and components failed must not report success")
+	assert.Contains(t, final.Error(), "shutdown phases")
+	assert.Contains(t, final.Error(), "system runtime shutdown")
+	assert.Contains(t, final.Error(), "flush incomplete", "the component's own reason must survive both layers")
+}
