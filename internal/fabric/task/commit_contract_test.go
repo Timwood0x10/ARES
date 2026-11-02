@@ -349,7 +349,7 @@ func TestExpireDeadlines_ReportsAnUndurableExpiry(t *testing.T) {
 func TestClassifyBatch_PerTaskAndMustPersistOnly(t *testing.T) {
 	// acceptance-a: its created event landed; the observability-only task.ready did not. That must not
 	// downgrade the task — nobody recovers a task from a task.ready line.
-	committed, refused, unknown := classifyBatch([]appendResult{
+	committed, refused, partial, unknown := classifyBatch([]appendResult{
 		{TaskID: "acceptance-a", Outcome: CommitCommitted, Type: EventTaskCreated},
 		{TaskID: "acceptance-a", Outcome: CommitNotCommitted, Type: EventTaskReady},
 		{TaskID: "acceptance-b", Outcome: CommitCommitted, Type: EventTaskCreated},
@@ -358,24 +358,29 @@ func TestClassifyBatch_PerTaskAndMustPersistOnly(t *testing.T) {
 	assert.Equal(t, []string{"acceptance-a", "acceptance-b"}, committed,
 		"an observational failure must not downgrade a durable commit")
 	assert.Empty(t, refused, "and must not report the task as refused")
+	assert.Empty(t, partial)
 	assert.Empty(t, unknown)
 
 	// interrupt.created is must-persist BY DESIGN (the approval gate has to survive a restart), so a
 	// failure there does count — but once, for the task, not once per event.
-	committed, refused, _ = classifyBatch([]appendResult{
+	committed, refused, partial, _ = classifyBatch([]appendResult{
 		{TaskID: "approval-a", Outcome: CommitCommitted, Type: EventTaskCreated},
 		{TaskID: "approval-a", Outcome: CommitNotCommitted, Type: EventType(ares_events.EventInterruptCreated)},
 	})
 	assert.Empty(t, committed, "one task cannot be both committed and refused")
-	assert.Equal(t, []string{"approval-a"}, refused)
+	assert.Empty(t, refused, "nor reported as purely refused: half of it is durable")
+	assert.Equal(t, []string{"approval-a"}, partial,
+		"a task whose own events disagree is its own state, not the worst of them")
 
-	// With no duplicate and a real must-persist failure, the task is refused exactly once.
-	committed, refused, _ = classifyBatch([]appendResult{
+	// One of the task's own must-persist events landed and one did not: partial, exactly once, and
+	// never "refused" — calling it refused is what let the batch delete a task the store still holds.
+	committed, refused, partial, _ = classifyBatch([]appendResult{
 		{TaskID: "x", Outcome: CommitCommitted, Type: EventTaskCreated},
 		{TaskID: "x", Outcome: CommitNotCommitted, Type: EventTaskCompleted},
 	})
 	assert.Empty(t, committed)
-	assert.Equal(t, []string{"x"}, refused)
+	assert.Empty(t, refused, "half of this task is durable: it is not a refusal")
+	assert.Equal(t, []string{"x"}, partial)
 }
 
 // blockingStore blocks Append until released, so a test can observe the window while a commit is in
@@ -480,4 +485,57 @@ func TestCompilePlan_UnsettledMembersAreNotExecutable(t *testing.T) {
 	task, taskErr := f.Task("batch-c")
 	require.NoError(t, taskErr, "but it is kept for reconciliation")
 	assert.True(t, task.CommitUnconfirmed)
+}
+
+// TestDelete_ASecondRefusalDoesNotClearAnEarlierUnknown is the isolation rule: the first tombstone may
+// have been written and merely reported as a timeout; a SECOND attempt that is definitively refused
+// says nothing about the first. Clearing the gate on that basis re-opened a task the store may
+// already consider deleted.
+func TestDelete_ASecondRefusalDoesNotClearAnEarlierUnknown(t *testing.T) {
+	unknownStore := &selectiveStubStore{failOn: string(EventTaskDeleted), err: context.DeadlineExceeded}
+	f := NewFabric().WithEventStore(unknownStore)
+	require.NoError(t, f.Create(newTask("iso-1")))
+
+	require.Error(t, f.Delete("iso-1"))
+	afterUnknown, err := f.Task("iso-1")
+	require.NoError(t, err)
+	require.True(t, afterUnknown.TombstoneUnconfirmed)
+
+	// Second attempt against a store that refuses outright.
+	refusingStore := &selectiveStubStore{failOn: string(EventTaskDeleted), err: errors.New("disk full")}
+	f = f.WithEventStore(refusingStore)
+	require.Error(t, f.Delete("iso-1"))
+
+	afterRefusal, err := f.Task("iso-1")
+	require.NoError(t, err)
+	assert.True(t, afterRefusal.PendingDelete,
+		"the earlier unknown keeps the gate closed: this refusal does not prove the first append failed")
+	assert.True(t, afterRefusal.TombstoneUnconfirmed)
+	assert.NotContains(t, f.ReadyTasks(), "iso-1")
+	assert.NotContains(t, f.ResumableTasks(), "iso-1")
+	_, acquireErr := f.Acquire("iso-1", "agent-a", time.Minute)
+	assert.Error(t, acquireErr)
+}
+
+// TestExpireDeadlines_ReportsPerMemberOutcomes: two tasks expired in the same sweep, one failure event
+// appended and the other refused. Reporting them together as "not persisted" makes the caller
+// reconcile or retry the wrong set — the committed one is already durable.
+func TestExpireDeadlines_ReportsPerMemberOutcomes(t *testing.T) {
+	store := &selectiveStubStore{failOn: string(EventTaskFailed), failTaskID: "exp-b", err: errors.New("disk full")}
+	f := NewFabric().WithEventStore(store)
+
+	now := time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)
+	withClock(f, &now)
+	require.NoError(t, f.Create(&Task{ID: "exp-a", State: StateReady, Deadline: now.Add(-time.Second)}))
+	require.NoError(t, f.Create(&Task{ID: "exp-b", State: StateReady, Deadline: now.Add(-time.Second)}))
+
+	expired, err := f.ExpireDeadlinesWithOutcome()
+
+	require.Error(t, err)
+	assert.ElementsMatch(t, []string{"exp-a", "exp-b"}, expired, "both are failed in memory")
+
+	var partial *PartialCommitError
+	require.True(t, errors.As(err, &partial), "the report must be per member, not one verdict for both")
+	assert.Equal(t, []string{"exp-a"}, partial.Committed, "this one is durable; retrying it would duplicate")
+	assert.Equal(t, []string{"exp-b"}, partial.Refused)
 }

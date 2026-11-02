@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/ares_events"
@@ -803,11 +802,14 @@ func (f *Fabric) ExpireDeadlinesWithOutcome() (expired []string, err error) {
 	pending := make([]*pendingAppend, 0, 1)
 	f.mu.Lock()
 	defer func() {
-		outcome := f.flushAppends(&pending)
-		if outcome == CommitCommitted || outcome == CommitSkipped {
+		// Per member, like the batch: two expired tasks where one failure appended and the other was
+		// refused are not "both unpersisted", and reporting them that way makes the caller retry (or
+		// reconcile) the wrong set.
+		committed, refused, partial, unknown := classifyBatch(f.flushAppendsDetailed(&pending))
+		if len(refused) == 0 && len(partial) == 0 && len(unknown) == 0 {
 			return
 		}
-		err = commitError(outcome, strings.Join(expired, ","))
+		err = &PartialCommitError{Committed: committed, Refused: refused, Partial: partial, Unknown: unknown}
 	}()
 	defer f.mu.Unlock()
 	now := f.now()
@@ -1243,6 +1245,7 @@ func (f *Fabric) Delete(id string) (err error) {
 			f.mu.Lock()
 			if current, ok := f.tasks[id]; ok && current == target {
 				current.PendingDelete = true
+				current.TombstoneUnconfirmed = true
 				current.UpdatedAt = f.now()
 			}
 			f.mu.Unlock()
@@ -1252,7 +1255,9 @@ func (f *Fabric) Delete(id string) (err error) {
 			// Definitely refused: the deletion did not happen, so admission reopens — the task is
 			// exactly as it was before the attempt.
 			f.mu.Lock()
-			if current, ok := f.tasks[id]; ok && current == target {
+			if current, ok := f.tasks[id]; ok && current == target && !current.TombstoneUnconfirmed {
+				// Reopen only when NO earlier attempt left a tombstone in doubt. A refusal now does
+				// not prove the previous append was not applied.
 				current.PendingDelete = false
 				current.UpdatedAt = f.now()
 			}

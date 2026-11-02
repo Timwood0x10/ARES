@@ -84,6 +84,12 @@ type Task struct {
 	// that was only partially committed, or to an append whose fate is unknown. The task is kept for
 	// reconciliation but must not run, because running it duplicates work the store may already hold.
 	CommitUnconfirmed bool
+
+	// TombstoneUnconfirmed records that a delete append's fate was never established: the tombstone
+	// may exist in the store. Unlike PendingDelete it is never cleared, because a LATER refusal says
+	// nothing about the earlier attempt — reopening the task on that basis would run work the store
+	// may already consider deleted.
+	TombstoneUnconfirmed bool
 	// AllowPartial is the creation-time policy that lets this task run when a
 	// dependency fails permanently, instead of being failed by the cascade. The
 	// gap is not hidden: the failed predecessor's ID is recorded in
@@ -206,5 +212,5 @@ func (t *Task) transition(to TaskState) error {
 // new gate cannot be added to one of them and forgotten in the others — the failure mode that let a
 // PendingDelete task drive preemption after ReadyTasks had started filtering it.
 func (t *Task) schedulable() bool {
-	return t != nil && !t.PendingDelete && !t.CommitUnconfirmed
+	return t != nil && !t.PendingDelete && !t.CommitUnconfirmed && !t.TombstoneUnconfirmed
 }

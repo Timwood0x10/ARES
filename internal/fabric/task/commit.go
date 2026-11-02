@@ -121,14 +121,17 @@ type PartialCommitError struct {
 	Committed []string
 	// Refused lists the ids the store definitely rejected: they are absent and may be retried.
 	Refused []string
+	// Partial lists the ids whose own events disagree: some durable, some refused. Neither state, and
+	// the one that must never be rolled back — the durable half exists in the store.
+	Partial []string
 	// Unknown lists the ids whose fate could not be established. Not retryable: reconcile by event id.
 	Unknown []string
 }
 
 // Error implements error, naming all three groups.
 func (e *PartialCommitError) Error() string {
-	return fmt.Sprintf("%s: plan partially committed — committed=%v refused=%v unknown=%v",
-		ErrPartialCommit.Error(), e.Committed, e.Refused, e.Unknown)
+	return fmt.Sprintf("%s: plan partially committed — committed=%v refused=%v partial=%v unknown=%v",
+		ErrPartialCommit.Error(), e.Committed, e.Refused, e.Partial, e.Unknown)
 }
 
 // Is reports the class of every instance: ErrPartialCommit.
@@ -141,10 +144,15 @@ var ErrPartialCommit = errors.New("taskfabric: batch partially committed")
 var ErrBatchNotCommitted = errors.New("taskfabric: batch not committed")
 
 // classifyBatch groups per-append results into the three buckets the contract distinguishes.
-func classifyBatch(results []appendResult) (committed, refused, unknown []string) {
+func classifyBatch(results []appendResult) (committed, refused, partial, unknown []string) {
 	// Per task, not per event: one transition can emit several events, and a task whose created event
 	// landed but whose observational interrupt.created did not is committed, full stop.
-	worst := make(map[string]CommitOutcome, len(results))
+	type tally struct {
+		committed int
+		refused   int
+		unknown   bool
+	}
+	perTask := make(map[string]*tally, len(results))
 	order := make([]string, 0, len(results))
 	for _, r := range results {
 		// Observability-only events never decide durability. Their failure is worth a log line, not a
@@ -152,22 +160,37 @@ func classifyBatch(results []appendResult) (committed, refused, unknown []string
 		if !isMustPersistEvent(r.Type) {
 			continue
 		}
-		if prev, seen := worst[r.TaskID]; seen {
-			worst[r.TaskID] = worse(prev, r.Outcome)
-			continue
+		entry, seen := perTask[r.TaskID]
+		if !seen {
+			entry = &tally{}
+			perTask[r.TaskID] = entry
+			order = append(order, r.TaskID)
 		}
-		worst[r.TaskID] = r.Outcome
-		order = append(order, r.TaskID)
+		switch r.Outcome {
+		case CommitCommitted, CommitSkipped:
+			entry.committed++
+		case CommitNotCommitted:
+			entry.refused++
+		default:
+			entry.unknown = true
+		}
 	}
 	for _, id := range order {
-		switch worst[id] {
-		case CommitCommitted, CommitSkipped:
+		landed, refusedCount := perTask[id].committed, perTask[id].refused
+		switch {
+		case perTask[id].unknown:
+			unknown = append(unknown, id)
+		case refusedCount == 0:
 			committed = append(committed, id)
-		case CommitNotCommitted:
+		case landed == 0:
 			refused = append(refused, id)
 		default:
-			unknown = append(unknown, id)
+			// Some of this task's own events landed and some did not. Collapsing that into "refused"
+			// was wrong in the dangerous direction: the caller then rolled the task back in memory
+			// while the store held its task.created, and a restart resurrected it as READY. It is
+			// neither state, so it gets its own.
+			partial = append(partial, id)
 		}
 	}
-	return committed, refused, unknown
+	return committed, refused, partial, unknown
 }

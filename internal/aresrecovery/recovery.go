@@ -287,8 +287,11 @@ func (r *Recovery) RequeueExpiredLeases() []string {
 // RequeueExpiredLeases: a task past its deadline must stop (Agent death is a
 // recoverable execution fault, a passed deadline is a task-level stop), so the
 // lease path must not hand it to a replacement executor first.
-func (r *Recovery) ExpireTaskDeadlines() []string {
-	return r.tasks.ExpireDeadlines()
+func (r *Recovery) ExpireTaskDeadlines() ([]string, error) {
+	// The error is returned, not logged: the sweep is where a task's durable state is settled, and a
+	// caller that cannot see "this expiry was refused / is unknown" will report a clean sweep for a
+	// subgraph the store still holds.
+	return r.tasks.ExpireDeadlinesWithOutcome()
 }
 
 // ExpireApprovals auto-rejects every pending approval gate whose

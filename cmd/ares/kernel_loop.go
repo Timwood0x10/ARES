@@ -262,11 +262,19 @@ func runSweepChain(
 	bindReplacements func(ids []string),
 ) {
 	// Deadline expiry runs BEFORE the lease requeue.
-	expired := recovery.ExpireTaskDeadlines()
+	expired, expErr := recovery.ExpireTaskDeadlines()
 	if len(expired) > 0 {
 		log.Info(ctx, "runKernelRecoveryLoop",
 			"kernel recovery loop: task(s) past deadline failed",
 			"count", len(expired), "task_ids", expired)
+	}
+	// TODO(plan/runtime-stability, round 2): this sweep has no caller to return to — the recovery
+	// loop runs as a bare goroutine and serve does not start it at all. Logging here is a placeholder,
+	// not the contract: the error has to reach a runtime-owned collector. Recorded so the gap is
+	// visible rather than implied by silence.
+	if expErr != nil {
+		log.Error(ctx, "runKernelRecoveryLoop",
+			"kernel recovery loop: deadline expiry has unsettled durable state", expErr)
 	}
 	// Approval SLA expiry runs AFTER deadline expiry and BEFORE the lease
 	// requeue (R1/R2).

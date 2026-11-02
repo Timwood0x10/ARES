@@ -269,12 +269,15 @@ func (f *Fabric) CompilePlan(ctx context.Context, steps []PlanStep) ([]string, e
 //     state. Deleting a task whose event landed loses work, and removing one whose fate is unknown
 //     is an unverified rollback — the event may exist and the task would be resurrected on restart.
 func (f *Fabric) settleBatchCommit(created []string, results []appendResult) ([]string, error) {
-	committed, refused, unknown := classifyBatch(results)
-	if len(refused) == 0 && len(unknown) == 0 {
+	committed, refused, partial, unknown := classifyBatch(results)
+	if len(refused) == 0 && len(partial) == 0 && len(unknown) == 0 {
 		return created, nil
 	}
 
-	if len(committed) == 0 && len(unknown) == 0 {
+	// Roll back ONLY when nothing at all reached the store. A task whose own events disagree half-and
+	// -half is not "refused": its task.created is in the store, and deleting it in memory means a
+	// restart resurrects it as READY while this process reported the batch as failed.
+	if len(committed) == 0 && len(partial) == 0 && len(unknown) == 0 {
 		var rollbackErr error
 		f.mu.Lock()
 		for _, id := range created {
@@ -293,7 +296,10 @@ func (f *Fabric) settleBatchCommit(created []string, results []appendResult) ([]
 	// Keeping the record and allowing execution are two different decisions, and this is where they
 	// are separated.
 	f.mu.Lock()
-	for _, id := range append(append([]string(nil), refused...), unknown...) {
+	unsettled := append([]string(nil), refused...)
+	unsettled = append(unsettled, partial...)
+	unsettled = append(unsettled, unknown...)
+	for _, id := range unsettled {
 		if t, ok := f.tasks[id]; ok {
 			t.CommitUnconfirmed = true
 			t.UpdatedAt = f.now()
@@ -301,7 +307,7 @@ func (f *Fabric) settleBatchCommit(created []string, results []appendResult) ([]
 	}
 	f.mu.Unlock()
 
-	return committed, &PartialCommitError{Committed: committed, Refused: refused, Unknown: unknown}
+	return committed, &PartialCommitError{Committed: committed, Refused: refused, Partial: partial, Unknown: unknown}
 }
 
 // CompileNode compiles a single PlanStep into exactly one task. It is the
