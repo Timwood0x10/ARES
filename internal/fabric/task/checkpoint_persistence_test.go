@@ -99,17 +99,20 @@ func TestMustPersistEventFailureIsLogged(t *testing.T) {
 	defer stopLogCapture()
 
 	// Create a task — the EventTaskCreated append will fail (must-persist).
-	if err := f.Create(newTask("w3-must")); err != nil {
-		t.Fatalf("Create must succeed (in-memory stays authoritative): %v", err)
+	//
+	// This used to assert that Create SUCCEEDS anyway, on the reading that "in-memory stays
+	// authoritative". RT-01 rejects that: the caller was told a task exists that no store knows
+	// about, so a restart loses it while the scheduler keeps running it. Create now reports the
+	// refusal, and the task must not remain executable.
+	createErr := f.Create(newTask("w3-must"))
+	if createErr == nil {
+		t.Fatal("Create acknowledged a task whose created event could not be persisted")
 	}
-
-	// The in-memory task exists (state machine not rolled back).
-	tk, err := f.Task("w3-must")
-	if err != nil {
-		t.Fatalf("Task must exist in memory: %v", err)
+	if !strings.Contains(createErr.Error(), "not persisted") {
+		t.Fatalf("the error must say the change was refused, got: %v", createErr)
 	}
-	if tk.State != StateReady {
-		t.Fatalf("task must be READY in memory, got %s", tk.State)
+	if _, err := f.Task("w3-must"); err == nil {
+		t.Fatal("the unpersisted task must not be retrievable: that is a task nobody can recover")
 	}
 
 	// The log must mention the must-persist event failure.
@@ -371,9 +374,23 @@ func TestStoreFailureDoesNotBreakStateMachine(t *testing.T) {
 	store.failAlways.Store(true)
 	f := NewFabric().WithEventStore(store)
 
-	// Every record() call will fail — but the state machine must still work.
+	// Every append fails. The state machine used to carry on regardless, which is the behaviour
+	// RT-01 removes: with a store configured, an unpersisted create is not a task.
+	//
+	// The in-memory fabric (no store) still keeps working — see TestStoreFailure…'s sibling tests;
+	// what changes here is only the store-configured contract.
+	if err := f.Create(newTask("w3-state")); err == nil {
+		t.Fatal("Create must not acknowledge a task the store refused")
+	}
+	if _, err := f.Task("w3-state"); err == nil {
+		t.Fatal("the refused task must not be left behind in memory")
+	}
+
+	// The fabric itself stays usable: a later create with a healthy store succeeds (checked in the
+	// no-store tests), and this one can be retried once the store recovers.
+	store.failAlways.Store(false)
 	if err := f.Create(newTask("w3-state")); err != nil {
-		t.Fatalf("Create: %v", err)
+		t.Fatalf("Create after the store recovered: %v", err)
 	}
 	epoch, err := f.Acquire("w3-state", "agent-a", time.Minute)
 	if err != nil {

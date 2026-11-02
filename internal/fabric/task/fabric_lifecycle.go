@@ -2,6 +2,7 @@ package taskfabric
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"time"
@@ -57,7 +58,7 @@ func WithResolvedDependencies() CreateOption {
 // Returns:
 //   - error: ErrTaskExists, an error for an empty id, or
 //     ErrDependencyUnresolved (only under WithResolvedDependencies).
-func (f *Fabric) Create(t *Task, opts ...CreateOption) error {
+func (f *Fabric) Create(t *Task, opts ...CreateOption) (err error) {
 	var cfg createOptions
 	for _, opt := range opts {
 		// A nil option is skipped rather than invoked: this runs on the
@@ -74,7 +75,22 @@ func (f *Fabric) Create(t *Task, opts ...CreateOption) error {
 	strategyID := f.strategyStampID()
 	pending := make([]*pendingAppend, 0, 1)
 	f.mu.Lock()
-	defer f.flushAppends(&pending)
+	// Registered FIRST so it runs LAST (defers are LIFO): the lock is released before the durable
+	// append, because store I/O must not be held under f.mu, and the outcome can still change the
+	// result afterwards.
+	defer func() {
+		outcome := f.flushAppends(&pending)
+		if outcome == CommitCommitted || outcome == CommitSkipped {
+			return
+		}
+		// Not committed, or unknown. Either way the task must not stay executable: an unpersisted
+		// create that the caller was told about is a task the scheduler can run and nobody can
+		// recover. The difference is what the caller is told, not whether the ghost is removed.
+		f.mu.Lock()
+		delete(f.tasks, t.ID)
+		f.mu.Unlock()
+		err = errors.Join(err, commitError(outcome, t.ID))
+	}()
 	defer f.mu.Unlock()
 	if cfg.resolveDependencies {
 		if err := resolvedDependenciesLocked(f.tasks, t); err != nil {

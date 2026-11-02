@@ -291,7 +291,13 @@ func (f *Fabric) recordWithExtrasLocked(t *Task, typ EventType, extras map[strin
 // single wedged append would block every later fabric mutation forever: the
 // in-memory transition has already happened by this point, so the caller would
 // never return and the whole write path would stall behind one dead store.
-func (f *Fabric) flushAppends(pending *[]*pendingAppend) {
+// flushAppends writes the pending durable events and reports what it knows about them.
+//
+// It used to return nothing: append failures were logged and the caller had already returned success.
+// The outcome is now the caller's to interpret — committed, refused, or unknown — because those three
+// lead to different behaviour and only the caller knows which state change is at stake.
+func (f *Fabric) flushAppends(pending *[]*pendingAppend) CommitOutcome {
+	outcome := CommitSkipped
 	for _, p := range *pending {
 		if p == nil {
 			continue
@@ -360,6 +366,9 @@ func (f *Fabric) flushAppends(pending *[]*pendingAppend) {
 		}
 		f.flushCond.L.Unlock()
 		f.flushCond.Broadcast()
+		if p.store != nil {
+			outcome = worse(outcome, classifyAppendError(appendErr))
+		}
 		if appendErr != nil {
 			if isMustPersistEvent(p.typ) {
 				log.Error(context.Background(), "flushAppends",
@@ -368,6 +377,7 @@ func (f *Fabric) flushAppends(pending *[]*pendingAppend) {
 			}
 		}
 	}
+	return outcome
 }
 
 // discardAppends claims pending durable-append sequence numbers that will
