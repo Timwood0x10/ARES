@@ -39,6 +39,8 @@ type lifecycleComp struct {
 	// blockStop makes Stop hang without watching its context, so the test can prove the orchestrator
 	// bounds the call instead of trusting the component.
 	blockStop bool
+	// stopPanic makes Stop panic, so the test can check the goroutine's recover boundary.
+	stopPanic string
 	stopMu    sync.Mutex
 	stopBlock chan struct{}
 	stopOnce  sync.Once
@@ -81,6 +83,9 @@ func (c *lifecycleComp) Ready(_ context.Context) error {
 func (c *lifecycleComp) Stop(ctx context.Context) error {
 	if c.stopCalls != nil {
 		atomic.AddInt32(c.stopCalls, 1)
+	}
+	if c.stopPanic != "" {
+		panic(c.stopPanic)
 	}
 	if c.blockStop {
 		// Deliberately ignores ctx: this models a component that keeps running its shutdown

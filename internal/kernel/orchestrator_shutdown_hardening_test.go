@@ -127,3 +127,28 @@ func TestShutdown_StillStopsIndependentComponents(t *testing.T) {
 	assert.Equal(t, StateStopped, cacheStatus.State,
 		"an unrelated component must still be stopped: a failed teardown is not a reason to leave it running")
 }
+
+// TestShutdown_StopPanicIsReportedNotFatal: Stop runs on its own goroutine now (so a component that
+// blocks cannot hold the teardown open), which also moved it out from under the caller's recover.
+// An unrecovered panic there terminates the process mid-shutdown — the moment when the shutdown
+// report matters most. It must be reported like any other stop failure.
+func TestShutdown_StopPanicIsReportedNotFatal(t *testing.T) {
+	reg := NewRegistry()
+	comp := &lifecycleComp{name: "bad-stop", blockWait: false}
+	comp.stopPanic = "boom"
+	requireNoErr(t, reg.Register(comp, ModeRequired))
+
+	orc := NewOrchestrator(reg, context.Background())
+	require.NoError(t, orc.Start(context.Background()))
+
+	var err error
+	require.NotPanics(t, func() { err = orc.Shutdown(context.Background()) },
+		"a panicking Stop must not escape the shutdown call")
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "panicked", "the report must name what happened")
+
+	status, _ := reg.GetStatus("bad-stop")
+	assert.NotEqual(t, StateStopped, status.State)
+	assert.Contains(t, status.Reason, "panicked")
+}

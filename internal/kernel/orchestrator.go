@@ -387,7 +387,19 @@ func (o *Orchestrator) stopComponent(ctx context.Context, name string) error {
 		// component happened to return. Bounding it here turns "blocks forever" into "reported as
 		// not stopped", which is a fact the operator can act on.
 		stopCh := make(chan error, 1)
-		go func() { stopCh <- stopper.Stop(stopCtx) }()
+		go func() {
+			// A panic in Stop used to be recoverable by whoever called Shutdown, because Stop ran on
+			// that goroutine. Moving it off the caller's stack also moved it out from under the
+			// caller's recover: a component that panics while stopping now takes the process down
+			// mid-teardown, which is the worst moment to lose the shutdown report. It is reported
+			// like any other stop failure instead.
+			defer func() {
+				if r := recover(); r != nil {
+					stopCh <- fmt.Errorf("kernel: stop %q panicked: %v", name, r)
+				}
+			}()
+			stopCh <- stopper.Stop(stopCtx)
+		}()
 		select {
 		case stopErr := <-stopCh:
 			if stopErr != nil {
