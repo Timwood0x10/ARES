@@ -268,11 +268,11 @@ func (s *Scheduler) endQuantumOutcome(ctx context.Context, winner, capability, t
 	// and attributing any of them to the agent poisons its success rate toward 0.
 	// A quantum cancelled by scheduler shutdown ran, but its result was never a verdict: the work was
 	// interrupted, not judged. Kept neutral alongside the non-executing cases.
-	if !qr.Executed || errors.Is(qr.StepErr, context.Canceled) {
+	if !qr.Executed || qr.Discarded || errors.Is(qr.StepErr, context.Canceled) {
 		s.tracker.EndNeutral(winner)
 		log.Debug(ctx, "endQuantumOutcome",
-			"kernel scheduler: quantum did not execute; outcome not attributed",
-			"task_id", taskID, "winner", winner, "reason", qr.Err())
+			"kernel scheduler: quantum produced no attributable outcome",
+			"task_id", taskID, "winner", winner, "discarded", qr.Discarded, "reason", qr.Err())
 		return
 	}
 
@@ -283,7 +283,7 @@ func (s *Scheduler) endQuantumOutcome(ctx context.Context, winner, capability, t
 	s.tracker.End(winner, succeeded)
 	if qr.CommitErr != nil {
 		log.Warn(ctx, "endQuantumOutcome",
-			"kernel scheduler: quantum result not durably recorded", nil,
+			"kernel scheduler: quantum result not durably recorded",
 			"task_id", taskID, "winner", winner, "commit_error", qr.CommitErr)
 	}
 	if s.attribution != nil {

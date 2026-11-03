@@ -80,6 +80,12 @@ type QuantumResult struct {
 	// task) or the quantum was preempted at the boundary. A non-executing quantum is never the
 	// executor's failure.
 	Executed bool
+	// Discarded reports that the step DID produce a result and the task did not take it, because
+	// ownership moved while it was running (preempted, then re-acquired by a new holder or a new
+	// epoch of the same one). That is neither a success nor a failure for this executor: the work was
+	// fenced out. Scoring it rewards an agent for a result the task never used, or punishes it for a
+	// step nobody was waiting for any more.
+	Discarded bool
 	// StepErr is the executor's own failure. Nil when the step produced a result, even if that
 	// result could not be persisted.
 	StepErr error
@@ -91,8 +97,30 @@ type QuantumResult struct {
 	RetriesConsumed int
 }
 
-// Succeeded reports whether the executor ran and produced a result.
-func (r QuantumResult) Succeeded() bool { return r.Executed && r.StepErr == nil }
+// Succeeded reports whether the executor ran and produced a result THE TASK TOOK.
+//
+// A discarded result is excluded by construction: it is neither a verdict on the executor nor on the
+// work, and a caller that asks "did this succeed" about a fenced result would be asking the wrong
+// question — but it would get a true answer if this ignored Discarded.
+func (r QuantumResult) Succeeded() bool {
+	return r.Executed && !r.Discarded && r.StepErr == nil
+}
+
+// classifyTerminal separates a runtime rejection from a storage outcome.
+//
+// A fencing error (ownership or epoch moved) means the result was discarded, not that the store
+// failed: there was no store write to judge. Reporting it as CommitErr made the scheduler treat a
+// late result from a stale holder as a real verdict.
+func classifyTerminal(err error) (commitErr error, discarded bool) {
+	switch {
+	case err == nil:
+		return nil, false
+	case errors.Is(err, ErrNotOwner), errors.Is(err, ErrEpochMismatch):
+		return nil, true
+	default:
+		return err, false
+	}
+}
 
 // Err joins the dimensions, for logging and for callers that predate the split.
 //
@@ -142,10 +170,16 @@ func (f *Fabric) RunQuantumResult(taskID, agentID string, epoch uint64, step Qua
 
 	if stepErr != nil {
 		if isCancellation(stepErr) {
-			releaseErr := f.Release(taskID, agentID, epoch)
-			return QuantumResult{Executed: true, StepErr: stepErr, CommitErr: releaseErr}
+			releaseErr, releaseDiscarded := classifyTerminal(f.Release(taskID, agentID, epoch))
+			return QuantumResult{Executed: true, StepErr: stepErr, CommitErr: releaseErr, Discarded: releaseDiscarded}
 		}
-		attempts, failErr := f.failWithAttempts(taskID, agentID, epoch, stepErr)
+		attempts, rawFailErr := f.failWithAttempts(taskID, agentID, epoch, stepErr)
+		failErr, failDiscarded := classifyTerminal(rawFailErr)
+		if failDiscarded {
+			// The failure could not be recorded because the task is no longer ours: the verdict is
+			// discarded with the result, and no retry was consumed.
+			return QuantumResult{Executed: true, StepErr: stepErr, Discarded: true}
+		}
 		// Recorded where the counter was modified, not inferred afterwards. The scorer's retry
 		// component counts a failed attempt as one consumed retry — the same unit as before — but it
 		// is now a fact from the transition rather than a guess about the error chain, which is what
@@ -158,16 +192,19 @@ func (f *Fabric) RunQuantumResult(taskID, agentID string, epoch uint64, step Qua
 	}
 
 	if done {
-		var completeErr error
+		var rawCompleteErr error
 		if checkpoint != nil {
-			completeErr = f.CompleteWithCheckpoint(taskID, agentID, epoch, checkpoint)
+			rawCompleteErr = f.CompleteWithCheckpoint(taskID, agentID, epoch, checkpoint)
 		} else {
-			completeErr = f.Complete(taskID, agentID, epoch)
+			rawCompleteErr = f.Complete(taskID, agentID, epoch)
 		}
-		// StepErr stays nil: the executor did its job, and a refused completion is a storage fact.
-		return QuantumResult{Executed: true, CommitErr: completeErr}
+		commitErr, discarded := classifyTerminal(rawCompleteErr)
+		// StepErr stays nil: the executor did its job. A refused completion is a storage fact; a
+		// fenced one is not a fact about this executor at all.
+		return QuantumResult{Executed: true, CommitErr: commitErr, Discarded: discarded}
 	}
-	return QuantumResult{Executed: true, CommitErr: f.Yield(taskID, agentID, epoch, checkpoint)}
+	yieldErr, yieldDiscarded := classifyTerminal(f.Yield(taskID, agentID, epoch, checkpoint))
+	return QuantumResult{Executed: true, CommitErr: yieldErr, Discarded: yieldDiscarded}
 }
 
 func (f *Fabric) RunQuantum(taskID, agentID string, epoch uint64, step QuantumStep) error {

@@ -4,9 +4,13 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
+	ares_events "github.com/Timwood0x10/ares/internal/ares_events"
+	"github.com/Timwood0x10/ares/internal/aresrecovery"
 	taskfabric "github.com/Timwood0x10/ares/internal/fabric/task"
 )
 
@@ -52,21 +56,63 @@ func TestQuantumResult_StorageOutcomeIsNotAnExecutorVerdict(t *testing.T) {
 	}
 }
 
-// TestQuantumResult_RetriesAreCarriedNotInferred: a real step failure whose failure-append was ALSO
-// refused used to score zero retries, because the joined error matched the commit sentinel. The retry
-// is now a field recorded at the requeue decision.
-func TestQuantumResult_RetriesAreCarriedNotInferred(t *testing.T) {
-	qr := taskfabric.QuantumResult{
-		Executed:        true,
-		StepErr:         errors.New("tool exploded"),
-		CommitErr:       errors.Join(taskfabric.ErrCommitRefused, context.DeadlineExceeded),
-		RetriesConsumed: 1,
-	}
+// failingFailedAppendStore refuses the task.failed append, so a real step failure has an unrecordable
+// failure on top of it — the exact shape that used to report zero retries.
+type failingFailedAppendStore struct{}
 
-	assert.Equal(t, 1, qr.RetriesConsumed,
-		"the retry that was actually spent must survive a commit failure riding on the same result")
+func (failingFailedAppendStore) Append(_ context.Context, streamID string, events []*ares_events.Event, _ int64) error {
+	for _, ev := range events {
+		if string(ev.Type) == string(taskfabric.EventTaskFailed) {
+			return errors.Join(taskfabric.ErrCommitRefused, errors.New("disk full"))
+		}
+	}
+	return nil
+}
+func (failingFailedAppendStore) Read(context.Context, string, ares_events.ReadOptions) ([]*ares_events.Event, error) {
+	return nil, nil
+}
+func (failingFailedAppendStore) ReadAll(context.Context, ares_events.ReadOptions) ([]*ares_events.Event, error) {
+	return nil, nil
+}
+func (failingFailedAppendStore) Subscribe(context.Context, ares_events.EventFilter) (<-chan *ares_events.Event, error) {
+	return nil, nil
+}
+func (failingFailedAppendStore) StreamVersion(context.Context, string) (int64, error) { return 0, nil }
+
+// TestRetryAttribution_SurvivesARefusedFailureAppend drives the production path end to end:
+// RunQuantumResult → failWithAttempts → endQuantumOutcome → attribution.
+//
+// The previous version of this test set RetriesConsumed by hand and then asserted it was 1, which
+// would keep passing even if the production code always returned 0. Here the retry has to survive a
+// commit failure riding on the same result, and the assertion is on what the attribution recorded.
+func TestRetryAttribution_SurvivesARefusedFailureAppend(t *testing.T) {
+	fabric := taskfabric.NewFabric().WithEventStore(failingFailedAppendStore{})
+	task := &taskfabric.Task{ID: "t-retry-commit", Capability: "code"}
+	require.NoError(t, fabric.Create(task))
+
+	epoch, err := fabric.Acquire("t-retry-commit", "coder", time.Minute)
+	require.NoError(t, err)
+
+	qr := fabric.RunQuantumResult("t-retry-commit", "coder", epoch, func() (any, bool, error) {
+		return nil, false, errors.New("tool exploded")
+	})
+
+	require.Equal(t, 1, qr.RetriesConsumed, "the retry the fabric spent must be reported")
+	require.Error(t, qr.CommitErr, "and the failure it could not record must be reported separately")
 	assert.False(t, qr.Succeeded())
 
-	// A single dimension is returned as itself, so sentinel comparisons keep working.
-	assert.Equal(t, taskfabric.ErrNotOwner, taskfabric.QuantumResult{StepErr: taskfabric.ErrNotOwner}.Err())
+	attribution := aresrecovery.NewExecutionAttribution()
+	tracker := NewLoadTracker()
+	sched := New(fabric, map[string]CapabilityExecutor{}, tracker)
+	sched.WithAttribution(attribution)
+
+	tracker.Begin("coder")
+	sched.endQuantumOutcome(context.Background(), "coder", "code", "t-retry-commit", qr, time.Millisecond)
+
+	snap := attribution.Snapshot()
+	require.Len(t, snap.PerCapability, 1)
+	cr := snap.PerCapability[0]
+	assert.Equal(t, 1, cr.Fail, "the step really did fail")
+	assert.Equal(t, 1.0, cr.AvgRetries,
+		"and the retry it consumed must survive the commit failure on the same result")
 }
