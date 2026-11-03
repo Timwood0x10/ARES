@@ -2,7 +2,9 @@ package taskfabric
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/ares_events"
@@ -32,6 +34,12 @@ type pendingAppend struct {
 	typ    EventType
 	taskID string
 	event  *ares_events.Event
+	// generation is the task's transition counter when this event was recorded, captured under the
+	// same lock that produced the event.
+	generation uint64
+	// idempotentRetry marks a re-append of an event that may already be durable (the unverified
+	// tombstone). For it, a version conflict is the SUCCESS case: the store already holds this id.
+	idempotentRetry bool
 	// seq is the fabric-wide monotonic sequence assigned under f.mu at record
 	// time. flushAppends waits for seq contiguity so durable appends from
 	// concurrent fabric calls land in causal order.
@@ -263,14 +271,15 @@ func (f *Fabric) recordWithExtrasLocked(t *Task, typ EventType, extras map[strin
 			// same transition must carry the same id, or the store cannot tell a retry from a second
 			// event; and reconciliation after an unknown outcome goes by id, so there has to be one
 			// to go by. Previously the id was empty here and the store minted a new one per attempt.
-			ID:         f.nextEventID(t.ID),
+			ID:         f.nextEventID(),
 			Type:       et,
 			StreamID:   t.ID,
 			ModuleName: "taskfabric",
 			Payload:    payload,
 			Timestamp:  ev.At,
 		},
-		seq: f.flushSeq,
+		seq:        f.flushSeq,
+		generation: t.Generation,
 	}
 }
 
@@ -314,8 +323,13 @@ func (f *Fabric) flushAppends(pending *[]*pendingAppend) CommitOutcome {
 // landed. Aggregating a batch into a single outcome is what turns "three of five committed" into
 // either a false success or a false total failure.
 type appendResult struct {
-	TaskID  string
-	Outcome CommitOutcome
+	TaskID string
+	// EventID identifies the append, so an unknown outcome can be recorded against something that
+	// can later be asked about.
+	EventID string
+	// Generation is the task state the event described.
+	Generation uint64
+	Outcome    CommitOutcome
 	// Type is needed because a task can emit more than one event for one transition (approval adds an
 	// observational interrupt.created). Classifying per EVENT reported the same task as committed and
 	// refused at once, and let an observability failure downgrade a durable commit.
@@ -394,11 +408,38 @@ func (f *Fabric) flushAppendsDetailed(pending *[]*pendingAppend) []appendResult 
 		f.flushCond.L.Unlock()
 		f.flushCond.Broadcast()
 		if p.store != nil {
-			results = append(results, appendResult{
-				TaskID:  p.taskID,
-				Outcome: classifyAppendError(appendErr),
-				Type:    p.typ,
-			})
+			outcome := classifyAppendError(appendErr)
+			if p.idempotentRetry {
+				if alreadyPersisted(appendErr) {
+					// Re-appending an event whose previous attempt timed out: the conflict IS the
+					// answer — the row is already there. Treating it as a refusal left the deletion
+					// permanently pending, because every retry hit the same wall.
+					outcome = CommitCommitted
+				} else if appendErr != nil {
+					// The retry failed for a reason this code does not recognise as "already there".
+					// Logged because the alternative is indistinguishable from the stuck-deletion
+					// bug this path exists to fix: the task stays pending and nothing says why.
+					log.Warn(context.Background(), "flushAppends",
+						"taskfabric: idempotent retry failed for an unrecognised reason; the event may already exist",
+						"event_type", p.typ, "task_id", p.taskID, "event_id", p.event.ID, "error", appendErr)
+				}
+			}
+			res := appendResult{
+				TaskID:     p.taskID,
+				EventID:    p.event.ID,
+				Generation: p.generation,
+				Outcome:    outcome,
+				Type:       p.typ,
+			}
+			if res.Outcome == CommitCommitted {
+				// A retry that finally landed settles the entry an earlier attempt left behind.
+				// Without this the ledger keeps reporting an event that is already durable, and a
+				// later Reconcile would "settle" something that was never pending.
+				f.clearPendingReconciliation(res.EventID)
+			} else {
+				f.recordPendingReconciliation(res)
+			}
+			results = append(results, res)
 		}
 		if appendErr != nil {
 			if isMustPersistEvent(p.typ) {
@@ -506,11 +547,35 @@ func taskEventType(typ EventType) ares_events.EventType {
 	}
 }
 
-// nextEventID mints a stable, process-unique event id.
+// nextEventID mints a stable, process-unique event id of FIXED length.
 //
-// The process nonce is what keeps two runs apart: without it a restarted process would reuse
-// "<task>#<seq>" for a different event, and an id-based reconciliation would "find" the previous
-// run's record and settle an outcome that never happened.
-func (f *Fabric) nextEventID(taskID string) string {
-	return fmt.Sprintf("%s-%016x-%d", taskID, f.eventNonce, f.flushSeq)
+// Fixed length is a storage constraint, not a preference: events.id is VARCHAR(255) and a legal
+// 255-character task id made the old "<task>-<nonce>-<seq>" form 274 characters, which the store
+// rejects. The task id is already carried by StreamID, so repeating it here bought nothing.
+//
+// The process nonce is what keeps two runs apart: without it a restarted process would reuse the same
+// counter for a different event, and an id-based reconciliation would "find" the previous run's
+// record and settle an outcome that never happened.
+func (f *Fabric) nextEventID() string {
+	return fmt.Sprintf("%016x%016x", f.eventNonce, f.flushSeq)
+}
+
+// alreadyPersisted reports whether an append error means the event is already in the store.
+//
+// Three shapes, because the answer depends on the backend: the store's own sentinel, PostgreSQL's
+// unique-violation SQLSTATE (23505), and — as a last resort — the message. The last one is a safety
+// net, not a design: without it an unmapped duplicate-key error is indistinguishable from a refusal,
+// and a deletion that the store actually committed would sit pending forever.
+func alreadyPersisted(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, ares_events.ErrVersionConflict) {
+		return true
+	}
+	var state interface{ SQLState() string }
+	if errors.As(err, &state) && state.SQLState() == "23505" {
+		return true
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "duplicate key")
 }

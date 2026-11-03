@@ -11,6 +11,10 @@ type Task struct {
 	// Capability is the required capability (e.g. "rust/unsafe-analysis");
 	// the capability-aware scheduler scores agents against it.
 	Capability string
+	// Generation counts this task's state transitions. It is what a reconciliation compares against:
+	// a pending event recorded at generation N describes the task as it was then, and settling it
+	// after the task has moved on would apply an outcome to a state that no longer exists.
+	Generation uint64
 	// State is the current lifecycle state.
 	State TaskState
 	// Priority drives preemption decisions (higher wins).
@@ -208,6 +212,7 @@ func (t *Task) transition(to TaskState) error {
 		return ErrIllegalState
 	}
 	t.State = to
+	t.Generation++
 	return nil
 }
 

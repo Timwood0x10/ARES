@@ -2,6 +2,8 @@ package taskfabric
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -55,7 +57,8 @@ func (s *idRecordingStore) idsFor(typ EventType) []string {
 }
 
 // TestEventID_IsAssignedBeforeAppend: the store used to mint the id, so the append call carried an
-// empty one. Nothing downstream could name the event it was asking the store about, which is the
+// empty one, and the replacement embedded the task id — which made a legal 255-character task id
+// produce a 274-character event id and fail the store's VARCHAR(255) column. Nothing downstream could name the event it was asking the store about, which is the
 // precondition for reconciling an unknown outcome at all.
 func TestEventID_IsAssignedBeforeAppend(t *testing.T) {
 	store := newIDRecordingStore()
@@ -66,7 +69,9 @@ func TestEventID_IsAssignedBeforeAppend(t *testing.T) {
 	ids := store.idsFor(EventTaskCreated)
 	require.Len(t, ids, 1)
 	assert.NotEmpty(t, ids[0], "the append must carry an id of its own")
-	assert.Contains(t, ids[0], "id-1", "and it must name the task it belongs to")
+	// Fixed length: events.id is VARCHAR(255) and the task id is already carried by StreamID.
+	assert.LessOrEqual(t, len(ids[0]), 64, "the id must stay well inside the column limit")
+	assert.NotContains(t, ids[0], "id-1", "and must not embed a task id of unbounded length")
 }
 
 // TestEventID_IsUniquePerEvent: two events of one task must not share an id, or reconciliation would
@@ -119,4 +124,84 @@ func TestDelete_ReusesTheUnverifiedTombstoneID(t *testing.T) {
 
 	_, taskErr := f.Task("id-3")
 	assert.Error(t, taskErr, "and a confirmed delete still removes the task")
+}
+
+// TestDelete_RetryTreatsVersionConflictAsCommitted is the stuck-deletion case: PostgreSQL committed the
+// tombstone and the acknowledgement timed out. Retrying appends the SAME id, which the store rejects as
+// a duplicate key — indistinguishable, from the client's side, from a version conflict. Reading that as
+// a refusal kept the task PendingDelete forever, because every retry hit the same wall.
+func TestDelete_RetryTreatsVersionConflictAsCommitted(t *testing.T) {
+	unknown := newIDRecordingStore()
+	unknown.failOn = string(EventTaskDeleted)
+	unknown.err = context.DeadlineExceeded
+	f := NewFabric().WithEventStore(unknown)
+	require.NoError(t, f.Create(newTask("id-conflict")))
+	require.Error(t, f.Delete("id-conflict"))
+
+	conflicting := newIDRecordingStore()
+	conflicting.failOn = string(EventTaskDeleted)
+	conflicting.err = ares_events.ErrVersionConflict
+	f = f.WithEventStore(conflicting)
+
+	require.NoError(t, f.Delete("id-conflict"),
+		"a conflict on a re-append means the earlier attempt landed, not that the delete failed")
+
+	_, taskErr := f.Task("id-conflict")
+	assert.Error(t, taskErr, "the task is deleted, as the store always said")
+}
+
+// pgUniqueViolation stands in for a driver error carrying SQLSTATE 23505, which is what a duplicate
+// event id looks like when the store does not translate it.
+type pgUniqueViolation struct{}
+
+func (pgUniqueViolation) Error() string {
+	return "ERROR: duplicate key value violates unique constraint"
+}
+func (pgUniqueViolation) SQLState() string { return "23505" }
+
+// TestAlreadyPersisted_RecognisesEveryShapeOfConflict pins the three forms the retry has to survive.
+//
+// Only the sentinel form is guaranteed by the interface; the other two are what a real backend
+// produces when it does not translate. Missing them is not cosmetic — it is the difference between a
+// deletion settling and a task stuck in PendingDelete forever.
+func TestAlreadyPersisted_RecognisesEveryShapeOfConflict(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"the store's sentinel", ares_events.ErrVersionConflict, true},
+		{"a wrapped sentinel", fmt.Errorf("append: %w", ares_events.ErrVersionConflict), true},
+		{"postgres unique violation", pgUniqueViolation{}, true},
+		{"an untranslated message", errors.New("ERROR: duplicate key value violates unique constraint \"events_pkey\""), true},
+		{"a real refusal is not a conflict", errors.New("connection refused"), false},
+		{"nil stays nil", nil, false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, alreadyPersisted(tc.err))
+		})
+	}
+}
+
+// TestDelete_UnrecognisedRetryFailureStaysRefused keeps the safety net honest: a retry that fails for
+// a reason nobody recognises must NOT be treated as committed. Guessing "it probably landed" would
+// silently delete a task the store still holds.
+func TestDelete_UnrecognisedRetryFailureStaysRefused(t *testing.T) {
+	unknown := newIDRecordingStore()
+	unknown.failOn = string(EventTaskDeleted)
+	unknown.err = context.DeadlineExceeded
+	f := NewFabric().WithEventStore(unknown)
+	require.NoError(t, f.Create(newTask("id-refused")))
+	require.Error(t, f.Delete("id-refused"))
+
+	refusing := newIDRecordingStore()
+	refusing.failOn = string(EventTaskDeleted)
+	refusing.err = errors.New("permission denied")
+	f = f.WithEventStore(refusing)
+
+	require.Error(t, f.Delete("id-refused"), "an unrecognised failure is still a failure")
+	_, taskErr := f.Task("id-refused")
+	assert.NoError(t, taskErr, "and the task stays, isolated, waiting for a real answer")
 }

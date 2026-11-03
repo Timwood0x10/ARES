@@ -201,6 +201,10 @@ func (f *Fabric) createLocked(t *Task, strategyID string, pending *[]*pendingApp
 		cp.Dependencies = append([]string(nil), t.Dependencies...)
 	}
 	cp.State = StateReady
+	// Generation starts at 1 so that 0 means "no record was ever taken" rather than "the state the
+	// task was created in" — a reconciliation comparing generations must not confuse an untouched
+	// task with one whose counter was never initialised.
+	cp.Generation = 1
 	cp.Owner = ""
 	cp.Lease = nil
 	cp.CreatedAt = f.now()
@@ -1300,6 +1304,7 @@ func (f *Fabric) Delete(id string) (err error) {
 				// append the SAME event, which is the only way an unverified deletion can be settled
 				// by id — a fresh id would produce two task.deleted records for one deletion.
 				ev.event.ID = t.PendingTombstoneID
+				ev.idempotentRetry = true
 			} else {
 				t.PendingTombstoneID = ev.event.ID
 			}

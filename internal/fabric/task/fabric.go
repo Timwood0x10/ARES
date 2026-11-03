@@ -131,7 +131,14 @@ type Fabric struct {
 	// eventNonce separates this process's event ids from any other run's. Set once at construction;
 	// read only under f.mu, like flushSeq.
 	eventNonce uint64
-	epoch      uint64
+	// reconMu guards reconPending, the ledger of appends whose fate is unsettled. Separate from f.mu
+	// because it is written from the flush path, which runs with f.mu released.
+	reconMu      sync.Mutex
+	reconPending map[string]PendingReconciliation
+	// reconciliationDropped counts unsettled appends that could not be recorded because they had no
+	// event id. Non-zero means the id invariant broke, and those events are unreconcilable.
+	reconciliationDropped atomic.Uint64
+	epoch                 uint64
 	// strategyStamp is the submission-time attribution source: called
 	// once per Create to stamp the checkpoint envelope's StrategyID. Guarded
 	// by mu; nil means "no strategy deployed / wiring absent", which reads as
