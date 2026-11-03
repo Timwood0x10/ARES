@@ -484,7 +484,17 @@ func (f *Fabric) CompleteWithCheckpoint(id, agentID string, epoch uint64, checkp
 // Terminal failure cascades to every transitive READY dependent: a FAILED
 // predecessor can never satisfy the dependency gate again, so the downstream
 // subgraph would otherwise sit unschedulable forever.
-func (f *Fabric) Fail(id, agentID string, epoch uint64, cause error) (err error) {
+func (f *Fabric) Fail(id, agentID string, epoch uint64, cause error) error {
+	_, err := f.failWithAttempts(id, agentID, epoch, cause)
+	return err
+}
+
+// failWithAttempts is Fail that also reports the attempt index this failure represents.
+//
+// The scheduler needs that fact AT the transition. Deriving it afterwards means reading a cumulative
+// counter (over-attributes later quanta) or re-reading a task another drain may already have
+// re-acquired — which is how a real retry was being reported as zero.
+func (f *Fabric) failWithAttempts(id, agentID string, epoch uint64, cause error) (attempts int, err error) {
 	pending := make([]*pendingAppend, 0, 1)
 	f.mu.Lock()
 	// The outcome is reported but the state is NOT rolled back, and that asymmetry with Complete is
@@ -504,9 +514,10 @@ func (f *Fabric) Fail(id, agentID string, epoch uint64, cause error) (err error)
 	defer f.mu.Unlock()
 	t, err := f.ownerLocked(id, agentID, epoch)
 	if err != nil {
-		return err
+		return attempts, err
 	}
 	t.RetryPolicy.Attempts++
+	attempts = t.RetryPolicy.Attempts
 	// A retry needs BOTH budget and a cause worth retrying: a permanent cause
 	// goes terminal even with budget left (see classifyFailure). Unclassified
 	// causes stay retryable, so tasks that never mark their causes keep 0.3.2
@@ -515,7 +526,7 @@ func (f *Fabric) Fail(id, agentID string, epoch uint64, cause error) (err error)
 	retryable := level != LevelFatal
 	if retryable && t.CanRetry() {
 		if err := t.transition(StateReady); err != nil {
-			return err
+			return attempts, err
 		}
 		t.ReadyAt = f.now()
 		t.AttemptReadyAt = t.ReadyAt
@@ -556,9 +567,12 @@ func (f *Fabric) Fail(id, agentID string, epoch uint64, cause error) (err error)
 		pending = append(pending, f.recordWithExtrasLocked(t, EventTaskReady, readyExtras))
 		// Not terminal: a retry is scheduled, so nothing is lost yet.
 		f.logFailureVisibilityLocked(t, cause, retryable, false)
-		return nil
+		return attempts, nil
 	}
-	return f.failTerminalLocked(t, cause, retryable, level, &pending)
+	if termErr := f.failTerminalLocked(t, cause, retryable, level, &pending); termErr != nil {
+		return attempts, termErr
+	}
+	return attempts, nil
 }
 
 // logFailureVisibilityLocked writes the escalation line when an attempt ended in a

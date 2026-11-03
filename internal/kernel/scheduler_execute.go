@@ -467,14 +467,17 @@ func (s *Scheduler) executeWithCandidates(ctx context.Context, taskID string, ca
 	// drain). See quantumRetries for the full rationale.
 	quantumStart := time.Now()
 	var usage quantumUsage
-	err = s.fabric.RunQuantum(taskID, winner, epoch, s.buildQuantumStep(ctx, executor, tk, meta, &usage))
+	// The rich result, not a bare error: "the step succeeded and the completion was refused" and
+	// "the step failed and the failure could not be recorded" are different events, and a single
+	// error forces the attribution below to guess which one it is looking at.
+	qr := s.fabric.RunQuantumResult(taskID, winner, epoch, s.buildQuantumStep(ctx, executor, tk, meta, &usage))
 	quantumLatency := time.Since(quantumStart)
-	retries := quantumRetries(err)
+	err = qr.Err()
 	// Release the busy slot and attribute the outcome (see endQuantumOutcome).
 	stopHeartbeat()
 	clearBusy()
 	s.afterQuantum(ctx, taskID, winner, err)
-	s.endQuantumOutcome(ctx, winner, tk.Capability, taskID, err, quantumLatency, retries)
+	s.endQuantumOutcome(ctx, winner, tk.Capability, taskID, qr, quantumLatency)
 	slotReleased = true
 	// Post-quantum bookkeeping: record the quantum's consumption (its LLM
 	// tokens + 1 tool round) so the next gate sees the new balance. Runs even

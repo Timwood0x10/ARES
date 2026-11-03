@@ -251,25 +251,6 @@ func tokenUsageFromResult(res *models.TaskResult, side string) int {
 // component with retry depth) or re-reading the task after RunQuantum (races
 // another drain that may have re-acquired and re-failed our requeued task,
 // attributing ITS retry to US).
-func quantumRetries(err error) int {
-	if err == nil {
-		return 0
-	}
-	if errors.Is(err, taskfabric.ErrNotOwner) ||
-		errors.Is(err, taskfabric.ErrEpochMismatch) ||
-		errors.Is(err, taskfabric.ErrIllegalState) ||
-		errors.Is(err, taskfabric.ErrTaskNotFound) {
-		return 0
-	}
-	// A storage outcome is not an executor failure. The quantum SUCCEEDED and the completion could
-	// not be made durable; counting that as a retry both inflates the scorer's retry component and
-	// attributes the failure to an agent that did nothing wrong.
-	if errors.Is(err, taskfabric.ErrCommitUnknown) || errors.Is(err, taskfabric.ErrCommitRefused) {
-		return 0
-	}
-	return 1
-}
-
 // endQuantumOutcome releases the winner's busy slot and attributes the
 // quantum outcome to the evolution feedback loop.
 //
@@ -279,40 +260,37 @@ func quantumRetries(err error) int {
 // Score's confidence factor would make the preempted task permanently
 // unschedulable. Such rejections end NEUTRAL — load is released but no
 // success/failure enters the history, and attribution is skipped.
-func (s *Scheduler) endQuantumOutcome(ctx context.Context, winner, capability, taskID string, err error, latency time.Duration, retries int) {
-	if errors.Is(err, taskfabric.ErrNotOwner) || errors.Is(err, taskfabric.ErrEpochMismatch) {
+func (s *Scheduler) endQuantumOutcome(ctx context.Context, winner, capability, taskID string,
+	qr taskfabric.QuantumResult, latency time.Duration,
+) {
+	// Whether the executor ever formed a verdict is a FIELD now, not something inferred from
+	// sentinel matching: fencing, a preempted boundary and a rejected Start all mean "did not run",
+	// and attributing any of them to the agent poisons its success rate toward 0.
+	// A quantum cancelled by scheduler shutdown ran, but its result was never a verdict: the work was
+	// interrupted, not judged. Kept neutral alongside the non-executing cases.
+	if !qr.Executed || errors.Is(qr.StepErr, context.Canceled) {
 		s.tracker.EndNeutral(winner)
 		log.Debug(ctx, "endQuantumOutcome",
-			"kernel scheduler: quantum ended by preemption fencing (benign); outcome not attributed",
-			"task_id", taskID, "winner", winner)
+			"kernel scheduler: quantum did not execute; outcome not attributed",
+			"task_id", taskID, "winner", winner, "reason", qr.Err())
 		return
 	}
-	// Fabric start-stage sentinels and scheduler-shutdown cancellation are
-	// not the executor's failure either. ErrIllegalState/ErrTaskNotFound mean
-	// the task was concurrently finalized or removed between acquire and the
-	// quantum — the executor never got to run. context.Canceled means the
-	// scheduler is shutting down mid-quantum: attributing graceful-shutdown
-	// aborts as failures poisoned every in-flight agent's confidence on every
-	// restart. All end neutral (load released, no history recorded).
-	if errors.Is(err, taskfabric.ErrIllegalState) || errors.Is(err, taskfabric.ErrTaskNotFound) ||
-		errors.Is(err, context.Canceled) {
-		s.tracker.EndNeutral(winner)
-		log.Debug(ctx, "endQuantumOutcome",
-			"kernel scheduler: quantum ended by a non-executor condition; outcome not attributed",
-			"task_id", taskID, "winner", winner, "error", err)
-		return
+
+	// The executor's verdict is the absence of StepErr — nothing else. A refused completion, or a
+	// failure that could not be recorded, is a storage fact about the transition; it says nothing
+	// about the agent that produced the result, and it must not lower its success rate.
+	succeeded := qr.Succeeded()
+	s.tracker.End(winner, succeeded)
+	if qr.CommitErr != nil {
+		log.Warn(ctx, "endQuantumOutcome",
+			"kernel scheduler: quantum result not durably recorded", nil,
+			"task_id", taskID, "winner", winner, "commit_error", qr.CommitErr)
 	}
-	s.tracker.End(winner, err == nil)
-	// Evolution feedback: record the outcome for the feedback loop. The
-	// attribution is read by the EvolutionFeedbackAdapter and pushed back into
-	// the tracker's confidence override (SetAgentConfidence) so the next
-	// Schedule sees the evolution-derived confidence.
-	//
-	// RecordWithMetrics carries the real quantum latency and retry
-	// budget so the deterministic scorer has non-degenerate evidence.
-	// Recovery count stays 0 (normal quantum: no replacement was needed).
 	if s.attribution != nil {
-		s.attribution.RecordWithMetrics(winner, capability, err == nil, latency, retries, 0)
+		// RetriesConsumed is recorded where the retry was spent (the fabric's requeue decision), so a
+		// real failure whose failure-append was ALSO refused still reports its retry — reading the
+		// error chain would have said zero.
+		s.attribution.RecordWithMetrics(winner, capability, succeeded, latency, qr.RetriesConsumed, 0)
 	}
 }
 

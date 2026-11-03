@@ -69,15 +69,55 @@ type QuantumStep func() (checkpoint any, done bool, err error)
 // restart, even though nothing had actually failed. The kernel's own outcome
 // attribution already exempted context.Canceled from confidence scoring
 // (scheduler_quantum.go); this is the matching fabric-side half.
-func (f *Fabric) RunQuantum(taskID, agentID string, epoch uint64, step QuantumStep) error {
-	if err := f.Start(taskID, agentID, epoch); err != nil {
-		return err
+// QuantumResult reports one quantum along the dimensions that must never be conflated.
+//
+// A single error cannot carry this. "The step succeeded but the completion was refused" and "the
+// step failed and the failure could not be recorded" both look like an error to a caller reading
+// only that error, and it has to guess which — which is how a storage refusal gets charged to an
+// agent whose execution succeeded.
+type QuantumResult struct {
+	// Executed is false when the step never ran: Start was rejected (ownership, fencing, missing
+	// task) or the quantum was preempted at the boundary. A non-executing quantum is never the
+	// executor's failure.
+	Executed bool
+	// StepErr is the executor's own failure. Nil when the step produced a result, even if that
+	// result could not be persisted.
+	StepErr error
+	// CommitErr is the storage outcome of the terminal transition. Orthogonal to StepErr: a step can
+	// succeed and its completion be refused, and a failed step can fail to be recorded.
+	CommitErr error
+	// RetriesConsumed is the retry this quantum actually spent, recorded at the transition that
+	// decided it — never derived from a cumulative counter or from the shape of an error chain.
+	RetriesConsumed int
+}
+
+// Succeeded reports whether the executor ran and produced a result.
+func (r QuantumResult) Succeeded() bool { return r.Executed && r.StepErr == nil }
+
+// Err joins the dimensions, for logging and for callers that predate the split.
+//
+// A single set dimension is returned AS ITSELF rather than wrapped: callers compare sentinels with
+// errors.Is and, in a few places, by identity, and wrapping one error in a join would change the
+// value they see for a case that is not ambiguous at all.
+func (r QuantumResult) Err() error {
+	switch {
+	case r.StepErr == nil:
+		return r.CommitErr
+	case r.CommitErr == nil:
+		return r.StepErr
+	default:
+		return errors.Join(r.StepErr, r.CommitErr)
 	}
-	// Count this quantum BEFORE the step runs: every attempt at the task's
-	// semantic progress — whether it yields, fails or completes — is one
-	// quantum. The count accumulates across lease holders (yield→resume,
-	// preemption, chaos replacement), so the panel's "Quantum #N" is the
-	// task's true execution depth, not the current holder's.
+}
+
+// RunQuantumResult runs one quantum and reports each dimension separately.
+func (f *Fabric) RunQuantumResult(taskID, agentID string, epoch uint64, step QuantumStep) QuantumResult {
+	if err := f.Start(taskID, agentID, epoch); err != nil {
+		// Never executed: fencing, ownership loss or a missing task. The scheduler reports these
+		// neutrally, because they are not the executor's verdict on the work.
+		return QuantumResult{Executed: false, StepErr: err}
+	}
+
 	f.mu.Lock()
 	if t, ok := f.tasks[taskID]; ok {
 		t.Quantum++
@@ -87,57 +127,53 @@ func (f *Fabric) RunQuantum(taskID, agentID string, epoch uint64, step QuantumSt
 
 	checkpoint, done, stepErr := runStepRecovered(step)
 
-	// M5: step-boundary preemption check. If Preempt was requested while
-	// the step was in flight, the task is already StateReady (Preempt
-	// transitions it). We must NOT proceed to Complete/Yield/Fail — those
-	// require ownership, which was cleared by Preempt. The step's result
-	// (checkpoint or error) is deliberately discarded: the in-flight LLM
-	// call completed naturally (not cancelled), but its result is fenced
-	// out. Log and return without a state transition — the task is already
-	// READY and will be re-acquired by the next drain.
 	f.mu.Lock()
 	preempted := false
 	if t, ok := f.tasks[taskID]; ok && t.PreemptRequested {
 		preempted = true
-		// Clear the flag so the next quantum (after re-acquire) starts
-		// fresh — the preemption has been honored.
 		t.PreemptRequested = false
 	}
 	f.mu.Unlock()
 	if preempted {
-		// The step may have produced a checkpoint or an error — both are
-		// discarded. The task's previous checkpoint (from before this
-		// quantum) is preserved by Preempt (it only transitions state +
-		// clears ownership). Return nil so the scheduler does not log a
-		// spurious failure; the task is READY and will resume.
-		return nil
+		// The step's result is fenced out on purpose: neither a failure nor a success, and the task
+		// is READY to resume. Reporting it as either is the mistake this type exists to avoid.
+		return QuantumResult{Executed: false}
 	}
 
 	if stepErr != nil {
 		if isCancellation(stepErr) {
-			// Release hands the task back to READY unowned and leaves the
-			// previous checkpoint in place, so the next drain re-acquires
-			// and resumes from the same PCB.
-			if releaseErr := f.Release(taskID, agentID, epoch); releaseErr != nil {
-				return errors.Join(stepErr, releaseErr)
-			}
-			return stepErr
+			releaseErr := f.Release(taskID, agentID, epoch)
+			return QuantumResult{Executed: true, StepErr: stepErr, CommitErr: releaseErr}
 		}
-		if failErr := f.Fail(taskID, agentID, epoch, stepErr); failErr != nil {
-			return errors.Join(stepErr, failErr)
+		attempts, failErr := f.failWithAttempts(taskID, agentID, epoch, stepErr)
+		// Recorded where the counter was modified, not inferred afterwards. The scorer's retry
+		// component counts a failed attempt as one consumed retry — the same unit as before — but it
+		// is now a fact from the transition rather than a guess about the error chain, which is what
+		// let a commit failure riding on the same error zero it out.
+		consumed := 0
+		if attempts > 0 {
+			consumed = 1
 		}
-		return stepErr
+		return QuantumResult{Executed: true, StepErr: stepErr, CommitErr: failErr, RetriesConsumed: consumed}
 	}
+
 	if done {
-		// Preserve the step's output in the task so the kernel dispatch
-		// can read it back. A nil checkpoint means the quantum produced no
-		// output (pure state machine progress) — plain Complete still works.
+		var completeErr error
 		if checkpoint != nil {
-			return f.CompleteWithCheckpoint(taskID, agentID, epoch, checkpoint)
+			completeErr = f.CompleteWithCheckpoint(taskID, agentID, epoch, checkpoint)
+		} else {
+			completeErr = f.Complete(taskID, agentID, epoch)
 		}
-		return f.Complete(taskID, agentID, epoch)
+		// StepErr stays nil: the executor did its job, and a refused completion is a storage fact.
+		return QuantumResult{Executed: true, CommitErr: completeErr}
 	}
-	return f.Yield(taskID, agentID, epoch, checkpoint)
+	return QuantumResult{Executed: true, CommitErr: f.Yield(taskID, agentID, epoch, checkpoint)}
+}
+
+func (f *Fabric) RunQuantum(taskID, agentID string, epoch uint64, step QuantumStep) error {
+	// Kept for the callers that only need "did this quantum report a problem": the scheduler uses
+	// RunQuantumResult, because it needs the dimensions kept apart.
+	return f.RunQuantumResult(taskID, agentID, epoch, step).Err()
 }
 
 // isCancellation reports whether err is a deliberate stop rather than a task

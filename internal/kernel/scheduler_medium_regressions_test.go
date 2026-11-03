@@ -113,12 +113,14 @@ func TestBudgetExhaustedSoleCandidateDoesNotChurnLeases(t *testing.T) {
 // toward 0.
 func TestEndQuantumOutcomeNeutralForNonExecutorConditions(t *testing.T) {
 	cases := []struct {
-		name string
-		err  error
+		name   string
+		result taskfabric.QuantumResult
 	}{
-		{"illegal_state", taskfabric.ErrIllegalState},
-		{"task_not_found", taskfabric.ErrTaskNotFound},
-		{"context_canceled", context.Canceled},
+		// Start-stage rejections: the executor never ran.
+		{"illegal_state", taskfabric.QuantumResult{Executed: false, StepErr: taskfabric.ErrIllegalState}},
+		{"task_not_found", taskfabric.QuantumResult{Executed: false, StepErr: taskfabric.ErrTaskNotFound}},
+		// It ran, but shutdown interrupted it: no verdict was formed.
+		{"context_canceled", taskfabric.QuantumResult{Executed: true, StepErr: context.Canceled}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -134,7 +136,7 @@ func TestEndQuantumOutcomeNeutralForNonExecutorConditions(t *testing.T) {
 			tracker.Begin("coder")
 			tracker.End("coder", true)
 
-			sched.endQuantumOutcome(context.Background(), "coder", "code", "t-x", tc.err, time.Millisecond, 0)
+			sched.endQuantumOutcome(context.Background(), "coder", "code", "t-x", tc.result, time.Millisecond)
 
 			if got := tracker.Confidence("coder"); got != 1.0 {
 				t.Fatalf("confidence must stay 1.0 (neutral outcome), got %v", got)
