@@ -1,6 +1,8 @@
 package taskfabric
 
 import (
+	"crypto/rand"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"sort"
@@ -126,6 +128,9 @@ type Fabric struct {
 	store      ares_events.EventStore // optional persistent event sink; guarded by mu
 	confidence ConfidenceSource       // experience-derived confidence (Skill-first); guarded by mu
 	now        func() time.Time       // injectable clock for lease tests
+	// eventNonce separates this process's event ids from any other run's. Set once at construction;
+	// read only under f.mu, like flushSeq.
+	eventNonce uint64
 	epoch      uint64
 	// strategyStamp is the submission-time attribution source: called
 	// once per Create to stamp the checkpoint envelope's StrategyID. Guarded
@@ -173,7 +178,7 @@ type Fabric struct {
 
 // NewFabric creates an empty Task Fabric.
 func NewFabric() *Fabric {
-	f := &Fabric{tasks: make(map[string]*Task), now: time.Now}
+	f := &Fabric{tasks: make(map[string]*Task), now: time.Now, eventNonce: newEventNonce()}
 	f.flushCond = sync.NewCond(&sync.Mutex{})
 	return f
 }
@@ -578,3 +583,18 @@ func (e *ReadyQueueFullError) Error() string {
 
 // Unwrap exposes the sentinel: errors.Is(err, ErrReadyQueueFull) stays true.
 func (e *ReadyQueueFullError) Unwrap() error { return ErrReadyQueueFull }
+
+// newEventNonce returns a random per-process token for event ids.
+//
+// Random rather than time-based because two processes starting in the same second would otherwise
+// mint the same "<task>#<seq>" pair, and an id-based reconciliation would settle one run's outcome
+// against the other's record.
+func newEventNonce() uint64 {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		// Falling back to the wall clock keeps ids unique within a run; it only weakens the
+		// cross-run separation, which is a reconciliation nicety, not a correctness requirement.
+		return uint64(time.Now().UnixNano())
+	}
+	return binary.LittleEndian.Uint64(b[:])
+}

@@ -90,6 +90,11 @@ type Task struct {
 	// nothing about the earlier attempt — reopening the task on that basis would run work the store
 	// may already consider deleted.
 	TombstoneUnconfirmed bool
+
+	// PendingTombstoneID is the id of the tombstone whose fate is undetermined. A later delete MUST
+	// reuse it: minting a new event would append a second, different task.deleted for one deletion,
+	// and reconciliation could only ever settle one of them.
+	PendingTombstoneID string
 	// AllowPartial is the creation-time policy that lets this task run when a
 	// dependency fails permanently, instead of being failed by the cascade. The
 	// gap is not hidden: the failed predecessor's ID is recorded in

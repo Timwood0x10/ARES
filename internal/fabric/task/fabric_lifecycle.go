@@ -1273,6 +1273,8 @@ func (f *Fabric) Delete(id string) (err error) {
 				// Reopen only when NO earlier attempt left a tombstone in doubt. A refusal now does
 				// not prove the previous append was not applied.
 				current.PendingDelete = false
+				// Nothing was written, so the id minted by this attempt is free to be replaced.
+				current.PendingTombstoneID = ""
 				current.UpdatedAt = f.now()
 			}
 			f.mu.Unlock()
@@ -1291,7 +1293,18 @@ func (f *Fabric) Delete(id string) (err error) {
 		// in flight can be handed a lease during the append; the delete then succeeds and removes the
 		// task out from under a running quantum (Start → ErrTaskNotFound).
 		t.PendingDelete = true
-		pending = append(pending, f.recordLocked(t, EventTaskDeleted))
+		// recordLocked returns nil without a store: an in-memory fabric has nothing to identify.
+		if ev := f.recordLocked(t, EventTaskDeleted); ev != nil {
+			if t.PendingTombstoneID != "" {
+				// A previous tombstone may already exist in the store. Reusing its id makes this
+				// append the SAME event, which is the only way an unverified deletion can be settled
+				// by id — a fresh id would produce two task.deleted records for one deletion.
+				ev.event.ID = t.PendingTombstoneID
+			} else {
+				t.PendingTombstoneID = ev.event.ID
+			}
+			pending = append(pending, ev)
+		}
 		target = t
 		return nil
 	default:

@@ -2,6 +2,7 @@ package taskfabric
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/ares_events"
@@ -258,6 +259,11 @@ func (f *Fabric) recordWithExtrasLocked(t *Task, typ EventType, extras map[strin
 		typ:    typ,
 		taskID: t.ID,
 		event: &ares_events.Event{
+			// Assigned BEFORE the append, not by the store. Two reasons: a retried append of the
+			// same transition must carry the same id, or the store cannot tell a retry from a second
+			// event; and reconciliation after an unknown outcome goes by id, so there has to be one
+			// to go by. Previously the id was empty here and the store minted a new one per attempt.
+			ID:         f.nextEventID(t.ID),
 			Type:       et,
 			StreamID:   t.ID,
 			ModuleName: "taskfabric",
@@ -498,4 +504,13 @@ func taskEventType(typ EventType) ares_events.EventType {
 		}
 		return ""
 	}
+}
+
+// nextEventID mints a stable, process-unique event id.
+//
+// The process nonce is what keeps two runs apart: without it a restarted process would reuse
+// "<task>#<seq>" for a different event, and an id-based reconciliation would "find" the previous
+// run's record and settle an outcome that never happened.
+func (f *Fabric) nextEventID(taskID string) string {
+	return fmt.Sprintf("%s-%016x-%d", taskID, f.eventNonce, f.flushSeq)
 }
