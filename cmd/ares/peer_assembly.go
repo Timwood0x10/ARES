@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/agentruntime"
@@ -636,6 +638,23 @@ func (a *peerAssembly) startLoops() {
 	recoveryLoopCfg := kernelLoopCfg
 	recoveryLoopCfg.RecoveryKick = recoveryKick
 	sched.WithRecoveryHint(recoveryHint)
+	// Sweep failures arrive by callback (the loop outlives any single sweep) and are returned from
+	// this run function, so the component's health carries them instead of a log line nobody reads.
+	var sweepMu sync.Mutex
+	var sweepErr error
+	recoveryLoopCfg.OnSweepError = func(err error) {
+		sweepMu.Lock()
+		sweepErr = errors.Join(sweepErr, err)
+		sweepMu.Unlock()
+
+		// Published NOW, not at exit: the loop keeps running, so waiting until it stops means the
+		// component reports healthy for as long as the process lives — and the shutdown path may
+		// suppress the failure anyway. The state is left alone because the loop is still working.
+		if comp != nil && comp.SystemRuntime != nil {
+			comp.SystemRuntime.ReportComponentFault(sysCompRecovery, err)
+		}
+	}
+
 	runBackground(ctx, comp, sysCompRecovery, func(context.Context) error {
 		defer close(recDone)
 		runKernelRecoveryLoop(recCtx, store, kernel.recovery, recoveryLoopCfg,
@@ -660,7 +679,12 @@ func (a *peerAssembly) startLoops() {
 			},
 			sched.HasCapableExecutor,
 		)
-		return nil
+
+		// Returning it (not only logging) is the point: the run function's error is what the component
+		// reports, so an unsettled expiry shows up in the same place as any other component fault.
+		sweepMu.Lock()
+		defer sweepMu.Unlock()
+		return sweepErr
 	})
 	kernel.recoveryStop = recCancel
 	kernel.recoveryDone = recDone

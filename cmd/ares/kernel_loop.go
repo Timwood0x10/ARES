@@ -51,6 +51,12 @@ const quotaApplyTimeout = 30 * time.Second
 // the package defaults, so an absent kernel loop config section keeps prior
 // behavior (zero-value usable).
 type kernelLoopConfig struct {
+	// OnSweepError receives a sweep that could not settle a task's durable state.
+	//
+	// A callback rather than a return value because the sweep runs on its own goroutine: the loop
+	// outlives any single sweep, so the failure has to reach an owner that lives at least as long.
+	// Nil = log only, which is what the tests use.
+	OnSweepError func(error)
 	// LeaseTTL is the scheduler task-lease duration (0 = scheduler default).
 	LeaseTTL time.Duration
 	// QuotaApplyInterval is how often the quota loop re-applies the budget.
@@ -260,7 +266,11 @@ func runSweepChain(
 	ctx context.Context,
 	recovery *aresrecovery.Recovery,
 	bindReplacements func(ids []string),
-) {
+) error {
+	// The chain runs to the end even when expiry fails: the tasks are already failed in memory and the
+	// later steps must not be skipped. What changes is that the failure is RETURNED — "the durable
+	// state of these expiries is unsettled" is something only a caller can act on.
+	var sweepErr error
 	// Deadline expiry runs BEFORE the lease requeue.
 	expired, expErr := recovery.ExpireTaskDeadlines()
 	if len(expired) > 0 {
@@ -275,6 +285,7 @@ func runSweepChain(
 	if expErr != nil {
 		log.Error(ctx, "runKernelRecoveryLoop",
 			"kernel recovery loop: deadline expiry has unsettled durable state", expErr)
+		sweepErr = errors.Join(sweepErr, expErr)
 	}
 	// Approval SLA expiry runs AFTER deadline expiry and BEFORE the lease
 	// requeue (R1/R2).
@@ -334,6 +345,7 @@ func runSweepChain(
 			"sample", audit.Sample,
 			"why", "retirement is single-node by contract (Parent is provenance); this is their cumulative footprint, not an error in this sweep")
 	}
+	return sweepErr
 }
 
 // reclaimIDs flattens reclaimed agents for the sweep's log line, keeping the STATE
@@ -553,7 +565,7 @@ func runKernelRecoveryLoop(
 			}
 			// Deadline expiry, approval SLA expiry, and lease requeue
 			// run in sequence: see runSweepChain for the ordering rationale.
-			runSweepChain(ctx, recovery, bindReplacements)
+			reportSweepError(cfg, runSweepChain(ctx, recovery, bindReplacements))
 		}()
 	}
 	// bindNominated handles one stale-winner nomination. It shares the
@@ -646,3 +658,14 @@ func parseKernelPollInterval(raw string) time.Duration {
 // kernel paths — the scheduler logic lives in one importable package, both
 // cmd/ares and sdk drive the same engine). cmd/ares keeps its historical
 // names so no caller (kernel wiring, peer mode, tests) changes.
+
+// reportSweepError hands a failed sweep to whoever registered an interest in it.
+//
+// Extracted from the loop body to keep that function under the complexity gate, and because the two
+// cases — nobody listening, and a callback that must not be called with nil — are the whole of it.
+func reportSweepError(cfg kernelLoopConfig, err error) {
+	if err == nil || cfg.OnSweepError == nil {
+		return
+	}
+	cfg.OnSweepError(err)
+}

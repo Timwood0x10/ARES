@@ -780,6 +780,23 @@ func (o *Orchestrator) SetEventSink(store ares_events.EventStore) {
 	o.mu.Unlock()
 }
 
+// ReportComponentFault records a fault that did not stop the component but that an operator must see.
+//
+// Unlike a failed Stop, the component keeps running, so its STATE is left alone and only the reason is
+// updated: marking a working recovery loop "failed" would be the same class of lie as marking a
+// stopped one "stopped". The reason is what Snapshot and ComponentStatus expose.
+func (o *Orchestrator) ReportComponentFault(name string, err error) {
+	if o == nil || err == nil {
+		return
+	}
+	// Reason only, written atomically by the registry. Reading the state and writing it back (the
+	// first version) let a concurrent failure mark the component Failed and this call then restore
+	// the stale state it had read — a fault report undoing a real failure.
+	o.registry.UpdateStatus(name, func(st *ComponentStatus) {
+		st.Reason = err.Error()
+	})
+}
+
 // Snapshot returns a point-in-time status view of all managed components
 // (the introspect panel and startup logs consume this instead of
 // reaching into the registry).
