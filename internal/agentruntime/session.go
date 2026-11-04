@@ -246,7 +246,7 @@ func SessionStalled(fabric *taskfabric.Fabric, sessionID, planTaskID string) boo
 	}
 	if planTaskID != "" {
 		tk, err := fabric.Task(planTaskID)
-		if err != nil || (tk.State != taskfabric.StateCompleted && tk.State != taskfabric.StateFailed) {
+		if err != nil || (!tk.CompletionSettled() && tk.State != taskfabric.StateFailed) {
 			// Plan quantum still in flight (or unreadable): the session may
 			// yet grow nodes.
 			return false
@@ -263,7 +263,7 @@ func SessionStalled(fabric *taskfabric.Fabric, sessionID, planTaskID string) boo
 			continue
 		}
 		seen = true
-		if tk.State != taskfabric.StateCompleted && tk.State != taskfabric.StateFailed {
+		if !tk.CompletionSettled() && tk.State != taskfabric.StateFailed {
 			return false
 		}
 	}

@@ -209,7 +209,10 @@ func dependencySatisfied(dep, dependent *Task) bool {
 		return false
 	}
 	if dep.State == StateCompleted {
-		return true
+		// A completion whose append is still in flight is not a completion the dependent can build on:
+		// if the store refuses it, the task reverts and the dependent would have run on a result that
+		// never existed durably.
+		return !dep.CommitPending
 	}
 	if dependent.AllowPartial && dep.State == StateFailed && slices.Contains(dependent.DegradedInputs, dep.ID) {
 		return true

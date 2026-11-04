@@ -89,6 +89,12 @@ type Task struct {
 	// reconciliation but must not run, because running it duplicates work the store may already hold.
 	CommitUnconfirmed bool
 
+	// CommitPending marks a transition whose append is IN FLIGHT. It is set before the state becomes
+	// observable and cleared once the store answers, so the window between "memory says COMPLETED" and
+	// "the store acknowledged it" is not observable as a completion: no dependent unlocks and no drain
+	// hands the task out during it.
+	CommitPending bool
+
 	// TombstoneUnconfirmed records that a delete append's fate was never established: the tombstone
 	// may exist in the store. Unlike PendingDelete it is never cleared, because a LATER refusal says
 	// nothing about the earlier attempt — reopening the task on that basis would run work the store
@@ -222,5 +228,14 @@ func (t *Task) transition(to TaskState) error {
 // new gate cannot be added to one of them and forgotten in the others — the failure mode that let a
 // PendingDelete task drive preemption after ReadyTasks had started filtering it.
 func (t *Task) schedulable() bool {
-	return t != nil && !t.PendingDelete && !t.CommitUnconfirmed && !t.TombstoneUnconfirmed
+	return t != nil && !t.PendingDelete && !t.CommitUnconfirmed && !t.TombstoneUnconfirmed && !t.CommitPending
+}
+
+// CompletionSettled reports whether this task is completed AND that completion is durable.
+//
+// Callers that CONSUME a result must use this rather than comparing State: during the window between
+// the in-memory transition and the store's acknowledgement, State already says COMPLETED. A waiter
+// that reads it there hands out a result that may be reverted a moment later.
+func (t *Task) CompletionSettled() bool {
+	return t != nil && t.State == StateCompleted && !t.CommitPending
 }

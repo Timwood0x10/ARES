@@ -37,6 +37,12 @@ type pendingAppend struct {
 	// generation is the task's transition counter when this event was recorded, captured under the
 	// same lock that produced the event.
 	generation uint64
+	// snapshot is the task as it was when the event was recorded.
+	//
+	// Reconciliation needs it: a completion that was reverted and later confirmed must be restored
+	// WITH its checkpoint, and a created task that memory dropped must be re-inserted — the ledger
+	// alone (ids and types) cannot rebuild either.
+	snapshot *Task
 	// idempotentRetry marks a re-append of an event that may already be durable (the unverified
 	// tombstone). For it, a version conflict is the SUCCESS case: the store already holds this id.
 	idempotentRetry bool
@@ -280,6 +286,7 @@ func (f *Fabric) recordWithExtrasLocked(t *Task, typ EventType, extras map[strin
 		},
 		seq:        f.flushSeq,
 		generation: t.Generation,
+		snapshot:   cloneTask(t),
 	}
 }
 
@@ -329,7 +336,10 @@ type appendResult struct {
 	EventID string
 	// Generation is the task state the event described.
 	Generation uint64
-	Outcome    CommitOutcome
+	// Snapshot is the task as it was recorded, so a confirmed event can be applied rather than
+	// merely forgotten.
+	Snapshot *Task
+	Outcome  CommitOutcome
 	// Type is needed because a task can emit more than one event for one transition (approval adds an
 	// observational interrupt.created). Classifying per EVENT reported the same task as committed and
 	// refused at once, and let an observability failure downgrade a durable commit.
@@ -428,6 +438,7 @@ func (f *Fabric) flushAppendsDetailed(pending *[]*pendingAppend) []appendResult 
 				TaskID:     p.taskID,
 				EventID:    p.event.ID,
 				Generation: p.generation,
+				Snapshot:   p.snapshot,
 				Outcome:    outcome,
 				Type:       p.typ,
 			}
@@ -578,4 +589,27 @@ func alreadyPersisted(err error) bool {
 		return true
 	}
 	return strings.Contains(strings.ToLower(err.Error()), "duplicate key")
+}
+
+// cloneTask copies a task for the reconciliation ledger.
+//
+// Shallow on purpose: every field the ledger needs to restore (state, checkpoint pointer, ownership)
+// is a value or a pointer the fabric replaces rather than mutates in place, and the fabric's checkpoint
+// ownership rule already forbids mutating an envelope after publishing it.
+func cloneTask(t *Task) *Task {
+	if t == nil {
+		return nil
+	}
+	cp := *t
+	// Referenced mutable fields are copied too. A shared *Lease made Renew mutate an
+	// already-published snapshot (and race with its readers), and a shared slice let a later append
+	// change a record of the past.
+	if t.Lease != nil {
+		lease := *t.Lease
+		cp.Lease = &lease
+	}
+	if t.DegradedInputs != nil {
+		cp.DegradedInputs = append([]string(nil), t.DegradedInputs...)
+	}
+	return &cp
 }

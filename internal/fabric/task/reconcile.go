@@ -29,6 +29,9 @@ type PendingReconciliation struct {
 	Outcome CommitOutcome
 	// At is when the append was attempted, so the ledger can be ordered and aged.
 	At time.Time
+	// Snapshot is the task as the event described it. Settling a completion without it restored the
+	// state but not the result: consumers got a COMPLETED task with the pre-quantum checkpoint.
+	Snapshot *Task
 }
 
 // TODO(persistence): this ledger is in memory only, so an unknown outcome is unrecoverable across a
@@ -73,6 +76,7 @@ func (f *Fabric) recordPendingReconciliation(r appendResult) {
 		Generation: r.Generation,
 		Outcome:    r.Outcome,
 		At:         f.now(),
+		Snapshot:   r.Snapshot,
 	}
 }
 
@@ -109,19 +113,100 @@ func (f *Fabric) PendingReconciliations() []PendingReconciliation {
 func (f *Fabric) Reconcile(ctx context.Context, eventID string, found bool, generation uint64) error {
 	f.reconMu.Lock()
 	rec, ok := f.reconPending[eventID]
+	f.reconMu.Unlock()
 	if !ok {
-		f.reconMu.Unlock()
 		return fmt.Errorf("%w: %s", ErrReconcileUnknownEvent, eventID)
 	}
-	if rec.Generation != generation {
-		f.reconMu.Unlock()
+	if !found {
+		// A single miss settles nothing: an append that is still in flight can land afterwards.
+		return fmt.Errorf("%w: event %s", ErrReconcileInconclusive, eventID)
+	}
+
+	// Apply against LIVE state, in one critical section: the generation must be compared with the
+	// task as it is now, and the effect applied before anything else can move it. Comparing the
+	// caller's generation with the ledger alone (what this used to do) accepted a stale generation
+	// whenever the task had advanced since the event was recorded — and then acted on the new state.
+	f.mu.Lock()
+	task, live := f.tasks[rec.TaskID]
+	// All three must agree: the caller's view, the record, and the live task. Checking only the
+	// caller against the live task accepted an OLD record against a task that had since advanced —
+	// e.g. a stale tombstone deleting newer state.
+	if generation != rec.Generation {
+		f.mu.Unlock()
 		return fmt.Errorf("%w: event %s was recorded at generation %d, caller says %d",
 			ErrReconcileGenerationMismatch, eventID, rec.Generation, generation)
 	}
-	if !found {
-		f.reconMu.Unlock()
-		return fmt.Errorf("%w: event %s", ErrReconcileInconclusive, eventID)
+	if live && task.Generation != generation {
+		f.mu.Unlock()
+		return fmt.Errorf("%w: event %s was recorded at generation %d, task %q is at %d",
+			ErrReconcileGenerationMismatch, eventID, rec.Generation, rec.TaskID, task.Generation)
 	}
+
+	var applyErr error
+	switch {
+	case !live && rec.Type == EventTaskDeleted:
+		// Already gone: the tombstone and the absence agree.
+	case !live && rec.Type == EventTaskCreated && rec.Snapshot != nil:
+		// Only a CREATE may bring a task back. Any other event with no live task means the task is
+		// gone for a reason — completed and deleted, usually — and restoring its snapshot would
+		// resurrect it: the recorded state says "READY at the time of the yield", which is true and
+		// completely out of date.
+		restored := cloneTask(rec.Snapshot)
+		restored.CommitPending, restored.CommitUnconfirmed = false, false
+		f.tasks[rec.TaskID] = restored
+	case !live:
+		log.Warn(ctx, "Reconcile",
+			"taskfabric: reconciled event has no in-memory task and no snapshot; nothing to repair",
+			"event_id", eventID, "task_id", rec.TaskID, "event_type", rec.Type)
+	case rec.Type == EventTaskCompleted:
+		// The completion was reverted when its append failed; now that the store confirms it exists,
+		// apply it. Clearing the flags without applying the transition was the gap: the ledger entry
+		// went away and the task stayed RUNNING forever.
+		if task.State != StateCompleted {
+			applyErr = task.transition(StateCompleted)
+		}
+		if applyErr == nil {
+			// The checkpoint the quantum produced. Restoring the state without it handed consumers a
+			// completed task whose result was the pre-quantum value (nil in the reported case).
+			if rec.Snapshot != nil {
+				// Assign even when nil: CompleteWithCheckpoint(..., nil) means "the quantum produced
+				// no result", and keeping the previous checkpoint would publish an older result as
+				// this completion's output.
+				task.Checkpoint = rec.Snapshot.Checkpoint
+			}
+			task.CommitUnconfirmed, task.CommitPending = false, false
+			task.UpdatedAt = f.now()
+		}
+	case rec.Type == EventTaskDeleted:
+		delete(f.tasks, rec.TaskID)
+	case rec.Type == EventTaskFailed || rec.Type == EventTaskCreated ||
+		rec.Type == EventTaskYielded || rec.Type == EventTaskCheckpointed:
+		// The state already reflects the event (a failed attempt may have requeued or terminated);
+		// what the failed append left behind is the isolation. It is only lifted when no OTHER
+		// authoritative record for this task is still unresolved: a yield emits task.yielded and
+		// task.checkpointed, and confirming the observational one says nothing about the checkpoint
+		// that decides where the task resumes.
+		// Two conditions, for two different reasons:
+		//   - CommitPending: an authoritative append for this task is IN FLIGHT. It has no ledger
+		//     entry yet (entries are written when an append fails), so the ledger alone cannot see
+		//     it; releasing the gate here made the task resumable before that append was acknowledged.
+		//   - no other unsettled record at THIS generation: a record from an older generation can
+		//     never be reconciled against the current task, so counting it would keep the retry
+		//     isolated forever.
+		if !task.CommitPending && !f.hasUnsettledMustPersist(rec.TaskID, rec.EventID, task.Generation) {
+			task.CommitUnconfirmed, task.CommitPending = false, false
+			task.UpdatedAt = f.now()
+		}
+	}
+	f.mu.Unlock()
+
+	if applyErr != nil {
+		// The record stays: the reconciliation did not settle anything, and retrying it is the
+		// caller's decision, not something to hide by deleting the evidence.
+		return fmt.Errorf("taskfabric: reconcile %s: %w", eventID, applyErr)
+	}
+
+	f.reconMu.Lock()
 	delete(f.reconPending, eventID)
 	f.reconMu.Unlock()
 
@@ -129,14 +214,6 @@ func (f *Fabric) Reconcile(ctx context.Context, eventID string, found bool, gene
 		"taskfabric: reconciled an unsettled append",
 		"event_id", eventID, "task_id", rec.TaskID, "event_type", rec.Type,
 		"reported_outcome", rec.Outcome.String())
-
-	if rec.Type == EventTaskDeleted {
-		// The tombstone exists after all, so the deletion happened: finish what the failed response
-		// left open.
-		f.mu.Lock()
-		delete(f.tasks, rec.TaskID)
-		f.mu.Unlock()
-	}
 	return nil
 }
 
@@ -151,4 +228,42 @@ func (f *Fabric) clearPendingReconciliation(eventID string) {
 	f.reconMu.Lock()
 	defer f.reconMu.Unlock()
 	delete(f.reconPending, eventID)
+}
+
+// hasUnsettledMustPersist reports whether another authoritative record for taskID is still waiting.
+//
+// Caller must NOT hold reconMu. The exception is the record being settled: its entry is removed after
+// this check, so counting it would keep every task isolated forever.
+func (f *Fabric) hasUnsettledMustPersist(taskID, exceptEventID string, generation uint64) bool {
+	f.reconMu.Lock()
+	defer f.reconMu.Unlock()
+	for id, rec := range f.reconPending {
+		if id == exceptEventID || rec.TaskID != taskID {
+			continue
+		}
+		// A record captured at an older generation describes a state that no longer exists: it cannot
+		// be settled against the live task, so it must not hold the current one isolated.
+		if rec.Generation != generation {
+			continue
+		}
+		if isMustPersistEvent(rec.Type) {
+			return true
+		}
+	}
+	return false
+}
+
+// clearPendingForTask drops every ledger entry for one task.
+//
+// Called when the task is confirmed deleted: an entry recorded before that (an uncertain create, a
+// yield) describes a task the store no longer has, and settling it later would resurrect a task its
+// owner deliberately removed.
+func (f *Fabric) clearPendingForTask(taskID string) {
+	f.reconMu.Lock()
+	defer f.reconMu.Unlock()
+	for id, rec := range f.reconPending {
+		if rec.TaskID == taskID {
+			delete(f.reconPending, id)
+		}
+	}
 }

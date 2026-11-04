@@ -213,7 +213,10 @@ func sessionAnswerTasks(fabric *taskfabric.Fabric, sessionID string) []*taskfabr
 			continue
 		}
 		tk, err := fabric.Task(id)
-		if err != nil || tk.State != taskfabric.StateCompleted {
+		// CompletionSettled, not a bare State comparison: a completion whose append is still in flight
+		// can still be reverted, and answering the waiter with it would publish a result the store
+		// has not acknowledged.
+		if err != nil || !tk.CompletionSettled() {
 			continue
 		}
 		round, ok := sessionAnswerRound(prefix, id)

@@ -194,3 +194,21 @@ func classifyBatch(results []appendResult) (committed, refused, partial, unknown
 	}
 	return committed, refused, partial, unknown
 }
+
+// worstMustPersist reports what is known about a change's AUTHORITATIVE events, ignoring the
+// observational ones.
+//
+// The distinction decides whether a task may run. A retry emits task.failed (authoritative: it says
+// the attempt happened and schedules the next one) and task.ready (observability). If only the latter
+// failed, the retry is recorded and the task must stay runnable — gating on the aggregate outcome
+// stranded a retry whose authoritative record had committed.
+func worstMustPersist(results []appendResult) CommitOutcome {
+	out := CommitSkipped
+	for _, r := range results {
+		if !isMustPersistEvent(r.Type) {
+			continue
+		}
+		out = worse(out, r.Outcome)
+	}
+	return out
+}
