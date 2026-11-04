@@ -204,6 +204,15 @@ func TestScheduledCountsTasksNotQuanta(t *testing.T) {
 	}
 	waitForTaskState(t, fabric, "t-multi", taskfabric.StateCompleted, 5*time.Second)
 
+	// The counters are updated by the dispatch loop, and the state transition is observed from
+	// another goroutine: asserting immediately after the state flaked whenever the loop had not yet
+	// finished its bookkeeping for the last quantum. Wait for the counters to settle, then assert —
+	// waiting on equality still fails (by timeout) if the value is wrong, so this is not a weakened
+	// check, only a synchronised one.
+	waitFor(t, 2*time.Second, func() bool {
+		return exec.calls == 2 && sched.Scheduled.Load() == 1
+	}, "counters must settle on 2 quanta and 1 scheduled task")
+
 	if got := sched.Scheduled.Load(); got != 1 {
 		t.Fatalf("Scheduled must count the completed TASK once, got %d", got)
 	}
