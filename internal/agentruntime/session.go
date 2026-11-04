@@ -221,6 +221,59 @@ func (s *Sessions) admitFreshLocked(ctx context.Context, sessionID, prompt strin
 	return true, nil // created by this call
 }
 
+// SessionTopology reports what the session graph knows that the fabric does not yet.
+//
+// It exists because "the fabric holds no unfinished task" and "the session can produce nothing more"
+// are different statements: between a graph growing a node and the projection compiling it into a
+// task, the fabric is empty of pending work while the session is actively working. A stall verdict
+// taken in that window is wrong, and it is wrong in the direction that loses the answer.
+type SessionTopology interface {
+	// PendingProjections reports how many of the session's graph nodes have no compiled task yet.
+	PendingProjections(sessionID string) int
+}
+
+// PendingProjections implements SessionTopology over the session registry and the task fabric.
+//
+// A node without a task is exactly the gap: the graph has grown, the projection has not caught up.
+func (s *Sessions) PendingProjections(sessionID string) int {
+	if s == nil || s.Reg == nil || s.Fabric == nil || sessionID == "" {
+		return 0
+	}
+	g, err := s.Reg.GetSession(sessionID)
+	if err != nil {
+		return 0
+	}
+	pending := 0
+	for _, step := range g.DAG().StepIndex() {
+		if step == nil {
+			continue
+		}
+		if _, taskErr := s.Fabric.Task(step.ID); taskErr != nil {
+			pending++
+		}
+	}
+	return pending
+}
+
+// registryTopology adapts a bare registry + fabric to SessionTopology, for callers that hold the
+// pieces but not a *Sessions (the HTTP task-read path does).
+type registryTopology struct {
+	reg    *agentfabric.SessionRegistry
+	fabric *taskfabric.Fabric
+}
+
+// NewSessionTopology builds a SessionTopology from a registry and the fabric its nodes compile into.
+func NewSessionTopology(reg *agentfabric.SessionRegistry, fabric *taskfabric.Fabric) SessionTopology {
+	if reg == nil || fabric == nil {
+		return nil
+	}
+	return registryTopology{reg: reg, fabric: fabric}
+}
+
+func (t registryTopology) PendingProjections(sessionID string) int {
+	return (&Sessions{Reg: t.reg, Fabric: t.fabric}).PendingProjections(sessionID)
+}
+
 // SessionStalled reports whether a session can no longer produce an answer:
 // the submission's plan task is terminal, the session owns at least one
 // fabric task, and every one of them is terminal too.
@@ -241,7 +294,19 @@ func (s *Sessions) admitFreshLocked(ctx context.Context, sessionID, prompt strin
 // Callers must run their answer scan FIRST: a completed answer means the
 // session is finished, not stalled, and the scan is what returns its content.
 func SessionStalled(fabric *taskfabric.Fabric, sessionID, planTaskID string) bool {
+	return SessionStalledWith(fabric, sessionID, planTaskID, nil)
+}
+
+// SessionStalledWith is SessionStalled aware of the session graph.
+//
+// topo may be nil (legacy callers): the verdict then keeps its old meaning — "the fabric has no
+// unfinished work" — which is only a proxy for "the session cannot answer".
+func SessionStalledWith(fabric *taskfabric.Fabric, sessionID, planTaskID string, topo SessionTopology) bool {
 	if fabric == nil || sessionID == "" {
+		return false
+	}
+	if topo != nil && topo.PendingProjections(sessionID) > 0 {
+		// The graph has nodes the fabric has not seen yet: the session is compiling, not stalled.
 		return false
 	}
 	if planTaskID != "" {
@@ -294,6 +359,20 @@ const StallConfirmations = 5
 // each other's evidence).
 type StallDetector struct {
 	consecutive atomic.Int64
+	// topo, when set, tells the detector what the graph knows beyond the fabric. Without it the
+	// verdict can only see compiled work, which is empty while a projection is still pending.
+	topo SessionTopology
+}
+
+// WithTopology makes the detector aware of the session graph.
+//
+// Chainable so existing construction sites (`&StallDetector{}`) keep working: a detector built
+// without it behaves exactly as before, which is what the legacy tests assert.
+func (d *StallDetector) WithTopology(topo SessionTopology) *StallDetector {
+	if d != nil {
+		d.topo = topo
+	}
+	return d
 }
 
 // Stalled reports whether the session should be treated as stalled now. A
@@ -303,7 +382,7 @@ type StallDetector struct {
 // Callers keep SessionStalled's own contract: run the answer scan FIRST, then
 // ask the detector.
 func (d *StallDetector) Stalled(fabric *taskfabric.Fabric, sessionID, planTaskID string) bool {
-	if !SessionStalled(fabric, sessionID, planTaskID) {
+	if !SessionStalledWith(fabric, sessionID, planTaskID, d.topo) {
 		d.consecutive.Store(0)
 		return false
 	}

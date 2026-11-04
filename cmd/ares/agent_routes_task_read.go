@@ -115,7 +115,8 @@ func (h *actionHandler) terminalViewFields(t *taskfabric.Task, dc taskfabric.Dec
 		// step placeholder as if it were the answer would re-open the P1
 		// wrong-result hole. A later GET self-heals if the answer lands
 		// after the verdict — the answer scan above runs first.
-		if agentruntime.SessionStalled(h.kernel.fabric, dc.SessionID, t.ID) {
+		if agentruntime.SessionStalledWith(h.kernel.fabric, dc.SessionID, t.ID,
+			agentruntime.NewSessionTopology(h.kernel.sessionReg, h.kernel.fabric)) {
 			return result, sessionStalledError
 		}
 		return result, ""
@@ -157,7 +158,10 @@ func waitForTaskResult(ctx context.Context, kernel *kernelHandle, taskID string,
 	defer deadline.Stop()
 	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
-	stalls := &agentruntime.StallDetector{}
+	// The detector sees the session graph too: a projection that has not caught up yet is compiling
+	// work, not a dead session.
+	stalls := (&agentruntime.StallDetector{}).WithTopology(
+		agentruntime.NewSessionTopology(kernel.sessionReg, kernel.fabric))
 	var last *taskfabric.Task
 	for {
 		if t, err := kernel.fabric.Task(taskID); err == nil {

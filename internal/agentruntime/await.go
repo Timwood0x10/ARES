@@ -382,6 +382,10 @@ type AwaitOptions struct {
 	// Wait is the fallback bound when ctx has no deadline. Zero =
 	// DefaultAwaitWait. Ignored when ctx already carries a deadline.
 	Wait time.Duration
+	// Topology, when set, lets the stall detector see graph nodes the fabric has not compiled yet.
+	// Without it a session whose projection is merely lagging looks finished, and the waiter reports
+	// stalled while the answer node is on its way.
+	Topology SessionTopology
 }
 
 // AwaitSessionResult runs the shared wait loop: poll the fabric until the
@@ -423,7 +427,7 @@ func AwaitSessionResult(
 
 	ticker := time.NewTicker(poll)
 	defer ticker.Stop()
-	stalls := &StallDetector{}
+	stalls := (&StallDetector{}).WithTopology(opts.Topology)
 	for {
 		// Fast failure: a failed plan means the session can never answer.
 		if tk, err := fabric.Task(planTaskID); err == nil && tk.State == taskfabric.StateFailed {
