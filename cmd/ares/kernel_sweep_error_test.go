@@ -126,3 +126,45 @@ func TestReportComponentFault_DoesNotOverwriteLifecycleState(t *testing.T) {
 		"a fault report must not restore a lifecycle state it merely read")
 	assert.Contains(t, after.Reason, "durable state unsettled")
 }
+
+// TestRunSweepChain_DeadlineExpiryOutranksLeaseRequeue pins the sweep's ordering with an observable
+// outcome: a task that is BOTH past its deadline and holding an expired lease must end FAILED. If the
+// lease requeue ran first it would return the task to READY and bind a replacement executor — work
+// restarted for a task whose deadline had already passed.
+//
+// The clock is injected rather than waited on: the task starts legitimately, then time moves past both
+// boundaries, which is the only way to reach this state without sleeping through it.
+func TestRunSweepChain_DeadlineExpiryOutranksLeaseRequeue(t *testing.T) {
+	now := time.Now()
+	clock := now
+	fabric := taskfabric.NewFabric().WithClock(func() time.Time { return clock })
+	require.NoError(t, fabric.Create(&taskfabric.Task{
+		ID:         "both-1",
+		Capability: "code",
+		Deadline:   now.Add(10 * time.Second),
+	}))
+
+	epoch, err := fabric.Acquire("both-1", "agent-a", 5*time.Second)
+	require.NoError(t, err)
+	require.NoError(t, fabric.Start("both-1", "agent-a", epoch))
+
+	// Past both the lease and the deadline.
+	clock = now.Add(20 * time.Second)
+
+	// The discriminating observation is not the final state — both orders can end FAILED — but whether
+	// a replacement executor was bound on the way. Requeue-first hands this task to a replacement
+	// before the expiry step can stop it, which is work restarted for a deadline that already passed.
+	var bound []string
+	rec := aresrecovery.New(fabric, agentfabric.NewFabric(), aresrecovery.DefaultRestartPolicy())
+	_ = runSweepChain(context.Background(), rec, func(ids []string) {
+		bound = append(bound, ids...)
+	})
+
+	assert.NotContains(t, bound, "both-1",
+		"an expired task must be failed before the lease requeue can bind a replacement")
+
+	task, taskErr := fabric.Task("both-1")
+	require.NoError(t, taskErr)
+	assert.Equal(t, taskfabric.StateFailed, task.State)
+	assert.NotContains(t, fabric.ReadyTasks(), "both-1")
+}
