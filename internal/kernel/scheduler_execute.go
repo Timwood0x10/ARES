@@ -244,6 +244,16 @@ func (s *Scheduler) admitWinner(
 }
 
 func (s *Scheduler) executeWithCandidates(ctx context.Context, taskID string, cands []taskfabric.Candidate) error {
+	// A preemption plan and a lease acquisition must agree on the same assignment. Release this
+	// lock as soon as the winner holds its busy slot; quanta and user hooks remain concurrent.
+	s.placementMu.Lock()
+	placementLocked := true
+	defer func() {
+		if placementLocked {
+			s.placementMu.Unlock()
+		}
+	}()
+	s.pruneDispatchAssignments(ctx)
 	tk, err := s.fabric.Task(taskID)
 	if err != nil {
 		return err
@@ -298,6 +308,10 @@ func (s *Scheduler) executeWithCandidates(ctx context.Context, taskID string, ca
 			// behavior when nothing was ever recorded).
 			cands[i].Confidence = conf
 		}
+	}
+	cands = s.constrainDispatchCandidates(tk, cands)
+	if len(cands) == 0 {
+		return apperrors.Kernel("schedule", "no_capable_candidate", taskID, "", taskfabric.ErrNoCapableCandidate)
 	}
 	winner, epoch, err := s.fabric.Schedule(taskID, cands, s.leaseTTL())
 	// Record the scheduling decision for the Observatory:
@@ -399,6 +413,9 @@ func (s *Scheduler) executeWithCandidates(ctx context.Context, taskID string, ca
 	if !s.admitWinner(ctx, taskID, winner, epoch, fabricAgent) {
 		return nil
 	}
+	delete(s.dispatchAssignments, taskID)
+	s.placementMu.Unlock()
+	placementLocked = false
 	busyCleared := false
 	clearBusy := func() {
 		if fabricAgent != nil && !busyCleared {

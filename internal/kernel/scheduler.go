@@ -38,6 +38,10 @@ type Scheduler struct {
 	// tracker supplies real per-agent Load/Confidence to Schedule
 	// (real load tracking instead of a static placeholder).
 	tracker *LoadTracker
+	// placementMu serializes preemption planning with Schedule/admission, never with a running
+	// quantum. dispatchAssignments reserves each matched agent until its task takes the busy slot.
+	placementMu         sync.Mutex
+	dispatchAssignments map[string]string
 	// PollInterval is how often ReadyTasks is drained (default 500ms).
 	PollInterval time.Duration
 	// ttl is the lease granted to each winning agent.
