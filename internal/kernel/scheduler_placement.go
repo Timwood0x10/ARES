@@ -19,6 +19,12 @@ func (s *Scheduler) hasRecoveryCandidate(tk *taskfabric.Task) bool {
 
 // preemptionAgentAvailable ignores a quantum's busy flag, but checks that the agent can still
 // execute after it gives up that quantum. Recovery bindings are never shared capacity.
+//
+// This is deliberately a DIFFERENT predicate from freeAgentIDs in scheduler_dispatch.go: that one
+// asks "can this agent take work right now" (IsIdle + Executable) for capacity accounting, while
+// this asks "will it be usable once its current quantum is evicted" (IsSchedulable). Using either in
+// the other's place is wrong: idle-excluding would hide every victim, schedulable-only would count
+// busy agents as free capacity.
 func (s *Scheduler) preemptionAgentAvailable(id string) bool {
 	if s.isBoundToAnyTask(id) {
 		return false
@@ -35,6 +41,11 @@ func (s *Scheduler) preemptionAgentAvailable(id string) bool {
 	return ok
 }
 
+// Locking: the caller holds placementMu. This function reaches into admission (admissible), the
+// fabric and the executor registry, so nothing it calls may re-enter preemption planning —
+// placementMu is NOT reentrant, and a callback that did would deadlock the scheduler rather than
+// merely mis-schedule.
+//
 // pruneDispatchAssignments drops obsolete reservations, including tasks waiting for approval or
 // retry backoff. Called under placementMu by both planning and admission so cancellations and
 // executor deaths do not reserve capacity until another preemption sweep happens.

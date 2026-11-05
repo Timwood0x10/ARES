@@ -131,7 +131,12 @@ type Fabric struct {
 	// eventNonce separates this process's event ids from any other run's. Set once at construction;
 	// read only under f.mu, like flushSeq.
 	eventNonce uint64
-	// reconMu guards reconPending, the ledger of appends whose fate is unsettled. Separate from f.mu
+	// reconMu guards reconPending, the ledger of appends whose fate is unsettled.
+	//
+	// TODO(persistence) — the ledger is IN MEMORY ONLY. An unknown outcome is therefore
+	// reconcilable only within the process that recorded it: a restart forgets it, and nothing
+	// downstream can settle the append by event id afterwards. Persisting it (or deriving it from
+	// the store: created without completed) is the outstanding work; see reconcile.go. Separate from f.mu
 	// because it is written from the flush path, which runs with f.mu released.
 	reconMu      sync.Mutex
 	reconPending map[string]PendingReconciliation
