@@ -10,6 +10,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/aresrecovery"
 	agentfabric "github.com/Timwood0x10/ares/internal/fabric/agent"
+	taskfabric "github.com/Timwood0x10/ares/internal/fabric/task"
 )
 
 // recoverySweepInterval is how often the event-driven recovery loop also
@@ -283,9 +284,17 @@ func runSweepChain(
 	// not the contract: the error has to reach a runtime-owned collector. Recorded so the gap is
 	// visible rather than implied by silence.
 	if expErr != nil {
-		log.Error(ctx, "runKernelRecoveryLoop",
-			"kernel recovery loop: deadline expiry has unsettled durable state", expErr)
-		sweepErr = errors.Join(sweepErr, expErr)
+		// A task expiring is NORMAL work for this sweep; only an expiry whose durable record could
+		// not be settled is a fault. Reporting every expiry as a fault would degrade component health
+		// on a healthy system, which is the fastest way to make the signal useless.
+		if isDurabilityFault(expErr) {
+			log.Error(ctx, "runKernelRecoveryLoop",
+				"kernel recovery loop: deadline expiry has unsettled durable state", expErr)
+			sweepErr = errors.Join(sweepErr, expErr)
+		} else {
+			log.Info(ctx, "runKernelRecoveryLoop",
+				"kernel recovery loop: deadline expiry reported a task outcome", "detail", expErr)
+		}
 	}
 	// Approval SLA expiry runs AFTER deadline expiry and BEFORE the lease
 	// requeue (R1/R2).
@@ -668,4 +677,22 @@ func reportSweepError(cfg kernelLoopConfig, err error) {
 		return
 	}
 	cfg.OnSweepError(err)
+}
+
+// isDurabilityFault reports whether an expiry error describes a persistence problem rather than the
+// ordinary "this task ran out of time" outcome.
+//
+// The distinction decides whether component health suffers: an expiry that failed its own append is a
+// fault an operator must see; a task that simply reached its deadline is the sweep doing its job.
+func isDurabilityFault(err error) bool {
+	if err == nil {
+		return false
+	}
+	var partial *taskfabric.PartialCommitError
+	if errors.As(err, &partial) {
+		// A batch that is entirely COMMITTED is a successful sweep: the type is used for the whole
+		// per-member report, so the presence of the error alone says nothing about durability.
+		return len(partial.Refused) > 0 || len(partial.Partial) > 0 || len(partial.Unknown) > 0
+	}
+	return errors.Is(err, taskfabric.ErrCommitUnknown) || errors.Is(err, taskfabric.ErrCommitRefused)
 }
