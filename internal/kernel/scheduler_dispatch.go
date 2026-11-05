@@ -209,14 +209,9 @@ func (s *Scheduler) fabricCandidateCount() int {
 // quantum. No-op when no priority information exists (all zeros) — the
 // scheduler never churns a running task on a tie or on unset priorities.
 //
-// Need computation: for every READY task that carries a priority, the free
-// pool is the set of agents that (a) could run at least one of those tasks
-// (capability overlap) and (b) are not currently holding a RUNNING task. When
-// the prioritized ready work exceeds that pool, the deficit is the number of
-// preemptions; the LOWEST-priority running tasks are preempted first so the
-// churn is minimal. Preempting a task whose owner cannot run the ready work is
-// still useful: the next sweep re-evaluates against the reduced running set
-// and preempts further only while the deficit persists.
+// Match prioritized demands to distinct agents, preferring free capacity over
+// eviction. Keep the assignment through admission so independent scoring cannot
+// spend a flexible agent on work assigned to a rigid one.
 //
 // Boundary semantics: the drain() call site runs between quanta (before its
 // own goroutines spawn); the background sweeper in Run() deliberately calls
@@ -227,77 +222,273 @@ func (s *Scheduler) fabricCandidateCount() int {
 // the fencing token, so no quantum is ever double-applied — its in-flight
 // work is simply discarded and resumed later.
 func (s *Scheduler) PreemptLowerPriority(ctx context.Context, ready []string) {
+	s.placementMu.Lock()
+	defer s.placementMu.Unlock()
+	s.pruneDispatchAssignments(ctx)
 	// The guard must ask "does this deployment HAVE executors", not "is one free right now":
-	// all-busy is precisely when preemption is the only way a high-priority task can start, so
-	// gating on idle agents skipped preemption in the one situation it exists for.
-	hasCandidates := s.ExecutorCount() > 0 || s.fabricCapacity() > 0
-	if !hasCandidates || len(ready) == 0 {
+	// all-busy is precisely when preemption is the only way a high-priority task can start.
+	if s.ExecutorCount() == 0 && s.fabricCapacity() == 0 {
 		return
 	}
-	maxReady := 0
-	// prioritized carries the capability of every ready task that actually
-	// competes for preemption (priority > 0).
-	var prioritizedCaps []string
-	prioritized := 0
-	for _, id := range ready {
-		tk, err := s.fabric.Task(id)
-		if err != nil || tk.Priority <= 0 {
-			continue
-		}
-		prioritized++
-		prioritizedCaps = append(prioritizedCaps, tk.Capability)
-		if tk.Priority > maxReady {
-			maxReady = tk.Priority
-		}
-	}
-	if maxReady <= 0 {
+	demands := s.preemptionDemands(ready)
+	if len(demands) == 0 {
 		return
 	}
 	running := s.fabric.RunningTasks()
-	if len(running) == 0 {
-		return
-	}
-	// Free capable pool: distinct agents that could run at least one
-	// prioritized ready task and are not currently holding a RUNNING task.
 	busy := make(map[string]struct{}, len(running))
 	for _, rt := range running {
 		busy[rt.Owner] = struct{}{}
 	}
-	freeCapable := s.freeCapableAgents(prioritizedCaps, busy)
-	need := prioritized - freeCapable
-	if need <= 0 {
-		// Every prioritized ready task has a free capable agent to land on:
-		// preempting anyone here would throw away in-flight quantum work for
-		// no benefit.
-		return
+	// One matching over free agents AND possible victims together. Splitting the phases (free agents
+	// first, victims second, each first-fit) let a rigid demand take the flexible agent, leaving the
+	// other demand unmatched and a preemption manufactured for work that could have been placed — the
+	// same greedy mistake one level up.
+	plan := s.planPreemptions(ctx, demands, running, busy)
+	s.dispatchAssignments = plan.assignments
+	for _, rt := range plan.victims {
+		if err := s.fabric.Preempt(rt.ID, rt.Owner, rt.Epoch, "higher-priority task arrived"); err != nil {
+			// A concurrently-finalized task or a stale epoch is a benign race.
+			for taskID, agentID := range s.dispatchAssignments {
+				if agentID == rt.Owner {
+					delete(s.dispatchAssignments, taskID)
+				}
+			}
+			continue
+		}
+		log.Info(ctx, "PreemptLowerPriority",
+			"kernel scheduler: preempted for higher-priority work",
+			"task_id", rt.ID, "priority", rt.Priority)
 	}
-	// Preempt at most `need` tasks, lowest priority first (ties broken by
-	// task id for determinism). A running task whose priority is at or above
-	// maxReady is never a candidate — only strictly outranked work moves.
+}
+
+// preemptionDemand is one prioritized READY task that has no executor yet.
+type preemptionDemand struct {
+	id         string
+	capability string
+	priority   int
+}
+
+// preemptionDemands collects the ready tasks that compete for preemption, highest priority first.
+func (s *Scheduler) preemptionDemands(ready []string) []preemptionDemand {
+	demands := make([]preemptionDemand, 0, len(ready))
+	resumable := make(map[string]bool)
+	for _, id := range s.fabric.ResumableTasks() {
+		resumable[id] = true
+	}
+	for _, id := range ready {
+		if !resumable[id] {
+			continue
+		}
+		tk, err := s.fabric.Task(id)
+		if err != nil || tk.Priority <= 0 {
+			continue
+		}
+		if s.hasRecoveryCandidate(tk) {
+			continue
+		}
+		demands = append(demands, preemptionDemand{id: id, capability: tk.Capability, priority: tk.Priority})
+		delete(resumable, id)
+	}
+	sort.Slice(demands, func(i, j int) bool {
+		if demands[i].priority != demands[j].priority {
+			return demands[i].priority > demands[j].priority
+		}
+		return demands[i].id < demands[j].id
+	})
+	return demands
+}
+
+// preemptionSlot is one agent a demand could be served by: a free one, or one currently running a
+// task that would have to be evicted.
+type preemptionSlot struct {
+	agentID    string
+	victim     taskfabric.RunningTask
+	free       bool
+	waitingFor string // a fenced quantum is still exiting for this assigned task
+}
+
+type preemptionPlan struct {
+	victims     []taskfabric.RunningTask
+	assignments map[string]string
+}
+
+// planPreemptions matches in priority order, retaining earlier demands and minimizing the number
+// of occupied victim slots. Assignments must survive planning: they are the reason each eviction helps.
+func (s *Scheduler) planPreemptions(
+	ctx context.Context,
+	demands []preemptionDemand,
+	running []taskfabric.RunningTask,
+	busy map[string]struct{},
+) preemptionPlan {
+	slots := make([]preemptionSlot, 0, len(demands)+len(running))
+	seen := make(map[string]bool)
+	for _, id := range s.freeAgentIDs(busy) {
+		slots = append(slots, preemptionSlot{agentID: id, free: true})
+		seen[id] = true
+	}
+	// Preempt changes durable state before the old quantum releases its actual busy slot. Keep
+	// that already-freed capacity in the plan across sweeps instead of evicting a second owner.
+	for taskID, id := range s.dispatchAssignments {
+		_, running := busy[id]
+		if !seen[id] && !running {
+			slots = append(slots, preemptionSlot{agentID: id, free: true, waitingFor: taskID})
+			seen[id] = true
+		}
+	}
+	sort.Slice(slots, func(i, j int) bool { return slots[i].agentID < slots[j].agentID })
 	sort.Slice(running, func(i, j int) bool {
 		if running[i].Priority != running[j].Priority {
 			return running[i].Priority < running[j].Priority
 		}
 		return running[i].ID < running[j].ID
 	})
-	preempted := 0
 	for _, rt := range running {
-		if preempted >= need {
+		if seen[rt.Owner] || !s.preemptionAgentAvailable(rt.Owner) {
+			// A bound executor can only serve the task it is bound to: freeing it buys nothing and
+			// interrupts recovery work that will simply be resumed.
+			continue
+		}
+		slots = append(slots, preemptionSlot{agentID: rt.Owner, victim: rt})
+		seen[rt.Owner] = true
+	}
+
+	caps := make(map[string][]string, len(slots))
+	for _, sl := range slots {
+		if ok, _ := s.admissible(ctx, sl.agentID); ok {
+			caps[sl.agentID] = s.agentCapabilities(sl.agentID)
+		}
+	}
+	canServe := func(d preemptionDemand, sl preemptionSlot) bool {
+		// Pending release is promised capacity, not idle capacity another demand can consume.
+		// In particular, the just-preempted task must not take it back and push the urgent task
+		// into a second eviction before the first quantum has even exited.
+		if sl.waitingFor != "" && sl.waitingFor != d.id {
+			return false
+		}
+		if _, available := caps[sl.agentID]; !available {
+			return false
+		}
+		if !sl.free && d.priority <= sl.victim.Priority {
+			// Only strictly outranked work moves.
+			return false
+		}
+		return capableForAny([]string{d.capability}, caps[sl.agentID])
+	}
+
+	assigned := make(map[int]int, len(slots)) // slot index → demand index
+	for d := range demands {
+		// Find ALL alternating paths before choosing an endpoint. Taking the first DFS path can
+		// evict a CPU owner while a GPU-only free slot remains reachable. Internal slots stay
+		// occupied when a path flips; only its unmatched endpoint adds a free slot or a victim.
+		from := make(map[int]int, len(slots)) // slot -> predecessor demand
+		previous := map[int]int{d: -1}        // demand -> predecessor occupied slot
+		queue := []int{d}
+		for head := 0; head < len(queue); head++ {
+			demand := queue[head]
+			for i, sl := range slots {
+				if _, visited := from[i]; visited || !canServe(demands[demand], sl) {
+					continue
+				}
+				from[i] = demand
+				if prev, taken := assigned[i]; taken {
+					if _, visited := previous[prev]; !visited {
+						previous[prev] = i
+						queue = append(queue, prev)
+					}
+				}
+			}
+		}
+		// Slots are ordered free first, then cheapest victim. Rerouting across either kind is
+		// allowed, but an unused victim is selected only if no free endpoint is reachable.
+		for i := range slots {
+			_, reachable := from[i]
+			_, taken := assigned[i]
+			if !reachable || taken {
+				continue
+			}
+			for i >= 0 {
+				demand := from[i]
+				assigned[i] = demand
+				i = previous[demand]
+			}
 			break
 		}
-		if rt.Priority >= maxReady {
-			continue
-		}
-		if err := s.fabric.Preempt(rt.ID, rt.Owner, rt.Epoch, "higher-priority task arrived"); err != nil {
-			// A concurrently-finalized task (already COMPLETED/FAILED) or a
-			// stale epoch is a benign race, not worth log spam.
-			continue
-		}
-		preempted++
-		log.Info(ctx, "PreemptLowerPriority",
-			"kernel scheduler: preempted for higher-priority work",
-			"task_id", rt.ID, "priority", rt.Priority, "max_ready", maxReady)
 	}
+
+	// Collected by slot order, not by iterating the map: map iteration is randomised, and a scheduling
+	// decision whose order changes between runs cannot be reasoned about from a log.
+	plan := preemptionPlan{
+		victims:     make([]taskfabric.RunningTask, 0, len(assigned)),
+		assignments: make(map[string]string, len(assigned)),
+	}
+	for i, sl := range slots {
+		demand, matched := assigned[i]
+		if !matched {
+			continue
+		}
+		plan.assignments[demands[demand].id] = sl.agentID
+		if !sl.free {
+			plan.victims = append(plan.victims, sl.victim)
+		}
+	}
+	return plan
+}
+
+// freeAgentIDs lists agents that could take work now: not running a task, not bound to one.
+func (s *Scheduler) freeAgentIDs(busy map[string]struct{}) []string {
+	free := make([]string, 0, len(s.allExecutors()))
+	seen := make(map[string]struct{}, len(s.allExecutors()))
+
+	// Peer mode: the fabric population is the single source, and a purely static registration has no
+	// live agent behind it — counting it as spare capacity cancels a preemption that was needed.
+	staticCounts := s.agents == nil || s.hybridStatic
+	if staticCounts {
+		for agentID, exec := range s.allExecutors() {
+			if exec == nil || !s.preemptionAgentAvailable(agentID) {
+				continue
+			}
+			if s.tracker.Load(agentID) >= 1 {
+				continue
+			}
+			if _, isBusy := busy[agentID]; isBusy {
+				continue
+			}
+			seen[agentID] = struct{}{}
+			free = append(free, agentID)
+		}
+	}
+
+	if s.agents == nil {
+		sort.Strings(free)
+		return free
+	}
+	for _, id := range s.agents.Agents() {
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		// Idle and executable, the same bar candidate selection applies: a busy agent or one with no
+		// cognition injected cannot take the urgent task, so it is not spare capacity.
+		if !s.agents.IsIdle(id) {
+			continue
+		}
+		if s.tracker.Load(id) >= 1 {
+			continue
+		}
+		agent, err := s.agents.Get(id)
+		if err != nil || agent == nil || !agent.Executable() {
+			continue
+		}
+		if s.isBoundToAnyTask(id) {
+			continue
+		}
+		if _, isBusy := busy[id]; isBusy {
+			continue
+		}
+		seen[id] = struct{}{}
+		free = append(free, id)
+	}
+	sort.Strings(free)
+	return free
 }
 
 // freeCapableAgents counts the distinct agents that (a) could run at least
@@ -306,6 +497,30 @@ func (s *Scheduler) PreemptLowerPriority(ctx context.Context, ready []string) {
 // currently holding a RUNNING task. Sources mirror buildCandidates: the
 // static registry (minus recovery-bound reservations) plus live IDLE fabric
 // agents, deduplicated by agent id.
+
+// agentCapabilities returns the capabilities an agent can serve, from the SAME sources candidate
+// selection uses — the live Fabric population first, the static pool second — but without the
+// availability filters.
+//
+// Preemption has to judge a busy agent, and a busy agent is precisely what candidate selection drops
+// from its list. Using that list here (the first attempt) made every victim look incapable and turned
+// preemption off; using only the static pool (the second) missed Fabric-only agents and their
+// multi-capability declarations, which is how a batch task got evicted for database work.
+func (s *Scheduler) agentCapabilities(agentID string) []string {
+	if agentID == "" {
+		return nil
+	}
+	if s.agents != nil {
+		if caps, err := s.agents.CapabilitiesOf(agentID); err == nil && len(caps) > 0 {
+			return caps
+		}
+	}
+	if exec, ok := s.allExecutors()[agentID]; ok && exec != nil {
+		return []string{string(exec.Type())}
+	}
+	return nil
+}
+
 func (s *Scheduler) freeCapableAgents(required []string, busy map[string]struct{}) int {
 	freeCapable := 0
 	seen := make(map[string]struct{})
