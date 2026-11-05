@@ -589,7 +589,12 @@ func executeAskViaSession(ctx context.Context, k *kernelHandle, taskID, prompt s
 		waitCtx, cancel = context.WithTimeout(ctx, collabTimeout)
 		defer cancel()
 	}
-	aw := agentruntime.AwaitSessionResult(waitCtx, k.fabric, sessionID, planTaskID, agentruntime.AwaitOptions{})
+	// The topology keeps a lagging projection from reading as a finished session: the evolution path
+	// waits on the same graph the agents write into.
+	aw := agentruntime.AwaitSessionResult(waitCtx, k.fabric, sessionID, planTaskID,
+		agentruntime.AwaitOptions{
+			Topology: agentruntime.NewSessionTopology(k.sessionReg, k.fabric),
+		})
 	k.sessions().ReleaseQuietly(sessionID)
 	switch {
 	case aw.Err == nil:

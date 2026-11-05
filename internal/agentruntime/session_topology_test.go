@@ -4,7 +4,6 @@ import (
 	"context"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -66,7 +65,6 @@ func TestStallDetector_AccumulatesOnlyRealStalls(t *testing.T) {
 	for i := 0; i < StallConfirmations+2; i++ {
 		require.False(t, det.Stalled(fabric, "s-topo2", ""),
 			"poll %d: a pending projection must not accumulate stall evidence", i+1)
-		time.Sleep(time.Millisecond)
 	}
 
 	ensureTask(t, fabric, nodeID)

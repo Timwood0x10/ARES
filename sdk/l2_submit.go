@@ -99,7 +99,10 @@ func (r *Runtime) submitThroughL2(ctx context.Context, execCore *agentruntime.Ex
 	// invariants the loop used to maintain by hand: answer scan first, a
 	// race-guard re-check after a sustained stall verdict, and the single
 	// answer-decode path. Poll cadence and timeout semantics stay here.
-	opts := agentruntime.AwaitOptions{}
+	// execCore.Sessions already owns the registry this wait needs, so the topology comes from the
+	// execution rather than from new plumbing: without it a projection that lags the graph reads as a
+	// finished session and the SDK returns a stall for work that is still being compiled.
+	opts := agentruntime.AwaitOptions{Topology: execCore.Sessions}
 	if taskBounded {
 		opts.Wait = t.Timeout
 	}

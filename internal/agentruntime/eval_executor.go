@@ -89,7 +89,14 @@ func (e *SessionEvalExecutor) Execute(ctx context.Context, input string) (string
 	// does not, and a long-lived eval loop must not pin them.
 	defer e.sessions.ReleaseQuietly(sessionID)
 
-	res := AwaitSessionResult(ctx, e.fabric, sessionID, taskID, e.opts)
+	// The executor holds the session registry, so the wait can see graph nodes that have not been
+	// projected yet. Without it a slow projection reads as a finished session and the eval path
+	// returns "stalled" for work that is still being compiled.
+	opts := e.opts
+	if opts.Topology == nil {
+		opts.Topology = e.sessions
+	}
+	res := AwaitSessionResult(ctx, e.fabric, sessionID, taskID, opts)
 	if res.Err != nil {
 		return "", nil, 0, res.Err
 	}
