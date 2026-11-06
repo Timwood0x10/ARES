@@ -18,6 +18,16 @@ the tool registry instead of being written once at boot. No configuration change
 >   that wants a cap sets it; one that does not behaves exactly as before.
 > - No public API was removed in this release. `internal/evoapi` and `RunScenario` were removed in
 >   0.3.5.
+> - **Calls that previously returned `nil` can now fail.** No signature changed; the errors are new:
+>   `Create` returns the store's refusal (previously it reported success and left a task a restart
+>   would lose); `Complete`, `CompleteWithCheckpoint`, `Fail` and `Yield` return `ErrCommitUnknown`
+>   or the refusal when their append does not commit; `Shutdown` returns an error when its budget
+>   expires with work still running, so a `serve` exit code can become non-zero where it used to be 0;
+>   and `serve` returns the error when Bootstrap's background workers outlive `backgroundExitBudget`.
+> - **A stalled session is reported later, not sooner.** `SessionStalled` now needs the session graph
+>   as well as the fabric, so a wait that used to end after five polls while a projection was still
+>   compiling keeps waiting until it can justify the verdict or its budget expires. Callers that
+>   cannot see the graph keep the old, narrower meaning.
 
 ### Highlights — the scheduling loop stops paying for its slowest task
 
@@ -59,6 +69,36 @@ applied, and no path reads fitness. A fitness loop that could set `enabled=false
 measured score by removing the work it cannot do — and the loss, tasks the system can no longer
 attempt, is invisible to it.
 
+### Highlights — a change is durable before it is visible
+
+`Complete` said COMPLETED, a retry said READY, a yield said SUSPENDED — all before the append
+returned, so a drain in that window released dependents, dispatched the task again, or answered a
+waiter with a result that could still be reverted.
+
+- `CommitPending` marks the transition in flight; `ReadyTasks`, `ResumableTasks`, `IsReady`,
+  `Acquire`, dependency satisfaction and `CompletionSettled` all read it. Only the invocation that
+  performed the transition may clear it — a duplicate or a losing call writes nothing.
+- Event ids are assigned **before** the append and are fixed length, because `events.id` is
+  `VARCHAR(255)` and embedding the task id turned a legal 255-character task id into 274.
+- Every non-committed append is recorded in `PendingReconciliations()` with its task, type,
+  generation and a snapshot. `Reconcile` applies the confirmed transition against **live** state,
+  restores the checkpoint (nil included), re-inserts a confirmed create, and retires a task's records
+  once its deletion is durable. The ledger is in memory only — see Known gaps.
+
+### Highlights — preemption, shutdown and the stall verdict stop guessing
+
+- **Preemption** picks victims from the same capability source as candidate selection, per demand,
+  and only when strictly outranked. Recovery-bound executors are never victims; free agents and
+  victims are one bipartite graph, so a flexible agent is not spent on a demand a rigid one could
+  serve; the plan holds through dispatch instead of being re-sampled by the drain.
+- **Shutdown** ends the errgroup drain with the caller's `ctx`, bounds `Stop`, propagates `Wait`
+  failures (leaving a non-stopped state with the reason), keeps the dependencies of a component that
+  did not exit, and returns the first call's result to later callers. `serve` runs the same teardown
+  for a signal and for a background failure, and `WaitBackgroundContext` bounds the last wait.
+- **A lagging projection is not a stall.** `SessionTopology` reports graph nodes with no compiled
+  task; `SessionStalledWith` refuses the verdict while any remain, so a session whose answer node is
+  still being compiled is no longer reported as finished after five polls.
+
 ### Added
 
 - `ARES_scheduler_ready_to_dispatch_seconds`, `ARES_scheduler_work_conserving_gap_seconds`,
@@ -70,6 +110,24 @@ attempt, is invisible to it.
   the cap, `Create` fails with `ErrReadyQueueFull` carrying the current depth and the cap. READY
   **and** SUSPENDED count as outstanding — a task that yields is scheduled again, so counting READY
   alone would let a yielding workload bypass the cap.
+- `CommitOutcome` (`committed` / `not_committed` / `unknown`) and `ErrCommitUnknown`: the fabric now
+  says what it knows about a state change instead of returning a bare error. A deadline or
+  cancellation classifies as **unknown**, not as a refusal — a write that timed out may have landed,
+  and re-running work on that reading is how a duplicate execution is born.
+- `Fabric.PendingReconciliations()` and `Fabric.Reconcile(ctx, eventID, found, generation)`: the
+  ledger of appends whose fate is unsettled, keyed by an event id assigned **before** the append.
+  Three rules, in order: an unknown id is an error rather than a no-op; the caller's generation, the
+  record's and the live task's must agree; and `found=false` is **inconclusive** — one miss does not
+  prove an in-flight append will not land, so the record stays.
+- `SessionTopology` / `SessionStalledWith` / `AwaitOptions.Topology`: the stall verdict can see graph
+  nodes the fabric has not compiled yet. `SessionStalled` keeps its old signature and its old
+  meaning (fabric-only) for callers that cannot see the graph.
+- `Components.WaitBackgroundContext(ctx)`: a bounded final wait for Bootstrap's background workers.
+  The unbounded `WaitBackground` stays, documented as unbounded, for callers whose `Close` is the
+  last thing that happens.
+- `Orchestrator.ReportComponentFault(name, err)`: records a fault that did **not** stop the component
+  — it updates `Reason` atomically and leaves the state alone, because marking a working loop
+  "failed" is the same class of lie as marking a stopped one "stopped".
 - `Components.StartedBackground()` lists the background workers a process started, in order. A
   worker's only trace used to be a log line, so "no evolution ticker when evolution is off" could
   not be stated as an assertion.
@@ -79,6 +137,23 @@ attempt, is invisible to it.
 - The soak workload now includes the scheduling pump, the experiment log (append + bounded query)
   and checkpoint decoding with both outcomes. The previous four workloads all exercised code this
   cycle did not touch.
+- **State changes are gated on acknowledgement.** `Create` (the task it just inserted is removed),
+  `Complete`,
+  `CompleteWithCheckpoint`, `Fail` and `Yield` mark the transition in flight (`CommitPending`) and
+  only clear it once the store answers; dependents, dispatch queues, `Acquire` and waiters all read
+  the mark. A refused failure or yield keeps the task isolated (`CommitUnconfirmed`) instead of
+  letting it run on a decision nobody recorded.
+- **Shutdown reads the caller's deadline.** The errgroup drain ends with `ctx.Done()`, `Stop` is
+  bounded, `Wait` failures/timeouts/cancellations propagate and leave a non-stopped state with the
+  reason attached, a component that did not exit keeps its dependency chain up, and a repeated
+  `Shutdown` returns the first call's recorded result rather than inventing a success.
+- **Preemption is matched per demand.** Victims are chosen from the same capability source as
+  candidate selection, only for demands that strictly outrank them, never from recovery-bound or
+  non-executable owners, and one agent serves one demand. Free agents and victims form a single
+  bipartite graph so an existing pair can be reassigned instead of buying an eviction.
+- **The recovery sweep reports what it could not settle.** `runSweepChain` returns the per-member
+  outcome and the loop hands it to `OnSweepError`, which publishes to component health immediately —
+  while an ordinary deadline expiry is logged as the sweep working, not as a persistence fault.
 - `make lint`'s local gate and the CI lint job were already aligned in 0.3.5; the scheduler work
   added no new lint surface.
 
@@ -100,6 +175,18 @@ attempt, is invisible to it.
   Making them so needs a YAML key with its own default and validation.
 - The idle evolution path still has predicate coverage only: `WiredEvolutionSystem.Coordinator` must
   stay concrete for `SetDeployer`/`SetApplyGate`, so a fake cannot be injected there.
+- **The reconciliation ledger is in memory only.** An unknown outcome is therefore reconcilable only
+  inside the process that recorded it: a restart forgets it, and nothing downstream can settle the
+  append by event id afterwards. Persisting it (or deriving it from the store: created without
+  completed) is the outstanding work; the gap is marked `TODO(persistence)` on both the field and the
+  type.
+- **RT-01 is patched, not fully accepted.** The contract, the gate and the ledger are covered by
+  tests that fail when reverted, but the PostgreSQL disconnect and commit-unknown checks were
+  **skipped** for lack of an isolated instance, the subprocess rebuild was not run, and no SQLite
+  store exists to check the backend contract against.
+- **RT-02 covers the shared wait entry, not every path.** Subscription compensation and multi-session
+  acceptance are untouched; the entry test drives `AwaitSessionResult` with an explicitly released
+  projection, so a projection that lands through the compiler subscription is outside it.
 - `internal/evoapi` removal, the `ObservationReplayPolicy` default, the idle-path gap and the three
   sub-30% Postgres packages carry over from 0.3.5 unchanged.
 
