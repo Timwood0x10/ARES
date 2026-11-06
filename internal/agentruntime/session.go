@@ -103,27 +103,70 @@ func (s *Sessions) lockAdmission(sessionID string) (unlock func()) {
 // turn's terminal tasks, so no caller ever returns from Admit into a fabric
 // that still holds a stale answer its wait loop could mistake for a result.
 func (s *Sessions) Admit(ctx context.Context, sessionID, prompt string) error {
+	_, err := s.AdmitFresh(ctx, sessionID, prompt)
+	return err
+}
+
+// AdmitFresh admits the session and reports whether THIS call created it.
+//
+// The answer is computed inside the per-session admission lock, so two concurrent submissions of a
+// new session cannot both believe they created it. Callers need the distinction to decide who owns
+// the cleanup when the rest of the submission fails: releasing a session someone else is using
+// would delete their live graph, while leaving one this call created orphans a READY root task.
+func (s *Sessions) AdmitFresh(ctx context.Context, sessionID, prompt string) (bool, error) {
 	if s == nil || sessionID == "" {
-		return nil
+		return false, nil
+	}
+	unlock := s.lockAdmission(sessionID)
+	defer unlock()
+	return s.admitFreshLocked(ctx, sessionID, prompt)
+}
+
+// AdmitAndDo admits the session and runs do while the per-session admission lock is held.
+//
+// The lock has to span the caller's work, not just the admission: ownership of the cleanup depends
+// on who created the session, and that fact is only useful if nobody can start using the session in
+// between. Without it two submissions of one session can interleave so that the one that OWNS the
+// session fails and tears it down, while the one that merely joined it is still creating its plan —
+// destroying work that had already been accepted.
+//
+// do receives created so it can decide whether a failure means "roll back what I made" or "leave
+// someone else's session alone". Holding the lock across a fabric Create is cheap (in-memory plus a
+// deferred flush) and only contends with submissions for the same session.
+func (s *Sessions) AdmitAndDo(ctx context.Context, sessionID, prompt string, do func(created bool) error) (bool, error) {
+	if s == nil || sessionID == "" || do == nil {
+		return false, nil
+	}
+	unlock := s.lockAdmission(sessionID)
+	defer unlock()
+	created, err := s.admitFreshLocked(ctx, sessionID, prompt)
+	if err != nil {
+		return false, err
+	}
+	return created, do(created)
+}
+
+// admitFreshLocked is AdmitFresh's body; the caller holds the per-session admission lock.
+func (s *Sessions) admitFreshLocked(ctx context.Context, sessionID, prompt string) (bool, error) {
+	if s == nil || sessionID == "" {
+		return false, nil
 	}
 	if s.Reg == nil {
-		return fmt.Errorf("agentruntime: cannot admit session %q without a session registry", sessionID)
+		return false, fmt.Errorf("agentruntime: cannot admit session %q without a session registry", sessionID)
 	}
 	// A "/" in the ID breaks the reaper keep-set (SessionIDFromNode
 	// reverse-parses at the first slash), so "a/b" would let the reaper
 	// harvest a LIVE session's history. Reject at the boundary.
 	if strings.Contains(sessionID, "/") {
-		return fmt.Errorf("agentruntime: session id %q must not contain a slash", sessionID)
+		return false, fmt.Errorf("agentruntime: session id %q must not contain a slash", sessionID)
 	}
-	unlock := s.lockAdmission(sessionID)
-	defer unlock()
 	if _, err := s.Reg.GetSession(sessionID); err == nil {
-		return nil
+		return false, nil // already live: this call did not create it
 	} else if !errors.Is(err, agentfabric.ErrSessionNotFound) {
-		return fmt.Errorf("agentruntime: look up session %q: %w", sessionID, err)
+		return false, fmt.Errorf("agentruntime: look up session %q: %w", sessionID, err)
 	}
 	if s.Compile == nil || s.Fabric == nil {
-		return fmt.Errorf("agentruntime: cannot admit session %q without compile coordinator and fabric", sessionID)
+		return false, fmt.Errorf("agentruntime: cannot admit session %q without compile coordinator and fabric", sessionID)
 	}
 
 	// InitSession wires the compile subscription on a context the registry
@@ -141,10 +184,10 @@ func (s *Sessions) Admit(ctx context.Context, sessionID, prompt string) error {
 		// and InitSession — re-check before failing.
 		if errors.Is(err, agentfabric.ErrSessionAlreadyExists) {
 			if _, err2 := s.Reg.GetSession(sessionID); err2 == nil {
-				return nil
+				return false, nil
 			}
 		}
-		return fmt.Errorf("agentruntime: init session %q: %w", sessionID, err)
+		return false, fmt.Errorf("agentruntime: init session %q: %w", sessionID, err)
 	}
 
 	// Compile the root task the planner's first quantum reads. An already
@@ -154,7 +197,7 @@ func (s *Sessions) Admit(ctx context.Context, sessionID, prompt string) error {
 	if _, err := s.Fabric.CompileNode(liveCtx, planprojection.ProjectStep(rootStep)); err != nil {
 		if !errors.Is(err, taskfabric.ErrTaskExists) {
 			s.ReleaseQuietly(sessionID)
-			return fmt.Errorf("agentruntime: compile session %q root: %w", sessionID, err)
+			return false, fmt.Errorf("agentruntime: compile session %q root: %w", sessionID, err)
 		}
 		// An existing TERMINAL root belongs to a previous session that
 		// already released under this same ID (client "continue the chat"),
@@ -169,13 +212,66 @@ func (s *Sessions) Admit(ctx context.Context, sessionID, prompt string) error {
 				"session_id", sessionID, "harvested", n)
 			if _, err := s.Fabric.CompileNode(liveCtx, planprojection.ProjectStep(rootStep)); err != nil {
 				s.ReleaseQuietly(sessionID)
-				return fmt.Errorf("agentruntime: recompile session %q root: %w", sessionID, err)
+				return false, fmt.Errorf("agentruntime: recompile session %q root: %w", sessionID, err)
 			}
 		}
 	}
 	slog.InfoContext(liveCtx, "agentruntime: admitted L2 session",
 		"session_id", sessionID, "root", g.Root())
-	return nil
+	return true, nil // created by this call
+}
+
+// SessionTopology reports what the session graph knows that the fabric does not yet.
+//
+// It exists because "the fabric holds no unfinished task" and "the session can produce nothing more"
+// are different statements: between a graph growing a node and the projection compiling it into a
+// task, the fabric is empty of pending work while the session is actively working. A stall verdict
+// taken in that window is wrong, and it is wrong in the direction that loses the answer.
+type SessionTopology interface {
+	// PendingProjections reports how many of the session's graph nodes have no compiled task yet.
+	PendingProjections(sessionID string) int
+}
+
+// PendingProjections implements SessionTopology over the session registry and the task fabric.
+//
+// A node without a task is exactly the gap: the graph has grown, the projection has not caught up.
+func (s *Sessions) PendingProjections(sessionID string) int {
+	if s == nil || s.Reg == nil || s.Fabric == nil || sessionID == "" {
+		return 0
+	}
+	g, err := s.Reg.GetSession(sessionID)
+	if err != nil {
+		return 0
+	}
+	pending := 0
+	for _, step := range g.DAG().StepIndex() {
+		if step == nil {
+			continue
+		}
+		if _, taskErr := s.Fabric.Task(step.ID); taskErr != nil {
+			pending++
+		}
+	}
+	return pending
+}
+
+// registryTopology adapts a bare registry + fabric to SessionTopology, for callers that hold the
+// pieces but not a *Sessions (the HTTP task-read path does).
+type registryTopology struct {
+	reg    *agentfabric.SessionRegistry
+	fabric *taskfabric.Fabric
+}
+
+// NewSessionTopology builds a SessionTopology from a registry and the fabric its nodes compile into.
+func NewSessionTopology(reg *agentfabric.SessionRegistry, fabric *taskfabric.Fabric) SessionTopology {
+	if reg == nil || fabric == nil {
+		return nil
+	}
+	return registryTopology{reg: reg, fabric: fabric}
+}
+
+func (t registryTopology) PendingProjections(sessionID string) int {
+	return (&Sessions{Reg: t.reg, Fabric: t.fabric}).PendingProjections(sessionID)
 }
 
 // SessionStalled reports whether a session can no longer produce an answer:
@@ -198,12 +294,24 @@ func (s *Sessions) Admit(ctx context.Context, sessionID, prompt string) error {
 // Callers must run their answer scan FIRST: a completed answer means the
 // session is finished, not stalled, and the scan is what returns its content.
 func SessionStalled(fabric *taskfabric.Fabric, sessionID, planTaskID string) bool {
+	return SessionStalledWith(fabric, sessionID, planTaskID, nil)
+}
+
+// SessionStalledWith is SessionStalled aware of the session graph.
+//
+// topo may be nil (legacy callers): the verdict then keeps its old meaning — "the fabric has no
+// unfinished work" — which is only a proxy for "the session cannot answer".
+func SessionStalledWith(fabric *taskfabric.Fabric, sessionID, planTaskID string, topo SessionTopology) bool {
 	if fabric == nil || sessionID == "" {
+		return false
+	}
+	if topo != nil && topo.PendingProjections(sessionID) > 0 {
+		// The graph has nodes the fabric has not seen yet: the session is compiling, not stalled.
 		return false
 	}
 	if planTaskID != "" {
 		tk, err := fabric.Task(planTaskID)
-		if err != nil || (tk.State != taskfabric.StateCompleted && tk.State != taskfabric.StateFailed) {
+		if err != nil || (!tk.CompletionSettled() && tk.State != taskfabric.StateFailed) {
 			// Plan quantum still in flight (or unreadable): the session may
 			// yet grow nodes.
 			return false
@@ -220,7 +328,7 @@ func SessionStalled(fabric *taskfabric.Fabric, sessionID, planTaskID string) boo
 			continue
 		}
 		seen = true
-		if tk.State != taskfabric.StateCompleted && tk.State != taskfabric.StateFailed {
+		if !tk.CompletionSettled() && tk.State != taskfabric.StateFailed {
 			return false
 		}
 	}
@@ -251,6 +359,20 @@ const StallConfirmations = 5
 // each other's evidence).
 type StallDetector struct {
 	consecutive atomic.Int64
+	// topo, when set, tells the detector what the graph knows beyond the fabric. Without it the
+	// verdict can only see compiled work, which is empty while a projection is still pending.
+	topo SessionTopology
+}
+
+// WithTopology makes the detector aware of the session graph.
+//
+// Chainable so existing construction sites (`&StallDetector{}`) keep working: a detector built
+// without it behaves exactly as before, which is what the legacy tests assert.
+func (d *StallDetector) WithTopology(topo SessionTopology) *StallDetector {
+	if d != nil {
+		d.topo = topo
+	}
+	return d
 }
 
 // Stalled reports whether the session should be treated as stalled now. A
@@ -260,7 +382,7 @@ type StallDetector struct {
 // Callers keep SessionStalled's own contract: run the answer scan FIRST, then
 // ask the detector.
 func (d *StallDetector) Stalled(fabric *taskfabric.Fabric, sessionID, planTaskID string) bool {
-	if !SessionStalled(fabric, sessionID, planTaskID) {
+	if !SessionStalledWith(fabric, sessionID, planTaskID, d.topo) {
 		d.consecutive.Store(0)
 		return false
 	}

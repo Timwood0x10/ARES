@@ -11,6 +11,10 @@ type Task struct {
 	// Capability is the required capability (e.g. "rust/unsafe-analysis");
 	// the capability-aware scheduler scores agents against it.
 	Capability string
+	// Generation counts this task's state transitions. It is what a reconciliation compares against:
+	// a pending event recorded at generation N describes the task as it was then, and settling it
+	// after the task has moved on would apply an outcome to a state that no longer exists.
+	Generation uint64
 	// State is the current lifecycle state.
 	State TaskState
 	// Priority drives preemption decisions (higher wins).
@@ -73,6 +77,34 @@ type Task struct {
 	//
 	// Guarded by f.mu like every other Task field.
 	Requeued bool
+
+	// PendingDelete marks a task whose tombstone could not be confirmed either way: the store may have
+	// written it and the answer did not come back. The task is kept for reconciliation but must not
+	// run — executing work the durable log already considers deleted is worse than a task that needs
+	// an operator.
+	PendingDelete bool
+
+	// CommitUnconfirmed marks a task whose own durable record is not settled: it belongs to a batch
+	// that was only partially committed, or to an append whose fate is unknown. The task is kept for
+	// reconciliation but must not run, because running it duplicates work the store may already hold.
+	CommitUnconfirmed bool
+
+	// CommitPending marks a transition whose append is IN FLIGHT. It is set before the state becomes
+	// observable and cleared once the store answers, so the window between "memory says COMPLETED" and
+	// "the store acknowledged it" is not observable as a completion: no dependent unlocks and no drain
+	// hands the task out during it.
+	CommitPending bool
+
+	// TombstoneUnconfirmed records that a delete append's fate was never established: the tombstone
+	// may exist in the store. Unlike PendingDelete it is never cleared, because a LATER refusal says
+	// nothing about the earlier attempt — reopening the task on that basis would run work the store
+	// may already consider deleted.
+	TombstoneUnconfirmed bool
+
+	// PendingTombstoneID is the id of the tombstone whose fate is undetermined. A later delete MUST
+	// reuse it: minting a new event would append a second, different task.deleted for one deletion,
+	// and reconciliation could only ever settle one of them.
+	PendingTombstoneID string
 	// AllowPartial is the creation-time policy that lets this task run when a
 	// dependency fails permanently, instead of being failed by the cascade. The
 	// gap is not hidden: the failed predecessor's ID is recorded in
@@ -99,6 +131,33 @@ type Task struct {
 	CreatedAt time.Time
 	// UpdatedAt is the last state transition or quantum boundary time.
 	UpdatedAt time.Time
+	// ReadyAt is the instant this task last entered StateReady. It is set
+	// on Create and on every transition INTO READY (requeue, preempt,
+	// release, lease-expiry), and cleared when the task leaves READY
+	// (Acquire). It serves two purposes:
+	//   - M0: the scheduler records ready_to_dispatch and ready_age
+	//     observability metrics from it;
+	//   - M1: ReadyTasks/ResumableTasks sort by (priority DESC, ReadyAt ASC,
+	//     id ASC) for deterministic dispatch order.
+	// Guarded by f.mu like every other Task field.
+	ReadyAt time.Time
+	// AttemptReadyAt is when THIS attempt became eligible to run: creation, a retry after failure,
+	// a release or lease expiry, a preemption, or the yield that ended the previous quantum.
+	//
+	// It exists because ReadyAt answers a different question. ReadyAt is the task's age (fairness
+	// and aging depend on it, so it must NOT be reset when a task yields); AttemptReadyAt is the
+	// queueing delay of one attempt. Measuring dispatch latency from ReadyAt charged a resumed task
+	// for the time its previous quantum spent executing — a 150ms quantum followed by an immediate
+	// resume reported 150ms of "waiting" for a quantum that waited 0.4ms.
+	AttemptReadyAt time.Time
+	// PreemptRequested is set by Preempt to signal that a cooperative
+	// preemption was requested at a quantum boundary (M5). A multi-step
+	// quantum checks this between steps: when set, the quantum stops
+	// dispatching further steps and hands the task back to READY with its
+	// checkpoint preserved. The in-flight LLM call is NOT cancelled (see
+	// PLAN-0.3.6-scheduling §5.1) — it completes naturally and its result
+	// is discarded by the fencing token. Guarded by f.mu.
+	PreemptRequested bool
 
 	// --- HITL approval gate ---
 	//
@@ -159,5 +218,24 @@ func (t *Task) transition(to TaskState) error {
 		return ErrIllegalState
 	}
 	t.State = to
+	t.Generation++
 	return nil
+}
+
+// schedulable reports whether this task may be handed to an executor.
+//
+// One predicate for every scheduling entry point (ReadyTasks, ResumableTasks, IsReady, Acquire), so a
+// new gate cannot be added to one of them and forgotten in the others — the failure mode that let a
+// PendingDelete task drive preemption after ReadyTasks had started filtering it.
+func (t *Task) schedulable() bool {
+	return t != nil && !t.PendingDelete && !t.CommitUnconfirmed && !t.TombstoneUnconfirmed && !t.CommitPending
+}
+
+// CompletionSettled reports whether this task is completed AND that completion is durable.
+//
+// Callers that CONSUME a result must use this rather than comparing State: during the window between
+// the in-memory transition and the store's acknowledgement, State already says COMPLETED. A waiter
+// that reads it there hands out a result that may be reverted a moment later.
+func (t *Task) CompletionSettled() bool {
+	return t != nil && t.State == StateCompleted && !t.CommitPending
 }

@@ -30,9 +30,16 @@ type PlanStep struct {
 	// Priority drives preemption (higher wins); 0 = normal.
 	Priority int
 	// MaxRetries counts TOTAL attempts (taskfabric.CanRetry semantics).
-	// <= 0 means "unset": CompilePlan resolves it to planDefaultMaxRetries
-	// (2), it never reaches the fabric as a literal zero.
+	// <= 0 with MaxRetriesSet=false means "unset": CompilePlan resolves it to
+	// planDefaultMaxRetries (2), it never reaches the fabric as a literal zero.
 	MaxRetries int
+	// MaxRetriesSet says the caller MEANT the value, including zero.
+	//
+	// Without it, "never retry" is unexpressible: zero already means "unset", so a step that
+	// configured max_attempts=1 would be silently upgraded to the two retries of the default. An L1
+	// declaration is explicit by construction, so the projection sets this whenever it carried a
+	// retry policy at all.
+	MaxRetriesSet bool
 	// AllowPartial lets this step run when a dependency fails permanently: the
 	// failed predecessor is recorded as a degraded input instead of failing the
 	// step. False (zero value) is strict — a failed dependency fails this step.
@@ -171,8 +178,11 @@ func (f *Fabric) CompilePlan(ctx context.Context, steps []PlanStep) ([]string, e
 		// documented plan contract: an unset step gets 2 total attempts
 		// (first try + one retry), same as a directly submitted task.
 		maxRetries := s.MaxRetries
-		if maxRetries <= 0 {
+		if !s.MaxRetriesSet && maxRetries <= 0 {
 			maxRetries = planDefaultMaxRetries
+		}
+		if maxRetries < 0 {
+			maxRetries = 0
 		}
 		t := &Task{
 			ID:           s.ID,
@@ -244,8 +254,60 @@ func (f *Fabric) CompilePlan(ctx context.Context, steps []PlanStep) ([]string, e
 		created = append(created, s.ID)
 	}
 	f.mu.Unlock()
-	f.flushAppends(&pending)
-	return created, nil
+
+	return f.settleBatchCommit(created, f.flushAppendsDetailed(&pending))
+}
+
+// settleBatchCommit decides what a compiled batch means once its durable appends are known.
+//
+// Extracted from CompilePlan for the complexity limit, and worth reading on its own: the three
+// branches are the contract.
+//
+//   - nothing failed: the batch is committed.
+//   - nothing durable: roll back in memory, because all-or-nothing still holds.
+//   - anything else (partial, or any unknown): keep every task and report which id is in which
+//     state. Deleting a task whose event landed loses work, and removing one whose fate is unknown
+//     is an unverified rollback — the event may exist and the task would be resurrected on restart.
+func (f *Fabric) settleBatchCommit(created []string, results []appendResult) ([]string, error) {
+	committed, refused, partial, unknown := classifyBatch(results)
+	if len(refused) == 0 && len(partial) == 0 && len(unknown) == 0 {
+		return created, nil
+	}
+
+	// Roll back ONLY when nothing at all reached the store. A task whose own events disagree half-and
+	// -half is not "refused": its task.created is in the store, and deleting it in memory means a
+	// restart resurrects it as READY while this process reported the batch as failed.
+	if len(committed) == 0 && len(partial) == 0 && len(unknown) == 0 {
+		var rollbackErr error
+		f.mu.Lock()
+		for _, id := range created {
+			// Only READY tasks can be removed and the batch has not been drained yet, so this cannot
+			// bounce; failures are collected rather than ignored.
+			if delErr := f.deleteLocked(id); delErr != nil {
+				rollbackErr = errors.Join(rollbackErr, fmt.Errorf("rollback %q: %w", id, delErr))
+			}
+		}
+		f.mu.Unlock()
+		return nil, errors.Join(fmt.Errorf("%w: refused=%v", ErrBatchNotCommitted, refused), rollbackErr)
+	}
+
+	// Refused and unknown members stay in memory for reconciliation but must not run: their own
+	// durable record is not settled, so executing them duplicates work the store may already hold.
+	// Keeping the record and allowing execution are two different decisions, and this is where they
+	// are separated.
+	f.mu.Lock()
+	unsettled := append([]string(nil), refused...)
+	unsettled = append(unsettled, partial...)
+	unsettled = append(unsettled, unknown...)
+	for _, id := range unsettled {
+		if t, ok := f.tasks[id]; ok {
+			t.CommitUnconfirmed = true
+			t.UpdatedAt = f.now()
+		}
+	}
+	f.mu.Unlock()
+
+	return committed, &PartialCommitError{Committed: committed, Refused: refused, Partial: partial, Unknown: unknown}
 }
 
 // CompileNode compiles a single PlanStep into exactly one task. It is the

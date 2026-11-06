@@ -59,7 +59,11 @@ func (c *fakePlannerChat) Chat(_ context.Context, _ []*llmcore.LLMMessage, _ []l
 
 // plannerTestBinder is a ToolBinder whose tools echo their args back so
 // toolCognition produces a real result in the fabric envelope.
-type plannerTestBinder struct{}
+type plannerTestBinder struct {
+	// extra schemas are appended to the built-in grep declaration, for tests whose scripted model
+	// calls more than one tool.
+	extra []resources.ToolSchema
+}
 
 func (b *plannerTestBinder) CallTool(_ context.Context, name string, args map[string]any) (any, error) {
 	if q, ok := args["query"]; ok {
@@ -79,7 +83,7 @@ func (b *plannerTestBinder) IsToolIdempotent(string) bool { return true }
 // schema shape on both the write and the read side, or every constraint
 // silently falls through to permissive.
 func (b *plannerTestBinder) GetToolSchemas() []resources.ToolSchema {
-	return []resources.ToolSchema{{
+	base := []resources.ToolSchema{{
 		Name: "grep",
 		Parameters: &resources.ParameterSchema{
 			Properties: map[string]*resources.Parameter{
@@ -89,6 +93,7 @@ func (b *plannerTestBinder) GetToolSchemas() []resources.ToolSchema {
 			Required: []string{"query"},
 		},
 	}}
+	return append(base, b.extra...)
 }
 
 // TestPlannerCognition_GrowsTwoPlanRoundsWithToolNodes is the acceptance
@@ -125,7 +130,10 @@ func TestPlannerCognition_GrowsTwoPlanRoundsWithToolNodes(t *testing.T) {
 
 	// Build the planner cognition.
 	chatClient := &fakePlannerChat{}
-	binder := &plannerTestBinder{}
+	// Two rounds means the scripted model calls grep and then read, so BOTH must be registered:
+	// a tool the binder does not expose cannot grow a node, and a fixture that lets it would be
+	// modelling a model calling something it was never advertised.
+	binder := &plannerTestBinder{extra: []resources.ToolSchema{{Name: "read"}}}
 	planner, err := NewPlannerCognition(PlannerDeps{
 		ChatClient: chatClient,
 		ToolBinder: binder,

@@ -454,6 +454,19 @@ func (p *KnowledgePipeline) ProcessStream(ctx context.Context, in <-chan *Knowle
 // range: the previous formula could exceed 1.0 (e.g. 1.0 merged with 1.0
 // yielded 1.1), violating the confidence contract and skewing downstream
 // ranking and filtering.
+//
+// What it actually computes: max(a,b) + 0.1*min(a,b), clamped.
+//
+// The MAX dominates, so this is not a consensus score and must not be read as one:
+//
+//	1.0 + 1.0 -> 1.10 -> 1.0   two strong sources
+//	1.0 + 0.5 -> 1.05 -> 1.0   one strong, one weak — indistinguishable from the above
+//	0.6 + 0.6 -> 0.66          only below the clamp does agreement show up at all
+//
+// The boost separates cases whose maximum is low enough to survive the clamp; a single confident
+// source and two agreeing ones rank the same. Changing that is a product decision (it needs an
+// answer to "should two 0.8s outrank one 1.0 and one 0.6"), not a bug fix — which is why the
+// behaviour is documented here instead of altered.
 func mergeConfidence(a, b float64) float64 {
 	var v float64
 	if a > b {

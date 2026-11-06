@@ -20,6 +20,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
@@ -80,6 +81,18 @@ func WithExec(fn ExecFunc) Option {
 	}
 }
 
+// WithProbeTimeout overrides how long one `--help` probe may take.
+//
+// Non-positive values are ignored: the bound exists because the probe is synchronous on the startup
+// path, so "disable it" is not a useful setting.
+func WithProbeTimeout(d time.Duration) Option {
+	return func(disc *Discoverer) {
+		if d > 0 {
+			disc.probeTimeout = d
+		}
+	}
+}
+
 // WithLookup overrides the path lookup function (test injection).
 func WithLookup(fn LookupFunc) Option {
 	return func(d *Discoverer) {
@@ -90,16 +103,18 @@ func WithLookup(fn LookupFunc) Option {
 // Discoverer probes an allowlist of native commands and builds core.Tool
 // instances for the ones present on the host.
 type Discoverer struct {
-	allowlist []string
-	exec      ExecFunc
-	lookup    LookupFunc
+	allowlist    []string
+	exec         ExecFunc
+	lookup       LookupFunc
+	probeTimeout time.Duration
 }
 
 // NewDiscoverer creates a Discoverer for the given allowlist. Only these
 // command names are probed and executed; anything else is rejected.
 func NewDiscoverer(allowlist []string, opts ...Option) *Discoverer {
 	d := &Discoverer{
-		allowlist: allowlist,
+		allowlist:    allowlist,
+		probeTimeout: defaultProbeTimeout,
 		exec: func(ctx context.Context, name string, args []string) ([]byte, error) {
 			cmd := exec.CommandContext(ctx, name, args...) //nolint:gosec // allowlist-gated by design
 			// Use a limited writer so the buffer cannot grow unbounded while
@@ -163,7 +178,14 @@ func (d *Discoverer) Discover(ctx context.Context) ([]core.Tool, error) {
 
 // describe extracts a one-line summary from `name --help` output.
 func (d *Discoverer) describe(ctx context.Context, name string) (string, error) {
-	out, err := d.exec(ctx, name, []string{"--help"})
+	// Bounded: this runs on the startup path, synchronously, for every allowlisted command. A
+	// command whose --help waits for input (or never exits) used to block serve forever before any
+	// component was wired — the caller's context is a plain WithCancel(Background), so it carries no
+	// deadline of its own. A timeout degrades to the placeholder description, which is the same
+	// treatment a missing or unparsable --help already gets.
+	probeCtx, cancel := context.WithTimeout(ctx, d.probeTimeout)
+	defer cancel()
+	out, err := d.exec(probeCtx, name, []string{"--help"})
 	if err != nil {
 		return "", err
 	}
@@ -273,3 +295,9 @@ func (t *CommandTool) Execute(ctx context.Context, params map[string]interface{}
 
 // compile-time interface check
 var _ core.Tool = (*CommandTool)(nil)
+
+// defaultProbeTimeout bounds one --help probe.
+//
+// Ten seconds is generous for a CLI printing its usage, and short enough that a handful of
+// allowlisted commands cannot add minutes to startup.
+const defaultProbeTimeout = 10 * time.Second

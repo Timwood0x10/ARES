@@ -190,11 +190,11 @@ func (a *GenomePopulationAdapter) Run(ctx context.Context) error {
 	// (the default) must produce ZERO proposals here: this is the first half of the single-path
 	// guarantee, and RunIdleEvolution is the other half.
 	//
-	// Note what is NOT covered: RunIdleEvolution's gate has no equivalent end-to-end test.
-	// WiredEvolutionSystem.Coordinator is a concrete *UngatedPatcher (bootstrap calls
-	// SetDeployer/SetApplyGate on it), so a fake cannot be injected there; only the predicate is
-	// tested. Gating Run and forgetting idle would therefore go unnoticed — do not read the
-	// passing suite as proof that both paths are closed.
+	// Both halves are covered end to end (TestGAObjective_RunSubmits* and
+	// TestIdleObjective_*): WiredEvolutionSystem.Coordinator is a patchCoordinator interface, so a
+	// recording coordinator can be injected on the idle path and the number of submissions
+	// observed directly. Each half also has a control asserting the wider objective DOES submit,
+	// because "submitted nothing" is otherwise true for any fixture that never produces a patch.
 	if a.shouldSubmitRuntimePatches() {
 		a.submitToCoordinator(ctx)
 	}

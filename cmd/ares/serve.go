@@ -23,9 +23,11 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/sync/errgroup"
 
+	sub "github.com/Timwood0x10/ares/internal/agents/sub"
 	"github.com/Timwood0x10/ares/internal/ares_bootstrap"
 	"github.com/Timwood0x10/ares/internal/ares_config"
 	"github.com/Timwood0x10/ares/internal/ares_shutdown"
+	agentfabric "github.com/Timwood0x10/ares/internal/fabric/agent"
 	"github.com/Timwood0x10/ares/internal/logger"
 )
 
@@ -102,7 +104,10 @@ func runServe() error {
 	// atomic.Store/Load so the goroutine never races with the Bootstrap
 	// assignment on the main goroutine.
 	var compPtr atomic.Pointer[ares_bootstrap.Components]
-	wiringServeSignalWatch(g, sigCh, ctx, cancel, shutdownMgr, &compPtr)
+	// Shutdown failures are kept outside the errgroup: Wait() returns only the first error, and
+	// during Ctrl-C that first error is the cancellation itself — which is then normalized to nil.
+	failures := &shutdownFailures{}
+	wiringServeSignalWatch(g, sigCh, ctx, cancel, shutdownMgr, &compPtr, failures)
 
 	// --- EventStore + Bootstrap ---
 	comp, store, mgr, err := wiringServeEventStore(ctx, cfg)
@@ -160,12 +165,12 @@ func runServe() error {
 	// Whether it is USED is decided by evolution.gates.regression_runtime_replay (default
 	// off; the gate refuses an enabled flag with no provider rather than downgrading
 	// silently).
-	comp.Evolution.CandidateReplayProvider = func() (*ares_bootstrap.CandidateReplayFactory, error) {
-		return ares_bootstrap.NewCandidateReplayFactory(ares_bootstrap.CandidateReplayConfig{
-			ChatClient: chatClient,
-			ToolBinder: toolBinder,
-		})
-	}
+	// comp.Evolution is nil under the minimal setup (--llm-url, no evolution config), and this used
+	// to be an unconditional field assignment on it: `ares serve --llm-url ...` — the path the CLI
+	// documents as needing no config file — panicked with a nil dereference before it could listen.
+	// The provider only matters to the regression-replay gate, which is off by default, so skipping
+	// the install is the correct behaviour rather than a degraded one.
+	installCandidateReplayProvider(ctx, comp, chatClient, toolBinder)
 
 	// --- Peer registry: enable direct agent-to-agent messaging ---
 	// setupPeerRegistry builds the registry; the kernel handle powers
@@ -222,12 +227,30 @@ func runServe() error {
 	// A context cancellation (SIGINT/SIGTERM → graceful shutdown) surfaces as
 	// context.Canceled from the errgroup; that is a NORMAL exit, not an error —
 	// normalized to nil so `ares serve` exits 0 on Ctrl-C.
-	return normalizeShutdownErr(g.Wait())
+	return finalShutdownError(g.Wait(), failures)
 }
 
 // normalizeShutdownErr treats context cancellation (graceful shutdown) as a
 // clean exit: Ctrl-C is not a failure. Extracted so runServe stays within the
 // cyclomatic-complexity limit.
+// finalShutdownError combines the errgroup result with the shutdown failures recorded outside it.
+//
+// This is the bug the split exists for: on Ctrl-C the errgroup's FIRST error is the cancellation, so
+// Wait() reports context.Canceled; normalizing that to nil then discarded whatever a later shutdown
+// step had failed with. A recorded failure therefore wins over the cancellation, and both are kept
+// when they are different problems.
+func finalShutdownError(waitErr error, failures *shutdownFailures) error {
+	normalized := normalizeShutdownErr(waitErr)
+	recorded := failures.err()
+	if recorded == nil {
+		return normalized
+	}
+	if normalized == nil {
+		return recorded
+	}
+	return errors.Join(normalized, recorded)
+}
+
 func normalizeShutdownErr(err error) error {
 	if errors.Is(err, context.Canceled) {
 		return nil
@@ -394,4 +417,31 @@ func portOf(addr string) int {
 		return 0
 	}
 	return port
+}
+
+// installCandidateReplayProvider attaches the replay factory when there is an evolution subsystem to
+// attach it to.
+//
+// It returns whether the provider was installed, because "not installed" is a normal state: the
+// minimal setup (--llm-url, no config file) wires no evolution components, and the replay gate that
+// consumes this provider is off by default. Assigning unconditionally on such a run is a nil
+// dereference before the server ever listens — which is exactly what it used to do.
+func installCandidateReplayProvider(
+	ctx context.Context,
+	comp *ares_bootstrap.Components,
+	chatClient sub.ChatClient,
+	toolBinder agentfabric.ToolBinder,
+) bool {
+	if comp == nil || comp.Evolution == nil {
+		log.InfoContext(ctx, "serve: evolution components absent (minimal setup); candidate-replay provider not installed",
+			"method", "runServe")
+		return false
+	}
+	comp.Evolution.CandidateReplayProvider = func() (*ares_bootstrap.CandidateReplayFactory, error) {
+		return ares_bootstrap.NewCandidateReplayFactory(ares_bootstrap.CandidateReplayConfig{
+			ChatClient: chatClient,
+			ToolBinder: toolBinder,
+		})
+	}
+	return true
 }

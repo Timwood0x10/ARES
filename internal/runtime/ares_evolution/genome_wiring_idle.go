@@ -288,10 +288,10 @@ func RunIdleEvolution(ctx context.Context, system *WiredEvolutionSystem, n int) 
 		// and submit to Coordinator for evaluation and application. Every
 		// patch is attributed to the current best strategy so the coordinator
 		// and runtime can A/B compare it against the active one.
-		// Same gate as Run: objective=strategy leaves this block dormant. If only Run were
-		// gated, the idle loop would keep applying runtime patches and "one generation, one
-		// path" would be true only for callers of Run.
-		if system.RuntimeObjective() && system.DiffReg != nil && system.Coordinator != nil && system.GenomeReg != nil {
+		// Same gate as Run, and literally the same function: objective=strategy leaves this
+		// block dormant. Spelling the condition out here (as it used to) is how one path gets
+		// fixed and the other forgotten.
+		if system.ShouldSubmitRuntimePatches() {
 			strategyID := ""
 			if best := system.Population.BestStrategy(); best != nil {
 				strategyID = best.ID

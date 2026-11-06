@@ -11,6 +11,7 @@ import (
 	"time"
 
 	api_mcp "github.com/Timwood0x10/ares/internal/mcpclient"
+	builtin_network "github.com/Timwood0x10/ares/internal/tools/resources/builtin/network"
 )
 
 // allowedMCPBinaryDirs lists directories whose binaries are trusted to be
@@ -121,8 +122,23 @@ func isAllowedMCPURL(endpoint string) bool {
 		return false
 	}
 	scheme := strings.ToLower(u.Scheme)
-	return scheme == "http" || scheme == "https"
+	if scheme != "http" && scheme != "https" {
+		return false
+	}
+
+	// The scheme alone says nothing about WHERE the endpoint points: discovery output is data, and
+	// data naming 169.254.169.254 or an RFC1918 address must not turn into a connection. This is the
+	// same gate the SSRF dialer applies (scheme + resolve + blocked-IP classification), reused
+	// rather than reimplemented so the two cannot drift — isAllowedMCPBinary already had the
+	// directory/symlink half of this.
+	ctx, cancel := context.WithTimeout(context.Background(), mcpURLCheckTimeout)
+	defer cancel()
+	return builtin_network.ValidateURL(ctx, endpoint) == nil
 }
+
+// mcpURLCheckTimeout bounds the resolution inside the allow-list predicate: this runs while walking
+// discovered records, and a slow resolver must not stall the caller.
+const mcpURLCheckTimeout = 3 * time.Second
 
 // isAllowedMCPBinary reports whether endpoint is a binary path that lives
 // under one of the trusted binary directories. Symlinks are resolved before

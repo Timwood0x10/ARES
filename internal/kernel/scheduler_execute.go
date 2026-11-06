@@ -25,7 +25,10 @@ import (
 // budget incident — the one an operator must act on, because the fix is a
 // bigger budget, not a new agent — was suppressed for as long as the other
 // kept firing.
-func (s *Scheduler) logFailure(taskID string, err error) {
+// logFailure reports an execution failure. ctx is the drain's context, not Background: the logger
+// attaches module and method itself, but the caller's context carries the values/trace that make
+// the line attributable, and passing Background silently dropped them.
+func (s *Scheduler) logFailure(ctx context.Context, taskID string, err error) {
 	// errors.Is, not ==: both paths return their sentinel wrapped in an
 	// apperrors.Kernel attribution (see executeWithCandidates), so an identity
 	// comparison never matches and the throttle silently dies.
@@ -46,8 +49,12 @@ func (s *Scheduler) logFailure(taskID string, err error) {
 		s.lastNoCandidateLog = now
 	}
 	s.noCandidateMu.Unlock()
-	log.Error(context.Background(), "logFailure",
-		"kernel scheduler: execute task failed", err, "task_id", taskID)
+	// The class travels with the line: "why did nobody retry this" is the first question an
+	// operator asks, and answering it by reading the cause text is how the wrong conclusion gets
+	// drawn. taskfabric owns the classification; the kernel only reports it.
+	log.Error(ctx, "logFailure",
+		"kernel scheduler: execute task failed", err,
+		"task_id", taskID, "failure_class", taskfabric.LevelOf(err).String())
 }
 
 // Submission-time metadata (UserProfile + Payload + UsedExperienceID) rides in
@@ -141,33 +148,33 @@ func (s *Scheduler) executeUnbound(ctx context.Context, taskID string) error {
 // Release is epoch-fenced (only the current holder can release) and
 // PRESERVES the checkpoint, so the "resume, don't restart" contract holds in
 // cases 1 and 2.
-func (s *Scheduler) handleStaleWinner(taskID, winner string, epoch uint64) error {
+func (s *Scheduler) handleStaleWinner(ctx context.Context, taskID, winner string, epoch uint64) error {
 	if s.HasCapableExecutor(taskID) {
 		if releaseErr := s.fabric.ReleaseReason(taskID, winner, epoch, agentfabric.StopUnfit.String()); releaseErr != nil {
-			log.Error(context.Background(), "handleStaleWinner",
+			log.Error(ctx, "handleStaleWinner",
 				"kernel scheduler: release for stale winner failed", releaseErr,
 				"task_id", taskID, "winner", winner)
 			return nil
 		}
-		log.Info(context.Background(), "handleStaleWinner",
+		log.Info(ctx, "handleStaleWinner",
 			"kernel scheduler: reclaimed task from a winner with no live executor; another capable executor will pick it up",
 			"task_id", taskID, "winner", winner, "reason", agentfabric.StopUnfit.String())
 		return nil
 	}
 	if s.hasRecoveryHint() {
 		if releaseErr := s.fabric.ReleaseReason(taskID, winner, epoch, agentfabric.StopUnfit.String()); releaseErr != nil {
-			log.Error(context.Background(), "handleStaleWinner",
+			log.Error(ctx, "handleStaleWinner",
 				"kernel scheduler: release for stale winner failed", releaseErr,
 				"task_id", taskID, "winner", winner)
 			return nil
 		}
-		log.Warn(context.Background(), "handleStaleWinner",
+		log.Warn(ctx, "handleStaleWinner",
 			"kernel scheduler: winner no longer executable; released to READY and nominated for recovery",
 			"winner", winner, "task_id", taskID, "reason", agentfabric.StopUnfit.String())
 		s.notifyRecovery(taskID)
 		return nil
 	}
-	log.Warn(context.Background(), "handleStaleWinner",
+	log.Warn(ctx, "handleStaleWinner",
 		"kernel scheduler: winner no longer executable and no capable replacement or recovery loop exists; task stays leased until TTL expiry",
 		"winner", winner, "task_id", taskID, "reason", agentfabric.StopUnfit.String())
 	return nil
@@ -237,6 +244,16 @@ func (s *Scheduler) admitWinner(
 }
 
 func (s *Scheduler) executeWithCandidates(ctx context.Context, taskID string, cands []taskfabric.Candidate) error {
+	// A preemption plan and a lease acquisition must agree on the same assignment. Release this
+	// lock as soon as the winner holds its busy slot; quanta and user hooks remain concurrent.
+	s.placementMu.Lock()
+	placementLocked := true
+	defer func() {
+		if placementLocked {
+			s.placementMu.Unlock()
+		}
+	}()
+	s.pruneDispatchAssignments(ctx)
 	tk, err := s.fabric.Task(taskID)
 	if err != nil {
 		return err
@@ -251,7 +268,7 @@ func (s *Scheduler) executeWithCandidates(ctx context.Context, taskID string, ca
 	// filterBudgetAffordable — the post-acquire gate below releases the task
 	// back to READY, which with a sole exhausted candidate became a silent
 	// acquire/release livelock).
-	cands = s.filterBudgetAffordable(cands)
+	cands = s.filterBudgetAffordable(ctx, cands)
 	if len(cands) == 0 {
 		// Distinct code AND distinct sentinel for the admission-filtered empty
 		// pool: "every capable agent is budget/deadline/reserve-exhausted" and
@@ -292,7 +309,11 @@ func (s *Scheduler) executeWithCandidates(ctx context.Context, taskID string, ca
 			cands[i].Confidence = conf
 		}
 	}
-	winner, epoch, err := s.fabric.Schedule(taskID, cands, s.ttl)
+	cands = s.constrainDispatchCandidates(tk, cands)
+	if len(cands) == 0 {
+		return apperrors.Kernel("schedule", "no_capable_candidate", taskID, "", taskfabric.ErrNoCapableCandidate)
+	}
+	winner, epoch, err := s.fabric.Schedule(taskID, cands, s.leaseTTL())
 	// Record the scheduling decision for the Observatory:
 	// candidate breakdown + winner. Recorded even on failure (e.g. no capable
 	// candidate) so the panel explains why a task stayed unscheduled.
@@ -312,8 +333,14 @@ func (s *Scheduler) executeWithCandidates(ctx context.Context, taskID string, ca
 		s.decisions.Record(d)
 	}
 	if err != nil {
+		// No claim, no dispatch sample: a task that never found an agent has not been "started".
+		// Sampling before the claim is what made this histogram describe attempts to run rather
+		// than runs.
 		return err
 	}
+	// Sampled after the lease and the agent exist: from here the task really is dispatched, and the
+	// wait it reports is the wait it actually served.
+	s.observeDispatchWait(taskID)
 	// When the fabric is wired, resolve the winner through the fabric
 	// FIRST — the fabric copy is the live, lifecycle-managed agent (kill/
 	// recovery affect it), so a same-id static registration must not shadow
@@ -321,7 +348,7 @@ func (s *Scheduler) executeWithCandidates(ctx context.Context, taskID string, ca
 	// mode, or a recovery-bound static executor) fall back to the registry.
 	executor, fallback := s.resolveExecutor(winner)
 	if executor == nil {
-		return s.handleStaleWinner(taskID, winner, epoch)
+		return s.handleStaleWinner(ctx, taskID, winner, epoch)
 	}
 	if fallback {
 		// N-3 observability: in peer mode the fabric had no live agent for the
@@ -366,7 +393,7 @@ func (s *Scheduler) executeWithCandidates(ctx context.Context, taskID string, ca
 	// boundary — the fabric's state machine (ReleaseReason→READY) drives the
 	// requeue. The checkpoint is preserved, so this is a hand-over, not a
 	// restart.
-	if ok, reason := s.admissible(winner); !ok {
+	if ok, reason := s.admissible(ctx, winner); !ok {
 		if releaseErr := s.fabric.ReleaseReason(taskID, winner, epoch, reason.String()); releaseErr != nil {
 			log.Error(ctx, "executeWithCandidates",
 				"kernel scheduler: reclaim for inadmissible winner failed", releaseErr,
@@ -386,6 +413,9 @@ func (s *Scheduler) executeWithCandidates(ctx context.Context, taskID string, ca
 	if !s.admitWinner(ctx, taskID, winner, epoch, fabricAgent) {
 		return nil
 	}
+	delete(s.dispatchAssignments, taskID)
+	s.placementMu.Unlock()
+	placementLocked = false
 	busyCleared := false
 	clearBusy := func() {
 		if fabricAgent != nil && !busyCleared {
@@ -454,14 +484,17 @@ func (s *Scheduler) executeWithCandidates(ctx context.Context, taskID string, ca
 	// drain). See quantumRetries for the full rationale.
 	quantumStart := time.Now()
 	var usage quantumUsage
-	err = s.fabric.RunQuantum(taskID, winner, epoch, s.buildQuantumStep(ctx, executor, tk, meta, &usage))
+	// The rich result, not a bare error: "the step succeeded and the completion was refused" and
+	// "the step failed and the failure could not be recorded" are different events, and a single
+	// error forces the attribution below to guess which one it is looking at.
+	qr := s.fabric.RunQuantumResult(taskID, winner, epoch, s.buildQuantumStep(ctx, executor, tk, meta, &usage))
 	quantumLatency := time.Since(quantumStart)
-	retries := quantumRetries(err)
+	err = qr.Err()
 	// Release the busy slot and attribute the outcome (see endQuantumOutcome).
 	stopHeartbeat()
 	clearBusy()
 	s.afterQuantum(ctx, taskID, winner, err)
-	s.endQuantumOutcome(winner, tk.Capability, taskID, err, quantumLatency, retries)
+	s.endQuantumOutcome(ctx, winner, tk.Capability, taskID, qr, quantumLatency)
 	slotReleased = true
 	// Post-quantum bookkeeping: record the quantum's consumption (its LLM
 	// tokens + 1 tool round) so the next gate sees the new balance. Runs even
@@ -480,7 +513,7 @@ func (s *Scheduler) executeWithCandidates(ctx context.Context, taskID string, ca
 			s.Scheduled.Add(1)
 		}
 	}
-	s.unbindRecoveryExecutorAfterTerminal(taskID)
+	s.unbindRecoveryExecutorAfterTerminal(ctx, taskID)
 	return err
 }
 
@@ -504,7 +537,7 @@ func (s *Scheduler) startLeaseHeartbeat(ctx context.Context, taskID, winner stri
 		})
 	}
 	qg.Go(func() error {
-		interval := leaseHeartbeatInterval(s.ttl)
+		interval := leaseHeartbeatInterval(s.leaseTTL())
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
@@ -514,7 +547,7 @@ func (s *Scheduler) startLeaseHeartbeat(ctx context.Context, taskID, winner stri
 			case <-qgCtx.Done():
 				return nil
 			case <-ticker.C:
-				if rerr := s.fabric.Renew(taskID, winner, epoch, s.ttl); rerr != nil {
+				if rerr := s.fabric.Renew(taskID, winner, epoch, s.leaseTTL()); rerr != nil {
 					// Ownership was lost (preempted, requeued after expiry,
 					// finalized) or the lease already expired — either way the
 					// holder must stop renewing, so the error is terminal for

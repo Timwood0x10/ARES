@@ -339,7 +339,7 @@ func TestSchedulerPriorityPreemption(t *testing.T) {
 	}
 
 	s := NewKernelScheduler(f, map[string]CapabilityExecutor{"agent-a": &stubAgent{id: "agent-a", typ: models.AgentType("code")}}, nil)
-	s.PreemptLowerPriority([]string{"high"})
+	s.PreemptLowerPriority(context.Background(), []string{"high"})
 
 	tk, err := f.Task("low")
 	if err != nil {
@@ -362,7 +362,7 @@ func TestSchedulerPriorityPreemption(t *testing.T) {
 	if err := f.Start("tie", "agent-a", epoch); err != nil {
 		t.Fatalf("start tie: %v", err)
 	}
-	s.PreemptLowerPriority([]string{"tie"})
+	s.PreemptLowerPriority(context.Background(), []string{"tie"})
 	tk, _ = f.Task("tie")
 	if tk.State != taskfabric.StateRunning {
 		t.Fatal("zero-priority preempt must not churn a running task")

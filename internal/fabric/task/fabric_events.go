@@ -2,6 +2,9 @@ package taskfabric
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/ares_events"
@@ -31,6 +34,18 @@ type pendingAppend struct {
 	typ    EventType
 	taskID string
 	event  *ares_events.Event
+	// generation is the task's transition counter when this event was recorded, captured under the
+	// same lock that produced the event.
+	generation uint64
+	// snapshot is the task as it was when the event was recorded.
+	//
+	// Reconciliation needs it: a completion that was reverted and later confirmed must be restored
+	// WITH its checkpoint, and a created task that memory dropped must be re-inserted — the ledger
+	// alone (ids and types) cannot rebuild either.
+	snapshot *Task
+	// idempotentRetry marks a re-append of an event that may already be durable (the unverified
+	// tombstone). For it, a version conflict is the SUCCESS case: the store already holds this id.
+	idempotentRetry bool
 	// seq is the fabric-wide monotonic sequence assigned under f.mu at record
 	// time. flushAppends waits for seq contiguity so durable appends from
 	// concurrent fabric calls land in causal order.
@@ -190,7 +205,7 @@ func (f *Fabric) recordWithExtrasLocked(t *Task, typ EventType, extras map[strin
 		// only when configured/pending, so the default path keeps its exact
 		// payload.
 		if !t.NextAttemptAt.IsZero() {
-			payload[restoreKeyNextAttemptAt] = t.NextAttemptAt.UTC().Format(time.RFC3339)
+			payload[restoreKeyNextAttemptAt] = t.NextAttemptAt.UTC().Format(time.RFC3339Nano)
 		}
 		if base := backoffMillis(t.BackoffBase); base > 0 {
 			payload[restoreKeyBackoffBaseMS] = base
@@ -258,13 +273,20 @@ func (f *Fabric) recordWithExtrasLocked(t *Task, typ EventType, extras map[strin
 		typ:    typ,
 		taskID: t.ID,
 		event: &ares_events.Event{
+			// Assigned BEFORE the append, not by the store. Two reasons: a retried append of the
+			// same transition must carry the same id, or the store cannot tell a retry from a second
+			// event; and reconciliation after an unknown outcome goes by id, so there has to be one
+			// to go by. Previously the id was empty here and the store minted a new one per attempt.
+			ID:         f.nextEventID(),
 			Type:       et,
 			StreamID:   t.ID,
 			ModuleName: "taskfabric",
 			Payload:    payload,
 			Timestamp:  ev.At,
 		},
-		seq: f.flushSeq,
+		seq:        f.flushSeq,
+		generation: t.Generation,
+		snapshot:   cloneTask(t),
 	}
 }
 
@@ -291,7 +313,42 @@ func (f *Fabric) recordWithExtrasLocked(t *Task, typ EventType, extras map[strin
 // single wedged append would block every later fabric mutation forever: the
 // in-memory transition has already happened by this point, so the caller would
 // never return and the whole write path would stall behind one dead store.
-func (f *Fabric) flushAppends(pending *[]*pendingAppend) {
+// flushAppends writes the pending durable events and reports what it knows about them.
+//
+// It used to return nothing: append failures were logged and the caller had already returned success.
+// The outcome is now the caller's to interpret — committed, refused, or unknown — because those three
+// lead to different behaviour and only the caller knows which state change is at stake.
+func (f *Fabric) flushAppends(pending *[]*pendingAppend) CommitOutcome {
+	out := CommitSkipped
+	for _, r := range f.flushAppendsDetailed(pending) {
+		out = worse(out, r.Outcome)
+	}
+	return out
+}
+
+// appendResult is one pending event's fate, kept per member so a batch can report WHICH of its tasks
+// landed. Aggregating a batch into a single outcome is what turns "three of five committed" into
+// either a false success or a false total failure.
+type appendResult struct {
+	TaskID string
+	// EventID identifies the append, so an unknown outcome can be recorded against something that
+	// can later be asked about.
+	EventID string
+	// Generation is the task state the event described.
+	Generation uint64
+	// Snapshot is the task as it was recorded, so a confirmed event can be applied rather than
+	// merely forgotten.
+	Snapshot *Task
+	Outcome  CommitOutcome
+	// Type is needed because a task can emit more than one event for one transition (approval adds an
+	// observational interrupt.created). Classifying per EVENT reported the same task as committed and
+	// refused at once, and let an observability failure downgrade a durable commit.
+	Type EventType
+}
+
+// flushAppendsDetailed is flushAppends with the per-append results preserved.
+func (f *Fabric) flushAppendsDetailed(pending *[]*pendingAppend) []appendResult {
+	results := make([]appendResult, 0, len(*pending))
 	for _, p := range *pending {
 		if p == nil {
 			continue
@@ -360,6 +417,41 @@ func (f *Fabric) flushAppends(pending *[]*pendingAppend) {
 		}
 		f.flushCond.L.Unlock()
 		f.flushCond.Broadcast()
+		if p.store != nil {
+			outcome := classifyAppendError(appendErr)
+			if p.idempotentRetry {
+				if alreadyPersisted(appendErr) {
+					// Re-appending an event whose previous attempt timed out: the conflict IS the
+					// answer — the row is already there. Treating it as a refusal left the deletion
+					// permanently pending, because every retry hit the same wall.
+					outcome = CommitCommitted
+				} else if appendErr != nil {
+					// The retry failed for a reason this code does not recognise as "already there".
+					// Logged because the alternative is indistinguishable from the stuck-deletion
+					// bug this path exists to fix: the task stays pending and nothing says why.
+					log.Warn(context.Background(), "flushAppends",
+						"taskfabric: idempotent retry failed for an unrecognised reason; the event may already exist",
+						"event_type", p.typ, "task_id", p.taskID, "event_id", p.event.ID, "error", appendErr)
+				}
+			}
+			res := appendResult{
+				TaskID:     p.taskID,
+				EventID:    p.event.ID,
+				Generation: p.generation,
+				Snapshot:   p.snapshot,
+				Outcome:    outcome,
+				Type:       p.typ,
+			}
+			if res.Outcome == CommitCommitted {
+				// A retry that finally landed settles the entry an earlier attempt left behind.
+				// Without this the ledger keeps reporting an event that is already durable, and a
+				// later Reconcile would "settle" something that was never pending.
+				f.clearPendingReconciliation(res.EventID)
+			} else {
+				f.recordPendingReconciliation(res)
+			}
+			results = append(results, res)
+		}
 		if appendErr != nil {
 			if isMustPersistEvent(p.typ) {
 				log.Error(context.Background(), "flushAppends",
@@ -368,6 +460,7 @@ func (f *Fabric) flushAppends(pending *[]*pendingAppend) {
 			}
 		}
 	}
+	return results
 }
 
 // discardAppends claims pending durable-append sequence numbers that will
@@ -463,4 +556,60 @@ func taskEventType(typ EventType) ares_events.EventType {
 		}
 		return ""
 	}
+}
+
+// nextEventID mints a stable, process-unique event id of FIXED length.
+//
+// Fixed length is a storage constraint, not a preference: events.id is VARCHAR(255) and a legal
+// 255-character task id made the old "<task>-<nonce>-<seq>" form 274 characters, which the store
+// rejects. The task id is already carried by StreamID, so repeating it here bought nothing.
+//
+// The process nonce is what keeps two runs apart: without it a restarted process would reuse the same
+// counter for a different event, and an id-based reconciliation would "find" the previous run's
+// record and settle an outcome that never happened.
+func (f *Fabric) nextEventID() string {
+	return fmt.Sprintf("%016x%016x", f.eventNonce, f.flushSeq)
+}
+
+// alreadyPersisted reports whether an append error means the event is already in the store.
+//
+// Three shapes, because the answer depends on the backend: the store's own sentinel, PostgreSQL's
+// unique-violation SQLSTATE (23505), and — as a last resort — the message. The last one is a safety
+// net, not a design: without it an unmapped duplicate-key error is indistinguishable from a refusal,
+// and a deletion that the store actually committed would sit pending forever.
+func alreadyPersisted(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, ares_events.ErrVersionConflict) {
+		return true
+	}
+	var state interface{ SQLState() string }
+	if errors.As(err, &state) && state.SQLState() == "23505" {
+		return true
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "duplicate key")
+}
+
+// cloneTask copies a task for the reconciliation ledger.
+//
+// Shallow on purpose: every field the ledger needs to restore (state, checkpoint pointer, ownership)
+// is a value or a pointer the fabric replaces rather than mutates in place, and the fabric's checkpoint
+// ownership rule already forbids mutating an envelope after publishing it.
+func cloneTask(t *Task) *Task {
+	if t == nil {
+		return nil
+	}
+	cp := *t
+	// Referenced mutable fields are copied too. A shared *Lease made Renew mutate an
+	// already-published snapshot (and race with its readers), and a shared slice let a later append
+	// change a record of the past.
+	if t.Lease != nil {
+		lease := *t.Lease
+		cp.Lease = &lease
+	}
+	if t.DegradedInputs != nil {
+		cp.DegradedInputs = append([]string(nil), t.DegradedInputs...)
+	}
+	return &cp
 }

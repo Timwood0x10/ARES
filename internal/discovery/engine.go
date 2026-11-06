@@ -22,6 +22,13 @@ type Engine struct {
 	providers []DiscoveryProvider
 	handlers  []EventHandler
 	mu        sync.RWMutex
+
+	// autoCancel/autoDone make the background loop's lifetime ownable rather than implied by the
+	// caller's ctx: without them a shutting-down process has no way to wait for the loop it started,
+	// so it could still be calling a provider after Close returned.
+	autoMu     sync.Mutex
+	autoCancel context.CancelFunc
+	autoDone   chan struct{}
 }
 
 // NewEngine creates a discovery engine.
@@ -306,7 +313,23 @@ func (e *Engine) StartAutoDiscovery(ctx context.Context, interval time.Duration)
 		interval = 5 * time.Minute
 	}
 
+	ctx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+
+	e.autoMu.Lock()
+	if e.autoCancel != nil {
+		// A second start would leave two loops writing the same store. The first one owns the
+		// lifecycle; a second call is a wiring error, not a reason to panic.
+		e.autoMu.Unlock()
+		cancel()
+		return
+	}
+	e.autoCancel = cancel
+	e.autoDone = done
+	e.autoMu.Unlock()
+
 	go func() {
+		defer close(done)
 		for attempt := 0; ; attempt++ {
 			e.runAutoDiscovery(ctx, interval, attempt)
 			if ctx.Err() != nil {
@@ -493,5 +516,44 @@ func (e *Engine) emit(evt Event) {
 
 	for _, h := range handlers {
 		h.HandleDiscoveryEvent(evt)
+	}
+}
+
+// StopAutoDiscovery cancels the background loop, if one is running.
+//
+// Idempotent, and safe from a shutdown path that may run after the caller's context was already
+// cancelled.
+func (e *Engine) StopAutoDiscovery() {
+	if e == nil {
+		return
+	}
+	e.autoMu.Lock()
+	cancel := e.autoCancel
+	e.autoCancel = nil
+	e.autoMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
+// WaitAutoDiscovery blocks until the background loop has exited, or ctx expires.
+//
+// This is what makes "no goroutine outlives shutdown" checkable: before it, the only evidence the
+// loop had stopped was the absence of further log lines.
+func (e *Engine) WaitAutoDiscovery(ctx context.Context) error {
+	if e == nil {
+		return nil
+	}
+	e.autoMu.Lock()
+	done := e.autoDone
+	e.autoMu.Unlock()
+	if done == nil {
+		return nil
+	}
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }

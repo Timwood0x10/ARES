@@ -196,3 +196,97 @@ func TestObjectiveConstantsMatchTheConfigLayer(t *testing.T) {
 	assert.Equal(t, aresconfig.EvolutionObjectiveRuntime, EvolutionObjectiveRuntime)
 	assert.Equal(t, aresconfig.EvolutionObjectiveBoth, EvolutionObjectiveBoth)
 }
+
+// TestShouldSubmitRuntimePatches_DependencyHalf pins the other half of the gate: a missing
+// coordinator or registry must close the path even when the objective permits it.
+//
+// Run and RunIdleEvolution used to spell this condition out separately, so one could be fixed
+// while the other kept submitting. They now call this function; the table is what proves it says
+// what both paths need.
+func TestShouldSubmitRuntimePatches_DependencyHalf(t *testing.T) {
+	withDeps := func() *WiredEvolutionSystem {
+		return &WiredEvolutionSystem{
+			Objective:   EvolutionObjectiveBoth,
+			Coordinator: &coordinator.UngatedPatcher{},
+			DiffReg:     diff.NewRegistry(),
+			GenomeReg:   evogenome.NewRegistry(),
+		}
+	}
+
+	cases := []struct {
+		name      string
+		mutate    func(*WiredEvolutionSystem)
+		objective string
+		want      bool
+	}{
+		{"both with every dependency", func(*WiredEvolutionSystem) {}, EvolutionObjectiveBoth, true},
+		{"runtime with every dependency", func(*WiredEvolutionSystem) {}, EvolutionObjectiveRuntime, true},
+		{"strategy ignores the dependencies", func(*WiredEvolutionSystem) {}, EvolutionObjectiveStrategy, false},
+		{"empty normalises to strategy", func(*WiredEvolutionSystem) {}, "", false},
+		{"no coordinator", func(s *WiredEvolutionSystem) { s.Coordinator = nil }, EvolutionObjectiveBoth, false},
+		{"no diff registry", func(s *WiredEvolutionSystem) { s.DiffReg = nil }, EvolutionObjectiveBoth, false},
+		{"no genome registry", func(s *WiredEvolutionSystem) { s.GenomeReg = nil }, EvolutionObjectiveBoth, false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := withDeps()
+			s.Objective = tc.objective
+			tc.mutate(s)
+			assert.Equal(t, tc.want, s.ShouldSubmitRuntimePatches())
+		})
+	}
+
+	assert.False(t, (*WiredEvolutionSystem)(nil).ShouldSubmitRuntimePatches(),
+		"a nil system must not look permissive")
+}
+
+// objSystemCoordinator is a recording coordinator that also satisfies the two setters bootstrap
+// uses, so a WiredEvolutionSystem can be built around it in a test.
+type objSystemCoordinator struct {
+	objRecordingCoordinator
+}
+
+func (c *objSystemCoordinator) SetDeployer(coordinator.PatchDeployer) {}
+func (c *objSystemCoordinator) SetApplyGate(coordinator.ApplyGate)    {}
+
+// idleSystem wires a system whose only submission path is RunIdleEvolution: the recording
+// coordinator is the SYSTEM's, while the adapter carries its own recorder from gatedAdapter, so a
+// count on the returned coordinator is idle-path submissions only.
+func idleSystem(t *testing.T, objective string) (*WiredEvolutionSystem, *objSystemCoordinator) {
+	t.Helper()
+	adapter, _ := gatedAdapter(t, objective)
+	coord := &objSystemCoordinator{}
+	system := &WiredEvolutionSystem{
+		Objective:   objective,
+		Population:  adapter.pop,
+		PopAdapter:  adapter,
+		Coordinator: coord,
+		DiffReg:     adapter.diffReg,
+		GenomeReg:   adapter.genomeReg,
+	}
+	return system, coord
+}
+
+// TestIdleObjective_StrategySubmitsNothing is the second half of the single-path guarantee, and
+// the one that previously had no test at all: the gate existed but nothing could observe whether
+// the idle loop honoured it.
+func TestIdleObjective_StrategySubmitsNothing(t *testing.T) {
+	system, coord := idleSystem(t, EvolutionObjectiveStrategy)
+
+	require.NoError(t, RunIdleEvolution(context.Background(), system, 1))
+
+	assert.Equal(t, 0, coord.count(),
+		"the idle loop must not submit runtime patches under objective=strategy")
+}
+
+// TestIdleObjective_BothSubmits is the control: without it the assertion above would also hold if
+// the idle path simply never produced a patch, which is how the earlier adapter test was vacuous.
+func TestIdleObjective_BothSubmits(t *testing.T) {
+	system, coord := idleSystem(t, EvolutionObjectiveBoth)
+
+	require.NoError(t, RunIdleEvolution(context.Background(), system, 1))
+
+	assert.Greater(t, coord.count(), 0,
+		"the control must submit at least one patch, or the strategy assertion proves nothing")
+}

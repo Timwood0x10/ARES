@@ -69,15 +69,83 @@ type QuantumStep func() (checkpoint any, done bool, err error)
 // restart, even though nothing had actually failed. The kernel's own outcome
 // attribution already exempted context.Canceled from confidence scoring
 // (scheduler_quantum.go); this is the matching fabric-side half.
-func (f *Fabric) RunQuantum(taskID, agentID string, epoch uint64, step QuantumStep) error {
-	if err := f.Start(taskID, agentID, epoch); err != nil {
-		return err
+// QuantumResult reports one quantum along the dimensions that must never be conflated.
+//
+// A single error cannot carry this. "The step succeeded but the completion was refused" and "the
+// step failed and the failure could not be recorded" both look like an error to a caller reading
+// only that error, and it has to guess which — which is how a storage refusal gets charged to an
+// agent whose execution succeeded.
+type QuantumResult struct {
+	// Executed is false when the step never ran: Start was rejected (ownership, fencing, missing
+	// task) or the quantum was preempted at the boundary. A non-executing quantum is never the
+	// executor's failure.
+	Executed bool
+	// Discarded reports that the step DID produce a result and the task did not take it, because
+	// ownership moved while it was running (preempted, then re-acquired by a new holder or a new
+	// epoch of the same one). That is neither a success nor a failure for this executor: the work was
+	// fenced out. Scoring it rewards an agent for a result the task never used, or punishes it for a
+	// step nobody was waiting for any more.
+	Discarded bool
+	// StepErr is the executor's own failure. Nil when the step produced a result, even if that
+	// result could not be persisted.
+	StepErr error
+	// CommitErr is the storage outcome of the terminal transition. Orthogonal to StepErr: a step can
+	// succeed and its completion be refused, and a failed step can fail to be recorded.
+	CommitErr error
+	// RetriesConsumed is the retry this quantum actually spent, recorded at the transition that
+	// decided it — never derived from a cumulative counter or from the shape of an error chain.
+	RetriesConsumed int
+}
+
+// Succeeded reports whether the executor ran and produced a result THE TASK TOOK.
+//
+// A discarded result is excluded by construction: it is neither a verdict on the executor nor on the
+// work, and a caller that asks "did this succeed" about a fenced result would be asking the wrong
+// question — but it would get a true answer if this ignored Discarded.
+func (r QuantumResult) Succeeded() bool {
+	return r.Executed && !r.Discarded && r.StepErr == nil
+}
+
+// classifyTerminal separates a runtime rejection from a storage outcome.
+//
+// A fencing error (ownership or epoch moved) means the result was discarded, not that the store
+// failed: there was no store write to judge. Reporting it as CommitErr made the scheduler treat a
+// late result from a stale holder as a real verdict.
+func classifyTerminal(err error) (commitErr error, discarded bool) {
+	switch {
+	case err == nil:
+		return nil, false
+	case errors.Is(err, ErrNotOwner), errors.Is(err, ErrEpochMismatch):
+		return nil, true
+	default:
+		return err, false
 	}
-	// Count this quantum BEFORE the step runs: every attempt at the task's
-	// semantic progress — whether it yields, fails or completes — is one
-	// quantum. The count accumulates across lease holders (yield→resume,
-	// preemption, chaos replacement), so the panel's "Quantum #N" is the
-	// task's true execution depth, not the current holder's.
+}
+
+// Err joins the dimensions, for logging and for callers that predate the split.
+//
+// A single set dimension is returned AS ITSELF rather than wrapped: callers compare sentinels with
+// errors.Is and, in a few places, by identity, and wrapping one error in a join would change the
+// value they see for a case that is not ambiguous at all.
+func (r QuantumResult) Err() error {
+	switch {
+	case r.StepErr == nil:
+		return r.CommitErr
+	case r.CommitErr == nil:
+		return r.StepErr
+	default:
+		return errors.Join(r.StepErr, r.CommitErr)
+	}
+}
+
+// RunQuantumResult runs one quantum and reports each dimension separately.
+func (f *Fabric) RunQuantumResult(taskID, agentID string, epoch uint64, step QuantumStep) QuantumResult {
+	if err := f.Start(taskID, agentID, epoch); err != nil {
+		// Never executed: fencing, ownership loss or a missing task. The scheduler reports these
+		// neutrally, because they are not the executor's verdict on the work.
+		return QuantumResult{Executed: false, StepErr: err}
+	}
+
 	f.mu.Lock()
 	if t, ok := f.tasks[taskID]; ok {
 		t.Quantum++
@@ -86,31 +154,63 @@ func (f *Fabric) RunQuantum(taskID, agentID string, epoch uint64, step QuantumSt
 	f.mu.Unlock()
 
 	checkpoint, done, stepErr := runStepRecovered(step)
+
+	f.mu.Lock()
+	preempted := false
+	if t, ok := f.tasks[taskID]; ok && t.PreemptRequested {
+		preempted = true
+		t.PreemptRequested = false
+	}
+	f.mu.Unlock()
+	if preempted {
+		// The step's result is fenced out on purpose: neither a failure nor a success, and the task
+		// is READY to resume. Reporting it as either is the mistake this type exists to avoid.
+		return QuantumResult{Executed: false}
+	}
+
 	if stepErr != nil {
 		if isCancellation(stepErr) {
-			// Release hands the task back to READY unowned and leaves the
-			// previous checkpoint in place, so the next drain re-acquires
-			// and resumes from the same PCB.
-			if releaseErr := f.Release(taskID, agentID, epoch); releaseErr != nil {
-				return errors.Join(stepErr, releaseErr)
-			}
-			return stepErr
+			releaseErr, releaseDiscarded := classifyTerminal(f.Release(taskID, agentID, epoch))
+			return QuantumResult{Executed: true, StepErr: stepErr, CommitErr: releaseErr, Discarded: releaseDiscarded}
 		}
-		if failErr := f.Fail(taskID, agentID, epoch, stepErr); failErr != nil {
-			return errors.Join(stepErr, failErr)
+		attempts, rawFailErr := f.failWithAttempts(taskID, agentID, epoch, stepErr)
+		failErr, failDiscarded := classifyTerminal(rawFailErr)
+		if failDiscarded {
+			// The failure could not be recorded because the task is no longer ours: the verdict is
+			// discarded with the result, and no retry was consumed.
+			return QuantumResult{Executed: true, StepErr: stepErr, Discarded: true}
 		}
-		return stepErr
+		// Recorded where the counter was modified, not inferred afterwards. The scorer's retry
+		// component counts a failed attempt as one consumed retry — the same unit as before — but it
+		// is now a fact from the transition rather than a guess about the error chain, which is what
+		// let a commit failure riding on the same error zero it out.
+		consumed := 0
+		if attempts > 0 {
+			consumed = 1
+		}
+		return QuantumResult{Executed: true, StepErr: stepErr, CommitErr: failErr, RetriesConsumed: consumed}
 	}
+
 	if done {
-		// Preserve the step's output in the task so the kernel dispatch
-		// can read it back. A nil checkpoint means the quantum produced no
-		// output (pure state machine progress) — plain Complete still works.
+		var rawCompleteErr error
 		if checkpoint != nil {
-			return f.CompleteWithCheckpoint(taskID, agentID, epoch, checkpoint)
+			rawCompleteErr = f.CompleteWithCheckpoint(taskID, agentID, epoch, checkpoint)
+		} else {
+			rawCompleteErr = f.Complete(taskID, agentID, epoch)
 		}
-		return f.Complete(taskID, agentID, epoch)
+		commitErr, discarded := classifyTerminal(rawCompleteErr)
+		// StepErr stays nil: the executor did its job. A refused completion is a storage fact; a
+		// fenced one is not a fact about this executor at all.
+		return QuantumResult{Executed: true, CommitErr: commitErr, Discarded: discarded}
 	}
-	return f.Yield(taskID, agentID, epoch, checkpoint)
+	yieldErr, yieldDiscarded := classifyTerminal(f.Yield(taskID, agentID, epoch, checkpoint))
+	return QuantumResult{Executed: true, CommitErr: yieldErr, Discarded: yieldDiscarded}
+}
+
+func (f *Fabric) RunQuantum(taskID, agentID string, epoch uint64, step QuantumStep) error {
+	// Kept for the callers that only need "did this quantum report a problem": the scheduler uses
+	// RunQuantumResult, because it needs the dimensions kept apart.
+	return f.RunQuantumResult(taskID, agentID, epoch, step).Err()
 }
 
 // isCancellation reports whether err is a deliberate stop rather than a task

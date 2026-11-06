@@ -1,6 +1,9 @@
 package core
 
-import "context"
+import (
+	"context"
+	"strings"
+)
 
 // ToolCategory represents the category of a tool.
 type ToolCategory string
@@ -111,9 +114,55 @@ type IdempotentTool interface {
 //	side_effects: true, false
 //	requires_network: true, false
 //	mutates_state: true, false
+//	idempotent: true, false   (declares that calling the tool twice is safe; see DeclaresIdempotent)
 type TaggableTool interface {
 	// Tags returns semantic metadata tags for LLM routing.
 	Tags() map[string]string
+}
+
+// TagIdempotent is the schema tag a tool uses to declare that calling it twice is safe.
+//
+// It lives here, next to ToolSchema, so the producer (a tool's own tag map) and the consumer (the
+// retry classifier) cannot drift apart on the spelling. Absent or unparseable means "not
+// declared", which the retry path treats as unsafe — the same default as BindTool.
+const TagIdempotent = "idempotent"
+
+// DeclaresIdempotent reports whether a tag map says the tool is safe to call repeatedly.
+//
+// The accepted spellings are the ones a YAML/JSON author is likely to write. Anything else is
+// treated as "not declared" rather than as an error: a typo in a tag must not start retrying an
+// unmarked write.
+func DeclaresIdempotent(tags map[string]string) bool {
+	if v, ok := parseDeclaredBool(tags[TagIdempotent]); ok && v {
+		return true
+	}
+	// "Changes no state" answers the same question: a retry has nothing to duplicate. Recognising
+	// the existing vocabulary here avoids a second, parallel set of tags for authors to learn.
+	// Tri-state, not "not true means false": a value the parser does not recognise is NOT a
+	// declaration, and treating it as one would turn a typo ("side_effects: flase") into permission
+	// to retry an unmarked write.
+	if v, ok := parseDeclaredBool(tags["side_effects"]); ok {
+		return !v
+	}
+	if v, ok := parseDeclaredBool(tags["mutates_state"]); ok {
+		return !v
+	}
+	return false
+}
+
+// parseDeclaredBool accepts the spellings a YAML/JSON author is likely to write and reports
+// whether the value was one of them. The ok result is what separates "declared false" from "not
+// declared": collapsing the two would make a typo mean "no side effects", which is exactly the
+// reading that permits a duplicate write.
+func parseDeclaredBool(v string) (value, ok bool) {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "true", "1", "yes", "y":
+		return true, true
+	case "false", "0", "no", "n":
+		return false, true
+	default:
+		return false, false
+	}
 }
 
 // ToolSchema represents the schema of a tool for capability export.

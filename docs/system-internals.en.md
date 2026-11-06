@@ -1,13 +1,16 @@
-# ARES System Internals (v0.3.x)
+# ARES System Internals (v0.3.6 · Interview Reference)
 
-> A reference walkthrough of how the ARES (goagent) v0.3.x AgentOS works,
-> covering 15 core modules, each with a Mermaid diagram and source
-> file / line references.
+> A runtime reference for ARES (goagent), retaining 30 topic sections and source entry points.
+> Checked on 2026-10-26 against commit `d6015bef`; the dispatch-metric changes
+> (`AttemptReadyAt` preference, `ready_age` deferred-head, `busySince` continuous
+> non-empty start) are now committed with the source and no longer listed as
+> working-tree differences.
+> Locate code by file + symbol; older line numbers are historical hints, not current coordinates.
 >
 > The design thesis in one line: **treat an agent as a disposable process,
 > a task as a durable intent; the kernel schedules, the LLM understands and
-> decomposes, GA makes it sharper over time, and checkpoint + chaos make it
-> safe to fail.**
+> decomposes, checkpoints support recovery, GA attempts strategy optimization,
+> and chaos exercises failure paths.** See §25.5 for the actual guarantees.
 >
 > Note: the project self-labels as dev / small ecosystem / GA not yet
 > validated at production scale (see `docs/reference/framework-comparison-*.md`).
@@ -24,21 +27,22 @@
 
 ## Contents
 
+0. [Interview Quick Answers](#0-interview-quick-answers)
 1. [Global Overview](#1-global-overview)
-2. [Entry Point & Startup (serve / Bootstrap)](#2-entry-point--startupserve--bootstrap)
-3. [Configuration Panel (config.yaml)](#3-configuration-panelconfigyaml)
-4. [Hot Path: Single-Task Execution Loop](#4-hot-pathsingle-task-execution-loop)
+2. [Entry Point & Startup (serve / Bootstrap)](#2-entry-point--startup-serve--bootstrap)
+3. [Configuration Panel (config.yaml)](#3-configuration-panel-configyaml)
+4. [Hot Path: Single-Task Execution Loop](#4-hot-path-single-task-execution-loop)
 5. [Quantization & Resource Budgets](#5-quantization--resource-budgets)
-6. [Dynamic Graph: L2 Session Graph ↔ Tasks (planprojection)](#6-dynamic-graphl2-session-graph--tasksplanprojection)
+6. [Dynamic Graph: L2 Session Graph ↔ Tasks (planprojection)](#6-dynamic-graph-l2-session-graph--tasks-planprojection)
 7. [L1 Tool-Class Graph Constraining L2](#7-l1-tool-class-graph-constraining-l2)
-8. [Agent Expansion (agentsyscall)](#8-agent-expansionagentsyscall)
-9. [Collaboration: Decompose / Ask / Handoff](#9-collaborationdecompose--ask--handoff)
-10. [IPC Message Bus (agentipc)](#10-ipc-message-busagentipc)
+8. [Agent Expansion (agentsyscall)](#8-agent-expansion-agentsyscall)
+9. [Collaboration: Decompose / Ask / Handoff](#9-collaboration-decompose--ask--handoff)
+10. [IPC Message Bus (agentipc)](#10-ipc-message-bus-agentipc)
 11. [Multi-Session Concurrency & Resource Isolation](#11-multi-session-concurrency--resource-isolation)
-12. [Recovery (aresrecovery)](#12-recoveryaresrecovery)
+12. [Recovery (aresrecovery)](#12-recovery-aresrecovery)
 13. [Chaos Engineering](#13-chaos-engineering)
-14. [Evolution (GA cold path + Deployment Pipeline)](#14-evolutionga-cold-path--deployment-pipeline)
-15. [Observability & Control Plane (introspect)](#15-observability--control-planeintrospect)
+14. [Evolution (GA cold path + Deployment Pipeline)](#14-evolution-ga-cold-path--deployment-pipeline)
+15. [Observability & Control Plane (introspect)](#15-observability--control-plane-introspect)
 16. [Storage Layer: Postgres (schema / retention / migration / tenant guard)](#16-storage-layer-postgres)
 17. [Knowledge Layer: AKG (build / retrieve / fallback)](#17-knowledge-layer-akg)
 18. [Memory & Distillation (session store / thresholds / token cost / safety fencing)](#18-memory--distillation)
@@ -49,18 +53,68 @@
 23. [L1 / L2 Dual Graphs & Data Splitting (Postgres / pgvector)](#23-l1--l2-dual-graphs--data-splitting)
 24. [Retrieval Denoising (Vector-Search Noise and How to Fight It)](#24-retrieval-denoising)
 25. [Checkpoint & Recovery (fields + 7 steps + two modes)](#25-checkpoint--recovery)
-26. [Context Management (sliding-window truncation + rule-based cleaning + RAG injection, NOT LLM summarization)](#26-context-management)
+26. [Context Management (sliding-window truncation + rule-based cleaning + RAG injection, NOT LLM summarization)](#26-context-management-sliding-window-truncation--rule-based-cleaning--rag-injection-not-llm-summarization)
 27. [LLM Failover + Tool Organization (`core.Registry`)](#27-llm-failover--tool-organization)
-28. [Event-Driven Bus (who subscribes + event-ledger compaction, 0.3.5)](#28-event-driven-bus)
+28. [Event-Driven Bus (who subscribes + event-ledger compaction, 0.3.5)](#28-event-driven-bus-who-subscribes-to-what)
 29. [HITL Approval Gate (0.3.3)](#29-hitl-approval-gate-033)
-30. [Version Status: 0.3.5](#30-version-status-035)
+30. [Version Status and Verification](#30-version-status-and-verification)
+
+---
+
+## 0. Interview Quick Answers
+
+### 0.1 The 30-second introduction
+
+> ARES is a recoverable Agent / Agent Infra project written in Go. It separates cognitive
+> executors, session plans, and task state: the LLM grows an L2 DAG, nodes are incrementally
+> projected into Task Fabric, and the kernel dispatches quanta by capability, load, and budget.
+> Leases, epochs, and checkpoints support yielding, retries, and recovery; the event ledger
+> connects execution, observability, and strategy evaluation. The main value is an inspectable,
+> schedulable state machine for long-running work. Production recovery guarantees still depend
+> on durable commit semantics, session reconstruction, and external tool side effects.
+
+### 0.2 Frequent questions
+
+| Question | Lead with this | Follow-up |
+|---|---|---|
+| How is this different from an Agent loop? | Externalize the loop as plan/tool/answer tasks with visible dependencies, retries, and scheduling | §4, §6, §22 |
+| How many graphs are there? | L1 tool-class constraints, L2 session plans, LiveDAG agent topology; Task Fabric is the execution projection | §7, §23 |
+| Who chooses the next step? | The LLM proposes a plan; the kernel selects resumable tasks and then eligible executors | §4.5 |
+| How is concurrency bounded? | Non-blocking pump, scheduler-wide inflight cap, per-agent admission; auto counts capacity, not idle agents | §4.5 |
+| What fairness is guaranteed? | Task priority + fixed aging + FIFO/id; no per-session quota or equal service-share guarantee | §11.1 |
+| How does backpressure work? | `kernel.max_ready_tasks` bounds READY+SUSPENDED; queue-full becomes HTTP 429 with depth/limit | §4.6 |
+| Can a quantum be forcibly killed? | Cooperative ownership revocation and late-commit rejection; arbitrary Go goroutines/external calls cannot be forcibly stopped | §5, §25.5 |
+| What survives a crash? | Executor replacement in-process; task rebuild with a durable EventStore; complete L2 recovery needs separate wiring and validation | §12, §25.5 |
+| Is execution exactly-once? | Owner/epoch fence fabric writes; external side effects still need idempotency/deduplication | §25.5 |
+| Does GA change tool permissions? | L1 is reconciled from registry/schema declarations, not learned from fitness | §7, §14 |
+| Where is tenant isolation enforced? | Context propagates identity; application queries enforce scope. RLS is off; `set_config` alone provides no isolation | §16, §21 |
+| How do you prove it works? | Cite concrete counterexamples, assertions, and runs; distinguish source inspection, targeted tests, model evaluation, and soak | §30 |
+
+### 0.3 Three engineering trade-offs to explain
+
+- **Capacity vs idleness:** with two busy agents and one idle, an idle-derived limit of 1
+  compared with inflight=2 rejects work for the third agent. `d6015bef` uses schedulable
+  capacity and fixes the analogous all-busy preemption guard.
+- **In-memory transitions vs durable commits:** update under the mutex, Append in order
+  outside it to avoid holding the state-machine lock during I/O. The early
+  implementation did not roll back memory on a failed Append; the current
+  workspace has patched the critical paths — `Create` and `Complete` /
+  `CompleteWithCheckpoint` now check the Append outcome, roll back memory, and
+  return a persistent error (`CommitNotCommitted` / `CommitUnknown` from
+  `commit.go`), while many non-critical transitions still ignore the flush
+  return value. So no single operation's success can be unconditionally read as
+  a durable acknowledgment; see §25.5.
+  state back, so a successful `Create` is not a durable acknowledgment.
+- **Declarations vs optimization feedback:** L1 enabled/budget/prior follow tool declarations.
+  Letting fitness disable difficult tools could improve the measured score by shrinking the
+  set of attempted work rather than improving capability.
 
 ---
 
 ## 1. Global Overview
 
-The system splits into a **hot path** (always running, completes work) and a
-**cold path** (runs when idle, keeps getting better), plus an
+The system splits into a **hot path** (completes work) and a
+**cold path** (evaluates/evolves strategies; improvements require evidence), plus an
 **observability / control plane**.
 
 ```mermaid
@@ -113,14 +167,14 @@ did not. The whole kitchen's state is visible on a **monitoring wall**
 §2–§4 are "how a dish goes from order to plate", §5–§11 are "the kitchen
 rules", §12–§15 are "when things break and how it gets better",
 §16–§21 are "back of house (storage / knowledge / memory / tools / security)",
-§22–§28 are "the frequent follow-up questions, each with a dedicated section".
+§22–§30 cover frequent follow-ups and version evidence.
 
 **Four invariants (thread through the whole system):**
 
 | Invariant | Meaning | Source |
 |---|---|---|
-| Agents never self-schedule | agents are scheduled, they never decide "who next" | `cmd/ares/kernel.go` (`kernelScheduler`; HTTP submission is the single entry) |
-| Tasks outlive agents | agents are disposable; tasks are durable in the fabric | `internal/aresrecovery/recovery.go` |
+| Agents never self-schedule | HTTP, SDK, and syscalls can submit; execution converges on the kernel | `internal/kernel/scheduler.go`, `internal/agentruntime/submit.go` |
+| Tasks outlive agents | task state is separate from executors; cross-process recovery needs durable storage and wiring | `internal/aresrecovery/recovery.go`, `internal/fabric/task/restore.go` |
 | Kernel enforces provenance | origin/tenant/source come from context, never LLM args | `internal/agentsyscall/syscall.go` |
 | Tasks are externally observable / schedulable | the task is a first-class citizen: "submit / check status / await result" all go through the same task interfaces; "what counts as done" is defined once | `cmd/ares/agent_routes_tasks.go`, `agent_routes_task_read.go`, `internal/agentruntime/await.go` (added in 0.3.2) |
 
@@ -155,7 +209,7 @@ is a first-class citizen" only closes the loop here.
 
 ## 2. Entry Point & Startup (serve / Bootstrap)
 
-`runServe` in `ares serve` is the assembly hub, in seven ordered stages:
+`runServe` in `ares serve` is the assembly hub, in four broad stages:
 **load config → Bootstrap assembly → build peer kernel → start HTTP + loops**.
 
 ```mermaid
@@ -230,6 +284,7 @@ agents:                                   # which agents + their capabilities
 
 kernel:                                   # scheduling + wallet + lease
   max_concurrent: 4
+  max_ready_tasks: 0     # 0=unlimited; positive caps READY+SUSPENDED at creation
   lease_ttl: 5m
   max_restarts: 5
   agent_budget:                           # *the agent wallet*
@@ -499,10 +554,21 @@ candidates = registered + unbound + capability-overlapping + idle executors
 **Winner (`Pick`) and explainability (`ScheduleDecision`)**:
 
 ```
-all candidates sorted by score descending (ties broken stably by capability-overlap, no flapping) → highest wins
-each Schedule records one ScheduleDecision: every candidate + four-factor breakdown + winner + epoch
-   stored in a DecisionRecorder (ring of 200, decision_recorder.go:26/58)
+walk candidates with a STRICT-greater comparison (s > bestScore) → highest score
+wins; ties keep the FIRST candidate in input order (no extra capability-overlap
+tie-break, and no flapping)
+when NO candidate has a positive score, fall back: ignore the confidence factor
+and pick the capability-overlapping candidate that still has capacity
+(overlap × (1-load) × priority boost) — the lastResort tier
+each Schedule records one ScheduleDecision: every candidate + four-factor breakdown
++ winner + epoch, stored in a DecisionRecorder (ring of 200, decision_recorder.go:26/58)
 ```
+
+> Note: `DecisionRecorder.scoreCandidates`'s score-descending + stable sort is a
+> **display ordering for the panel only**, NOT the selection algorithm
+> (`internal/kernel/decision_recorder.go:107–126` states "the scheduler does NOT
+> mutate candidates, it only reads them"). The only selection algorithm is `Pick`
+> (`internal/fabric/task/scheduler.go:98–134`).
 
 > The panel can show "TASK-184 ↓ agent-7f21 ↓ Acquire ↓ epoch=42" plus each candidate's
 > `Overlap/Load/Confidence/PriorityBoost/Score` — **not a black box; it can say why this
@@ -676,6 +742,63 @@ MCP tools whose description declares no capability word still stay advertised un
 
 ---
 
+### 4.5 Scheduling: choose a task, then an agent
+
+```text
+Events / poll / periodic preemption check
+  → ResumableTasks (READY: dependencies/backoff/approval; SUSPENDED: valid lease)
+  → priority + aging order → PreemptLowerPriority
+  → admitQuantum (shared scheduler inflight counter; return when full)
+  → one goroutine per quantum: candidates/score → Acquire → agent admission → RunQuantum
+  → releaseQuantum; subsequent events or polling dispatch more work
+```
+
+- **The pump exists:** `drain` does not wait for its entire batch. The WaitGroup joins work
+  during shutdown rather than acting as a batch barrier. `admitQuantum` reserves a shared
+  slot under a lock; `releaseQuantum` returns it. This cap belongs to one Scheduler instance.
+- **Auto capacity:** `limit = clamp(max(S, C), 1, 32)`, where S is `ExecutorCount()` and C
+  counts Agent Fabric agents satisfying `IsSchedulable()` (`StateIdle && cognition != nil`,
+  **including busy agents**: execution uses a separate busy flag, not a RUNNING agent state).
+  Positive `kernel.max_concurrent` overrides auto, still capped at 32. C is not the idle
+  count or task-specific capability/budget headroom; `max` is not a deduplicated union of
+  the two sources. Candidate selection and admission still apply.
+- **Normal Peer assembly has an empty static map:** `make(map, len(subAgents))` reserves
+  space, not entries; `spawnPeers` registers in Agent Fabric. Recovery bindings can add
+  temporary static executors. Do not assume every configured peer is in the static map.
+- **All-busy deployments can request preemption:** the guard asks `S > 0 || C > 0`, then
+  compares high-priority READY demand against the free capable pool and preempts lower-priority
+  RUNNING tasks for the deficit. It neither evicts every low-priority task nor guarantees an
+  immediate physical execution slot for a particular high-priority task.
+- **Two rankings:** priority/aging ranks tasks; capability, confidence, load, etc. rank
+  agents for one task (§4.2). Task aging is not agent fitness.
+
+Source: `internal/kernel/scheduler_dispatch.go` (`drain`, `drainLimit`, `fabricCapacity`,
+`PreemptLowerPriority`), `internal/kernel/scheduler_execute.go` (`admitWinner`),
+`internal/fabric/task/dag.go`, `cmd/ares/peer_assembly.go`.
+
+### 4.6 Submission backpressure and HTTP semantics
+
+| Item | Current meaning |
+|---|---|
+| Configuration | `kernel.max_ready_tasks`: default 0/unlimited; negatives rejected; injected by `newKernelFabric` |
+| depth | All READY + SUSPENDED tasks, including dependency/backoff/approval-blocked work; not `len(ReadyTasks())` |
+| Rejection point | On creation, `createLocked` returns `*ReadyQueueFullError{Depth, Max}` when depth ≥ limit; not a hard invariant on every requeue transition |
+| Error contract | `errors.Is(err, ErrReadyQueueFull)` classifies; `errors.As` extracts depth; wrapping preserves both |
+| HTTP | `handleSubmitTask` → `writeSubmitRejection`: 429 with `status="error"`, `code="queue_full"`, `error`, `depth`, `limit` |
+| Success | Default 202 acknowledges admission; a `?wait` 200 means a result is readable, so inspect task state for business success |
+
+One `Submit` spans **Admit/init session → compile root → Create plan**. A full queue can
+reject the root, or the root can take the final slot and the plan then be rejected. A 429
+alone does not prove that the submission left no state behind; see §30 for baseline vs
+working-tree cleanup. Clients should distinguish overload from internal errors and consider
+request idempotency/session state when retrying. This is not an unconditional safe-retry
+transaction guarantee for every 429.
+
+Source: `cmd/ares/agent_routes_tasks.go`, `internal/agentruntime/submit.go`,
+`internal/agentruntime/session.go`, `internal/fabric/task/fabric_lifecycle.go`.
+
+---
+
 ## 5. Quantization & Resource Budgets
 
 **Quantization's core is not "bookkeeping" — it is checkpoint-resume /
@@ -698,13 +821,13 @@ flowchart LR
 | Post bookkeeping | `consumeBudget` | `internal/kernel/scheduler_governance.go` |
 | Reclaim (attributed release) | `fabric.ReleaseReason` → `task.released{reason}` | `internal/fabric/task/fabric_lifecycle.go` |
 | One concurrent quantum per agent | `maxConcurrentPerAgent` | architectural invariant |
-| Reject expired holder | epoch fencing | validated at drain |
+| Reject stale holder | owner + epoch fencing | fabric lease guard `ownerLocked` |
 
 **What one quantum actually does (`buildQuantumStep` in `scheduler_quantum.go`, read line by line)**:
 
-The scheduler does not "run the whole LLM call to the end"; it wraps **one
-small step** (a quantum) in a closure and hands it to `RunQuantum`. Three
-things in that closure are worth reading:
+The scheduler wraps one `ExecuteStep` as a quantum for `RunQuantum`. A planner quantum
+may contain a complete LLM request; this is not a preemptible CPU slice of that request.
+The following is pseudocode with types and details omitted:
 
 ```go
 func (s *Scheduler) buildQuantumStep(ctx, executor, tk, meta, usage) taskfabric.QuantumStep {
@@ -721,7 +844,7 @@ func (s *Scheduler) buildQuantumStep(ctx, executor, tk, meta, usage) taskfabric.
         select {
         case res := <-done: out, stepErr = res.out, res.err                                 // 4 got the result
         case <-ctx.Done():
-            return nil, false, fmt.Errorf("quantum aborted by scheduler shutdown")           // 5 shut down = may yield
+            return nil, false, fmt.Errorf("scheduler shutdown: %w", ctx.Err())                // 5 cancellation → Release
         }
         ...
     }
@@ -738,12 +861,11 @@ Line by line:
   implementation of "multi-tenant, each sees its own".
 - **③ the real step**: `ExecuteStep` is the `routerCognition` dispatch from §4
   (run a tool / grow a plan node / emit an answer).
-- **④ vs ⑤ is the key**: the `select` listens to "result arrived" and "the
-  scheduler is shutting down" at the same time. On shutdown it **returns
-  "not done" (`false`) immediately**, so the task goes back to SUSPENDED /
-  READY with its checkpoint, and the next round (same or another agent)
-  resumes it. **That is the code body of "a quantum is interruptible and can
-  yield"**: not run-to-the-end, but "small step + can always back out".
+- **④ vs ⑤:** normal `Done=false` yields to SUSPENDED; shutdown returns an error
+  wrapping `ctx.Err()`, which `RunQuantum` treats as cancellation and releases to READY
+  without spending failure retry attempts. The wrapper can exit while the inner step
+  goroutine is still running; the executor must honor context cancellation. Only the last
+  stored checkpoint is retained, not necessarily the unfinished step's progress.
 
 **The agent wallet** = `kernel.agent_budget` (`config.go:151`): `tokens` /
 `tools` / `deadline` / `reserve_ratio`; the first three are all-zero =
@@ -814,7 +936,7 @@ Two "graphs" are the most confusing part:
 | Graph | What | Character |
 |---|---|---|
 | **L2 session graph** (`L2Graph` / `MutableDAG`) | a session's execution plan; nodes = tool instances / plan / answer | in-memory, live, LLM keeps growing nodes |
-| **Task fabric** | the tasks actually scheduled + executed | durable (event-sourced) |
+| **Task fabric** | the tasks actually scheduled + executed | in-memory state machine; a durable EventStore enables rebuild from persisted events |
 
 "Dynamic" = **as the L2 graph grows a node, it is immediately compiled into a
 task**.
@@ -846,7 +968,7 @@ missing, remove what is extra).
 
 **"Node ID = task ID" in plain terms**: when the planner wants to read the
 previous grep's result, it does not dig through logs — it takes the node ID
-(e.g. `tool-7`) straight to the fabric and looks up `task-7`'s envelope,
+(e.g. `tool-7`) straight to the fabric and looks up the task with that same ID,
 like "the work-order number *is* the shelf number", one hop to the data.
 
 ```mermaid
@@ -894,14 +1016,13 @@ actual execution plan".
 **Plain-English picture**: L1 is the **company policy manual** ("which tools
 you may use, how many times each, which to prefer"); L2 is **this order's
 actual work orders** ("this order used grep 3 times"). The policy manual is
-one copy company-wide and long-stable — GA evolution edits *the manual*; the
-work orders are born one at a time per session and archived when the session
-ends. The manual constrains the work orders, but work orders never rewrite
+one shared copy, synchronized from tool declarations by a reconciler; the
+work orders grow per session. The manual constrains work orders, but work orders never rewrite
 the manual.
 
 ```mermaid
 flowchart TB
-    subgraph L1[L1 tool-class graph - built at boot from tool schemas]
+    subgraph L1[L1 tool-class graph - schema declarations and runtime reconcile]
         toolA[tool A<br/>enabled=true, budget=3, prior=0.8]
         toolB[tool B<br/>enabled=false]
     end
@@ -918,10 +1039,23 @@ flowchart TB
 comment: "the L1 graph is NOT compiled into taskfabric — it is a capability
 catalog, not an execution plan (L1 != L2)"):
 
-- At boot, `injectToolClassDAG` (`serve_peer.go:534`) scans
-  `toolBinder.GetToolSchemas()` to build L1 and feeds it to the evolution system.
-- The planner checks L1 constraints before growing a tool node
-  (`internal/fabric/agent/l2graph.go` `CountToolClass`).
+- At boot, `injectToolClassDAG` → `toolClassSpecs` reads enabled/budget/prior from schema
+  tags; defaults are enabled=true, budget=0/unlimited, and undeclared prior. Even zero-tool
+  boot injects an empty DAG that can be filled later.
+- `startToolClassReconciler` is production-wired: initial reconcile, a fixed **5-minute**
+  timer, and registry-change triggers; `Components.GoBackground` supervises the worker.
+  The interval currently has no YAML configuration key.
+- `ReconcileToolClassDAG` adds/updates/removes and attempts rollback on failure. Default
+  removal grace is **3 consecutive misses**; reappearance clears the count. An **empty
+  declaration keeps the old graph and reports it**. These are declarations, never fitness inputs.
+- Before growing a tool node, the planner checks enabled and uses `CountToolClass` to cap
+  this session's instances; prior is a prompt preference. Unknown classes are permissive.
+  L1 is not execution-time authorization or a sandbox. Existing tasks are not rebuilt, but
+  **later quanta of the same live session** may observe changed declarations.
+
+Source: `cmd/ares/serve_peer.go`, `internal/runtime/ares_evolution/toolclass_reconcile.go`,
+`internal/fabric/agent/planner_cognition.go`. Distinguish **L1 declaration reconciliation**
+here from §6's **L2 → task projection reconciliation** in `planprojection.Coordinator`.
 
 > Note: there is also a **LiveDAG** (`buildLiveAgentDAG`, `serve_peer.go:574`)
 > = "one node per peer agent", the **agent-pool topology** that the
@@ -1051,7 +1185,7 @@ flowchart TD
 | **Ask** | `ask_agent` → `Bus.Request` | "let me ask you" (fire-and-forget, no blocking; breaks the C-1 deadlock) |
 | **Handoff** | `Bus.Handoff` | "I can't do it, whole task to you" (point-to-point, **bypasses the scheduler**) |
 
-**Ask is fire-and-forget**: `ask_agent` returns `{Status: "pending"}`
+**Ask is asynchronous**: `ask_agent` returns `{Status: "pending"}`
 immediately; the quantum does not block (or the asker would hold the
 scheduler, the target could never be drained, deadlock). The reply arrives in
 the background (currently only logged, not written back to the asker — marked
@@ -1190,6 +1324,38 @@ pile (READY) and another rider resumes **from where he left off
 stuck does not block order 4's dispatch. The only global constraints are
 "how many riders are on the road at once" (`maxConcurrent`) and "each
 rider's fuel tank" (`agent_budget` wallet).
+
+---
+
+### 11.1 Fairness and metrics: what can be promised
+
+`sortResumableLocked` uses:
+
+1. `effectivePriority = Priority + 0.01 × max(0, now - ReadyAt).Seconds()`, descending;
+2. `ReadyAt`, ascending; 3. task ID, ascending.
+
+This is **task-level aging**: 100 seconds adds one priority point, with a fixed code constant.
+There is no session round-robin, service share, or tenant quota. At equal priority, an earlier
+large session can still precede a later small session. Zero `ReadyAt` actually contributes zero
+aging before timestamp/id tie-breaking; the comments do not imply infinite aging.
+Preemption compares raw `Priority`, not this aging score.
+
+| Metric | Actual measurement | Interpretation boundary |
+|---|---|---|
+| `ready_to_dispatch` | After `Schedule` acquires the lease, the wait of **this dispatch attempt**: `AttemptReadyAt` (the attempt's start) preferred, falling back to `ReadyAt` only when it is zero (old task / restored from an old store) | Measures **this attempt's wait, not the task's total age** (a resumed task carries the previous quantum's run time in `ReadyAt`); sampled before `execute` and the post-budget/agent admission gates, not proof `ExecuteStep` began |
+| `ready_age` | Sampled candidate/dispatch task ages | Not an exhaustive per-session wait distribution |
+| `work_conserving_gap` | Time since inflight became continuously non-empty, when work is deferred | Neither a specific task's wait nor proof that a matching idle agent existed |
+
+The sampled positions above correspond to the **committed** `scheduler_dispatch.go`
+(`observeDispatchWait` prefers `AttemptReadyAt`, falling back to `ReadyAt` when absent).
+A task with both timestamps zero is not sampled; a negative wait clamps to 0.
+
+To demonstrate work conservation, record capability matches, free resources, inflight, limit,
+and actual execution-start times together. To demonstrate fairness, compare session service
+shares/tail latency rather than citing the aging formula alone.
+
+Source: `internal/fabric/task/dag.go` (`sortResumableLocked`),
+`internal/kernel/scheduler_dispatch.go` (`observeDispatch`, `observeWorkConservingGap`).
 
 ---
 
@@ -1381,8 +1547,9 @@ disturb a GA cycle about to make a decision.
 
 ## 14. Evolution (GA cold path + Deployment Pipeline)
 
-**What is a "gene"**: the `Strategy`'s `Params` (temperature, etc.) +
-`PromptTemplate`. **Evolution never changes code — only these two.**
+**A strategy gene:** `Strategy.Params` (temperature, etc.) + `PromptTemplate`. This breeding
+path neither trains model weights nor edits source code. Other `RuntimePatch` executors can
+change runtime structure/configuration; the entire evolution package is not limited to those two fields.
 
 **Plain-English intuition first**: GA is not "change the code to make it
 smarter"; it is "change the agent's **habits of doing the work**". An agent
@@ -1394,17 +1561,31 @@ tokens…)". GA does exactly:
    set on "high score, low spend, fast".
 2. **Breed**: keep the high scorers as **parents**; breed the next generation
    by **crossover** (splice two templates) + **mutation** (nudge a number).
-3. **Three safety gates (G1/G2/G3)**: no free-for-all —
-   - G1 (population level): block "stagnation / tool out-of-bounds" (a whole
-     population stopped improving, or someone wants a tool outside the
-     allowlist, gets held);
-   - G2 (shadow A/B): the new strategy quietly runs a batch in a **shadow
-     environment**, compared against the old; it passes only on **≥ 5%
-     improvement**;
-   - G3 (eval regression): after going live, re-run the baseline; a
-     significant drop is **not promoted, auto-rolled back**.
-4. **Rollback net**: sample-monitor 30s after deployment; a regression > 10%
-   → automatic rollback to the old strategy.
+3. **Safety gates** — these are **two independent paths, not one serial chain**;
+   do not read them as "every candidate walks every step below":
+   - **Strategy Lifecycle gating** (`StrategyLifecycle`, the path the GA cycle
+     actually takes, `lifecycle_promotion.go`):
+     - G1 (population level): block "stagnation / tool out-of-bounds" (a whole
+       population stopped improving, or someone wants a tool outside the
+       allowlist, gets held);
+     - G2 (shadow gate): the new strategy runs a batch in a **shadow**
+       environment against the old one; `shadowVerifyGate` decides via
+       `ShouldDeploy()` — **win-rate ≥ MinWinRate (default 0.55) + a
+       thin-evidence policy, NOT "score improvement ≥ 5%"**;
+     - G3 (eval regression): the G3 eval-suite gate + arena regression gate
+       run **BEFORE promote** (`lifecycle.Submit` runs
+       `for _, gate := range l.gates` then `l.promote`) — **not "evaluate after
+       going live, then decide"**. A significant drop / below-threshold is not
+       promoted and returns to `StateActive`.
+   - **RuntimePatch deployment pipeline** (`DeploymentPipeline`, requires
+     **explicit** `deployment.enabled: true`, off by default; `deployment.go`):
+     shadow staging run → evaluation → score **delta**
+     (`shadowScore - baselineScore`) ≥ `PromotionThreshold` (default 0.05, an
+     **absolute score difference in [0,1], NOT a relative improvement
+     percentage**) to promote to live. This is the separate rollout path for
+     patch-class (graph/planner/knowledge-structure) changes.
+4. **Rollback net**: sample-monitor 30s after the **live deployment**; a
+   regression > 10% → automatic rollback to the old strategy.
 
 So "evolution" is fundamentally a **canary A/B rollout with a safety net**,
 not "magic that makes the model smarter".
@@ -1422,15 +1603,30 @@ flowchart TD
     guard1 --> score[Score<br/>from real task results ExecutionAttribution]
     score --> breed[EvolveAfterScoring<br/>selection: crossover + mutation]
     breed --> guard2[post-guardrail]
-    guard2 --> submit[submitToCoordinator]
-    submit --> deploy[DeploymentPipeline.Deploy]
-    deploy --> stage[1 shadow staging run]
-    stage --> aB[2 shadow A/B<br/>delta >= 5% to pass]
-    aB --> live[3 actually change the live system]
-    live --> monitor[4 MonitorAndRollback<br/>sample after 30s]
-    monitor -->|regression > 10%| rollback[auto rollback to old strategy]
-    monitor -->|no regression| done[formally promoted]
+    guard2 --> submit[lifecycle.Submit]
+    subgraph PathA [Strategy Lifecycle gating (the path the GA cycle actually takes)]
+        submit --> g2[G2 shadowVerifyGate<br/>win-rate >= MinWinRate 0.55<br/>+ thin-evidence policy]
+        g2 --> g3[G3 eval-suite + arena regression gate<br/>runs BEFORE promote]
+        g3 -->|all pass, no manual hold| promote[l.promote -> ACTIVE]
+        g3 -->|rejected / hold| hold[StateShadow / pendingApproval]
+    end
+    subgraph PathB [RuntimePatch deployment pipeline (off by default, needs enabled)]
+        patch[patch.RuntimePatch] --> deploy[DeploymentPipeline.Deploy]
+        deploy --> stage[1 shadow staging run]
+        stage --> aB[2 shadow evaluate<br/>score delta >= 0.05 to pass]
+        aB --> live[3 actually change the live system]
+        live --> monitor[4 MonitorAndRollback<br/>sample after 30s]
+        monitor -->|regression > 10%| rollback[auto rollback to old strategy]
+        monitor -->|no regression| done[formally promoted]
+    end
 ```
+
+> **The two paths**: `PathA` (Strategy Lifecycle gating) is the GA evolution's
+> actual promotion chain; `PathB` (RuntimePatch deployment pipeline) is a separate
+> rollout path for graph/planner/knowledge-structure patches, off by default.
+> They are **NOT a serial must-walk chain** — do not read them as "a strategy
+> first walks PathA then PathB". The rollback net (MonitorAndRollback) hangs
+> off PathB.
 
 **"How evolution lands on the live system"** (deployment pipeline, 4 steps,
 `internal/runtime/evolution/deployment/deployment.go`):
@@ -1448,35 +1644,68 @@ change) + `Target` (where) + `Value` (to what) + `Rollback` (inverse). It is
 dispatched by Target to the Graph / Planner / Recovery / Knowledge / Memory
 PatchExecutors.
 
-**Effect on running tasks: none.** GA changes L1 (capability/strategy layer),
-not L2 (session execution plan). Tool nodes already compiled into fabric tasks
-in a running session are not rebuilt by an L1 patch; a changed prompt template
-is only picked up by the next new session / next plan quantum. Worst case
-"new strategy got worse" → the monitor detects it within 30s → auto rollback.
+**Effects depend on the object being changed.** L1 currently has a declarative reconciler,
+not a GA writer. Already-projected tasks are not rebuilt by L1 reconciliation, but subsequent
+planner quanta in live sessions may read changed declarations/strategies. Strategy rollout,
+LiveDAG structural patches, and L1 updates are different paths. Rollback depends on enabled
+gates, observation windows, and comparable samples; sampling after 30s is not a guarantee
+that every regression is repaired within 30s.
 
-**G1/G2/G3 safety gates** (loose to tight):
+**Gate-location reference** (split by path — do not mix them into one):
 
-| Gate | Location | Blocks |
-|---|---|---|
-| G1 Guardrails | around `GenomePopulationAdapter` | population-level: stagnation / tool allowlist out-of-bounds |
-| G2 Shadow Gate | `DeploymentPipeline` step ② | shadow A/B: only delta >= 5% passes |
-| G3 Eval + Regression | after lifecycle submit | run eval-suite / A/B vs baseline: a significant drop is not promoted |
+| Gate | Path | Location | Blocks |
+|---|---|---|---|
+| G1 Guardrails | PathA (Lifecycle) | around `GenomePopulationAdapter` | population-level: stagnation / tool allowlist out-of-bounds |
+| G2 Shadow Gate | PathA (Lifecycle) | `shadowVerifyGate` inside `lifecycle.Submit`, **before promote** | win-rate ≥ MinWinRate (default 0.55) + thin-evidence policy; NOT "score improvement ≥ 5%" |
+| G3 Eval + Regression | PathA (Lifecycle) | eval-suite + arena gate inside `lifecycle.Submit`, **before promote** | run eval-suite / A/B vs baseline; a drop / below threshold is not promoted, returns to `StateActive` |
+| RuntimePatch deployment gate | PathB (DeploymentPipeline, off by default) | inside `Deploy`, after the shadow staging evaluation | score **delta** ≥ `PromotionThreshold` (default 0.05, absolute difference, not a percentage) to promote to live |
 
 > **Scope of these gates — do not read this table as "every promotion is
-> verified".** G1-G3 guard the **`DeploymentPipeline` / `StrategyLifecycle`**
-> chain. The **patch application path has no gate installed in production**: it
-> decides by its own fitness threshold, which is exactly why the type is named
-> `UngatedPatcher` (`internal/runtime/evolution/coordinator/coordinator.go:185`).
-> Routing the patch path through the gate chain is tracked as A1-a; until then a
-> patch can land without ever meeting G1-G3.
+> verified".** G1-G3 guard **PathA** (`StrategyLifecycle` gating chain);
+> RuntimePatch rollout goes through **PathB** (`DeploymentPipeline`, off by
+> default, needs explicit `enabled: true`). The two paths are independent.
+> `UngatedPatcher` still does not imply the full G1-G3 chain. Since 0.3.5,
+> `ApplyGate` is installed where both coordinator and lifecycle exist, blocking patches
+> attributed to a manually held strategy; unattributed patches or those without a hold
+> can pass (§30). Neither "no gate at all" nor "every patch is quality-evaluated" is accurate.
 
-**The GA closed loop**: more runs → more score data → sharper evolution →
-better strategy → better runs.
+**The intended GA loop:** execution → attributed evidence → scoring/breeding → gates/deployment
+→ observation. Sampling bias, cold start, and evaluation coverage matter; improvement is a hypothesis to test.
+
+> **Closing lifecycle**: the GA is not a resident goroutine but is **driven on
+> demand** — `GenomePopulationAdapter.Run` is triggered by the background ticker
+> (`bootstrap_evolution.go:471` `runEvolutionTicker`, registered via
+> `comp.GoBackground`, exiting gracefully at process shutdown) or an event path;
+> each `Run` is **one bounded evolution** (`runMu` serializes, `running` flag
+> toggles, `genome_wiring_run.go:128`). Inside `Run`: `runPreGuardrails →
+> EvolveAfterScoring → record lineage/seal → recordOutcomes →
+> runPostGuardrails → submitToCoordinator when armed`, each returning immediately
+> on `ctx` cancellation. **The Strategy Lifecycle's rollback watch loop**
+> (`lifecycle.Start/Stop`, `lifecycle.go:626/669`) is the managed background
+> goroutine: `Stop()` cancels and **waits** for the watch to exit (managed pair,
+> no fire-and-forget). Keep them separate: the GA loop itself is a short task and
+> does not "never stop" on its own; the resident background piece is the
+> lifecycle's rollback watch, which has its own Start/Stop contract.
+>
+> **"Do not call it stalled when scoring hasn't caught up"**: the stagnation check
+> inside `GenomePopulationAdapter.Run` (`guardrails.go:386`
+> `stagnantCount >= MaxStagnantGenerations`) **only accumulates on generations
+> where the population has finished scoring**. When scoring has not caught up
+> (a majority of the population is still `Score == -1` unevaluated),
+> `ErrCodeUnevaluatedPopulation` (`guardrails.go:348–380`) blocks that
+> generation first (Critical) rather than reading it as "the score isn't moving =
+> stagnation"; and **generation-0 cold start is exempted** (`guardrails.go:353–359`
+> comment: the first generation IS the scoring itself, and gating it on
+> unevaluated would pin the generation at 0 forever). So **"compiling (scoring)
+> hasn't caught up" is an explicit unevaluated state, not a stagnation signal** —
+> it must not be judged `stalled` and rolled back / blocked; only stable
+> multi-generation scored-but-unimproving states accumulate `stagnantCount`.
 
 ### 14.1 How the Idle GA Evolves Without LLM Involvement (Hot/Cold Path Decoupling)
 
-The GA loop itself (score → select → cross/mutate → gate → deploy)
-**makes zero LLM calls**. The key is that two timelines are decoupled:
+Default historical replay scoring and string/numeric breeding can be LLM-free. Optional
+LLM judging, arena evaluation, and real-runtime replay can call models. Do not generalize
+the local LLM-free property to the whole evolution/deployment chain:
 
 ```
 Hot path (task execution)                    Cold path (idle GA)
@@ -1491,13 +1720,12 @@ Hot path (task execution)                    Cold path (idle GA)
 │  TokenCost,Latency}     │          │ ② Evolve: sort by fitness,   │
 └─────────────────────────┘          │   crossover + mutation      │
                                      │   (pure string/arithmetic)   │
-                                     │ ③ G1/G2/G3 gates (numeric)  │
-                                     │ ④ Deploy: write L1 metadata │
+                                     │ ③ Gates (some call models)  │
+                                     │ ④ Deploy strategy / observe │
                                      └──────────────────────────────┘
 ```
 
-**LLM is only invoked in the hot path** (planner once per quantum to grow
-nodes). GA reads the `ExecutionAttribution` record that the kernel already
+**Default replay scoring reuses hot-path data.** GA reads the `ExecutionAttribution` record that the kernel already
 inlined into the event bus at `kernel/scheduler_quantum.go:309` when the
 task finished — *which strategy ran, success or not, token cost, latency*.
 That record **already exists**; GA does not re-query the LLM.
@@ -1549,9 +1777,30 @@ The per-candidate replay that shipped in the same batch:
 through a real runtime, case by case** (`RuntimeArenaExecutor`: one runtime per
 candidate, bounded to 2 retained, shared judge + deterministic floor) instead
 of having a model **role-play** the candidate — "a score difference is an
-execution difference, not a judging difference." When enabled with no provider
-(the serving tool binder's boot ordering decides that), it **fails closed and
-names the missing piece** rather than silently downgrading to role-play.
+execution difference, not a judging difference." When enabled with no provider,
+it **fails closed and names the missing piece** rather than silently downgrading
+to role-play.
+
+**Wiring status (be precise)**: the real-replay executor
+(`RuntimeArenaExecutor`) is implemented, but the serve-side provider install
+happens **after** the gate is built at bootstrap — `installCandidateReplayProvider`
+(`cmd/ares/serve.go:173`) attaches the factory to
+`comp.Evolution.CandidateReplayProvider` **after** `buildRegressionGate`
+(`bootstrap_evolution.go:324`) reads that field at bootstrap time. So:
+- **serve main path**: the `CandidateReplayProvider` is a **deferred closure
+  factory**, invoked only when a promote check actually runs; by then serve has
+  installed it, so the wiring is **closed** (assuming `regression_runtime_replay`
+  is explicitly on and serve finished installing).
+- **non-serve path** (tests, pure-Bootstrap scripts): the provider stays nil, so
+  explicitly enabling `regression_runtime_replay` fails closed and names the
+  missing piece.
+- **minimal setup** (`--llm-url`, no evolution config): `comp.Evolution == nil`,
+  the entire gate wiring is skipped (`bootstrap_evolution.go:255`); the regression
+  gate does not exist, so the provider is moot.
+
+In short: the executor is **implemented**; the serve startup wiring is
+**closed on the main path** via the deferred-factory mechanism, but the
+missing-piece check when explicitly enabled is **not closed on non-serve paths**.
 
 | Stage | Source |
 |---|---|
@@ -1559,6 +1808,8 @@ names the missing piece** rather than silently downgrading to role-play.
 | Probe config key | `internal/ares_config/config_evolution.go` (`eval_probe_interval`) |
 | Replay executor | `internal/ares_bootstrap/runtime_arena_executor.go` |
 | Swappable-executor seam + shared judge | `internal/runtime/ares_evolution/service/llm_arena_scorer.go` (`ArenaExecutor`) |
+| Provider install (serve side, deferred) | `cmd/ares/serve.go:422-445` (`installCandidateReplayProvider`) |
+| Gate build reads provider (Bootstrap side) | `internal/ares_bootstrap/bootstrap_evolution.go:324` / `regression_gate_wiring.go` |
 
 ---
 
@@ -1633,19 +1884,11 @@ defensively cleared before return to the pool (`pool.go:215` so no tenant
 leaks across requests). **SQL-injection guard**: every identifier passes
 `validateSQLIdentifier` (`security.go:29-40`: regex + length + quoting).
 
-**Plain-English "Scheme B" (why not RLS)**: Postgres has built-in row-level
-security (RLS) that can isolate tenants at the DB layer, but "letting the DB
-do access control" means the **policy is scattered inside the database** —
-when the app changes its logic, the DB does not know, and both debugging and
-evolution get painful. The v0.3.x choice: **the DB only stores data; all
-access control lives in the app layer** — each connection first
-`set_config('app.tenant_id', <current tenant>)` to stamp itself; the rows in
-the DB are just "labeled data"; the app code decides who sees what. The cost
-is "forget to stamp and you cannot find data" (fail-safe: better to find
-nothing than to leak across tenants); the benefit is that the policy is
-centralized, testable, and rollable. That is why the comment calls RLS a
-"pre-enforcement checklist" — **not enabled yet**; today the app-layer
-"stamping" is what keeps the line.
+**Interview boundary:** `set_config` sets a transaction-local variable; it does not constrain
+which rows SQL can read. With RLS disabled, application query predicates and authorization
+must enforce scope; a missing predicate does not automatically fail closed. HTTP identity
+also needs principal-to-tenant/user binding: propagating context is not identity verification.
+This describes current enforcement, not an inherent superiority of application filtering over RLS.
 
 On "retention": `events_retention_days` is **opt-in (unset = never
 delete)**, i.e. the event ledger is by default *not* cleaned, because the
@@ -1919,7 +2162,22 @@ HITL / MCP / full-app — the living documentation of "how to use the system."
 |---|---|---|
 | **SSRF** | `ValidateURL` rejects private/loopback/link-local/cloud metadata (`169.254`); **every hop re-validated** to stop redirect bypass | `internal/tools/resources/builtin/network/ssrf.go:32` |
 | **Sandbox** | code-execution tools run sandboxed; MCP stdio servers are **constrained by the operator** (stated in docs) | `SECURITY.md:61` / `.../execution/code_runner.go` |
-| **Tenant** | **single-tenant by default**; `tenant_id` is a **per-request opt-in scope**; **kernel-enforced** (an LLM-supplied tenant is always overwritten by context); the knowledge side isolates by **namespace** | `SECURITY.md:69-99` / `agentsyscall` |
+| **Tenant** | **single-tenant by default**; `tenant_id` is a **per-request opt-in scope**; **kernel-enforced** at the **syscall layer** (an LLM-supplied tenant is always overwritten by context); the knowledge side isolates by **namespace** | `SECURITY.md:69-99` / `agentsyscall` |
+
+> **Trust-boundary limit (be precise)**: the "kernel-enforced / context-stamped"
+> claim holds **only at the syscall layer** — it stops **the LLM from tampering
+> with an existing execution identity** (the LLM-supplied tenant/user is always
+> overwritten by the context's `kctx.CallerID` / `tenantctx`). But the **HTTP
+> entry does not yet bind identity to an authenticated principal**:
+> `submitTaskRequest`'s `tenant_id` / `user_id` are currently **declared by the
+> caller in the request body** (`cmd/ares/agent_routes_tasks.go:148–162`, the
+> field comment: "the tenant is caller-declared today — a genuine multi-tenant
+> deployment must derive it from the authenticated principal server-side instead
+> of trusting this field"); the handler stuffs the declared value straight into
+> the payload without extracting it from the authenticated principal
+> (`agent_routes_tasks.go:228–242`). **So you cannot promise tenant isolation
+> across untrusted callers on this path.** The single-tenant default still
+> stands: an absent `tenant_id` falls back to the process default, by design.
 
 **The common fail-closed toolkit (recollected here from earlier sections):**
 
@@ -1931,9 +2189,13 @@ HITL / MCP / full-app — the living documentation of "how to use the system."
 | SQL identifier validation | `validateSQLIdentifier` blocks injection | `internal/storage/postgres/security.go:29` |
 | Tenant kernel-enforced | `kctx.CallerID` / `tenantctx` override LLM args | `internal/agentsyscall/syscall.go` |
 
-**The one through-line**: fail closed wherever it can, never trust the LLM or
-the model where the kernel can enforce, and have context stamp every
-tenant / origin / provenance.
+**The one through-line**: fail closed wherever it can, and never trust the LLM
+or the model where the kernel can enforce. At the **syscall execution layer**,
+tenant / origin / provenance are stamped by context (the LLM cannot overwrite
+them); at the **HTTP entry layer**, however, `tenant_id` / `user_id` are still
+caller-declared and not yet bound to an authenticated principal (see the
+trust-boundary limit above), so cross-untrusted-caller tenant isolation is not
+promised there.
 
 ---
 
@@ -1945,12 +2207,10 @@ v0.3.x **deletes the ReAct tool loop** (many source comments state
 loop" but the **dynamic DAG + splitting "do" into two node kinds + an outer
 evolution round** working together.
 
-**Plain-English picture (why not ReAct)**: ReAct is "one person thinking
-while doing" — the LLM loops in its head "think → call tool → see result →
-think again → call tool again". The problem: **everything is in its memory**
-— once it crashes (panic / timeout / killed), **"where I got to" is lost
-entirely** and it must start from scratch. And it **runs as long as it wants**
-with no convergence bound, so it burns money and time without a ceiling.
+**The comparison is with this project's former nested execution loop:** it hid
+“think → tool → observe” inside an executor, making individual tool operations hard for the
+kernel to schedule and inspect. ReAct is a reasoning/action pattern compatible with checkpoints,
+budgets, and persistence; it does not inherently mean unbounded execution or total loss on crash.
 
 v0.3.x splits "think" and "do" into **two kinds of boxes** on the DAG:
 - **Think (plan box)**: each plan quantum calls the LLM once and **only
@@ -1958,19 +2218,19 @@ v0.3.x splits "think" and "do" into **two kinds of boxes** on the DAG:
 - **Do (tool box)**: every tool call is a **first-class task**, scheduled and
   executed by the kernel; results are written back to the fabric for the
   next planner quantum to read.
-- **Outer evolution round**: after a round, GA injects a mutation and the
-  whole DAG re-runs — this is the "gets sharper over time" outer loop.
+- **Cold-path evolution:** candidates are evaluated and deployed separately (§14); completing
+  a user session does not automatically replay its whole L2 graph with a mutation.
 
-In one line: **ReAct is "one person"; the dynamic DAG is "a line of stations
-+ one flowchart" — the flowchart (L2 graph + tasks) is durable while the
-cooks (agents) are swappable, so losing one does not lose overall progress.**
+In one line: **externalize the loop as schedulable tasks and replaceable executors. The L2
+graph is in memory; tasks can rebuild from persisted events/checkpoints. Complete session
+recovery is a separate boundary (§25.5).**
 
 ### 22.1 A metaphor
 
 | Mode | Metaphor |
 |---|---|
-| **ReAct** | One cook thinks while doing, all in their head; if the cook collapses, the recipe is lost |
-| **Dynamic DAG** | A recipe flow-chart + a line of station cooks; a cook fills one box and hands it off, the head cook watches the chart and assigns work; the chart is a durable asset, the cook is swappable |
+| **Former nested loop** | One cook handles thinking and doing; the dispatcher cannot see each internal work order |
+| **Dynamic DAG** | A live recipe chart and station cooks; the dispatcher assigns individual tasks, with progress in task checkpoints |
 
 ### 22.2 "Think" and "Do" are split into two node kinds
 
@@ -1995,7 +2255,7 @@ flowchart TB
 | one cognition's `LLM→tool→LLM` tight loop | **plannerCognition**: one LLM call per quantum, grows tool calls as nodes, does not execute | `planner_cognition.go:236` (`ExecuteStep`) |
 | tools run inside the cognition | **toolCognition**: a tool node is a first-class fabric task, executed by the scheduler | `internal/fabric/agent/l2graph.go` |
 | unbounded, LLM runs as long as it wants | **maxPlanDepth** (default 10) forces convergence | `planner_cognition.go:26` (`DefaultMaxPlanDepth`) |
-| loop state = in-memory Messages, lost on crash | tasks + `CheckpointEnvelope` are durable (checkpoint-resume); the **L2 graph itself is in-process only** — after a restart the session is re-admitted with a freshly built (empty) graph | see §6, §25.1 |
+| nested loop state is hard to schedule independently | task + checkpoint support recovery; L2 stays in memory, and task restore is not automatic session reconstruction | see §6, §25.5 |
 
 ### 22.3 What "dynamic" actually means (grow-as-you-go)
 
@@ -2026,7 +2286,9 @@ flowchart TB
 
 ### 22.4 What this buys vs what it costs
 
-**Gained (not in ReAct):** tools are first-class tasks with checkpoint-resume; unified kernel scheduling; a `maxPlanDepth` convergence bound; an explicit, replayable plan; evolvable steering.
+**Gained in this architecture change:** first-class tool tasks, unified kernel scheduling,
+bounded planning depth, and explicit dependencies/checkpoints for diagnosis and recovery.
+Other ReAct implementations can provide such capabilities too.
 
 **Paid (where ReAct was simpler):**
 
@@ -2034,29 +2296,19 @@ flowchart TB
 |---|---|
 | Complexity explosion | ReAct is one loop; 0.3.x is planner + L2 graph + incremental compile + scheduler + toolCognition + checkpoint |
 | More latency | tool results must "go into the fabric → next plan quantum reads", several hops more than ReAct's immediate feed-back; **unfriendly to rapid trial-and-error** |
-| Token cost | every plan quantum re-assembles context and re-calls the LLM, burning more than ReAct |
+| Token cost | every plan quantum re-assembles context and calls the LLM; compare costs using the same tasks and models |
 | Wiring fragility | `PlannerDeps` has 9 fields (`planner_cognition.go:31`); miss any and it degrades |
 
 ### 22.5 There is also an "outer round" (evolution)
 
-`LoopConfig` (`internal/runtime/loop.go:11`; the verbatim comment sits at `:9`:
-"Unlike a fixed ReAct loop, drives the outer round loop that re-executes the
-entire DAG with mutations applied between rounds"). This is what the GA cold
-path uses — **a mutation is injected between rounds, then the whole DAG is
-re-executed**.
+`LoopConfig` in `internal/runtime/loop.go` describes a DAG round-loop with between-round
+mutations. User plan/tool/answer execution and GA evaluation/deployment are different loops.
+Trace the actual cold path through `GenomePopulationAdapter.Run` and its wiring rather than
+inferring production call chains from a round-loop comment.
 
-So the full replacement = **planner (think) + scheduler/toolCognition (do) +
-the outer round loop (evolve): three pieces together**.
-
-> **One-line verdict**: ReAct is "one person thinking while doing" — a single
-> chain, lost entirely on crash. The dynamic DAG splits that chain into "plan
-> boxes (think) + tool boxes (do) + answer boxes (end)"; the skeleton (the
-> graph) is durable while the cook (the agent) is swappable; it grows as it
-> runs, the head cook (scheduler) assigns work, and the outer loop can evolve.
-> It is a "trade structure for robustness" choice — **positive** for 0.3.x's
-> goals (resilience, evolvability, multi-agent collaboration); but used for
-> "single-agent real-time interactive trial-and-error" it is heavier, slower,
-> and more token-hungry than classic ReAct.
+> **The trade-off:** explicit state, dependencies, and scheduling improve inspectability and
+> recovery control while adding projection-consistency, lifecycle, and testing costs. Latency,
+> token cost, and strategy gains require controlled measurements.
 
 ---
 
@@ -2070,10 +2322,10 @@ same kind":
 | | L1 ToolClass graph (`injectToolClassDAG`) | L2 session graph (`L2Graph` / `MutableDAG`) |
 |---|---|---|
 | Node is | a **tool class** (grep, web_search…) | a **tool instance** (3rd grep of this session) |
-| Built by | boot scan of `toolBinder.GetToolSchemas()` | LLM grows it **live** in planner quanta |
+| Built by | boot and runtime reconciliation of `toolBinder.GetToolSchemas()` | LLM grows it **live** in planner quanta |
 | Carries | `enabled`/`budget`/`prior` metadata | `payload` / dependency edges / results |
 | Lifetime | shared system-wide, long-stable | one per session, reaped at session end |
-| Changed by | **GA evolution** (patch on metadata) | **LLM** (grow nodes while running) |
+| Changed by | **Declarative reconciler** (registry/schema tags) | **LLM** (grow nodes while running) |
 | Compiled to tasks? | **No** (constraint catalog only) | **Yes** → fabric tasks, run by the scheduler |
 
 Source: L1 built at `cmd/ares/serve_peer.go:515`; L2 at
@@ -2092,19 +2344,17 @@ instances live in L2.**
 ```mermaid
 flowchart TB
     one[If L1/L2 were one graph] --> a[sharing: the catalog is copied per session]
-    one --> b[evolution safety: a GA patch to 'rules'<br/>would corrupt in-flight session work-orders]
-    one --> c[update cadence: stable(evolved) vs volatile(LLM-grown)<br/>in one object, locks/versions/rebuild all clash]
+    one --> b[update isolation: tool declarations<br/>coupled to session execution state]
+    one --> c[update cadence: registry reconcile vs LLM growth<br/>need distinct lifecycles]
 ```
 
 1. **Sharing**: the tool catalog is naturally "one for the whole system"; mix it
    with session work-orders and every session gets a copy.
-2. **Evolution safety**: **in-flight L2 sessions are unaffected by an L1 metadata change**
-   (their nodes are already grown; the change only governs "next time"). One caveat worth
-   stating: nothing in production writes L1 metadata yet — the only two `SetNodeMetadata` call
-   sites target the workflow DAG and the live-task (L2) DAG — so this is what the separation
-   guarantees *once* a writer exists, not something observable today.
-3. **Cadence**: L1 is stable (occasionally evolved), L2 is volatile
-   (growing every quantum). One object = broken locking.
+2. **Update isolation:** L1 reconciliation does not rebuild existing L2 tasks. Subsequent
+   node growth in the same live session can read new constraints. The declarative reconciler
+   is already wired, not a future GA writer; an entire active session is not insulated from changes.
+3. **Cadence:** L1 follows registry changes and periodic reconciliation; L2 grows with planner
+   quanta. Each owns its lifecycle.
 
 > Analogy: a DB schema (table structure) is never the same thing as its rows
 > — L1 is the schema, L2 is the rows.
@@ -2113,7 +2363,7 @@ flowchart TB
 
 | Data class | Where | Why |
 |---|---|---|
-| **Structured**: task state machine, lease/epoch, checkpoints, event ledger | Postgres tables — **only when `storage` is enabled**; otherwise the event store falls back to an in-memory archive (`cmd/ares/serve_wiring.go:338`) | needs transactions, exact queries, event sourcing, multi-node sharing |
+| **Structured**: task events, checkpoints, epoch high-water mark | Postgres with durable storage enabled; otherwise memory. Live task/lease state remains in memory | exact reads and recovery folds, not distributed task locking |
 | **Semantic**: knowledge objects, distilled experiences (Problem/Solution/Constraints) | pgvector columns (`VECTOR(1024)`) | needs recall by *meaning*, not by word |
 
 Agent-fabric runtime state (the agent population, `CognitiveState`) is
@@ -2121,9 +2371,10 @@ Agent-fabric runtime state (the agent population, `CognitiveState`) is
 `migrate.go:128` notes it currently has **no production query**.
 
 "Same Postgres + pgvector instance" is deliberate: relational data
-(experience rows) + vectors (`embedding` column) live in **one DB, one
-transaction** — no separate Milvus/Pinecone. Multi-node clusters share one
-PG. (`migrate.go:97` creates the generic `embeddings` table as
+(experience rows) + vectors (`embedding` column) can share a database and its transaction
+facilities without separate Milvus/Pinecone. Sharing PG does not turn process-local Task
+Fabric locks, leases, and scheduling into a distributed protocol.
+(`migrate.go:97` creates the generic `embeddings` table as
 `VECTOR(1024)`; the real pgvector tables are `knowledge_chunks_1024` /
 `experiences_1024`, whose `ivfflat` indexes live in `migrate_storage.go:72`.)
 
@@ -2161,10 +2412,29 @@ flowchart LR
 | Technique | Fixes | Source |
 |---|---|---|
 | Hard filter first (`WHERE tenant_id AND embedding IS NOT NULL`) | ①③ | `internal/storage/postgres/vector.go:91` |
-| **HybridSearch** (vector cosine + lexical keyword, fused) | ①④ | `internal/knowledge/store.go:55` |
+| **HybridSearch** (vector cosine + lexical keyword + configurable recency, three-term blend, default 0.7/0.3/0) | ①④ | `internal/knowledge/hybrid.go:243–282` (`store.go:64`) |
 | TopK + MinScore gates (default `RAGTopK:5 / MinScore:0.4`) | ①③ | `internal/runtime/memory/manager.go:448-449` |
-| Quality metadata in scoring (Extraction/Consistency/Freshness/Usage) | ③ | `internal/knowledge/object.go:96` (weights in `quality.go:31`) |
 | Experience dedup / conflict merge (similarity threshold) | ③ | `internal/runtime/memory/experience/conflict_resolver.go:15` |
+
+> **Quality gating ≠ retrieval-ranking weighting (do not conflate the two)**:
+> - `QualityGateConfig.ComputeFinal` is for **knowledge quality evaluation,
+>   admission gating (QualityGate), and promotion decisions**
+>   (`internal/knowledge/quality.go:82–93`); it composes the full four-dimension
+>   score (0.4×Extraction + 0.3×Consistency + 0.2×Freshness + 0.1×Usage). It is
+>   **not a retrieval-ranking term**.
+> - **The current hybrid retrieval ranking does NOT fuse the full four-dimension
+>   Quality score.** The retrieval blend uses only vector cosine + lexical +
+>   configurable recency (`hybrid.go:273–282` `weights.blend`, default 0.7/0.3/0)
+>   and **does not read the `obj.Quality` field** to mix in
+>   Extraction/Consistency/Usage.
+> - The one shared signal is **freshness**: `freshnessTiers` is used both for the
+>   write-time Quality `FreshnessScore` and the query-time recency term
+>   (`quality.go:41–42` notes they are deliberately shared), so "freshness" is
+>   consistent across both paths — but that is not the four-dim Quality being used
+>   for ranking.
+> - `internal/knowledge/object.go:93`'s field comment ("Quality … used for recall
+>   ranking") is **ahead of / not accurate** to the current behavior — the hybrid
+>   ranking actually uses three terms; trust `hybrid.go` / `quality.go` over it.
 
 **What it does NOT do (the highest-value gap)**: a **model-based** second pass
 — there is no cross-encoder / learned reranker anywhere in the tree. What exists
@@ -2303,13 +2573,75 @@ sequenceDiagram
 
 ---
 
+### 25.5 Recovery guarantee matrix: tasks, sessions, and side effects
+
+| Layer | Current implementation | Does not establish |
+|---|---|---|
+| In-process executor failure | Expired leases requeue; `RestartAgent` can restore CognitiveState from a death snapshot | Recovery of arbitrary LLM/tool internal state |
+| Cross-process task rebuild | `RestoreFromStore` folds persisted must-persist events; preserves terminals, resets other tasks to READY, clears owner/lease, restores the epoch high-water mark | Successful `Create` means a durable commit |
+| serve startup | `peerAssembly.assembleFabric` restores before scheduler start and seeds IDs using `MaxRestoredSeq` | Distributed lease/CAS merely by sharing Postgres |
+| Default SDK | `sdk.ensureScheduler` creates its own in-memory Task Fabric | The same cross-process task recovery as serve by default |
+| L2 session | `SessionRegistry` / `L2Graph` are live in-memory objects; checkpoints carry SessionID | Task restore automatically recreates all L2 nodes, edges, subscriptions, and outputs |
+| Tool side effects | Owner/epoch reject stale fabric writes; individual tools may implement idempotency | Exactly-once external HTTP/file/database effects |
+
+**The important failure window:** a tool succeeds externally, then the process crashes before
+its checkpoint/terminal event is durably stored. Recovery can execute it again. Fencing protects
+task-state commits; it does not undo external effects. End-to-end exactly-once requires tool-side
+idempotency keys/result records or a transaction/protocol spanning the effect, not just an epoch.
+
+**Durability boundary** (distinguish "old implementation" from "current workspace"; be
+precise): `recordLocked` mutates memory and prepares pending appends under the mutex.
+`flushAppends` (`fabric_events.go:299`) attempts Append synchronously after unlock and
+before the method returns, returning a `CommitOutcome` (`commit.go`):
+`CommitSkipped` (no store, in-memory) / `CommitCommitted` / `CommitNotCommitted` (the store
+refused) / `CommitUnknown` (deadline/cancellation — **may have landed, so do not treat it
+as a plain failure and re-issue**).
+
+Per the current workspace source (`internal/fabric/task/fabric_lifecycle.go` + `commit.go`):
+
+| State operation | Checks the Append result? | Behavior | Source |
+|---|---|---|---|
+| `Create` | **Yes** | on anything but `Committed/Skipped`, the in-memory task is deleted (no ghost left) and `commitError` (NotCommitted/Unknown) is joined into the returned error | `fabric_lifecycle.go:61–100` |
+| `Complete` / `CompleteWithCheckpoint` | **Yes** | on anything but `Committed/Skipped`, the completion is **reverted** (`revertCompletionLocked` restores state/checkpoint so dependents are not released on a completion the store never saw) and `commitError` is returned | `fabric_lifecycle.go:386–429 / 440–470` |
+| `Fail` | **Yes** | on anything but `Committed/Skipped` the `commitError` is returned, but the state is **not** rolled back: a terminal failure has already cascaded to its READY dependents, and reverting only the task would leave them failed for a predecessor that is running again. The store settles it by event id | `fabric_lifecycle.go:486–580` |
+| `Delete` | **Yes** | the task is removed only after the tombstone is confirmed; a refusal reopens admission and returns `commitError`, an unknown keeps the task `PendingDelete`/`TombstoneUnconfirmed` (excluded from every scheduling entry) and remembers the tombstone id so a retry appends the same event; a version conflict on that retry means the earlier attempt landed | `fabric_lifecycle.go:1270–1330` |
+| `ExpireDeadlines` | **Yes** | per-member `PartialCommitError`; expired ids are returned even with the error, and nothing is rolled back (same cascade reasoning as `Fail`) | `fabric_lifecycle.go:805–830` |
+| Other transitions (`Acquire` / `Start` / `Yield` / `Release` (delegates to `ReleaseReason`) / `ResolveApproval` / `ResolveApprovalWithBlastRadius` / `ExpireApprovals` / `CheckExpiredLeases`, …) | **No** | still a bare `defer f.flushAppends(&pending)` — the return value is ignored, memory is not rolled back, and the append error is not returned as the state operation's error | `fabric_lifecycle.go:277/337/357/485/678/711/767/849/1022/1120/1182` |
+
+So the current boundary is: **Create, the Complete-class terminal transitions, `Fail`, `Delete` and
+`ExpireDeadlines` treat a persistence failure as an error, while the remaining transitions
+(`Acquire` / `Start` / `Yield` / `Release` / approval paths) still ignore the flush return value.** Do not claim a complete
+"durable-commit-before-publish" contract is closed. Defaults: 10s Append timeout,
+30s ordering-wait timeout; `CommitUnknown` requires the caller to **reconcile by event
+id** and not blindly retry with a fresh event (`commit.go:48–53` comment). Overall this
+is still **not** a write-ahead durable-commit state machine.
+
+> **Old vs current**: this document previously said "an Append failure does not roll
+> back state and is not returned as the state operation's error" — that describes the
+> earlier implementation. The current `Create` / `Complete` / `CompleteWithCheckpoint`
+> now (RT-01 fix in progress) **handle the commit outcome and return a persistent
+> error**. Label this as "old-implementation boundary + RT-01 fix in progress"; do not
+> front-run it as "durable commit is closed".
+
+**Complete session-recovery validation** must cover persisted events → tasks → L2 registry/graph/
+subscription reconstruction → dependency execution → final answer. Task restoration in
+`assembleFabric` does not validate that whole chain. A fresh `Admit` is not replay of the old L2
+graph. Killing an agent in-process through chaos is not evidence of whole-session recovery after
+killing and restarting the process.
+
+Source: `internal/fabric/task/restore.go`, `internal/fabric/task/fabric_events.go`,
+`cmd/ares/peer_assembly.go`, `sdk/scheduler.go`, `internal/agentruntime/session.go`.
+
+---
+
 ## 26. Context Management (sliding-window truncation + rule-based cleaning + RAG injection, NOT LLM summarization)
 
 > This section is deliberately factual: the project does **not** do LLM
 > summarization-style compaction (not OpenAI's `compact` "summarize the
 > history into one paragraph and feed it back"). What it does is
 > **"sliding-window truncation + rule-based cleaning + RAG injection"**,
-> zero LLM cost. This is a deliberate trade-off with a clear boundary.
+> Truncation/cleaning do not call a generative model; RAG may incur embedding costs,
+> and injected text consumes input tokens.
 
 **Plain-English intuition first**: the LLM's context window has a fixed
 number of "seats" (the token cap). To fill those "seats" there are three
@@ -2396,9 +2728,10 @@ extraction), zero LLM calls.** It treats message roles differently:
   `memory.context_token_budget` when set; otherwise **45% of `memory.model_context_window`**
   (`EffectiveContextTokenBudget`) — 45 rather than 50+ because the answer, the skills block and
   RAG snippets are added around the prompt, so a budget at the window's edge leaves them
-  nowhere. Unset on both = off. The estimate uses the vendor rates (**0.6 token per CJK
-  character, 0.3 per other**) from `internal/runtime/memory/tokencount`, shared with the
-  storage cap so the two cannot drift apart. Storage has its own bound:
+  nowhere. Unset on both = off. The heuristic estimate uses **0.6 token per CJK
+  character, 0.3 per other character** from `internal/runtime/memory/tokencount`, shared with
+  the storage cap. This is not the model's actual tokenizer or billing count, and it does not
+  guarantee the final request fits the model window. Storage has its own bound:
   `memory.session_max_tokens` caps how much one session HOLDS, independent of the message count
   (one large tool result is a single message). **Still TODO**: the memory-anchor LLM summary
   (B-G3) — a new LLM call, intentionally not done.
@@ -2413,12 +2746,12 @@ extraction), zero LLM calls.** It treats message roles differently:
 | **LLM summarization (NOT done here)** | an extra LLM call (expensive + slow) | most complete semantic compression | costs tokens + lossy summary + a new failure point |
 
 **Why "truncation + rule cleaning + RAG" instead of LLM summarization**:
-1. **Zero LLM cost** — truncation/cleaning/vector search add no tokens; the hot
-   path never blocks on the LLM.
+1. **Avoid a summarization-model call** — truncation and rule cleaning do not call a model;
+   embeddings and injected input tokens still need accounting.
 2. **Deterministic** — rule-based results are stable; no "summary LLM had a
    bad day" variance.
-3. **Sufficient** — "recent N (coherent) + RAG relevant snippets (semantic)"
-   covers most agent scenarios.
+3. **Coverage needs evaluation** — recent history and relevant snippets complement each other;
+   long-session cases must check whether critical memories survive.
 
 ### 26.4 Clear boundaries (factual, not hype)
 
@@ -2444,8 +2777,8 @@ extraction), zero LLM calls.** It treats message roles differently:
 > only the most recent `MaxHistory` (10-50), then runs a `ContextCleaner`
 > (regex-cuts code blocks, tool messages take the first sentence — **zero LLM
 > cost**); RAG simultaneously injects relevant experience snippets.
-> **Why not LLM summarization**: truncation + rules + vector search add no
-> tokens, the hot path never blocks on the LLM, and it's deterministic.
+> **Why not LLM summarization**: avoid its latency and generation cost with deterministic
+> rule processing; RAG embeddings and input tokens still cost resources.
 > **Boundary**: in very long tasks, info that is neither recent nor related
 > but critical gets missed on both sides; covering that needs an added LLM
 > summarization path — a known limitation, not a design oversight."
@@ -2538,12 +2871,10 @@ disclosure); this is "how they are **organized** once in".
 | `Execute(name, params)` | run one tool | `:177` |
 | `OnChange(fn)` | pool-change notification (MCP dynamic add/remove syncs here) | `:41` |
 
-**How it meshes with earlier modules**: the L1 ToolClass graph (§7/§23) is built
-at boot from **tool schemas** — `toolBinder.GetToolSchemas()` →
-`buildToolClassDAG` (`cmd/ares/serve_peer.go:660-515,622`), with node id =
-`toolName#<argKeySet>` (`core/convert.go` `ToolClassID` / `ToolArgShape`).
-The capability tags in `core/capability.go` are a **different** mechanism: they
-drive §19's envcap capability search, not the L1 graph.
+**How it meshes:** L1 is built at boot and continuously reconciled:
+`toolBinder.GetToolSchemas()` → `toolClassSpecs` → builder/reconciler in `cmd/ares/serve_peer.go`.
+Node ID = `toolName#<argKeySet>` (`core/convert.go`: `ToolClassID` / `ToolArgShape`).
+Capability tags in `core/capability.go` support discovery/filtering; they are not L1 enabled/budget/prior.
 
 ---
 
@@ -2622,6 +2953,26 @@ lifecycle events**", not "any event drives anything".
 | Per-stream bookkeeping TTL sweep (24h) | `maybeSweepBookkeepingLocked` (`compactable_store.go`) | the four per-stream maps (`lastChecked`/`lastTouched`/`roundCounter`/`lastArchivedVersion`) grew without bound in a long-lived process; now swept opportunistically in `maybeCompact` on a 24h idle TTL with a 1-minute cadence; lock order fixed as `mu → archiveMu` |
 | `Close()` safe shutdown | `CompactableEventStore.Close()` (`compactable_store.go`) | cancels `lctx` → `wg.Wait` (bounded by `compactionTimeout + 5s`) → underlying `Close`; `Append` checks the `closed` flag under `mu` to prevent WaitGroup Add-after-Wait |
 
+### 28.4 EventStore: a ledger is not a transaction coordinator
+
+- `EventStore.Append(ctx, streamID, events, expectedVersion)` defines **0 as auto-detect,
+  without OCC checking**. A positive value must match the current stream version. Zero is
+  not a compare-and-swap assertion that the stream is empty.
+- The interface exposes single-stream appends, not a multi-stream transaction for root/plan/
+  tasks. Fabric memory transitions and external tool effects are not part of that transaction (§25.5).
+- `Subscribe` is a notification channel, not a durable consumer-offset/ack protocol. Ledger
+  persistence, live delivery, and recovery reads are distinct guarantees. Polling and graph
+  version/drop reconciliation compensate for some missed notifications.
+- Compactor summaries/synthetic events are not complete task/L2 checkpoints. Readable summaries
+  do not prove that all recovery-required events remain available; validate retention/compaction
+  against recovery data requirements.
+- H01 prerequisite: clarify each store implementation's success, timeout, conflict, duplicate,
+  and notification semantics before selecting durable acknowledgment, write-ahead commit, or
+  compensation. This describes the current boundary, not an implemented transaction fix.
+
+Source: `internal/ares_events/store.go`, `internal/fabric/task/fabric_events.go`,
+`internal/ares_events/compactable_store.go`, `internal/fabric/task/restore.go`.
+
 > Note: `ReadOptions` gained a `ToVersion` field (`types.go`), shared by the
 > compaction and read paths.
 
@@ -2634,7 +2985,7 @@ lifecycle events**", not "any event drives anything".
 | Orchestration | Leader (single point + double-path race) | Leader removed; flat peers + kernel scheduling | ✅ positive |
 | Tasks | no durable state machine, ReAct has no checkpoint | durable tasks + checkpoint-resume | ✅ positive |
 | Agents | passive sub-agents | disposable cognition, can spawn | ✅ positive |
-| Planning | implicit, one-shot | explicit L2 graph, grow-as-you-go, recoverable | ✅ positive |
+| Planning | implicit, one-shot | explicit in-memory L2 graph; task rebuild and complete session recovery need separate validation | ✅ positive |
 | Self-healing | two external heartbeat supervisors | event-driven unified recovery chain + in-place revive | ✅ positive |
 | Evolution | early DreamMode | GA + G1/G2/G3 gates + rollback net | ✅ stronger |
 | Cost | — | complexity up; no equivalent of centralized-owner semantics; HITL wired in fabric (0.3.3) | ⚠️ |
@@ -2694,7 +3045,40 @@ persists byte-for-byte identically to 0.3.2/0.3.3 — pinned by
 > the dev branch moves. Function names / file paths are more stable than line
 > numbers — locate by symbol when in doubt.
 
-## 30. Version Status: 0.3.5
+## 30. Version Status and Verification
+
+### 30.1 Current status (2026-10-26)
+
+Commit baseline: **`d6015bef`**; repository version: **0.3.6**. This table records the scope
+checked for this documentation update, not whole-repository verification. Recheck after later
+changes/releases; do not replace published tags.
+
+| Item | Status and evidence |
+|---|---|
+| Non-blocking pump, task order/aging, creation backpressure | Implemented; see §4.5–4.6 and §11.1 |
+| Auto capacity and all-busy preemption guard | Fixed in `d6015bef`; targeted S01/S02 regressions in `scheduler_capacity_test.go` passed |
+| HTTP 429 | Typed error in `cd5e5f09`, mapping in `9cf06412`; `submit_queue_full_e2e_test.go` exercises handler → Submitter → Fabric for root rejection, plan rejection, and an unlimited control |
+| Rejected-submission residue | **Commit baseline:** plan Create failure returns directly. **Uncommitted working tree checked here:** `AdmitFresh` enables Release/Harvest for newly created sessions on failure, preserving existing sessions; targeted S04 tests passed |
+| Cleanup coverage | The harness has no running scheduler; `Harvest` refuses LEASED/RUNNING/SUSPENDED tasks. These results do not establish atomicity under concurrent submissions, running-task cleanup, or durable transactions |
+| L1 declarations | Timer/change trigger, grace, and empty-declaration protection exist; targeted reconciliation/wiring tests passed |
+| H01 durable-commit contract | Separate hardening work; clarify EventStore/durable acknowledgment semantics first (§28.4) |
+| Soak / real models | Not run in this update. No automated soak is wired in the repository; `make nightly` printing a message is not a soak result |
+
+### 30.2 Executed verification
+
+This command passed in the working tree checked here (4 packages, `-race -count=1`):
+
+```sh
+TZ=UTC go test -race -count=1 -timeout=300s \
+  ./internal/kernel ./internal/fabric/task ./internal/runtime/ares_evolution ./cmd/ares \
+  -run 'Test(S01_|S02_|DrainLimit|Backpressure|MaxReadyTasks|WriteSubmitRejection|SubmitQueueFull|S04_|ReconcileToolClassDAG|ToolClassReconciler|StartToolClassReconciler|InjectToolClassDAG|BuildToolClassDAG|ToolClassSpecs)'
+```
+
+This covers the name-matched regressions only. The full test matrix, real-Postgres process-crash
+recovery, long soak, and real-model quality evaluation were not run. In an interview, distinguish
+“confirmed in source,” “targeted tests passed,” and “still to validate.”
+
+### 30.3 Historical 0.3.5 features
 
 **0.3.5 (turning three "half-evidences" into production wiring + closing evolution observability; ledger wording 2026-10-17/20)**:
 

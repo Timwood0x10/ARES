@@ -2,8 +2,10 @@ package ares_mcp
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"runtime"
 	"testing"
 	"time"
@@ -25,8 +27,10 @@ func TestStdioTransportStartEmptyCommand(t *testing.T) {
 }
 
 func TestStdioTransportDoubleStart(t *testing.T) {
-	// Use a command that stays alive so we can test double-start.
-	tr := NewStdioTransport(StdioConfig{Command: "cat"})
+	// The transport requires an absolute command path (same rule as the SDK client), and the child
+	// must exist on every machine that runs this suite — so it is the test binary itself, not a
+	// host utility (CI images do not reliably ship `cat` at a fixed path).
+	tr := NewStdioTransport(stdioHelperConfig(t))
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -263,9 +267,10 @@ func TestNewTransportFromConfigReturnsCorrectType(t *testing.T) {
 }
 
 func TestStdioTransportReceiveContextCancelNoLeak(t *testing.T) {
-	// Use "cat" which reads stdin and echoes to stdout — it will block waiting for input,
-	// so Receive() will block in t.stdout.Scan() until we cancel the context.
-	tr := NewStdioTransport(StdioConfig{Command: "cat"})
+	// The helper process echoes stdin to stdout and then blocks waiting for more input, so
+	// Receive() sits in Scan() until the context is cancelled — exactly what `cat` provided, without
+	// depending on a host binary being installed.
+	tr := NewStdioTransport(stdioHelperConfig(t))
 	ctx, cancel := context.WithCancel(context.Background())
 
 	if err := tr.Start(ctx); err != nil {
@@ -290,4 +295,36 @@ func TestStdioTransportReceiveContextCancelNoLeak(t *testing.T) {
 	if diff > 2 {
 		t.Fatalf("possible goroutine leak: goroutines increased by %d (before=%d, after=%d)", diff, before, after)
 	}
+}
+
+// stdioHelperEnv marks the child process the transport tests spawn.
+const stdioHelperEnv = "ARES_STDIO_TEST_HELPER"
+
+// stdioHelperConfig points the transport at this test binary, re-executed as a stdin echo.
+//
+// The alternative — resolving `cat` with exec.LookPath — makes the suite depend on a host utility:
+// CI images differ, the resolved path differs, and a missing binary turns a regression test into a
+// skip. os.Executable() is absolute by construction and exists wherever the tests run, which is also
+// what the new absolute-path contract expects.
+func stdioHelperConfig(t *testing.T) StdioConfig {
+	t.Helper()
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatalf("resolve test binary: %v", err)
+	}
+	return StdioConfig{
+		Command: exe,
+		Args:    []string{"-test.run=^TestStdioHelperProcess$"},
+		Env:     map[string]string{stdioHelperEnv: "1"},
+	}
+}
+
+// TestStdioHelperProcess is not a test: it is the child body. When the parent spawns the test binary
+// with stdioHelperEnv set, this function echoes stdin to stdout and returns; without the variable it
+// is skipped, so a normal `go test` run does nothing.
+func TestStdioHelperProcess(t *testing.T) {
+	if os.Getenv(stdioHelperEnv) != "1" {
+		t.Skip("helper process only")
+	}
+	_, _ = io.Copy(os.Stdout, os.Stdin)
 }

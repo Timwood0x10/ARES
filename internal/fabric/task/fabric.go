@@ -1,7 +1,10 @@
 package taskfabric
 
 import (
+	"crypto/rand"
+	"encoding/binary"
 	"errors"
+	"fmt"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -51,6 +54,18 @@ var (
 	// them made a governance budget that was simply too small for the LLM look
 	// exactly like a missing executor.
 	ErrNoAffordableCandidate = errors.New("taskfabric: no affordable candidate")
+	// ErrReadyQueueFull: Create was rejected because the fabric's READY task
+	// count has reached the configured max (WithMaxReadyTasks). The task was
+	// NOT created. Callers should retry or apply flow control.
+	//
+	// It is its own sentinel rather than a wrap of errors.ErrQueueFull: that one means "message
+	// queue is full", and matching it here would let a caller handle task admission as if it were
+	// transport backpressure. Callers match on THIS value with errors.Is.
+	ErrReadyQueueFull = errors.New("taskfabric: ready queue full")
+	// ReadyQueueFullError carries WHY the queue is full. The sentinel says "rejected"; the fields
+	// say "at depth N of M", which is what an HTTP layer needs to answer 429 with a retry hint
+	// instead of parsing the message.
+	//
 	// ErrTaskIDRequired: Create was called without an id.
 	ErrTaskIDRequired = errors.New("taskfabric: task id required")
 	// ErrAgentIDRequired: Acquire was called without an owning agent id.
@@ -113,7 +128,22 @@ type Fabric struct {
 	store      ares_events.EventStore // optional persistent event sink; guarded by mu
 	confidence ConfidenceSource       // experience-derived confidence (Skill-first); guarded by mu
 	now        func() time.Time       // injectable clock for lease tests
-	epoch      uint64
+	// eventNonce separates this process's event ids from any other run's. Set once at construction;
+	// read only under f.mu, like flushSeq.
+	eventNonce uint64
+	// reconMu guards reconPending, the ledger of appends whose fate is unsettled.
+	//
+	// TODO(persistence) — the ledger is IN MEMORY ONLY. An unknown outcome is therefore
+	// reconcilable only within the process that recorded it: a restart forgets it, and nothing
+	// downstream can settle the append by event id afterwards. Persisting it (or deriving it from
+	// the store: created without completed) is the outstanding work; see reconcile.go. Separate from f.mu
+	// because it is written from the flush path, which runs with f.mu released.
+	reconMu      sync.Mutex
+	reconPending map[string]PendingReconciliation
+	// reconciliationDropped counts unsettled appends that could not be recorded because they had no
+	// event id. Non-zero means the id invariant broke, and those events are unreconcilable.
+	reconciliationDropped atomic.Uint64
+	epoch                 uint64
 	// strategyStamp is the submission-time attribution source: called
 	// once per Create to stamp the checkpoint envelope's StrategyID. Guarded
 	// by mu; nil means "no strategy deployed / wiring absent", which reads as
@@ -132,6 +162,13 @@ type Fabric struct {
 	// per-task timeout still expires; leaving the default zero is the
 	// deliberate fabric-wide "wait forever" choice.
 	defaultApprovalSLA time.Duration
+
+	// maxReadyTasks caps how many READY tasks the fabric holds at once (M4
+	// backpressure). Zero (the default) means unlimited — preserving the
+	// existing behavior so a deployment that does not set it is unaffected.
+	// A positive value rejects new task creation with ErrQueueFull when the
+	// READY count would exceed the cap. Guarded by mu.
+	maxReadyTasks int
 
 	// decodeObserver receives one notification per checkpoint read-back that
 	// goes through Fabric.DecodeCheckpoint. Atomic because the scheduler and
@@ -153,7 +190,7 @@ type Fabric struct {
 
 // NewFabric creates an empty Task Fabric.
 func NewFabric() *Fabric {
-	f := &Fabric{tasks: make(map[string]*Task), now: time.Now}
+	f := &Fabric{tasks: make(map[string]*Task), now: time.Now, eventNonce: newEventNonce()}
 	f.flushCond = sync.NewCond(&sync.Mutex{})
 	return f
 }
@@ -184,6 +221,17 @@ func (f *Fabric) WithDefaultApprovalSLA(d time.Duration) *Fabric {
 	if d > 0 {
 		f.defaultApprovalSLA = d
 	}
+	return f
+}
+
+// WithMaxReadyTasks sets the READY task capacity cap (M4 backpressure).
+// Zero (the default) means unlimited — preserving the existing behavior.
+// A positive value rejects new task creation with ErrQueueFull when the
+// READY count would exceed the cap. Returns the fabric for chaining.
+func (f *Fabric) WithMaxReadyTasks(n int) *Fabric {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.maxReadyTasks = n
 	return f
 }
 
@@ -527,4 +575,38 @@ func (f *Fabric) TaskSnapshot() []TaskView {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].TaskID < out[j].TaskID })
 	return out
+}
+
+// ReadyQueueFullError is returned by Create when outstanding work has reached the configured cap.
+//
+// Depth is the count that tripped the cap; Max is the cap itself. Both are the values the caller
+// would otherwise have to recover by parsing the message — and a caller that parses an error string
+// is one refactor away from reporting the wrong number.
+type ReadyQueueFullError struct {
+	Depth int
+	Max   int
+}
+
+// Error renders the same shape the sentinel-based message had, so log-based tooling and the
+// existing assertions keep working.
+func (e *ReadyQueueFullError) Error() string {
+	return fmt.Sprintf("taskfabric: ready queue full (depth %d, max %d)", e.Depth, e.Max)
+}
+
+// Unwrap exposes the sentinel: errors.Is(err, ErrReadyQueueFull) stays true.
+func (e *ReadyQueueFullError) Unwrap() error { return ErrReadyQueueFull }
+
+// newEventNonce returns a random per-process token for event ids.
+//
+// Random rather than time-based because two processes starting in the same second would otherwise
+// mint the same "<task>#<seq>" pair, and an id-based reconciliation would settle one run's outcome
+// against the other's record.
+func newEventNonce() uint64 {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		// Falling back to the wall clock keeps ids unique within a run; it only weakens the
+		// cross-run separation, which is a reconciliation nicety, not a correctness requirement.
+		return uint64(time.Now().UnixNano())
+	}
+	return binary.LittleEndian.Uint64(b[:])
 }

@@ -50,7 +50,7 @@ func (s *Scheduler) hasRecoveryHint() bool {
 // not grow unboundedly and the replacement is not offered as a candidate for
 // other tasks. No-op while the task can still run again (READY/RUNNING/
 // SUSPENDED).
-func (s *Scheduler) unbindRecoveryExecutorAfterTerminal(taskID string) {
+func (s *Scheduler) unbindRecoveryExecutorAfterTerminal(ctx context.Context, taskID string) {
 	tk2, tkErr := s.fabric.Task(taskID)
 	if tkErr != nil {
 		return
@@ -61,7 +61,7 @@ func (s *Scheduler) unbindRecoveryExecutorAfterTerminal(taskID string) {
 	if boundID := s.unbindFor(taskID); boundID != "" {
 		s.UnregisterExecutor(boundID)
 		s.tracker.Forget(boundID)
-		log.Info(context.Background(), "unbindRecoveryExecutorAfterTerminal",
+		log.Info(ctx, "unbindRecoveryExecutorAfterTerminal",
 			"kernel scheduler: unregistered recovery executor after task reached state",
 			"executor", boundID, "task_id", taskID, "state", tk2.State)
 	}
@@ -81,7 +81,7 @@ func (s *Scheduler) unbindRecoveryExecutorAfterTerminal(taskID string) {
 // peer config survives — that set is fixed, not rotating), and (b) are
 // currently idle (load == 0), so an in-flight quantum's End still finds its
 // slot.
-func (s *Scheduler) reconcileFabricDeaths() {
+func (s *Scheduler) reconcileFabricDeaths(ctx context.Context) {
 	if s.agents == nil {
 		return
 	}
@@ -99,7 +99,7 @@ func (s *Scheduler) reconcileFabricDeaths() {
 			continue // recovery replacements are unregistered at terminal state
 		}
 		if _, err := s.agents.Get(id); err != nil {
-			log.Info(context.Background(), "reconcileFabricDeaths",
+			log.Info(ctx, "reconcileFabricDeaths",
 				"kernel scheduler: unregistering executor — agent no longer in fabric (killed or retired)",
 				"executor", id)
 			s.UnregisterExecutor(id)

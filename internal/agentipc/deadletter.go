@@ -33,7 +33,17 @@ type DeadLetterStore struct {
 	mu       sync.Mutex
 	next     uint64
 	capacity int
-	entries  []DeadLetter
+	// entries is a FIXED ring once full: the oldest entry sits at head, and the next write
+	// overwrites the slot at (head+count)%capacity.
+	//
+	// The previous implementation appended and then sliced the front off (`entries = entries[1:]`),
+	// which advances the slice header but keeps the whole backing array alive — so every evicted
+	// DeadLetter, Payload included, stayed reachable from the array the slice pointed into. In a
+	// long-lived process with steady failures that is an unbounded leak growing at one entry per
+	// eviction, and the payloads are message bodies.
+	entries []DeadLetter
+	head    int
+	count   int
 }
 
 // NewDeadLetterStore creates a store capped at capacity entries (oldest
@@ -49,8 +59,11 @@ func NewDeadLetterStore(capacity int) *DeadLetterStore {
 func (s *DeadLetterStore) Record(from, to, topic string, payload any, reason, traceID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.capacity <= 0 {
+		s.capacity = 1024 // zero-value store: same default as the constructor
+	}
 	s.next++
-	s.entries = append(s.entries, DeadLetter{
+	dl := DeadLetter{
 		ID:      s.next,
 		From:    from,
 		To:      to,
@@ -59,18 +72,31 @@ func (s *DeadLetterStore) Record(from, to, topic string, payload any, reason, tr
 		TraceID: traceID,
 		Reason:  reason,
 		At:      time.Now(),
-	})
-	if len(s.entries) > s.capacity {
-		s.entries = s.entries[1:]
 	}
+	if s.count < s.capacity {
+		s.entries = append(s.entries, dl)
+		s.count = len(s.entries)
+		return
+	}
+	// Full: overwrite the oldest slot in place. Assigning over it drops the previous value's only
+	// reference, which is the point — the array never moves and never grows past capacity.
+	s.entries[s.head] = dl
+	s.head = (s.head + 1) % s.capacity
+	s.count = s.capacity
 }
 
 // Snapshot returns a copy of the dead letters (oldest first).
 func (s *DeadLetterStore) Snapshot() []DeadLetter {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	out := make([]DeadLetter, len(s.entries))
-	copy(out, s.entries)
+	out := make([]DeadLetter, 0, s.count)
+	if s.count < len(s.entries) {
+		// Not full yet: the entries are in write order.
+		return append(out, s.entries[:s.count]...)
+	}
+	// Full: oldest first means head..end, then 0..head.
+	out = append(out, s.entries[s.head:]...)
+	out = append(out, s.entries[:s.head]...)
 	return out
 }
 
@@ -78,5 +104,5 @@ func (s *DeadLetterStore) Snapshot() []DeadLetter {
 func (s *DeadLetterStore) Count() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return len(s.entries)
+	return s.count
 }

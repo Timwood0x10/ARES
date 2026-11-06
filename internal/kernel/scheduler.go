@@ -38,6 +38,10 @@ type Scheduler struct {
 	// tracker supplies real per-agent Load/Confidence to Schedule
 	// (real load tracking instead of a static placeholder).
 	tracker *LoadTracker
+	// placementMu serializes preemption planning with Schedule/admission, never with a running
+	// quantum. dispatchAssignments reserves each matched agent until its task takes the busy slot.
+	placementMu         sync.Mutex
+	dispatchAssignments map[string]string
 	// PollInterval is how often ReadyTasks is drained (default 500ms).
 	PollInterval time.Duration
 	// ttl is the lease granted to each winning agent.
@@ -135,6 +139,53 @@ type Scheduler struct {
 	// architecture red line forbids kernelscheduler importing runtime
 	// (TestSchedulerMustNotImportRuntime).
 	recoveryHint func(taskID string)
+	// metrics is the optional scheduling-loop observability sink (M0
+	// baseline). Nil keeps a no-op sink so an unwired scheduler behaves
+	// exactly as before. Guarded by execMu alongside the executor registry
+	// so a runtime WithSchedulerMetrics call cannot race with the drain
+	// loop reading the field.
+	metrics SchedulerMetrics
+	// inflight tracks every quantum goroutine spawned by the drain pump
+	// (M2 work-conserving). The pump launches goroutines and returns
+	// immediately — the scheduling loop is no longer blocked by the
+	// slowest quantum in a batch. Run()'s shutdown path calls
+	// inflight.Wait() so the scheduler does not report stopped while
+	// goroutines still hold leases and mutate fabric state (the honesty
+	// contract previously enforced by drain's own wg.Wait). Guarded by
+	// inflightMu: Add/Done/Wait are already thread-safe, but the mu
+	// serializes the pump's Add against a concurrent Wait in shutdown so
+	// a late pump after ctx.Done cannot Add after Wait has returned.
+	inflightMu sync.Mutex
+	inflight   sync.WaitGroup
+
+	// quantumMu guards inflightQuanta and busySince.
+	//
+	// The admission budget is PROCESS-WIDE, not per pump. While the pump waited for its batch one
+	// drain ran at a time, so a per-drain semaphore was accidentally a global cap; once the pump
+	// stops waiting, overlapping pumps would each admit a full limit and WithMaxConcurrent would
+	// stop being a cap at all.
+	quantumMu      sync.Mutex
+	inflightQuanta int
+	// busySince is when the scheduler last went from having no quanta in flight to having one, and
+	// it is cleared only when the last quantum finishes. It is not "saturated": one quantum on a
+	// four-capacity machine starts the clock too.
+	//
+	// It is deliberately NOT "the start of the oldest quantum still running". With overlapping
+	// quanta the first to finish is often not the oldest, and the field keeps the saturation start:
+	// a chain of quanta that keeps the pipeline full measures as one continuous busy period, which
+	// is what the gap histogram reports. Per-task waiting is measured separately as ready_age.
+	busySince time.Time
+
+	// headSampleMu guards the queue-age sampling rate for a head that stays put.
+	//
+	// The queue is observed once per drain (500ms by default), so a task that waits 30s would
+	// contribute sixty identical samples to the age histogram while a task that dispatches at once
+	// contributes one. That is a time-weighted estimate of the queue's age, not a per-task wait
+	// distribution, and sampling every tick makes the two look the same. One sample per
+	// headSampleInterval keeps the estimate without letting a single stalled task dominate it.
+	headSampleMu  sync.Mutex
+	headSampledID string
+	headSampledAt time.Time
 }
 
 // Running reports whether the scheduler's drain loop is currently running.
@@ -188,6 +239,7 @@ func New(fabric *taskfabric.Fabric, executors map[string]CapabilityExecutor, tra
 		PollInterval:   500 * time.Millisecond,
 		ttl:            5 * time.Minute,
 		decisions:      newDecisionRecorder(),
+		metrics:        noOpSchedulerMetrics{},
 	}
 }
 
@@ -239,7 +291,12 @@ func (s *Scheduler) WithStaticPoolHybrid() *Scheduler {
 // (executor count, then live fabric candidates). Returns the scheduler for
 // chaining.
 func (s *Scheduler) WithMaxConcurrent(n int) *Scheduler {
+	// Guarded, not merely documented: the chain is fluent and the object is shared with a running
+	// loop, so "call before Run" is a convention nothing enforces. A concurrent call while draining
+	// would be a data race on a field the loop reads on every tick.
+	s.execMu.Lock()
 	s.maxConcurrent = n
+	s.execMu.Unlock()
 	return s
 }
 
@@ -249,7 +306,9 @@ func (s *Scheduler) WithMaxConcurrent(n int) *Scheduler {
 // scheduler for chaining.
 func (s *Scheduler) WithTTL(ttl time.Duration) *Scheduler {
 	if ttl > 0 {
+		s.execMu.Lock()
 		s.ttl = ttl
+		s.execMu.Unlock()
 	}
 	return s
 }
@@ -316,7 +375,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 							log.Error(ctx, "Run", "kernel scheduler: panic in preemption sweep, continuing", nil, "panic", r)
 						}
 					}()
-					s.PreemptLowerPriority(s.fabric.ResumableTasks())
+					s.PreemptLowerPriority(ctx, s.fabric.ResumableTasks())
 				}()
 			}
 		}
@@ -350,6 +409,14 @@ func (s *Scheduler) Run(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
+			// M2: wait for every in-flight quantum before reporting stopped.
+			// The pump returns immediately, so the loop exits while goroutines
+			// may still hold leases — inflight.Wait is the honesty gate that
+			// replaces drain's former wg.Wait. The mu ensures a late pump
+			// cannot Add after we begin waiting.
+			s.inflightMu.Lock()
+			s.inflight.Wait()
+			s.inflightMu.Unlock()
 			return
 		case <-ticker.C:
 			s.safeDrain(ctx)
@@ -375,6 +442,33 @@ func (s *Scheduler) Run(ctx context.Context) {
 func (s *Scheduler) WithEventStore(store ares_events.EventStore) *Scheduler {
 	s.eventStore = store
 	return s
+}
+
+// WithSchedulerMetrics wires the scheduling-loop observability sink (M0
+// baseline). Nil restores the no-op sink. Returns the scheduler for chaining.
+func (s *Scheduler) WithSchedulerMetrics(m SchedulerMetrics) *Scheduler {
+	s.execMu.Lock()
+	defer s.execMu.Unlock()
+	if m == nil {
+		s.metrics = noOpSchedulerMetrics{}
+	} else {
+		s.metrics = m
+	}
+	return s
+}
+
+// metricsOf snapshots the currently wired metrics sink under execMu so a
+// runtime WithSchedulerMetrics call cannot race with the drain loop.
+func (s *Scheduler) metricsOf() SchedulerMetrics {
+	s.execMu.RLock()
+	defer s.execMu.RUnlock()
+	if s.metrics == nil {
+		// A nil INTERFACE is not a nil receiver: calling a method on it panics, unlike the no-op
+		// value the constructor installs. A zero-value Scheduler (tests, future call sites) must
+		// still be safe to drain.
+		return noOpSchedulerMetrics{}
+	}
+	return s.metrics
 }
 
 // SchedulerSnapshot is a point-in-time, read-only view of the scheduler's
@@ -429,13 +523,14 @@ func (s *Scheduler) Snapshot() SchedulerSnapshot {
 	s.execMu.RLock()
 	execN := len(s.executors)
 	boundN := len(s.boundExecutors)
+	ttl, maxConcurrent := s.ttl, s.maxConcurrent
 	s.execMu.RUnlock()
 
 	snap := SchedulerSnapshot{
 		PollInterval:     s.preemptInterval(), // same guard/default as both tickers
 		PreemptInterval:  s.preemptInterval(),
-		TTL:              s.ttl,
-		MaxConcurrent:    s.maxConcurrent,
+		TTL:              ttl,
+		MaxConcurrent:    maxConcurrent,
 		EventDriven:      s.eventStore != nil,
 		Executors:        execN,
 		BoundExecutors:   boundN,
@@ -463,4 +558,32 @@ func (s *Scheduler) Snapshot() SchedulerSnapshot {
 		snap.Load = s.tracker.Snapshot()
 	}
 	return snap
+}
+
+// HasSchedulerMetrics reports whether a real observation sink is installed.
+//
+// It exists so production wiring can be asserted: the three ARES_scheduler_* histograms are
+// registered whether or not anything feeds them, and an empty histogram reads on a dashboard as
+// "no slow dispatches" rather than "nobody is measuring".
+func (s *Scheduler) HasSchedulerMetrics() bool {
+	if s == nil {
+		return false
+	}
+	s.execMu.RLock()
+	defer s.execMu.RUnlock()
+	if s.metrics == nil {
+		return false
+	}
+	_, noop := s.metrics.(noOpSchedulerMetrics)
+	return !noop
+}
+
+// leaseTTL reads the lease duration under the same lock the setter takes.
+//
+// Every read goes through here rather than touching s.ttl directly: WithTTL used to be an
+// unguarded write, so a caller that set it while draining raced the Schedule path that reads it.
+func (s *Scheduler) leaseTTL() time.Duration {
+	s.execMu.RLock()
+	defer s.execMu.RUnlock()
+	return s.ttl
 }

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/core/models"
@@ -280,6 +281,25 @@ const tenantMetadataKey = "tenant_id"
 //   - dependsOn: the node this instance depends on (output feeding into it);
 //     empty means no predecessor.
 func (g *L2Graph) AddToolNode(ctx context.Context, id, tool string, args map[string]any, dependsOn string) error {
+	return g.AddToolNodeWithPolicy(ctx, id, tool, args, dependsOn, StepPolicy{})
+}
+
+// StepPolicy carries the execution constraints the L1 catalogue declares for a tool.
+//
+// Zero values mean "nothing declared", which is exactly what every tool had before the catalogue
+// could carry these fields: no explicit retry policy (the fabric default applies) and no deadline.
+type StepPolicy struct {
+	// MaxAttempts includes the first execution: 1 means never retry. 0 means undeclared.
+	MaxAttempts int
+	// Timeout is the total budget for the task, resolved to an absolute deadline at compile time.
+	Timeout time.Duration
+}
+
+// AddToolNodeWithPolicy is AddToolNode with the tool's declared constraints attached.
+//
+// The planner fills them from the L1 node, which is the only place they are visible: the model
+// cannot influence them, and a caller that has no declaration passes the zero StepPolicy.
+func (g *L2Graph) AddToolNodeWithPolicy(ctx context.Context, id, tool string, args map[string]any, dependsOn string, policy StepPolicy) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
@@ -299,6 +319,16 @@ func (g *L2Graph) AddToolNode(ctx context.Context, id, tool string, args map[str
 	}
 	if strings.TrimSpace(dependsOn) != "" {
 		step.DependsOn = []string{dependsOn}
+	}
+	// Same unit on both sides: the engine's MaxAttempts and the catalogue's max_attempts both count
+	// TOTAL attempts including the first (Task.CanRetry compares Attempts < MaxRetries, and Attempts
+	// increments per failure, so MaxRetries=N allows exactly N executions). Subtracting one here
+	// would make "max_attempts: 2" run once — measured, not assumed.
+	if policy.MaxAttempts >= 1 {
+		step.RetryPolicy = &engine.RetryPolicy{MaxAttempts: policy.MaxAttempts}
+	}
+	if policy.Timeout > 0 {
+		step.Timeout = policy.Timeout
 	}
 	if err := g.dag.AddNode(ctx, step); err != nil {
 		return fmt.Errorf("agentfabric: add tool node %q: %w", id, err)
@@ -486,7 +516,14 @@ func (c *toolCognition) ExecuteStep(ctx context.Context, task *models.Task) (*St
 
 	res, err := c.binder.CallTool(ctx, c.tool, argsFromPayload(task.Payload))
 	if err != nil {
-		return nil, fmt.Errorf("agentfabric: tool %q call: %w", c.tool, err)
+		// Classified HERE because this is the only place that knows both halves: which tool failed
+		// and whether that tool tolerates being called twice. A timeout from an idempotent read is
+		// worth retrying; the same timeout from an unmarked write may already have landed, and the
+		// fabric would otherwise retry it into a duplicate side effect.
+		return nil, taskfabric.ClassifyToolFailure(
+			fmt.Errorf("agentfabric: tool %q call: %w", c.tool, err),
+			c.binder.IsToolIdempotent(c.tool),
+		)
 	}
 	result := models.NewTaskResult(task.TaskID, task.AgentType)
 	result.SetSuccess([]*models.RecommendItem{{ItemID: task.TaskID, Content: stringify(res)}}, "tool "+c.tool+" completed")

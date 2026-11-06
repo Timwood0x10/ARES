@@ -278,13 +278,24 @@ func TestStopComponent_WaitError(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 
-	if err := o.Shutdown(context.Background()); err != nil {
-		t.Fatalf("Shutdown: %v", err)
+	// This case used to expect a nil Shutdown and StateStopped, on the reading that "a Wait error
+	// should not prevent stop". That reading is what RT-04 removes: a component whose Wait reported
+	// failure has NOT stopped, and recording it as Stopped is the false claim — it also made Shutdown
+	// report success for a teardown that failed.
+	err := o.Shutdown(context.Background())
+	if err == nil {
+		t.Fatal("Shutdown returned nil although a component reported a Wait error")
+	}
+	if !errors.Is(err, errSentinel) {
+		t.Fatalf("Shutdown error must keep the component's cause reachable, got: %v", err)
 	}
 
 	st, _ := reg.GetStatus("a")
-	if st.State != StateStopped {
-		t.Errorf("state = %s, want Stopped (Wait error should not prevent stop)", st.State)
+	if st.State == StateStopped {
+		t.Errorf("state = %s, want a non-stopped state: the component did not stop", st.State)
+	}
+	if st.Reason == "" {
+		t.Error("the status must carry the reason the component did not stop")
 	}
 }
 

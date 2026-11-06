@@ -1,55 +1,102 @@
 package apitools
 
 import (
+	"context"
 	"net"
+	"net/http"
+	"net/url"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	builtin_network "github.com/Timwood0x10/ares/internal/tools/resources/builtin/network"
 )
 
-// TestIsPrivateIPBlocksExtendedRanges locks T-1: the hand-rolled checks used
-// to miss CGNAT (100.64.0.0/10 — the Kubernetes pod CIDR), IPv6 ULA
-// (fc00::/7), and did not normalize IPv4-mapped IPv6 addresses before
-// classifying them. This mirrors builtin/network/ssrf.go's hardened gate;
-// the two must not drift apart.
-func TestIsPrivateIPBlocksExtendedRanges(t *testing.T) {
-	cases := []struct {
-		ip   string
-		want bool
-		note string
-	}{
-		{"100.64.0.1", true, "CGNAT low bound"},
-		{"100.127.255.255", true, "CGNAT high bound"},
-		{"100.63.1.1", false, "just below CGNAT is public"},
-		{"100.128.0.1", false, "just above CGNAT is public"},
-		{"fc00::1", true, "IPv6 ULA"},
-		{"fd12:3456:789a::1", true, "IPv6 ULA fd range"},
-		{"::ffff:10.0.0.1", true, "IPv4-mapped private must classify private"},
-		{"::ffff:8.8.8.8", false, "IPv4-mapped public stays public"},
-		{"0.0.0.0", true, "unspecified"},
-		{"::", true, "unspecified v6"},
-		{"169.254.169.254", true, "link-local (cloud metadata service)"},
-		{"fe80::1", true, "link-local v6"},
-		{"10.0.0.1", true, "RFC1918 10/8"},
-		{"172.16.0.1", true, "RFC1918 172.16/12 low"},
-		{"172.31.255.255", true, "RFC1918 172.16/12 high"},
-		{"172.32.0.1", false, "outside RFC1918"},
-		{"192.168.1.1", true, "RFC1918 192.168/16"},
-		{"8.8.8.8", false, "public"},
-		{"2606:4700:4700::1111", false, "public v6"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.ip, func(t *testing.T) {
-			got := isPrivateIP(net.ParseIP(tc.ip))
-			if got != tc.want {
-				t.Fatalf("isPrivateIP(%s) = %v, want %v (%s)", tc.ip, got, tc.want, tc.note)
-			}
-		})
-	}
+// TestWebSearchTool_SSRFClientRefusesPrivateTargets is the first half of the SSRF fix: the guard
+// must sit at CONNECT time, not in a pre-flight resolution.
+//
+// The previous implementation resolved the host, checked the addresses, and then dialled by NAME —
+// so a DNS answer that changed between the two steps reached a private address that had already
+// passed the check. Asserting on the dial of a loopback address proves the connection-time control
+// is wired, which is the property a pre-flight check cannot provide.
+//
+// The block-list predicate itself is covered once, in the network package (isBlockedIP); this file
+// only asserts what apitools wires up.
+func TestWebSearchTool_SSRFClientRefusesPrivateTargets(t *testing.T) {
+	tool := newWebSearchTool()
+
+	transport, ok := tool.ssrfClient.Transport.(*http.Transport)
+	require.True(t, ok, "the SSRF client must carry the hardened transport")
+	require.NotNil(t, transport.DialContext)
+
+	_, err := transport.DialContext(context.Background(), "tcp", "127.0.0.1:9")
+	require.Error(t, err, "a loopback target must be refused before any connection is made")
+	assert.Contains(t, err.Error(), "blocked address",
+		"the refusal must come from the SSRF control, not from a connection failure: %v", err)
 }
 
-// TestIsPrivateIPNilFailsClosed verifies a nil IP (unparseable input) is
-// treated as private/blocked, never as a pass-through.
-func TestIsPrivateIPNilFailsClosed(t *testing.T) {
-	if !isPrivateIP(nil) {
-		t.Fatal("isPrivateIP(nil) must fail closed (blocked)")
+// TestWebSearchTool_SSRFClientRejectsRedirectToPrivate is the redirect half: a public endpoint that
+// answers 302 to a metadata address must not be followed.
+//
+// Go's default client follows up to ten hops and checks nothing about where they lead, so a
+// compromised SearXNG instance (or any endpoint the LLM can name) could redirect the request into
+// the instance metadata service.
+func TestWebSearchTool_SSRFClientRejectsRedirectToPrivate(t *testing.T) {
+	tool := newWebSearchTool()
+	require.NotNil(t, tool.ssrfClient.CheckRedirect,
+		"without a CheckRedirect the client follows redirects anywhere")
+
+	req := &http.Request{URL: &url.URL{Scheme: "http", Host: "169.254.169.254", Path: "/latest/meta-data/"}}
+	err := tool.ssrfClient.CheckRedirect(req, []*http.Request{{URL: &url.URL{Scheme: "http", Host: "search.example"}}})
+
+	require.Error(t, err, "a redirect to the metadata service must be refused")
+}
+
+// TestWebSearchTool_TrustedClientCapsRedirects: the operator-configured endpoint is trusted by
+// configuration, but its responses are not. Hops are capped; the destination is deliberately NOT
+// IP-checked, because the documented default endpoint is localhost:5605 and the SSRF block list
+// would refuse it.
+func TestWebSearchTool_TrustedClientCapsRedirects(t *testing.T) {
+	tool := newWebSearchTool()
+	require.NotNil(t, tool.trustedClient.CheckRedirect,
+		"an unbounded redirect chain against a broken proxy holds the request open for free")
+
+	sameHost := &url.URL{Scheme: "http", Host: "localhost:5605", Path: "/search"}
+	req := &http.Request{URL: sameHost}
+
+	assert.NoError(t, tool.trustedClient.CheckRedirect(req, nil),
+		"the first hop to the operator's own endpoint must be allowed")
+
+	via := make([]*http.Request, builtin_network.MaxHTTPRedirects)
+	for i := range via {
+		via[i] = &http.Request{URL: sameHost}
 	}
+	require.Error(t, tool.trustedClient.CheckRedirect(req, via),
+		"a chain longer than the cap must stop")
+}
+
+// TestWebSearchTool_SSRFClientDoesNotInheritTheProxy: ProxyFromEnvironment would let a proxy
+// resolve and connect on the tool's behalf, bypassing the dial-time check entirely.
+func TestWebSearchTool_SSRFClientDoesNotInheritTheProxy(t *testing.T) {
+	tool := newWebSearchTool()
+
+	transport, ok := tool.ssrfClient.Transport.(*http.Transport)
+	require.True(t, ok)
+	assert.Nil(t, transport.Proxy, "a proxy would route around the connect-time IP check")
+}
+
+// TestWebSearchTool_SSRFClientBlocksMetadataAddress keeps the most valuable target in the test:
+// link-local 169.254.169.254 is not a private RFC1918 range, so an implementation that only checks
+// IsPrivate would let it through.
+func TestWebSearchTool_SSRFClientBlocksMetadataAddress(t *testing.T) {
+	tool := newWebSearchTool()
+	transport, ok := tool.ssrfClient.Transport.(*http.Transport)
+	require.True(t, ok)
+
+	// DialContext takes host:port; name resolution is not involved for a literal address.
+	_, err := transport.DialContext(context.Background(), "tcp", net.JoinHostPort("169.254.169.254", "80"))
+
+	require.Error(t, err, "the instance metadata service must never be reachable")
+	assert.Contains(t, err.Error(), "blocked address")
 }

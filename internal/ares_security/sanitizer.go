@@ -87,48 +87,72 @@ func DefaultSanitizeOptions() SanitizeOptions {
 	}
 }
 
+// Compiled once. These patterns are fixed at build time, so compiling them inside the mask
+// functions meant a fresh regexp on every redaction — and masking runs per matched value in log
+// and LLM-response sanitising, the hottest path in this file.
+//
+// Both the rule table below and the mask helpers share these values; *regexp.Regexp is safe for
+// concurrent use, so sharing costs nothing.
+var (
+	reAPIKeyPattern = regexp.MustCompile(`(?i)(api[_-]?key|apikey|secret[_-]?key|token[_-]?key)[:\s]+["']?([a-zA-Z0-9_\-\.]+)["']?`)
+	// The field form is anchored on a word boundary and accepts '='; the value form (used when a
+	// match is already known to be a password assignment) does not. Keeping them separate is
+	// deliberate — collapsing the two would change which inputs match.
+	rePasswordFieldPattern = regexp.MustCompile(`(?i)\b(password|passwd|pwd)\b[=:\s]+["']?([^"'\s]+)["']?`)
+	rePasswordValuePattern = regexp.MustCompile(`(?i)(password|passwd|pwd)[:\s]+["']?([^"'\s]+)["']?`)
+	reTokenPattern         = regexp.MustCompile(`(?i)(token|bearer[:\s]+|authorization[:\s]+bearer)[:\s]+["']?([a-zA-Z0-9_\-\.]+)["']?`)
+	reEmailPattern         = regexp.MustCompile(`[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}`)
+	rePhonePattern         = regexp.MustCompile(`(\+?\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}`)
+	reCreditCardPattern    = regexp.MustCompile(`\b(?:\d[ -]*?){13,16}\b`)
+	reSSNPattern           = regexp.MustCompile(`\b\d{3}[-.]?\d{2}[-.]?\d{4}\b`)
+	reBareValuePattern     = regexp.MustCompile(`[a-zA-Z0-9_\-\.]+`)
+	reKeywordPattern       = regexp.MustCompile(`(?i)(key|secret|token|credential|auth)`)
+	reTokenKeywordPattern  = regexp.MustCompile(`(?i)(token|bearer|auth|credential|jwt)`)
+	reNonDigitPattern      = regexp.MustCompile(`[^\d]`)
+)
+
 // defaultSensitivePatterns returns default patterns for detecting sensitive information.
 func defaultSensitivePatterns() []SensitivePattern {
 	return []SensitivePattern{
 		{
 			Type:        SensitiveFieldTypeAPIKey,
-			Pattern:     regexp.MustCompile(`(?i)(api[_-]?key|apikey|secret[_-]?key|token[_-]?key)[:\s]+["']?([a-zA-Z0-9_\-\.]+)["']?`),
+			Pattern:     reAPIKeyPattern,
 			MaskFunc:    maskAPIKey,
 			Description: "API keys (api_key, secret_key, token_key)",
 		},
 		{
 			Type:        SensitiveFieldTypePassword,
-			Pattern:     regexp.MustCompile(`(?i)\b(password|passwd|pwd)\b[=:\s]+["']?([^"'\s]+)["']?`),
+			Pattern:     rePasswordFieldPattern,
 			MaskFunc:    maskPassword,
 			Description: "Passwords",
 		},
 		{
 			Type:        SensitiveFieldTypeToken,
-			Pattern:     regexp.MustCompile(`(?i)(token|bearer[:\s]+|authorization[:\s]+bearer)[:\s]+["']?([a-zA-Z0-9_\-\.]+)["']?`),
+			Pattern:     reTokenPattern,
 			MaskFunc:    maskToken,
 			Description: "Authentication tokens",
 		},
 		{
 			Type:        SensitiveFieldTypeEmail,
-			Pattern:     regexp.MustCompile(`[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}`),
+			Pattern:     reEmailPattern,
 			MaskFunc:    maskEmail,
 			Description: "Email addresses",
 		},
 		{
 			Type:        SensitiveFieldTypePhone,
-			Pattern:     regexp.MustCompile(`(\+?\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}`),
+			Pattern:     rePhonePattern,
 			MaskFunc:    maskPhone,
 			Description: "Phone numbers",
 		},
 		{
 			Type:        SensitiveFieldTypeCreditCard,
-			Pattern:     regexp.MustCompile(`\b(?:\d[ -]*?){13,16}\b`),
+			Pattern:     reCreditCardPattern,
 			MaskFunc:    maskCreditCard,
 			Description: "Credit card numbers",
 		},
 		{
 			Type:        SensitiveFieldTypeSSN,
-			Pattern:     regexp.MustCompile(`\b\d{3}[-.]?\d{2}[-.]?\d{4}\b`),
+			Pattern:     reSSNPattern,
 			MaskFunc:    maskSSN,
 			Description: "Social security numbers",
 		},
@@ -262,7 +286,7 @@ func (s *Sanitizer) maybeMaskNumeric(digits string, original interface{}) interf
 // maskAPIKey masks an API key while preserving some context.
 func maskAPIKey(match string) string {
 	// Extract the actual key value using the same pattern as the detection
-	re := regexp.MustCompile(`(?i)(api[_-]?key|apikey|secret[_-]?key|token[_-]?key)[:\s]+["']?([a-zA-Z0-9_\-\.]+)["']?`)
+	re := reAPIKeyPattern
 	matches := re.FindStringSubmatch(match)
 	if len(matches) > 2 {
 		// matches[1] is the keyword, matches[2] is the actual key
@@ -270,14 +294,14 @@ func maskAPIKey(match string) string {
 		return strings.Replace(match, keyValue, maskString(keyValue, 4), 1)
 	}
 	// Fallback: try to find any long alphanumeric string
-	re2 := regexp.MustCompile(`[a-zA-Z0-9_\-\.]+`)
+	re2 := reBareValuePattern
 	allMatches := re2.FindAllString(match, -1)
 	if len(allMatches) == 0 {
 		return maskString(match, 4)
 	}
 
 	// Prefer the match nearest to a known key-related keyword.
-	kwRe := regexp.MustCompile(`(?i)(key|secret|token|credential|auth)`)
+	kwRe := reKeywordPattern
 	bestScore := -1
 	best := allMatches[0]
 	for _, m := range allMatches {
@@ -307,7 +331,7 @@ func maskAPIKey(match string) string {
 // maskPassword masks a password completely.
 func maskPassword(match string) string {
 	// Extract the password value: find the part after password/passwd/pwd keyword
-	re := regexp.MustCompile(`(?i)(password|passwd|pwd)[:\s]+["']?([^"'\s]+)["']?`)
+	re := rePasswordValuePattern
 	matches := re.FindStringSubmatch(match)
 	if len(matches) > 2 {
 		// matches[1] is the keyword (password/passwd/pwd), matches[2] is the actual password
@@ -320,7 +344,7 @@ func maskPassword(match string) string {
 // maskToken masks a token while preserving some context.
 func maskToken(match string) string {
 	// Extract the actual token value using the same pattern as the detection
-	re := regexp.MustCompile(`(?i)(token|bearer[:\s]+|authorization[:\s]+bearer)[:\s]+["']?([a-zA-Z0-9_\-\.]+)["']?`)
+	re := reTokenPattern
 	matches := re.FindStringSubmatch(match)
 	if len(matches) > 2 {
 		// matches[1] is the keyword, matches[2] is the actual token
@@ -328,14 +352,14 @@ func maskToken(match string) string {
 		return strings.Replace(match, tokenValue, maskString(tokenValue, 4), 1)
 	}
 	// Fallback: try to find any long alphanumeric string
-	re2 := regexp.MustCompile(`[a-zA-Z0-9_\-\.]+`)
+	re2 := reBareValuePattern
 	allMatches := re2.FindAllString(match, -1)
 	if len(allMatches) == 0 {
 		return maskString(match, 4)
 	}
 
 	// Prefer the match nearest to a known token-related keyword.
-	kwRe := regexp.MustCompile(`(?i)(token|bearer|auth|credential|jwt)`)
+	kwRe := reTokenKeywordPattern
 	bestScore := -1
 	best := allMatches[0]
 	for _, m := range allMatches {
@@ -384,7 +408,7 @@ func maskEmail(match string) string {
 // maskPhone masks a phone number.
 func maskPhone(match string) string {
 	// Remove common formatting characters
-	cleaned := regexp.MustCompile(`[^\d]`).ReplaceAllString(match, "")
+	cleaned := reNonDigitPattern.ReplaceAllString(match, "")
 	if len(cleaned) < 3 {
 		return maskString(match, 3)
 	}
@@ -404,7 +428,7 @@ func maskPhone(match string) string {
 // maskCreditCard masks a credit card number.
 func maskCreditCard(match string) string {
 	// Remove spaces and dashes
-	cleaned := regexp.MustCompile(`[^\d]`).ReplaceAllString(match, "")
+	cleaned := reNonDigitPattern.ReplaceAllString(match, "")
 	if len(cleaned) < 4 {
 		return maskString(match, 4)
 	}
@@ -423,7 +447,7 @@ func maskCreditCard(match string) string {
 
 // maskSSN masks a social security number, preserving the original separator format.
 func maskSSN(match string) string {
-	cleaned := regexp.MustCompile(`[^\d]`).ReplaceAllString(match, "")
+	cleaned := reNonDigitPattern.ReplaceAllString(match, "")
 	if len(cleaned) != 9 {
 		return "***-**-****"
 	}

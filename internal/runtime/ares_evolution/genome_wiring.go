@@ -444,12 +444,12 @@ func (a *GenomePopulationAdapter) PopulationGeneration() int {
 
 // runtimeObjective reports whether this adapter may submit runtime patches.
 func (a *GenomePopulationAdapter) runtimeObjective() bool {
-	return normalizeObjective(a.objective) != EvolutionObjectiveStrategy
+	return objectiveAllowsRuntimePatches(a.objective)
 }
 
 // strategyObjective reports whether this adapter may submit strategies.
 func (a *GenomePopulationAdapter) strategyObjective() bool {
-	return normalizeObjective(a.objective) != EvolutionObjectiveRuntime
+	return objectiveAllowsStrategy(a.objective)
 }
 
 // runtimePatchCoordinator is the slice of the coordinator this package drives: submit proposals,

@@ -47,6 +47,13 @@ type Orchestrator struct {
 	mu      sync.Mutex
 	started bool
 	stopped bool
+	// shutdownDone closes when the first Shutdown finishes, and shutdownErr carries its result.
+	//
+	// A later call must be able to learn what happened, not just that something started: sharing
+	// only the "already begun" flag made a second caller return nil while the first was still
+	// draining, and kept returning nil after that first call had timed out.
+	shutdownDone chan struct{}
+	shutdownErr  error
 }
 
 // NewOrchestrator creates a new orchestrator with the given registry.
@@ -194,14 +201,37 @@ func (o *Orchestrator) startComponent(ctx context.Context, name string) error {
 // deadline when it has one, otherwise overallShutdownTimeout. Components that
 // did not reach Stopped when the budget expires are named in the returned
 // error (and logged) instead of blocking the process exit forever.
-func (o *Orchestrator) Shutdown(ctx context.Context) error {
+func (o *Orchestrator) Shutdown(ctx context.Context) (err error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	o.mu.Lock()
 	if o.stopped {
+		done := o.shutdownDone
 		o.mu.Unlock()
-		return nil
+		// Wait for the call that is actually doing the work, and return ITS result. Reporting
+		// success merely because another goroutine took the job is how a failed teardown turns
+		// into a green log line.
+		select {
+		case <-done:
+			o.mu.Lock()
+			defer o.mu.Unlock()
+			return o.shutdownErr
+		case <-ctx.Done():
+			return fmt.Errorf("kernel: shutdown still in progress: %w", ctx.Err())
+		}
 	}
 	o.stopped = true
+	o.shutdownDone = make(chan struct{})
+	done := o.shutdownDone
 	o.mu.Unlock()
+	defer func() {
+		o.mu.Lock()
+		o.shutdownErr = err
+		o.mu.Unlock()
+		close(done)
+	}()
 
 	if ctx == nil {
 		ctx = context.Background()
@@ -228,8 +258,19 @@ func (o *Orchestrator) Shutdown(ctx context.Context) error {
 	}
 
 	// Reverse order for shutdown.
+	//
+	// A component that did not exit is still using whatever it depends on, so THOSE are left alone:
+	// closing a store under a writer whose Wait timed out trades a visible failure for silent
+	// corruption. Only that dependency chain is protected — stopping the whole walk as well would
+	// leave unrelated components running for no reason, which is its own kind of silent residue.
+	blocked := make(map[string]bool)
+	var leftRunning []string
 	for i := len(order) - 1; i >= 0; i-- {
 		name := order[i]
+		if blocked[name] {
+			leftRunning = append(leftRunning, name)
+			continue
+		}
 		if ctx.Err() != nil {
 			errs = append(errs, fmt.Errorf(
 				"kernel: shutdown budget expired before stopping %q", name))
@@ -237,7 +278,12 @@ func (o *Orchestrator) Shutdown(ctx context.Context) error {
 		}
 		if err := o.stopComponent(ctx, name); err != nil {
 			errs = append(errs, fmt.Errorf("kernel: stop %q: %w", name, err))
+			o.blockDependencies(name, blocked)
 		}
+	}
+	if len(leftRunning) > 0 {
+		errs = append(errs, fmt.Errorf(
+			"kernel: left running because a dependent did not stop: %s", strings.Join(leftRunning, ", ")))
 	}
 
 	// Report every component that did not reach a terminal stopped state so
@@ -256,8 +302,12 @@ func (o *Orchestrator) Shutdown(ctx context.Context) error {
 			"components", strings.Join(notStopped, ", "))
 	}
 
-	// Wait for all errgroup goroutines, bounded so a misbehaving component
-	// cannot hang shutdown forever.
+	// Wait for all errgroup goroutines.
+	//
+	// The caller's budget is the tighter contract, so the wait has to end with it: a caller that
+	// asked for 25ms and got its answer 250ms later was given a shutdown that claimed to respect a
+	// deadline it never read. The fixed cap remains only as a backstop for a caller that supplied no
+	// deadline at all — it must not extend a budget that was already given.
 	waitCh := make(chan error, 1)
 	go func() {
 		waitCh <- o.eg.Wait()
@@ -269,6 +319,21 @@ func (o *Orchestrator) Shutdown(ctx context.Context) error {
 		if waitErr != nil {
 			errs = append(errs, fmt.Errorf("kernel: errgroup wait: %w", waitErr))
 		}
+	case <-ctx.Done():
+		// The budget expired while goroutines may still be running — but it may also have expired in
+		// the same instant the drain finished, and the select would then pick at random. A drain that
+		// completed is a fact, so it wins: reporting a timeout for work that is already done would be
+		// a false alarm in a report people read under pressure.
+		select {
+		case waitErr := <-waitCh:
+			if waitErr != nil {
+				errs = append(errs, fmt.Errorf("kernel: errgroup wait: %w", waitErr))
+			}
+		default:
+			// Wrapped so the caller can tell "ran out of time" from "a component failed":
+			// errors.Is(err, context.DeadlineExceeded) is that distinction.
+			errs = append(errs, fmt.Errorf("kernel: errgroup wait interrupted by the shutdown budget: %w", ctx.Err()))
+		}
 	case <-egWaitTimer.C:
 		errs = append(errs, fmt.Errorf("kernel: errgroup wait timed out after %s", waitTimeout))
 	}
@@ -278,6 +343,25 @@ func (o *Orchestrator) Shutdown(ctx context.Context) error {
 	}
 	log.Info(ctx, "Shutdown", "kernel: shutdown complete")
 	return nil
+}
+
+// blockDependencies marks everything the named component depends on, transitively, as unsafe to stop.
+//
+// The relationship is the reason: a component that did not exit may still be writing through the
+// components below it, so those must stay up. Anything outside that chain is unrelated and is still
+// torn down in this pass.
+func (o *Orchestrator) blockDependencies(name string, blocked map[string]bool) {
+	comp := o.registry.GetComponent(name)
+	if comp == nil {
+		return
+	}
+	for _, dep := range comp.Dependencies() {
+		if blocked[dep] {
+			continue
+		}
+		blocked[dep] = true
+		o.blockDependencies(dep, blocked)
+	}
 }
 
 // stopComponent executes Stop → Wait for one component.
@@ -297,9 +381,35 @@ func (o *Orchestrator) stopComponent(ctx context.Context, name string) error {
 	if stopper, ok := comp.(Stopper); ok {
 		stopCtx, stopCancel := context.WithTimeout(ctx, stopTimeout)
 		defer stopCancel()
-		if err := stopper.Stop(stopCtx); err != nil {
-			o.setStatus(name, StateFailed, err.Error())
-			return err
+
+		// Stop was called inline, so a component that ignores its context held the whole shutdown
+		// open: the caller's budget expired, and the process stayed inside this call until the
+		// component happened to return. Bounding it here turns "blocks forever" into "reported as
+		// not stopped", which is a fact the operator can act on.
+		stopCh := make(chan error, 1)
+		go func() {
+			// A panic in Stop used to be recoverable by whoever called Shutdown, because Stop ran on
+			// that goroutine. Moving it off the caller's stack also moved it out from under the
+			// caller's recover: a component that panics while stopping now takes the process down
+			// mid-teardown, which is the worst moment to lose the shutdown report. It is reported
+			// like any other stop failure instead.
+			defer func() {
+				if r := recover(); r != nil {
+					stopCh <- fmt.Errorf("kernel: stop %q panicked: %v", name, r)
+				}
+			}()
+			stopCh <- stopper.Stop(stopCtx)
+		}()
+		select {
+		case stopErr := <-stopCh:
+			if stopErr != nil {
+				o.setStatus(name, StateFailed, stopErr.Error())
+				return stopErr
+			}
+		case <-stopCtx.Done():
+			stopErr := fmt.Errorf("kernel: stop %q did not return within %s: %w", name, stopTimeout, stopCtx.Err())
+			o.setStatus(name, StateFailed, stopErr.Error())
+			return stopErr
 		}
 	}
 
@@ -315,21 +425,31 @@ func (o *Orchestrator) stopComponent(ctx context.Context, name string) error {
 		// the deadline and must not leave an un-cancellable timer behind.
 		waitTimer := time.NewTimer(stopTimeout)
 		defer waitTimer.Stop()
+
+		// Every outcome of the wait is a fact about whether the component actually exited, and the
+		// status is where that fact is recorded. All three used to be logged and then overwritten by
+		// an unconditional StateStopped, which made "did not stop" indistinguishable from "stopped"
+		// in the only place an operator looks — and left Shutdown returning success for a teardown
+		// that never finished.
+		var waitErr error
 		select {
-		case waitErr := <-waitCh:
-			if waitErr != nil {
-				log.Warn(ctx, "stopComponent",
-					"kernel: wait error", "component", name, "error", waitErr)
+		case err := <-waitCh:
+			if err != nil {
+				waitErr = fmt.Errorf("kernel: wait %q: %w", name, err)
 			}
 		case <-waitTimer.C:
 			// The buffered channel lets the waiter goroutine send and exit as
 			// soon as Wait() returns (N-5): no leak, only a bounded overshoot
 			// for this component's bookkeeping.
-			log.Warn(ctx, "stopComponent",
-				"kernel: wait timed out", "component", name, "timeout", stopTimeout)
+			waitErr = fmt.Errorf("kernel: wait %q timed out after %s: %w", name, stopTimeout, context.DeadlineExceeded)
 		case <-ctx.Done():
-			log.Warn(ctx, "stopComponent",
-				"kernel: wait aborted by shutdown context", "component", name)
+			waitErr = fmt.Errorf("kernel: wait %q aborted by the shutdown budget: %w", name, ctx.Err())
+		}
+		if waitErr != nil {
+			o.setStatus(name, StateFailed, waitErr.Error())
+			log.Warn(ctx, "stopComponent", "kernel: component did not stop cleanly",
+				"component", name, "error", waitErr)
+			return waitErr
 		}
 	}
 
@@ -658,6 +778,23 @@ func (o *Orchestrator) SetEventSink(store ares_events.EventStore) {
 	o.mu.Lock()
 	o.events = store
 	o.mu.Unlock()
+}
+
+// ReportComponentFault records a fault that did not stop the component but that an operator must see.
+//
+// Unlike a failed Stop, the component keeps running, so its STATE is left alone and only the reason is
+// updated: marking a working recovery loop "failed" would be the same class of lie as marking a
+// stopped one "stopped". The reason is what Snapshot and ComponentStatus expose.
+func (o *Orchestrator) ReportComponentFault(name string, err error) {
+	if o == nil || err == nil {
+		return
+	}
+	// Reason only, written atomically by the registry. Reading the state and writing it back (the
+	// first version) let a concurrent failure mark the component Failed and this call then restore
+	// the stale state it had read — a fault report undoing a real failure.
+	o.registry.UpdateStatus(name, func(st *ComponentStatus) {
+		st.Reason = err.Error()
+	})
 }
 
 // Snapshot returns a point-in-time status view of all managed components

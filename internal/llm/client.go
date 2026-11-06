@@ -105,9 +105,14 @@ type Config struct {
 
 // Client represents an LLM client that supports multiple providers.
 type Client struct {
-	config         *Config
-	httpClient     *http.Client
-	streamClient   *http.Client // No Timeout — streaming uses context for cancellation.
+	config       *Config
+	httpClient   *http.Client
+	streamClient *http.Client // No Timeout — streaming uses context for cancellation.
+	// tracer, limiter and circuit are written at construction (through Options) and read on every
+	// call with no lock. SetTracer is the one post-construction writer, so it is safe only BEFORE
+	// the client is shared with concurrent callers — bootstrap wires it immediately after NewClient,
+	// which is the only production call. A "swap the tracer at runtime" path would be a data race
+	// on the hot path (recordLLMCall); convert these to atomic/mutex-guarded before adding one.
 	tracer         observability.Tracer
 	ares_callbacks ares_callbacks.Emitter   // Optional: emits lifecycle events for LLM calls.
 	limiter        ares_ratelimit.Limiter   // Optional: rate limiter for API calls.
@@ -196,6 +201,9 @@ func (c *Client) Close() {
 
 // SetTracer sets an optional observability tracer on the client.
 // When set, Generate and GenerateStream will record LLM call spans.
+//
+// Not concurrency-safe by design: see the field comment on Client.tracer. Call it before the client
+// is used from more than one goroutine (bootstrap does), or add synchronisation first.
 func (c *Client) SetTracer(t observability.Tracer) {
 	c.tracer = t
 }

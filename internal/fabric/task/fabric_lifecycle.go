@@ -2,6 +2,7 @@ package taskfabric
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"time"
@@ -57,7 +58,7 @@ func WithResolvedDependencies() CreateOption {
 // Returns:
 //   - error: ErrTaskExists, an error for an empty id, or
 //     ErrDependencyUnresolved (only under WithResolvedDependencies).
-func (f *Fabric) Create(t *Task, opts ...CreateOption) error {
+func (f *Fabric) Create(t *Task, opts ...CreateOption) (err error) {
 	var cfg createOptions
 	for _, opt := range opts {
 		// A nil option is skipped rather than invoked: this runs on the
@@ -74,7 +75,22 @@ func (f *Fabric) Create(t *Task, opts ...CreateOption) error {
 	strategyID := f.strategyStampID()
 	pending := make([]*pendingAppend, 0, 1)
 	f.mu.Lock()
-	defer f.flushAppends(&pending)
+	// Registered FIRST so it runs LAST (defers are LIFO): the lock is released before the durable
+	// append, because store I/O must not be held under f.mu, and the outcome can still change the
+	// result afterwards.
+	defer func() {
+		outcome := f.flushAppends(&pending)
+		if outcome == CommitCommitted || outcome == CommitSkipped {
+			return
+		}
+		// Not committed, or unknown. Either way the task must not stay executable: an unpersisted
+		// create that the caller was told about is a task the scheduler can run and nobody can
+		// recover. The difference is what the caller is told, not whether the ghost is removed.
+		f.mu.Lock()
+		delete(f.tasks, t.ID)
+		f.mu.Unlock()
+		err = errors.Join(err, commitError(outcome, t.ID))
+	}()
 	defer f.mu.Unlock()
 	if cfg.resolveDependencies {
 		if err := resolvedDependenciesLocked(f.tasks, t); err != nil {
@@ -148,6 +164,28 @@ func (f *Fabric) createLocked(t *Task, strategyID string, pending *[]*pendingApp
 	if _, exists := f.tasks[t.ID]; exists {
 		return ErrTaskExists
 	}
+	// M4 backpressure: reject if the OUTSTANDING count would exceed the configured cap. Zero means
+	// unlimited (the default). The check runs under f.mu so a concurrent Create cannot slip past
+	// the cap.
+	//
+	// Outstanding is READY plus SUSPENDED, not READY alone: a suspended task is scheduled again by
+	// the next drain (ResumableTasks), so a workload that yields between steps would otherwise
+	// bypass the cap entirely. Terminal tasks (COMPLETED/FAILED) do not count — they are not
+	// schedulable and will be reaped.
+	if f.maxReadyTasks > 0 {
+		readyCount := 0
+		for _, existing := range f.tasks {
+			if existing.State == StateReady || existing.State == StateSuspended {
+				readyCount++
+			}
+		}
+		if readyCount >= f.maxReadyTasks {
+			// Typed rather than a formatted %w: the HTTP layer needs depth and cap as VALUES to
+			// answer 429 with a retry hint, and parsing them back out of a message is how a
+			// refactor silently starts reporting the wrong number.
+			return &ReadyQueueFullError{Depth: readyCount, Max: f.maxReadyTasks}
+		}
+	}
 	// Copy the caller's *Task so the fabric owns an isolated instance —
 	// the caller keeping (or reusing) its *t cannot then race the fabric's
 	// snapshot/state reads. `cp := *t` isolates every scalar field; the
@@ -163,10 +201,16 @@ func (f *Fabric) createLocked(t *Task, strategyID string, pending *[]*pendingApp
 		cp.Dependencies = append([]string(nil), t.Dependencies...)
 	}
 	cp.State = StateReady
+	// Generation starts at 1 so that 0 means "no record was ever taken" rather than "the state the
+	// task was created in" — a reconciliation comparing generations must not confuse an untouched
+	// task with one whose counter was never initialised.
+	cp.Generation = 1
 	cp.Owner = ""
 	cp.Lease = nil
 	cp.CreatedAt = f.now()
 	cp.UpdatedAt = cp.CreatedAt
+	cp.ReadyAt = cp.CreatedAt
+	cp.AttemptReadyAt = cp.CreatedAt
 	// HITL SLA safety net: a RequiresApproval task created without its own
 	// ApprovalTimeout inherits the fabric default. This is the single choke
 	// point for EVERY create path (direct Create AND CompilePlan, which both
@@ -246,6 +290,11 @@ func (f *Fabric) Acquire(id, agentID string, ttl time.Duration) (uint64, error) 
 	if t.State != StateReady && t.State != StateSuspended {
 		return 0, ErrTaskNotReady
 	}
+	if !t.schedulable() {
+		// A tombstone that may or may not have been written, or a record whose own append is not
+		// settled: running this duplicates work the durable log may already hold.
+		return 0, fmt.Errorf("task %s is awaiting commit reconciliation: %w", id, ErrTaskNotReady)
+	}
 	if !t.Deadline.IsZero() && f.now().After(t.Deadline) {
 		// Race guard for ExpireDeadlines: the scan runs on the recovery tick, so
 		// a task can pass its deadline between two ticks. Granting it a lease
@@ -258,7 +307,7 @@ func (f *Fabric) Acquire(id, agentID string, ttl time.Duration) (uint64, error) 
 		// the task, but Acquire is a public grant point, so a direct caller must
 		// not be able to start the retry early either.
 		return 0, fmt.Errorf("task %s is in retry backoff until %s: %w",
-			t.ID, t.NextAttemptAt.UTC().Format(time.RFC3339), ErrTaskNotReady)
+			t.ID, t.NextAttemptAt.UTC().Format(time.RFC3339Nano), ErrTaskNotReady)
 	}
 	// HITL approval guard: placed after
 	// deadline and backoff so those errors take precedence (D3 decision: a
@@ -281,6 +330,9 @@ func (f *Fabric) Acquire(id, agentID string, ttl time.Duration) (uint64, error) 
 	if err := t.transition(StateLeased); err != nil {
 		return 0, err
 	}
+	// M5: clear the preemption flag on re-acquire — the task is starting a
+	// fresh quantum and should not be treated as preempted.
+	t.PreemptRequested = false
 	t.Owner = agentID
 	t.Lease = &lease
 	pending = append(pending, f.recordLocked(t, EventTaskAcquired))
@@ -308,18 +360,63 @@ func (f *Fabric) Start(id, agentID string, epoch uint64) error {
 // hands execution back to the Runtime at a checkpoint. The state after yield
 // is decided by the Scheduler (continue/suspend/preempt/handoff/complete);
 // The default transition is SUSPENDED with the checkpoint preserved.
-func (f *Fabric) Yield(id, agentID string, epoch uint64, checkpoint any) error {
+func (f *Fabric) Yield(id, agentID string, epoch uint64, checkpoint any) (err error) {
 	pending := make([]*pendingAppend, 0, 1)
+	var t *Task
+	// owned records whether THIS invocation performed the transition. Without it, a duplicate call
+	// that returns ErrIllegalState left an empty pending list, flushAppends reported CommitSkipped
+	// (its "nothing to write" value), and the handler cleared a flag belonging to the call that is
+	// still in flight — releasing dependents before the store had answered.
+	var owned bool
 	f.mu.Lock()
-	defer f.flushAppends(&pending)
+	defer func() {
+		// Authoritative events only: a yield emits task.yielded (observability) plus task.checkpointed
+		// (the resume point). If only the former failed, the checkpoint is recorded and the task must
+		// stay resumable — gating on the aggregate isolated it forever.
+		outcome := worstMustPersist(f.flushAppendsDetailed(&pending))
+		if outcome == CommitCommitted || outcome == CommitSkipped {
+			if owned {
+				f.mu.Lock()
+				f.clearCommitPendingLocked(t)
+				f.mu.Unlock()
+			}
+			return
+		}
+		f.mu.Lock()
+		if t != nil {
+			t.CommitPending = false
+			if outcome == CommitUnknown {
+				// The yield may be durable: the checkpoint that says where to resume is on its way
+				// or already there. Resuming from the OLD checkpoint would re-run work the store
+				// already recorded as done, so the task waits for reconciliation instead.
+				t.CommitUnconfirmed = true
+			} else {
+				// Definitely not written: the quantum's progress does not exist anywhere. SUSPENDED
+				// cannot go back to RUNNING (the state machine forbids it), and the honest meaning of
+				// "the yield was refused" is that the task is unowned and must be re-acquired — which
+				// is what READY already means, and what lease expiry would eventually do.
+				_ = t.transition(StateReady)
+			}
+		}
+		f.mu.Unlock()
+		err = errors.Join(err, commitError(outcome, id))
+	}()
 	defer f.mu.Unlock()
-	t, err := f.ownerLocked(id, agentID, epoch)
+	t, err = f.ownerLocked(id, agentID, epoch)
 	if err != nil {
 		return err
 	}
 	if err := t.transition(StateSuspended); err != nil {
 		return err
 	}
+	// Set BEFORE the append: a suspended task is resumable, and a resumable task that the store has
+	// not acknowledged is a second execution waiting to happen.
+	t.CommitPending = true
+	owned = true
+	// The next quantum starts waiting now, not when the task first became READY: yielding must not
+	// charge the next attempt for this one's execution time. ReadyAt is left alone — fairness ages
+	// the task, and resetting it would let a yielding workload look perpetually fresh.
+	t.AttemptReadyAt = f.now()
 	// Only overwrite the checkpoint when the quantum provides a non-nil
 	// value. A nil Yield (progress pause without new data) must not erase
 	// the checkpoint saved by a previous quantum or commit envelope.
@@ -336,20 +433,64 @@ func (f *Fabric) Yield(id, agentID string, epoch uint64, checkpoint any) error {
 // Complete finalizes a RUNNING task owned by agentID (at the fenced epoch) as
 // COMPLETED. The task's Checkpoint is preserved as-is: a quantum may have
 // written progress (or a worker result) into it before completing.
-func (f *Fabric) Complete(id, agentID string, epoch uint64) error {
+func (f *Fabric) Complete(id, agentID string, epoch uint64) (err error) {
 	pending := make([]*pendingAppend, 0, 1)
+	var t *Task
+	var owned bool
 	f.mu.Lock()
-	defer f.flushAppends(&pending)
+	defer func() {
+		outcome := f.flushAppends(&pending)
+		if outcome == CommitCommitted || outcome == CommitSkipped {
+			if owned {
+				f.mu.Lock()
+				f.clearCommitPendingLocked(t)
+				f.mu.Unlock()
+			}
+			return
+		}
+		// The completion is not durable, so the task is not completed: revert it before anyone can
+		// observe a state no store knows about. Left as-is, dependents become eligible on the
+		// strength of a completion the restart will never see, and they run work whose predecessor
+		// will be replayed.
+		f.mu.Lock()
+		f.revertCompletionLocked(t, StateRunning)
+		f.mu.Unlock()
+		err = errors.Join(err, commitError(outcome, id))
+	}()
 	defer f.mu.Unlock()
-	t, err := f.ownerLocked(id, agentID, epoch)
+	t, err = f.ownerLocked(id, agentID, epoch)
 	if err != nil {
 		return err
 	}
 	if err := t.transition(StateCompleted); err != nil {
 		return err
 	}
+	// Set BEFORE the append: from here until the store answers, the completion is not usable by anyone.
+	t.CommitPending = true
+	owned = true
 	pending = append(pending, f.recordLocked(t, EventTaskCompleted))
 	return nil
+}
+
+// clearCommitPendingLocked marks a transition's append as settled. Caller must hold f.mu.
+//
+// nil-safe because the deferred handlers run even when the operation bailed out before it had a task.
+func (f *Fabric) clearCommitPendingLocked(t *Task) {
+	if t != nil {
+		t.CommitPending = false
+	}
+}
+
+// revertCompletionLocked puts a task back to the state it had before a completion that could not be
+// persisted. The completion is the one transition that releases dependents, so this is where an
+// unacknowledged write does the most damage.
+func (f *Fabric) revertCompletionLocked(t *Task, previous TaskState) {
+	if t == nil {
+		return
+	}
+	t.State = previous
+	t.CommitPending = false
+	t.UpdatedAt = f.now()
 }
 
 // CompleteWithCheckpoint finalizes a RUNNING task as COMPLETED while storing
@@ -365,18 +506,40 @@ func (f *Fabric) Complete(id, agentID string, epoch uint64) error {
 // fails with ErrIllegalState and keeps its previous checkpoint — writing the
 // checkpoint first and failing the transition afterwards left a
 // never-completed task with the completed run's result embedded in it.
-func (f *Fabric) CompleteWithCheckpoint(id, agentID string, epoch uint64, checkpoint any) error {
+func (f *Fabric) CompleteWithCheckpoint(id, agentID string, epoch uint64, checkpoint any) (err error) {
 	pending := make([]*pendingAppend, 0, 1)
+	var t *Task
+	var previousCheckpoint any
+	var owned bool
 	f.mu.Lock()
-	defer f.flushAppends(&pending)
+	defer func() {
+		outcome := f.flushAppends(&pending)
+		if outcome == CommitCommitted || outcome == CommitSkipped {
+			if owned {
+				f.mu.Lock()
+				f.clearCommitPendingLocked(t)
+				f.mu.Unlock()
+			}
+			return
+		}
+		f.mu.Lock()
+		f.revertCompletionLocked(t, StateRunning)
+		t.Checkpoint = previousCheckpoint
+		f.mu.Unlock()
+		err = errors.Join(err, commitError(outcome, id))
+	}()
 	defer f.mu.Unlock()
-	t, err := f.ownerLocked(id, agentID, epoch)
+	t, err = f.ownerLocked(id, agentID, epoch)
 	if err != nil {
 		return err
 	}
+	previousCheckpoint = t.Checkpoint
 	if err := t.transition(StateCompleted); err != nil {
 		return err
 	}
+	// Same window as Complete: the completion is visible in memory before the store has answered.
+	t.CommitPending = true
+	owned = true
 	t.Checkpoint = checkpoint
 	pending = append(pending, f.recordLocked(t, EventTaskCompleted))
 	return nil
@@ -395,31 +558,84 @@ func (f *Fabric) CompleteWithCheckpoint(id, agentID string, epoch uint64, checkp
 // predecessor can never satisfy the dependency gate again, so the downstream
 // subgraph would otherwise sit unschedulable forever.
 func (f *Fabric) Fail(id, agentID string, epoch uint64, cause error) error {
+	_, err := f.failWithAttempts(id, agentID, epoch, cause)
+	return err
+}
+
+// failWithAttempts is Fail that also reports the attempt index this failure represents.
+//
+// The scheduler needs that fact AT the transition. Deriving it afterwards means reading a cumulative
+// counter (over-attributes later quanta) or re-reading a task another drain may already have
+// re-acquired — which is how a real retry was being reported as zero.
+func (f *Fabric) failWithAttempts(id, agentID string, epoch uint64, cause error) (attempts int, err error) {
 	pending := make([]*pendingAppend, 0, 1)
+	var t *Task
 	f.mu.Lock()
-	defer f.flushAppends(&pending)
+	// The outcome is reported but the state is NOT rolled back, and that asymmetry with Complete is
+	// deliberate. Complete's undo is a single field: the task goes back to RUNNING and its dependents
+	// stay blocked, which is exactly the pre-call state. A failed Fail has already cascaded to every
+	// READY dependent and stamped the cause into the checkpoint; locally reverting the task alone
+	// would leave dependents FAILED for a predecessor that is RUNNING again — a different lie, and a
+	// harder one to notice. The honest report is "this failure is not durable", and the store is the
+	// one that can settle it (reconcile by event id).
+	var owned bool
+	defer func() {
+		// Gated on the AUTHORITATIVE events only. A retry emits task.failed plus an observational
+		// task.ready; when only the latter failed, the retry itself is durably recorded and the task
+		// must stay runnable. Using the aggregate outcome here stranded exactly that case.
+		outcome := worstMustPersist(f.flushAppendsDetailed(&pending))
+		if outcome == CommitCommitted || outcome == CommitSkipped {
+			// Only the invocation that performed the transition may clear its mark: a same-owner call
+			// that loses the state race writes nothing, and its empty flush reports CommitSkipped.
+			if owned {
+				f.mu.Lock()
+				f.clearCommitPendingLocked(t)
+				f.mu.Unlock()
+			}
+			return
+		}
+		// The failure is not durable. The state stays (a cascade has already run), but the task must
+		// not be handed out again: a requeued task whose failure nobody recorded would be picked up as
+		// if the attempt had never happened, and a terminal one could be resurrected by a restart that
+		// folded the older checkpoint.
+		f.mu.Lock()
+		if t != nil {
+			t.CommitPending = false
+			t.CommitUnconfirmed = true
+		}
+		f.mu.Unlock()
+		err = errors.Join(err, commitError(outcome, id))
+	}()
 	defer f.mu.Unlock()
-	t, err := f.ownerLocked(id, agentID, epoch)
+	t, err = f.ownerLocked(id, agentID, epoch)
 	if err != nil {
-		return err
+		return attempts, err
 	}
 	t.RetryPolicy.Attempts++
+	attempts = t.RetryPolicy.Attempts
 	// A retry needs BOTH budget and a cause worth retrying: a permanent cause
 	// goes terminal even with budget left (see classifyFailure). Unclassified
 	// causes stay retryable, so tasks that never mark their causes keep 0.3.2
 	// behaviour exactly.
-	retryable := classifyFailure(cause)
+	level := failureLevel(cause)
+	retryable := level != LevelFatal
 	if retryable && t.CanRetry() {
 		if err := t.transition(StateReady); err != nil {
-			return err
+			return attempts, err
 		}
+		// The retry is only real once its record is durable; until then it is not acquirable.
+		t.CommitPending = true
+		owned = true
+		t.ReadyAt = f.now()
+		t.AttemptReadyAt = t.ReadyAt
 		// Schedule the next attempt before recording: task.failed is the
 		// must-persist carrier of NextAttemptAt (task.ready is
 		// observability-only), so the restore fold recovers the due time from it
 		// — a restart must not turn a pending backoff into an immediate retry.
 		// A zero delay leaves NextAttemptAt zero: immediately runnable, exactly
 		// as before backoff existed.
-		t.NextAttemptAt = nextAttemptAt(f.now(), t.RetryPolicy.Attempts, t.BackoffBase, t.BackoffMax)
+		base, ceiling := backoffForLevel(level, t.BackoffBase, t.BackoffMax)
+		t.NextAttemptAt = nextAttemptAt(f.now(), t.RetryPolicy.Attempts, base, ceiling)
 		// A retry is a continuation too (defect A6): the next attempt may land on
 		// another agent, with only the checkpoint carried over. Durable via the
 		// task.failed event recorded just below (its retryable flag is the fold
@@ -429,7 +645,7 @@ func (f *Fabric) Fail(id, agentID string, epoch uint64, cause error) error {
 		// the terminal/requeue event must not lose the actor. Ownership is
 		// cleared only after the event is captured, so the following
 		// task.ready event reflects the unowned task.
-		pending = append(pending, f.failedEventLocked(t, retryable))
+		pending = append(pending, f.failedEventLocked(t, retryable, level))
 		t.Owner = ""
 		t.Lease = nil
 		// task.ready is observability-only (never folded), but it is the event an
@@ -438,16 +654,32 @@ func (f *Fabric) Fail(id, agentID string, epoch uint64, cause error) error {
 		// so the default path keeps its exact payload.
 		var readyExtras map[string]any
 		if !t.NextAttemptAt.IsZero() {
+			// Nanoseconds, not seconds: the delay is jittered, so its sub-second part is real. A
+			// second-resolution carrier truncated it, and a restart then fired the retry up to a
+			// second early — a backoff that survives a crash only approximately is a backoff that
+			// can be defeated by restarting.
 			readyExtras = map[string]any{
-				restoreKeyNextAttemptAt: t.NextAttemptAt.UTC().Format(time.RFC3339),
+				restoreKeyNextAttemptAt: t.NextAttemptAt.UTC().Format(time.RFC3339Nano),
 			}
 		}
 		pending = append(pending, f.recordWithExtrasLocked(t, EventTaskReady, readyExtras))
 		// Not terminal: a retry is scheduled, so nothing is lost yet.
 		f.logFailureVisibilityLocked(t, cause, retryable, false)
-		return nil
+		return attempts, nil
 	}
-	return f.failTerminalLocked(t, cause, retryable, &pending)
+	// Terminal: the task must stay un-schedulable until its own record is durable. Ownership is
+	// claimed only AFTER the transition succeeds — a losing call (e.g. a Fail racing a Complete) must
+	// not adopt the flag it never set, or its handler would clear the winner's mark.
+	prevPending := t.CommitPending
+	t.CommitPending = true
+	if termErr := f.failTerminalLocked(t, cause, retryable, level, &pending); termErr != nil {
+		// Restore, not clear: the flag may belong to another call that is still waiting on the store
+		// (a Fail racing a Complete on the same owner). Clearing it here released dependents early.
+		t.CommitPending = prevPending
+		return attempts, termErr
+	}
+	owned = true
+	return attempts, nil
 }
 
 // logFailureVisibilityLocked writes the escalation line when an attempt ended in a
@@ -473,6 +705,7 @@ func (f *Fabric) logFailureVisibilityLocked(t *Task, cause error, retryable, ter
 		"attempts", t.RetryPolicy.Attempts,
 		"max_retries", t.RetryPolicy.MaxRetries,
 		"retryable", retryable,
+		"failure_class", failureLevel(cause).String(),
 		"terminal", terminal,
 		"cause", failureCauseText(cause))
 }
@@ -480,9 +713,10 @@ func (f *Fabric) logFailureVisibilityLocked(t *Task, cause error, retryable, ter
 // failedEventLocked records task.failed carrying the retry classification that
 // produced it, so the event stream alone answers "will this be retried?".
 // Caller must hold f.mu.
-func (f *Fabric) failedEventLocked(t *Task, retryable bool) *pendingAppend {
+func (f *Fabric) failedEventLocked(t *Task, retryable bool, level Level) *pendingAppend {
 	return f.recordWithExtrasLocked(t, EventTaskFailed, map[string]any{
-		payloadKeyRetryable: retryable,
+		payloadKeyRetryable:    retryable,
+		payloadKeyFailureClass: level.String(),
 	})
 }
 
@@ -495,7 +729,7 @@ func (f *Fabric) failedEventLocked(t *Task, retryable bool) *pendingAppend {
 // Caller must hold f.mu. Ownership deliberately stays attached (as before the
 // split): the terminal event must identify who held the task, and a FAILED task
 // can no longer be acquired, so the stale lease is inert provenance.
-func (f *Fabric) failTerminalLocked(t *Task, cause error, retryable bool, pending *[]*pendingAppend) error {
+func (f *Fabric) failTerminalLocked(t *Task, cause error, retryable bool, level Level, pending *[]*pendingAppend) error {
 	if err := t.transition(StateFailed); err != nil {
 		return err
 	}
@@ -503,7 +737,7 @@ func (f *Fabric) failTerminalLocked(t *Task, cause error, retryable bool, pendin
 	// readers of the previous envelope stay race-free — the fabric's
 	// documented checkpoint ownership rule.
 	t.Checkpoint = f.checkpointWithCause(t.Checkpoint, cause)
-	*pending = append(*pending, f.failedEventLocked(t, retryable))
+	*pending = append(*pending, f.failedEventLocked(t, retryable, level))
 	// Terminal failures are shared by Fail and ExpireDeadlines, so the escalation
 	// belongs here rather than at either call site: a budget that ran out on an
 	// unclassified cause must be visible whichever sweep ended the task.
@@ -589,6 +823,7 @@ func (f *Fabric) ReleaseReason(id, agentID string, epoch uint64, reason string) 
 	if err := t.transition(StateReady); err != nil {
 		return err
 	}
+	t.ReadyAt = f.now()
 	// Record the released event while the releasing agent is still
 	// attached (provenance), then clear ownership so the task is unowned.
 	if reason == "" {
@@ -630,6 +865,8 @@ func (f *Fabric) CheckExpiredLeases() []string {
 		if err := t.transition(StateReady); err != nil {
 			continue
 		}
+		t.ReadyAt = now
+		t.AttemptReadyAt = now
 		// The work is now continued rather than started (defect A6): the task
 		// keeps its checkpoint but lost its owner, so whoever acquires it next
 		// resumes someone else's progress. The task.expired event below is what
@@ -663,13 +900,40 @@ func (f *Fabric) CheckExpiredLeases() []string {
 //   - Owner/Lease stay attached for provenance; the holder's next
 //     Complete/Yield/Fail is rejected by ownerLocked, so a late writer cannot
 //     race the expiry.
+//
+// ExpireDeadlines is the ids-only shape kept for callers that predate the commit contract.
+//
+// It discards the outcome, which is exactly what the contract forbids for a caller that can act on
+// it: prefer ExpireDeadlinesWithOutcome. This wrapper exists because the deadline sweep has MANY test
+// callers and, until it is wired into a dispatch loop, no production one — see the note on the
+// scheduler side about where that error has to go, which is a decision rather than a log line.
 func (f *Fabric) ExpireDeadlines() []string {
+	expired, _ := f.ExpireDeadlinesWithOutcome()
+	return expired
+}
+
+// ExpireDeadlinesWithOutcome fails every task whose absolute deadline has passed and reports what is
+// known about the durability of those failures.
+//
+// The expired ids are returned even when the report carries an error: the tasks ARE failed in memory
+// and their dependents have been cascaded, so hiding them would be a second incorrect statement. The
+// error says the durable side is not settled — a refusal may be retried, an unknown must be
+// reconciled by event id — and nothing is rolled back, for the same reason Fail does not roll back.
+func (f *Fabric) ExpireDeadlinesWithOutcome() (expired []string, err error) {
 	pending := make([]*pendingAppend, 0, 1)
 	f.mu.Lock()
-	defer f.flushAppends(&pending)
+	defer func() {
+		// Per member, like the batch: two expired tasks where one failure appended and the other was
+		// refused are not "both unpersisted", and reporting them that way makes the caller retry (or
+		// reconcile) the wrong set.
+		committed, refused, partial, unknown := classifyBatch(f.flushAppendsDetailed(&pending))
+		if len(refused) == 0 && len(partial) == 0 && len(unknown) == 0 {
+			return
+		}
+		err = &PartialCommitError{Committed: committed, Refused: refused, Partial: partial, Unknown: unknown}
+	}()
 	defer f.mu.Unlock()
 	now := f.now()
-	var expired []string
 	for _, t := range f.tasks {
 		if t.Deadline.IsZero() || !now.After(t.Deadline) {
 			continue
@@ -681,7 +945,7 @@ func (f *Fabric) ExpireDeadlines() []string {
 		default:
 			continue
 		}
-		if err := f.failTerminalLocked(t, ErrTaskDeadlineExceeded, false, &pending); err != nil {
+		if err := f.failTerminalLocked(t, ErrTaskDeadlineExceeded, false, LevelFatal, &pending); err != nil {
 			// An illegal transition means the state moved under us in this
 			// tick (e.g. the holder completed): the deadline no longer applies,
 			// so skip this task instead of failing the whole sweep.
@@ -689,7 +953,7 @@ func (f *Fabric) ExpireDeadlines() []string {
 		}
 		expired = append(expired, t.ID)
 	}
-	return expired
+	return expired, nil
 }
 
 // ApprovalDecisionApproved and ApprovalDecisionRejected are the two allowed
@@ -816,7 +1080,7 @@ func (f *Fabric) resolveApprovalLocked(t *Task, decision, feedback, by string, p
 	t.ApprovalBy = by
 	t.ApprovalAt = f.now()
 	if decision == ApprovalDecisionRejected {
-		if err := f.failTerminalLocked(t, ErrInterruptRejected, false, pending); err != nil {
+		if err := f.failTerminalLocked(t, ErrInterruptRejected, false, LevelFatal, pending); err != nil {
 			t.ApprovalDecision, t.ApprovalFeedback = prevDecision, prevFeedback
 			t.ApprovalBy, t.ApprovalAt = prevBy, prevAt
 			return err
@@ -1046,7 +1310,7 @@ func (f *Fabric) ExpireApprovals() []string {
 		t.ApprovalFeedback = approvalTimeoutFeedback
 		t.ApprovalBy = approvalSLAPrincipal
 		t.ApprovalAt = now
-		if err := f.failTerminalLocked(t, ErrApprovalExpired, false, &pending); err != nil {
+		if err := f.failTerminalLocked(t, ErrApprovalExpired, false, LevelFatal, &pending); err != nil {
 			t.ApprovalDecision, t.ApprovalFeedback = "", ""
 			t.ApprovalBy, t.ApprovalAt = "", time.Time{}
 			continue
@@ -1078,27 +1342,81 @@ func (f *Fabric) ExpireApprovals() []string {
 // store is attached: the store already holds the task's task.created, so
 // without a tombstone RestoreFromStore folds the deleted task back and the
 // discarded work becomes READY again and re-executes after a restart.
-func (f *Fabric) Delete(id string) error {
+func (f *Fabric) Delete(id string) (err error) {
 	pending := make([]*pendingAppend, 0, 1)
+	var target *Task
 	f.mu.Lock()
-	defer f.flushAppends(&pending)
+	defer func() {
+		outcome := f.flushAppends(&pending)
+		switch outcome {
+		case CommitCommitted, CommitSkipped:
+			// Remove only now. The task was never absent from the map, so no Create could have
+			// reused this id in the meantime — which is what made the previous "put it back by id"
+			// rollback capable of clobbering a NEWER task with the same id.
+			f.mu.Lock()
+			if current, ok := f.tasks[id]; ok && current == target {
+				delete(f.tasks, id)
+			}
+			f.mu.Unlock()
+			// The tombstone is durable: any entry recorded before it describes a task the store no
+			// longer has. Settling one of those later would bring a deliberately deleted task back.
+			f.clearPendingForTask(id)
+			return
+		case CommitUnknown:
+			// The tombstone may have been written. Restoring a schedulable state would run work the
+			// durable log may already consider deleted, so the task stays visible only for
+			// reconciliation and is excluded from scheduling.
+			f.mu.Lock()
+			if current, ok := f.tasks[id]; ok && current == target {
+				current.PendingDelete = true
+				current.TombstoneUnconfirmed = true
+				current.UpdatedAt = f.now()
+			}
+			f.mu.Unlock()
+			err = errors.Join(err, commitError(outcome, id))
+			return
+		default:
+			// Definitely refused: the deletion did not happen, so admission reopens — the task is
+			// exactly as it was before the attempt.
+			f.mu.Lock()
+			if current, ok := f.tasks[id]; ok && current == target && !current.TombstoneUnconfirmed {
+				// Reopen only when NO earlier attempt left a tombstone in doubt. A refusal now does
+				// not prove the previous append was not applied.
+				current.PendingDelete = false
+				// Nothing was written, so the id minted by this attempt is free to be replaced.
+				current.PendingTombstoneID = ""
+				current.UpdatedAt = f.now()
+			}
+			f.mu.Unlock()
+			err = errors.Join(err, commitError(outcome, id))
+			return
+		}
+	}()
 	defer f.mu.Unlock()
-	return f.deleteWithTombstoneLocked(id, &pending)
-}
-
-// deleteWithTombstoneLocked records the tombstone for id and removes the task.
-// Callers MUST hold f.mu and flush the returned pending appends.
-func (f *Fabric) deleteWithTombstoneLocked(id string, pending *[]*pendingAppend) error {
 	t, ok := f.tasks[id]
 	if !ok {
 		return ErrTaskNotFound
 	}
 	switch t.State {
 	case StateReady, StateCompleted, StateFailed:
-		// Record while the task is still attached so the tombstone carries the
-		// same provenance payload every other must-persist event does.
-		*pending = append(*pending, f.recordLocked(t, EventTaskDeleted))
-		delete(f.tasks, id)
+		// Close admission BEFORE the append, not after a failure. Otherwise a task whose deletion is
+		// in flight can be handed a lease during the append; the delete then succeeds and removes the
+		// task out from under a running quantum (Start → ErrTaskNotFound).
+		t.PendingDelete = true
+		// recordLocked returns nil without a store: an in-memory fabric has nothing to identify.
+		if ev := f.recordLocked(t, EventTaskDeleted); ev != nil {
+			if t.PendingTombstoneID != "" {
+				// A previous tombstone may already exist in the store. Reusing its id makes this
+				// append the SAME event, which is the only way an unverified deletion can be settled
+				// by id — a fresh id would produce two task.deleted records for one deletion.
+				ev.event.ID = t.PendingTombstoneID
+				ev.idempotentRetry = true
+			} else {
+				t.PendingTombstoneID = ev.event.ID
+			}
+			pending = append(pending, ev)
+		}
+		target = t
 		return nil
 	default:
 		return ErrTaskUndeletable

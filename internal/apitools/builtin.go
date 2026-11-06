@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"math"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -18,6 +17,7 @@ import (
 
 	builtin_hash "github.com/Timwood0x10/ares/internal/tools/resources/builtin/hash"
 	builtin_math "github.com/Timwood0x10/ares/internal/tools/resources/builtin/math"
+	builtin_network "github.com/Timwood0x10/ares/internal/tools/resources/builtin/network"
 	builtin_pdf "github.com/Timwood0x10/ares/internal/tools/resources/builtin/pdf"
 	builtin_stringutils "github.com/Timwood0x10/ares/internal/tools/resources/builtin/stringutils"
 	builtin_system "github.com/Timwood0x10/ares/internal/tools/resources/builtin/system"
@@ -444,69 +444,36 @@ type webSearchTool struct {
 // configured endpoint and an SSRF-safe dialer for request-supplied overrides.
 func newWebSearchTool() *webSearchTool {
 	return &webSearchTool{
-		trustedClient: &http.Client{Timeout: 10 * time.Second},
+		// The operator-configured endpoint is trusted by configuration, but its RESPONSES are not:
+		// a compromised or misconfigured instance can answer with a redirect to anywhere. Redirects
+		// are capped here. They are not IP-checked, because the documented default endpoint is
+		// localhost:5605 and the SSRF block list would refuse it — the trusted client exists
+		// precisely to reach that address.
+		trustedClient: &http.Client{Timeout: 10 * time.Second, CheckRedirect: capRedirects},
+		// Caller-supplied override URLs (the LLM-controlled searxng_base_url) reuse the network
+		// package's hardened transport rather than a second, hand-rolled guard: see
+		// network.SSRFTransport, which re-checks the resolved address at connect time (a pre-flight
+		// resolution followed by a plain dial leaves a window where DNS rebinds to a private IP) and
+		// disables the environment proxy so a proxy cannot bypass the check. SSRFCheckRedirect
+		// applies the same filter to every hop.
 		ssrfClient: &http.Client{
-			Timeout: 10 * time.Second,
-			Transport: &http.Transport{
-				DialContext: ssrfSafeDialContext,
-			},
+			Timeout:       10 * time.Second,
+			Transport:     builtin_network.SSRFTransport(),
+			CheckRedirect: builtin_network.SSRFCheckRedirect,
 		},
 	}
 }
 
-// ssrfSafeDialContext blocks dialing private/loopback/link-local addresses
-// to mitigate Server-Side Request Forgery (SSRF) risk.
-func ssrfSafeDialContext(ctx context.Context, network, addr string) (net.Conn, error) {
-	host, port, err := net.SplitHostPort(addr)
-	if err != nil {
-		return nil, fmt.Errorf("ssrf: invalid address %q: %w", addr, err)
-	}
-	// Resolve the host first so we inspect the actual IP we would dial.
-	ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
-	if err != nil {
-		return nil, fmt.Errorf("ssrf: resolve %q: %w", host, err)
-	}
-	for _, ip := range ips {
-		if isPrivateIP(ip.IP) {
-			return nil, fmt.Errorf("ssrf: refusing to dial private/loopback address %s for %s", ip.IP, host)
-		}
-	}
-	dialer := &net.Dialer{}
-	return dialer.DialContext(ctx, network, net.JoinHostPort(host, port))
-}
-
-// isPrivateIP reports whether the given IP is in a private, loopback,
-// link-local, unspecified, or CGNAT range. Requests to such addresses are
-// blocked by default.
+// capRedirects bounds how many hops a trusted endpoint may redirect through.
 //
-// This mirrors internal/tools/resources/builtin/network/ssrf.go::isBlockedIP so
-// the two SSRF gates cannot drift apart — that version was hardened first and
-// is the reference. The hand-rolled checks that used to live here missed CGNAT
-// (100.64.0.0/10, the Kubernetes pod CIDR) and IPv6 ULA, and did not normalize
-// IPv4-mapped IPv6 addresses before classifying them.
-func isPrivateIP(ip net.IP) bool {
-	if ip == nil {
-		return true
+// The destination is not re-validated against the SSRF block list on purpose: this client's whole
+// job is to reach the operator's endpoint, whose default is localhost. Capping still matters — an
+// unbounded chain against a broken proxy is a cheap way to hold a request open.
+func capRedirects(req *http.Request, via []*http.Request) error {
+	if len(via) >= builtin_network.MaxHTTPRedirects {
+		return fmt.Errorf("web_search: stopped after %d redirects", builtin_network.MaxHTTPRedirects)
 	}
-	// Normalize IPv4-mapped IPv6 to its 4-byte form so IsLoopback / IsPrivate
-	// classify it correctly across Go versions.
-	if v4 := ip.To4(); v4 != nil {
-		ip = v4
-	}
-	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
-		return true
-	}
-	if ip.IsUnspecified() {
-		return true
-	}
-	// CGNAT / carrier-grade NAT (RFC 6598): 100.64.0.0/10. Used by Kubernetes
-	// pod CIDRs and ISP-grade NAT — reachable from inside a cluster but must
-	// not be an SSRF target. Not covered by IsPrivate (which only checks the
-	// RFC 1918 ranges).
-	if v4 := ip.To4(); v4 != nil && v4[0] == 100 && v4[1] >= 64 && v4[1] <= 127 {
-		return true
-	}
-	return false
+	return nil
 }
 
 func (t *webSearchTool) Name() string { return "web_search" }

@@ -19,6 +19,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/kernel"
 	"github.com/Timwood0x10/ares/internal/runtime"
 	"github.com/Timwood0x10/ares/internal/runtime/arena"
+	"github.com/Timwood0x10/ares/internal/runtime/observability"
 )
 
 // kernelHandle carries the assembled kernel from agent construction to the
@@ -387,10 +388,42 @@ type loadTracker = kernel.LoadTracker
 // the historical cmd/ares constructor signature; the implementation lives in
 // kernel.New.
 func NewKernelScheduler(fabric *taskfabric.Fabric, executors map[string]CapabilityExecutor, tracker *loadTracker) *kernelScheduler {
-	return kernel.New(fabric, executors, tracker)
+	sched := kernel.New(fabric, executors, tracker)
+	// Wire the scheduling observations. Without this the three ARES_scheduler_* histograms are
+	// registered and never recorded: an empty histogram is indistinguishable from "no slow
+	// dispatches", which is the one reading an operator would draw from it.
+	//
+	// NewPrometheusMetrics is idempotent (a second call returns the instance registered at
+	// bootstrap), so this does not create a second registry.
+	if m, err := observability.NewPrometheusMetrics(); err != nil {
+		log.Warn(context.Background(), "NewKernelScheduler",
+			"kernel scheduler: scheduling metrics not wired; ARES_scheduler_* will stay empty",
+			err)
+	} else if m != nil {
+		sched.WithSchedulerMetrics(schedulerMetrics{m: m})
+	}
+	return sched
 }
 
 // newLoadTracker creates a shared tracker.
 func newLoadTracker() *loadTracker {
 	return kernel.NewLoadTracker()
 }
+
+// schedulerMetrics adapts the Prometheus instrument set to the kernel's observation interface.
+//
+// The names differ (RecordSchedulerReadyToDispatch vs RecordReadyToDispatch) because neither side
+// imports the other: the kernel must not depend on observability. Bridging here is what makes the
+// interface implementable at all — without it, WithSchedulerMetrics had no caller it could accept,
+// which is why the three histograms were registered and never recorded.
+type schedulerMetrics struct {
+	m *observability.PrometheusMetrics
+}
+
+func (s schedulerMetrics) RecordReadyToDispatch(seconds float64) {
+	s.m.RecordSchedulerReadyToDispatch(seconds)
+}
+func (s schedulerMetrics) RecordWorkConservingGap(seconds float64) {
+	s.m.RecordSchedulerWorkConservingGap(seconds)
+}
+func (s schedulerMetrics) RecordReadyAge(seconds float64) { s.m.RecordSchedulerReadyAge(seconds) }

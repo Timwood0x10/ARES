@@ -84,11 +84,44 @@ func (b *toolBinder) CallTool(ctx context.Context, name string, args map[string]
 }
 
 // IsToolIdempotent reports whether a tool is safe to retry on failure.
+//
+// Two sources, in this order: the binding (BindIdempotentTool) and the tool's own schema tag. The
+// tag is what makes retry safety reachable for tools the agent runtime never binds by hand — MCP
+// tools live in the registry, so before this they were permanently "unknown" and any ambiguous
+// failure killed the task.
+//
+// The default stays unsafe: only an explicit declaration turns retries on, because the failure it
+// guards against (a duplicated write) cannot be undone by trying again.
 func (b *toolBinder) IsToolIdempotent(name string) bool {
 	b.mu.RLock()
-	defer b.mu.RUnlock()
 	entry, ok := b.tools[name]
-	return ok && entry.idempotent
+	registry := b.registry
+	b.mu.RUnlock()
+	if ok && entry.idempotent {
+		return true
+	}
+	return registryDeclaresIdempotent(registry, name)
+}
+
+// registryDeclaresIdempotent reads the retry-safety declaration from a registered tool's tags.
+func registryDeclaresIdempotent(registry *core.Registry, name string) bool {
+	if registry == nil || name == "" {
+		return false
+	}
+	tool, ok := registry.Get(name)
+	if !ok || tool == nil {
+		return false
+	}
+	// Code first: an implementation is a stronger statement than a tag, and it cannot be lost in a
+	// config round-trip.
+	if idem, ok := tool.(core.IdempotentTool); ok {
+		return idem.IsIdempotent()
+	}
+	taggable, ok := tool.(core.TaggableTool)
+	if !ok {
+		return false
+	}
+	return core.DeclaresIdempotent(taggable.Tags())
 }
 
 // ListTools returns all available tool names.

@@ -36,6 +36,15 @@ type lifecycleComp struct {
 	waitBlock chan struct{}
 	unblock   sync.Once
 
+	// blockStop makes Stop hang without watching its context, so the test can prove the orchestrator
+	// bounds the call instead of trusting the component.
+	blockStop bool
+	// stopPanic makes Stop panic, so the test can check the goroutine's recover boundary.
+	stopPanic string
+	stopMu    sync.Mutex
+	stopBlock chan struct{}
+	stopOnce  sync.Once
+
 	// failReady marks the component as started then fails Ready, simulating
 	// a partial start that must be cleaned up by rollback.
 	failReady bool
@@ -71,9 +80,23 @@ func (c *lifecycleComp) Ready(_ context.Context) error {
 	return c.readyErr
 }
 
-func (c *lifecycleComp) Stop(_ context.Context) error {
+func (c *lifecycleComp) Stop(ctx context.Context) error {
 	if c.stopCalls != nil {
 		atomic.AddInt32(c.stopCalls, 1)
+	}
+	if c.stopPanic != "" {
+		panic(c.stopPanic)
+	}
+	if c.blockStop {
+		// Deliberately ignores ctx: this models a component that keeps running its shutdown
+		// regardless of the budget it was given.
+		c.stopMu.Lock()
+		if c.stopBlock == nil {
+			c.stopBlock = make(chan struct{})
+		}
+		ch := c.stopBlock
+		c.stopMu.Unlock()
+		<-ch
 	}
 	return c.stopErr
 }
@@ -417,11 +440,18 @@ func TestOrchestrator_Shutdown_BlockingWaiterTimesOut(t *testing.T) {
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutdownCancel()
 	// The blocking Waiter has no context; Shutdown must respect the caller's
-	// 5s deadline instead of the 30s stopTimeout. Allow a small margin. The
-	// Wait aborts gracefully via the shutdown context (a caller-imposed
-	// deadline is not a component error, so Shutdown may return nil).
-	if err := o.Shutdown(shutdownCtx); err != nil {
-		t.Fatalf("Shutdown: %v", err)
+	// 5s deadline instead of the 30s stopTimeout. Allow a small margin.
+	//
+	// This used to assert a nil error, on the grounds that "a caller-imposed deadline is not a
+	// component error". That conflated two things: the deadline is not an error, but a goroutine
+	// still running when the budget expires means the shutdown did NOT finish — reporting success
+	// for it is the false claim RT-04 exists to remove.
+	err := o.Shutdown(shutdownCtx)
+	if err == nil {
+		t.Fatal("Shutdown returned nil while a managed goroutine was still running past the caller's budget")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Shutdown error must identify the expired budget, got: %v", err)
 	}
 	elapsed := time.Since(start)
 
@@ -449,4 +479,15 @@ func TestOrchestrator_CancelSignalsRootContext(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("Cancel() must cancel the managed root context")
 	}
+}
+
+// releaseStop unblocks a Stop that is hanging, so the leaked goroutine can exit before goleak runs.
+func (c *lifecycleComp) releaseStop() {
+	c.stopOnce.Do(func() {
+		c.stopMu.Lock()
+		if c.stopBlock != nil {
+			close(c.stopBlock)
+		}
+		c.stopMu.Unlock()
+	})
 }

@@ -447,54 +447,6 @@ func TestSemaphoreLimiter(t *testing.T) {
 	})
 }
 
-func TestWeightedSemaphoreLimiter(t *testing.T) {
-	t.Run("create weighted semaphore", func(t *testing.T) {
-		config := &LimiterConfig{Rate: 10, Burst: 10}
-		limiter := NewWeightedSemaphoreLimiter(config)
-
-		if limiter == nil {
-			t.Errorf("limiter should not be nil")
-		}
-	})
-
-	t.Run("acquire with weight", func(t *testing.T) {
-		config := &LimiterConfig{Rate: 10, Burst: 10}
-		limiter := NewWeightedSemaphoreLimiter(config)
-
-		err := limiter.Acquire(context.Background(), "test", 5)
-		if err != nil {
-			t.Errorf("acquire error: %v", err)
-		}
-
-		limiter.Release("test", 5)
-	})
-
-	t.Run("available", func(t *testing.T) {
-		config := &LimiterConfig{Rate: 10, Burst: 10}
-		limiter := NewWeightedSemaphoreLimiter(config)
-
-		limiter.Acquire(context.Background(), "test", 3)
-
-		available := limiter.Available()
-		if available != 7 {
-			t.Errorf("expected 7 available, got %d", available)
-		}
-	})
-
-	t.Run("reset", func(t *testing.T) {
-		config := &LimiterConfig{Rate: 10, Burst: 10}
-		limiter := NewWeightedSemaphoreLimiter(config)
-
-		limiter.Acquire(context.Background(), "test", 5)
-		limiter.Reset()
-
-		available := limiter.Available()
-		if available != 10 {
-			t.Errorf("expected 10 available after reset, got %d", available)
-		}
-	})
-}
-
 func TestLimiterFactory(t *testing.T) {
 	t.Run("create limiter", func(t *testing.T) {
 		factory := NewFactory()

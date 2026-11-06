@@ -210,11 +210,36 @@ func runBackgroundOnce(ctx context.Context, name string, fn func(ctx context.Con
 // each goroutine exits on ctx.Done() and this ensures no goroutine is left
 // running across a graceful shutdown.
 func (c *Components) WaitBackground() {
+	// Unbounded on purpose, and the reason this variant still exists: callers that own the whole
+	// process lifetime (an embedded SDK whose Close() is the last thing that happens) have no budget
+	// to lend. Any caller that DOES have one should use WaitBackgroundContext — a wait with no
+	// deadline silently outlives the shutdown budget it was supposed to respect.
+	_ = c.WaitBackgroundContext(context.Background())
+}
+
+// WaitBackgroundContext is WaitBackground bounded by ctx.
+//
+// It exists because the CLI called the unbounded form after the kernel had already spent its own
+// shutdown budget: the runtime was closed, the context was cancelled, and the process still sat here
+// waiting for goroutines with no deadline at all. A worker that ignores cancellation can therefore
+// hold the process open indefinitely, which is the failure the bounded shutdown was meant to prevent.
+func (c *Components) WaitBackgroundContext(ctx context.Context) error {
 	if c == nil {
-		return
+		return nil
 	}
-	if err := c.bgGroup.Wait(); err != nil {
-		log.Warn("bootstrap: background group error during shutdown", "error", err)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	done := make(chan error, 1)
+	go func() { done <- c.bgGroup.Wait() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			log.Warn("bootstrap: background group error during shutdown", "error", err)
+		}
+		return err
+	case <-ctx.Done():
+		return fmt.Errorf("bootstrap: background goroutines still running: %w", ctx.Err())
 	}
 }
 

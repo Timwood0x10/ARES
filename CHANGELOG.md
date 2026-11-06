@@ -2,6 +2,194 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.6] — a scheduler that keeps working, and an L1 that keeps itself true
+
+The scheduling loop no longer waits for its slowest quantum before considering new work, dispatch
+order is defined rather than sampled from a map, and the L1 capability catalogue is re-derived from
+the tool registry instead of being written once at boot. No configuration changes are required.
+
+> **Upgrade notes**
+> - `VERSION` is 0.3.6. Nothing in the config schema changed; existing `ares.yaml` files keep
+>   working, and `evolution.objective` still defaults to `strategy`.
+> - The three `ARES_scheduler_*` histograms were registered in 0.3.5 and never recorded. They are
+>   now fed by the production scheduler, so a dashboard that showed them as permanently empty will
+>   start reporting.
+> - Backpressure stays **off by default** (`kernel.max_ready_tasks: 0` = unlimited). A deployment
+>   that wants a cap sets it; one that does not behaves exactly as before.
+> - No public API was removed in this release. `internal/evoapi` and `RunScenario` were removed in
+>   0.3.5.
+> - **Calls that previously returned `nil` can now fail.** No signature changed; the errors are new:
+>   `Create` returns the store's refusal (previously it reported success and left a task a restart
+>   would lose); `Complete`, `CompleteWithCheckpoint`, `Fail` and `Yield` return `ErrCommitUnknown`
+>   or the refusal when their append does not commit; `Shutdown` returns an error when its budget
+>   expires with work still running, so a `serve` exit code can become non-zero where it used to be 0;
+>   and `serve` returns the error when Bootstrap's background workers outlive `backgroundExitBudget`.
+> - **A stalled session is reported later, not sooner.** `SessionStalled` now needs the session graph
+>   as well as the fabric, so a wait that used to end after five polls while a projection was still
+>   compiling keeps waiting until it can justify the verdict or its budget expires. Callers that
+>   cannot see the graph keep the old, narrower meaning.
+
+### Highlights — the scheduling loop stops paying for its slowest task
+
+**One slow quantum no longer stalls dispatch.** `drain` used to end with `wg.Wait()`, and `Run`
+called it synchronously: a single 30-second quantum held the scheduling loop, so an idle agent
+could not pick up work that arrived meanwhile, and the event branch could not run either. The pump
+now launches and returns; the wait moved to a process-wide in-flight tracker that shutdown uses.
+
+**Admission is a budget, not a parking space.** The first version of the pump kept a per-drain
+semaphore and blocked on it when the batch exceeded capacity — the batch barrier, relocated. It is
+now a process-wide counter that *refuses* and leaves the rest READY for the next tick, so the loop
+keeps serving events. The budget is process-wide on purpose: with pumps overlapping, a per-pump
+limit lets N pumps each admit N quanta and `WithMaxConcurrent` stops being a cap.
+
+**Shutdown still waits, and says so honestly.** `maxConcurrentPerAgent=1` used to be implied by the
+batch barrier. It is now enforced by the lease, and a quantum the scheduler aborts at shutdown is no
+longer logged as a task failure — with pumps overlapping, `cancel()` can catch many at once, and an
+orderly shutdown used to look like a burst of errors.
+
+### Highlights — dispatch order is defined, and old work ages
+
+- Ready tasks are ordered by `(priority DESC, ready_since ASC, id ASC)`. All three keys are load
+  bearing: without the id key the order of tasks equal on the first two comes from Go's randomised
+  map iteration.
+- A task's effective priority grows with the time it has waited (`+0.01` per second, fixed), so a
+  session with one task is not starved behind another session's hundred. The aging weight is small
+  enough to cross one priority band, not to invert the ranking.
+
+### Highlights — L1 is reconciled, never learned
+
+`enabled` / `budget` / `prior` decide whether the planner may use a tool at all. They are derived
+from the tool schema's own tags and re-applied on a timer, on a registry change, and once at start;
+a tool attached at runtime now enters the catalogue without a restart.
+
+The reconciler is **declarative and transactional**: a failure part-way is rolled back to the
+snapshot taken on entry, removal waits for three consecutive misses (a registry that briefly returns
+fewer tools is indistinguishable from a deletion), an empty catalogue is reported rather than
+applied, and no path reads fitness. A fitness loop that could set `enabled=false` would raise its
+measured score by removing the work it cannot do — and the loss, tasks the system can no longer
+attempt, is invisible to it.
+
+### Highlights — a change is durable before it is visible
+
+`Complete` said COMPLETED, a retry said READY, a yield said SUSPENDED — all before the append
+returned, so a drain in that window released dependents, dispatched the task again, or answered a
+waiter with a result that could still be reverted.
+
+- `CommitPending` marks the transition in flight; `ReadyTasks`, `ResumableTasks`, `IsReady`,
+  `Acquire`, dependency satisfaction and `CompletionSettled` all read it. Only the invocation that
+  performed the transition may clear it — a duplicate or a losing call writes nothing.
+- Event ids are assigned **before** the append and are fixed length, because `events.id` is
+  `VARCHAR(255)` and embedding the task id turned a legal 255-character task id into 274.
+- Every non-committed append is recorded in `PendingReconciliations()` with its task, type,
+  generation and a snapshot. `Reconcile` applies the confirmed transition against **live** state,
+  restores the checkpoint (nil included), re-inserts a confirmed create, and retires a task's records
+  once its deletion is durable. The ledger is in memory only — see Known gaps.
+
+### Highlights — preemption, shutdown and the stall verdict stop guessing
+
+- **Preemption** picks victims from the same capability source as candidate selection, per demand,
+  and only when strictly outranked. Recovery-bound executors are never victims; free agents and
+  victims are one bipartite graph, so a flexible agent is not spent on a demand a rigid one could
+  serve; the plan holds through dispatch instead of being re-sampled by the drain.
+- **Shutdown** ends the errgroup drain with the caller's `ctx`, bounds `Stop`, propagates `Wait`
+  failures (leaving a non-stopped state with the reason), keeps the dependencies of a component that
+  did not exit, and returns the first call's result to later callers. `serve` runs the same teardown
+  for a signal and for a background failure, and `WaitBackgroundContext` bounds the last wait.
+- **A lagging projection is not a stall.** `SessionTopology` reports graph nodes with no compiled
+  task; `SessionStalledWith` refuses the verdict while any remain, so a session whose answer node is
+  still being compiled is no longer reported as finished after five polls.
+
+### Added
+
+- `ARES_scheduler_ready_to_dispatch_seconds`, `ARES_scheduler_work_conserving_gap_seconds`,
+  `ARES_scheduler_ready_age_seconds`, now recorded by the production scheduler through a thin
+  adapter (`PrometheusMetrics` and the kernel interface used different method names, which is why no
+  caller could implement the interface before).
+- **`kernel.max_ready_tasks`** caps outstanding work, and reaches the fabric the scheduler actually
+  drains (the option existed since 0.3.5 with no caller, so it could only be set from a test). Over
+  the cap, `Create` fails with `ErrReadyQueueFull` carrying the current depth and the cap. READY
+  **and** SUSPENDED count as outstanding — a task that yields is scheduled again, so counting READY
+  alone would let a yielding workload bypass the cap.
+- `CommitOutcome` (`committed` / `not_committed` / `unknown`) and `ErrCommitUnknown`: the fabric now
+  says what it knows about a state change instead of returning a bare error. A deadline or
+  cancellation classifies as **unknown**, not as a refusal — a write that timed out may have landed,
+  and re-running work on that reading is how a duplicate execution is born.
+- `Fabric.PendingReconciliations()` and `Fabric.Reconcile(ctx, eventID, found, generation)`: the
+  ledger of appends whose fate is unsettled, keyed by an event id assigned **before** the append.
+  Three rules, in order: an unknown id is an error rather than a no-op; the caller's generation, the
+  record's and the live task's must agree; and `found=false` is **inconclusive** — one miss does not
+  prove an in-flight append will not land, so the record stays.
+- `SessionTopology` / `SessionStalledWith` / `AwaitOptions.Topology`: the stall verdict can see graph
+  nodes the fabric has not compiled yet. `SessionStalled` keeps its old signature and its old
+  meaning (fabric-only) for callers that cannot see the graph.
+- `Components.WaitBackgroundContext(ctx)`: a bounded final wait for Bootstrap's background workers.
+  The unbounded `WaitBackground` stays, documented as unbounded, for callers whose `Close` is the
+  last thing that happens.
+- `Orchestrator.ReportComponentFault(name, err)`: records a fault that did **not** stop the component
+  — it updates `Reason` atomically and leaves the state alone, because marking a working loop
+  "failed" is the same class of lie as marking a stopped one "stopped".
+- `Components.StartedBackground()` lists the background workers a process started, in order. A
+  worker's only trace used to be a log line, so "no evolution ticker when evolution is off" could
+  not be stated as an assertion.
+
+### Changed
+
+- The soak workload now includes the scheduling pump, the experiment log (append + bounded query)
+  and checkpoint decoding with both outcomes. The previous four workloads all exercised code this
+  cycle did not touch.
+- **State changes are gated on acknowledgement.** `Create` (the task it just inserted is removed),
+  `Complete`,
+  `CompleteWithCheckpoint`, `Fail` and `Yield` mark the transition in flight (`CommitPending`) and
+  only clear it once the store answers; dependents, dispatch queues, `Acquire` and waiters all read
+  the mark. A refused failure or yield keeps the task isolated (`CommitUnconfirmed`) instead of
+  letting it run on a decision nobody recorded.
+- **Shutdown reads the caller's deadline.** The errgroup drain ends with `ctx.Done()`, `Stop` is
+  bounded, `Wait` failures/timeouts/cancellations propagate and leave a non-stopped state with the
+  reason attached, a component that did not exit keeps its dependency chain up, and a repeated
+  `Shutdown` returns the first call's recorded result rather than inventing a success.
+- **Preemption is matched per demand.** Victims are chosen from the same capability source as
+  candidate selection, only for demands that strictly outrank them, never from recovery-bound or
+  non-executable owners, and one agent serves one demand. Free agents and victims form a single
+  bipartite graph so an existing pair can be reassigned instead of buying an eviction.
+- **The recovery sweep reports what it could not settle.** `runSweepChain` returns the per-member
+  outcome and the loop hands it to `OnSweepError`, which publishes to component health immediately —
+  while an ordinary deadline expiry is logged as the sweep working, not as a persistence fault.
+- `make lint`'s local gate and the CI lint job were already aligned in 0.3.5; the scheduler work
+  added no new lint surface.
+
+### Removed
+
+- `L1PatchExecutor`: written during this cycle and deleted before release. It was unreachable (no
+  differ emits an L1-targeted patch, and the registry dispatches by component name rather than node
+  id) and it would have been a second writer of one surface — the reconciler resets metadata from
+  the tags every interval, so a patch it wrote would be overwritten. Nothing shipped, so nothing
+  breaks.
+
+### Known gaps
+
+- **Fairness is asserted as an order, not as a bound.** The milestone asked for `ready_age` to stay
+  under a number of dispatch cycles; the observation interface carries no task label, and adding one
+  would scale histogram cardinality with the task count. Ordering implies a bound only while
+  dispatch is prompt, which the work-conserving test covers separately.
+- **`grace` and the reconciliation interval are not configurable** (three misses, five minutes).
+  Making them so needs a YAML key with its own default and validation.
+- The idle evolution path still has predicate coverage only: `WiredEvolutionSystem.Coordinator` must
+  stay concrete for `SetDeployer`/`SetApplyGate`, so a fake cannot be injected there.
+- **The reconciliation ledger is in memory only.** An unknown outcome is therefore reconcilable only
+  inside the process that recorded it: a restart forgets it, and nothing downstream can settle the
+  append by event id afterwards. Persisting it (or deriving it from the store: created without
+  completed) is the outstanding work; the gap is marked `TODO(persistence)` on both the field and the
+  type.
+- **RT-01 is patched, not fully accepted.** The contract, the gate and the ledger are covered by
+  tests that fail when reverted, but the PostgreSQL disconnect and commit-unknown checks were
+  **skipped** for lack of an isolated instance, the subprocess rebuild was not run, and no SQLite
+  store exists to check the backend contract against.
+- **RT-02 covers the shared wait entry, not every path.** Subscription compensation and multi-session
+  acceptance are untouched; the entry test drives `AwaitSessionResult` with an explicitly released
+  projection, so a projection that lands through the compiler subscription is outside it.
+- `internal/evoapi` removal, the `ObservationReplayPolicy` default, the idle-path gap and the three
+  sub-30% Postgres packages carry over from 0.3.5 unchanged.
+
 ## [0.3.5] — causal history, one evolution path, an auditable GA
 
 Compressed history keeps the reason a call was made, the GA stops being able to do two things per
@@ -200,8 +388,11 @@ unchanged: the token budget, the tool filter and the experiment log are all opt-
 
 ### Known gaps
 
-- **L1 metadata has no production writer**: `enabled`/`budget`/`prior` come from tool
-  declarations, not from the GA loop — a GA-to-L1 patch executor does not exist yet.
+- **L1 metadata is declared, and deliberately not learned.** `enabled`/`budget`/`prior` come from
+  the tool's own tags and are re-derived periodically from the tool registry (a reconciler, added in
+  0.3.6). Nothing writes them from fitness, and nothing should: the planner reads them to decide
+  whether a tool may be used at all, so a loop that could disable a ToolClass would raise its
+  measured score by removing the work it cannot do.
 - `internal/evoapi` still has no importers; removal is scheduled for 0.5.0.
 
 ## [0.3.3]

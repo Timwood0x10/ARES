@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync"
 	"testing"
+	"time"
 )
 
 // mockProvider is a test provider that returns fixed records.
@@ -338,5 +339,47 @@ func TestEngine_DiscoverNowMergesRegisteredWithDiscovered(t *testing.T) {
 	svc, err := store.Get(ctx, "tool-a")
 	if err != nil || svc == nil {
 		t.Fatal("service merged from register+provider disappeared")
+	}
+}
+
+// TestEngine_StopAutoDiscoveryIsAwaitable: the background loop used to be owned only by the caller's
+// ctx, so a shutdown had no way to wait for it — it could still be calling providers after the
+// components reported themselves closed. Stop + Wait make the lifetime explicit and checkable.
+func TestEngine_StopAutoDiscoveryIsAwaitable(t *testing.T) {
+	engine := NewEngine(NewMemoryStore(), nil)
+	// A one-hour interval means only cancellation can end the loop, which is the property under
+	// test: doing it by interval would pass even if Stop did nothing.
+	engine.StartAutoDiscovery(context.Background(), time.Hour)
+
+	engine.StopAutoDiscovery()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := engine.WaitAutoDiscovery(ctx); err != nil {
+		t.Fatalf("the loop did not exit after Stop: %v", err)
+	}
+}
+
+// TestEngine_StartAutoDiscoveryIsIdempotent: a second start would put two loops on the same store.
+// The second call must be a no-op rather than a second writer.
+func TestEngine_StartAutoDiscoveryIsIdempotent(t *testing.T) {
+	engine := NewEngine(NewMemoryStore(), nil)
+	engine.StartAutoDiscovery(context.Background(), time.Hour)
+	engine.StartAutoDiscovery(context.Background(), time.Hour)
+	engine.StopAutoDiscovery()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := engine.WaitAutoDiscovery(ctx); err != nil {
+		t.Fatalf("the loop did not exit after Stop: %v", err)
+	}
+}
+
+// TestEngine_WaitAutoDiscoveryWithoutStart returns immediately: nothing was started, so there is
+// nothing to wait for (and no channel to block on).
+func TestEngine_WaitAutoDiscoveryWithoutStart(t *testing.T) {
+	engine := NewEngine(NewMemoryStore(), nil)
+	if err := engine.WaitAutoDiscovery(context.Background()); err != nil {
+		t.Fatalf("wait without start: %v", err)
 	}
 }

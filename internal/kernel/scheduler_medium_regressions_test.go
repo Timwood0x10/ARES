@@ -113,12 +113,14 @@ func TestBudgetExhaustedSoleCandidateDoesNotChurnLeases(t *testing.T) {
 // toward 0.
 func TestEndQuantumOutcomeNeutralForNonExecutorConditions(t *testing.T) {
 	cases := []struct {
-		name string
-		err  error
+		name   string
+		result taskfabric.QuantumResult
 	}{
-		{"illegal_state", taskfabric.ErrIllegalState},
-		{"task_not_found", taskfabric.ErrTaskNotFound},
-		{"context_canceled", context.Canceled},
+		// Start-stage rejections: the executor never ran.
+		{"illegal_state", taskfabric.QuantumResult{Executed: false, StepErr: taskfabric.ErrIllegalState}},
+		{"task_not_found", taskfabric.QuantumResult{Executed: false, StepErr: taskfabric.ErrTaskNotFound}},
+		// It ran, but shutdown interrupted it: no verdict was formed.
+		{"context_canceled", taskfabric.QuantumResult{Executed: true, StepErr: context.Canceled}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -134,7 +136,7 @@ func TestEndQuantumOutcomeNeutralForNonExecutorConditions(t *testing.T) {
 			tracker.Begin("coder")
 			tracker.End("coder", true)
 
-			sched.endQuantumOutcome("coder", "code", "t-x", tc.err, time.Millisecond, 0)
+			sched.endQuantumOutcome(context.Background(), "coder", "code", "t-x", tc.result, time.Millisecond)
 
 			if got := tracker.Confidence("coder"); got != 1.0 {
 				t.Fatalf("confidence must stay 1.0 (neutral outcome), got %v", got)
@@ -201,6 +203,15 @@ func TestScheduledCountsTasksNotQuanta(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 	waitForTaskState(t, fabric, "t-multi", taskfabric.StateCompleted, 5*time.Second)
+
+	// The counters are updated by the dispatch loop, and the state transition is observed from
+	// another goroutine: asserting immediately after the state flaked whenever the loop had not yet
+	// finished its bookkeeping for the last quantum. Wait for the counters to settle, then assert —
+	// waiting on equality still fails (by timeout) if the value is wrong, so this is not a weakened
+	// check, only a synchronised one.
+	waitFor(t, 2*time.Second, func() bool {
+		return exec.calls == 2 && sched.Scheduled.Load() == 1
+	}, "counters must settle on 2 quanta and 1 scheduled task")
 
 	if got := sched.Scheduled.Load(); got != 1 {
 		t.Fatalf("Scheduled must count the completed TASK once, got %d", got)
@@ -409,7 +420,7 @@ func TestReconcileForgetsDeadAgentTrackerEntries(t *testing.T) {
 	// yet) must survive the sweep.
 	tracker.SetPriority("cfg-peer", 7)
 
-	sched.reconcileFabricDeaths()
+	sched.reconcileFabricDeaths(context.Background())
 
 	snap := tracker.Snapshot()
 	for _, a := range snap.Agents {

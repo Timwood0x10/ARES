@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -30,6 +32,39 @@ import (
 	core_tools "github.com/Timwood0x10/ares/internal/tools/resources/core"
 )
 
+// shutdownFailures collects teardown failures that an errgroup cannot report.
+//
+// errgroup.Wait returns only the FIRST error, and during a normal Ctrl-C that first error is usually
+// context.Canceled from a watcher exiting — so a real failure from a later step was both masked by
+// the cancellation and then normalized away as "Ctrl-C is fine". These are recorded separately and
+// joined by the caller.
+type shutdownFailures struct {
+	mu   sync.Mutex
+	errs []error
+}
+
+func (f *shutdownFailures) add(err error) {
+	if f == nil || err == nil {
+		return
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.errs = append(f.errs, err)
+}
+
+// err returns the joined failures, or nil when the teardown was clean.
+func (f *shutdownFailures) err() error {
+	if f == nil {
+		return nil
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.errs) == 0 {
+		return nil
+	}
+	return errors.Join(f.errs...)
+}
+
 // wiringServeSignalWatch starts the signal-handling goroutine on the errgroup
 // (M-C2 segment extraction: body moved verbatim from runServe). compPtr is
 // the atomic slot the Bootstrap assignment publishes to.
@@ -40,6 +75,7 @@ func wiringServeSignalWatch(
 	cancel context.CancelFunc,
 	shutdownMgr *ares_shutdown.Manager,
 	compPtr *atomic.Pointer[ares_bootstrap.Components],
+	failures *shutdownFailures,
 ) {
 	g.Go(func() error {
 		select {
@@ -63,23 +99,14 @@ func wiringServeSignalWatch(
 				fmt.Fprintln(os.Stderr, "\nSecond signal received: forcing immediate exit")
 				os.Exit(1)
 			}()
-			// Run the registered shutdown phases (HTTP → MCP → runtime) with a
-			// bounded overall timeout. cancel() afterwards stops background
-			// goroutines (event bridge, task submission) that wait on ctx.
-			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer shutdownCancel()
-			if err := shutdownMgr.StartShutdown(shutdownCtx); err != nil {
-				fmt.Fprintf(os.Stderr, "graceful shutdown error: %v\n", err)
-			}
-			// Give SystemRuntime Shutdown its own 15s budget so it
-			// is not starved by phase callbacks that consumed the shared
-			// 30s shutdownCtx. An expired context would skip MCP/Runtime/
-			// FlightRecorder Stop, leaking goroutines and connections.
-			sysRuntimeCtx, sysRuntimeCancel := context.WithTimeout(context.Background(), 15*time.Second)
-			defer sysRuntimeCancel()
-			shutdownSystemRuntime(compPtr, sysRuntimeCtx)
-			cancel()
+			runServeTeardown(ctx, cancel, shutdownMgr, compPtr, failures)
 		case <-ctx.Done():
+			// A background failure (config watcher, event bridge, a submitted task) cancels the
+			// group's context WITHOUT a signal. This case used to do nothing: the phases never ran,
+			// SystemRuntime was never asked to stop, and the HTTP listener — which does not follow
+			// the context by itself — kept accepting requests, so g.Wait() blocked on a server
+			// nothing had asked to close. Both paths run the same sequence; only the trigger differs.
+			runServeTeardown(ctx, cancel, shutdownMgr, compPtr, failures)
 		}
 		comp := compPtr.Load()
 		if comp == nil {
@@ -94,8 +121,13 @@ func wiringServeSignalWatch(
 		// Wait for Bootstrap's background goroutines (distillation subscriber,
 		// GA evolution ticker, LLM suggestion ticker) to exit after the
 		// context is cancelled, so none outlives the graceful shutdown.
-		comp.WaitBackground()
-		return nil
+		//
+		// Bounded: this runs AFTER the kernel and SystemRuntime have spent their own budgets, so an
+		// unbounded wait here re-opens the exact hole they closed — the process reported a finished
+		// shutdown and then sat in this call indefinitely.
+		bgErr := finishBackgroundWait(ctx, comp, backgroundExitBudget)
+		failures.add(bgErr)
+		return bgErr
 	})
 }
 
@@ -674,12 +706,82 @@ func startServeHTTPAndHooks(
 // reverse topological order; nil guards keep this safe on the bootstrap-failure
 // path. Extracted from runServe to keep its cyclomatic complexity within lint
 // limits.
-func shutdownSystemRuntime(compPtr *atomic.Pointer[ares_bootstrap.Components], ctx context.Context) {
+func shutdownSystemRuntime(compPtr *atomic.Pointer[ares_bootstrap.Components], ctx context.Context) error {
 	comp := compPtr.Load()
 	if comp == nil || comp.SystemRuntime == nil {
-		return
+		return nil
 	}
 	if err := comp.SystemRuntime.Shutdown(ctx); err != nil {
+		// Printed AND returned. Printing alone left the CLI reporting a clean exit after a Runtime
+		// whose components failed to stop — the caller has no way to see the difference between
+		// "stopped" and "we tried".
 		fmt.Fprintf(os.Stderr, "system_runtime shutdown error: %v\n", err)
+		return fmt.Errorf("serve: system runtime shutdown: %w", err)
 	}
+	return nil
+}
+
+// backgroundExitBudget bounds the final wait for Bootstrap's background goroutines.
+//
+// Ten seconds is the last item in a shutdown sequence that already spent 30s on the shutdown phases
+// and 15s on SystemRuntime; it exists to keep a single uncooperative worker from making the whole
+// budget meaningless, not to give that worker more time.
+const backgroundExitBudget = 10 * time.Second
+
+// runServeTeardown stops the registered phases, then the SystemRuntime, then releases the process
+// context.
+//
+// Extracted so the signal path and the failure path cannot drift apart — they were one branch and one
+// empty case, and the empty case skipped the entire teardown.
+//
+// Each step carries its own budget because they run in sequence: a phase that consumed the shared
+// deadline would leave the later stops with an expired context, and they skip themselves, leaking
+// goroutines and connections.
+func runServeTeardown(
+	ctx context.Context,
+	cancel context.CancelFunc,
+	shutdownMgr *ares_shutdown.Manager,
+	compPtr *atomic.Pointer[ares_bootstrap.Components],
+	failures *shutdownFailures,
+) {
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), shutdownPhaseBudget)
+	defer shutdownCancel()
+	if err := shutdownMgr.StartShutdown(shutdownCtx); err != nil {
+		// Printed AND collected: an HTTP drain that ran out of budget is a failed teardown, and
+		// printing it while returning success is how a hung shutdown reads as a clean one.
+		fmt.Fprintf(os.Stderr, "graceful shutdown error: %v\n", err)
+		failures.add(fmt.Errorf("serve: shutdown phases: %w", err))
+	}
+
+	sysRuntimeCtx, sysRuntimeCancel := context.WithTimeout(context.Background(), sysRuntimeShutdownBudget)
+	defer sysRuntimeCancel()
+	failures.add(shutdownSystemRuntime(compPtr, sysRuntimeCtx))
+
+	// Stops background goroutines (event bridge, task submission) that wait on ctx.
+	cancel()
+}
+
+// shutdownPhaseBudget bounds the registered phase callbacks (HTTP → MCP → runtime).
+const shutdownPhaseBudget = 30 * time.Second
+
+// sysRuntimeShutdownBudget bounds the SystemRuntime's own teardown, separate from the phases so it
+// cannot be starved by callbacks that used up the shared deadline.
+const sysRuntimeShutdownBudget = 15 * time.Second
+
+// finishBackgroundWait is the CLI's last shutdown step, bounded and reported.
+//
+// The error is RETURNED, not only printed: printing alone let the caller's errgroup finish with nil,
+// so a shutdown whose background workers never exited was reported as clean — the same false success
+// the kernel side was fixed for. A normal Ctrl-C reaches here with every worker gone and still gets
+// nil; the error describes a teardown that did not finish, not the fact that a signal arrived.
+func finishBackgroundWait(ctx context.Context, comp *ares_bootstrap.Components, budget time.Duration) error {
+	bgCtx, cancel := context.WithTimeout(context.Background(), budget)
+	defer cancel()
+	if err := comp.WaitBackgroundContext(bgCtx); err != nil {
+		fmt.Fprintf(os.Stderr, "graceful shutdown: background goroutines did not exit: %v\n", err)
+		log.Warn(ctx, "wiringServeSignalWatch",
+			"serve: background goroutines still running at exit", "error", err)
+		return fmt.Errorf("serve: background goroutines did not exit: %w", err)
+	}
+	return nil
 }

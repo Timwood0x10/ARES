@@ -739,8 +739,12 @@ func TestWebSearchToolOverrideBlocksPrivateTarget(t *testing.T) {
 	if result.Success {
 		t.Fatalf("SSRF override to loopback must fail, got success: %v", result.Data)
 	}
-	if !strings.Contains(fmt.Sprint(result.Data), "ssrf") {
-		t.Fatalf("want ssrf refusal in data, got: %v", result.Data)
+	// The refusal now comes from the shared implementation (network.SSRFTransport's dial-time
+	// control) rather than a local dialer, so the message is the network package's wording. Assert
+	// what it means — a blocked private target — instead of the old prefix.
+	reason := strings.ToLower(fmt.Sprint(result.Data))
+	if !strings.Contains(reason, "blocked address") {
+		t.Fatalf("want an SSRF refusal in data, got: %v", result.Data)
 	}
 }
 

@@ -263,8 +263,7 @@ func (h *actionHandler) handleSubmitTask(w http.ResponseWriter, r *http.Request,
 	taskID, err := submitPeerTask(submitCtx, h.kernel, capability, req.Payload)
 	if err != nil {
 		h.auditAction(r, "submit_task", capability, princ, false)
-		w.WriteHeader(http.StatusInternalServerError)
-		writeJSON(w, map[string]any{"error": err.Error(), "status": "error"})
+		writeSubmitRejection(w, err)
 		return
 	}
 	h.auditAction(r, "submit_task", capability, princ, true)
@@ -797,4 +796,29 @@ func collabNodeOutput(f *taskfabric.Fabric, tk *taskfabric.Task) string {
 	}
 	reason, _ := step["reason"].(string)
 	return reason
+}
+
+// writeSubmitRejection maps a submission failure onto the status that describes it.
+//
+// Until this existed every failure was 500, which told a caller nothing it could act on: a queue at
+// capacity is a "come back shortly", a malformed request is a "fix it", and a storage fault is
+// neither. The queue case is recognised through the error CHAIN, not the message, and the numbers
+// travel as fields so the response never has to be parsed.
+func writeSubmitRejection(w http.ResponseWriter, err error) {
+	var full *taskfabric.ReadyQueueFullError
+	if errors.As(err, &full) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		writeJSON(w, map[string]any{
+			// A stable machine-readable code: the status carries the class, this carries the
+			// reason, and neither depends on wording.
+			"code":   "queue_full",
+			"status": "error",
+			"error":  "submission rejected: outstanding work is at capacity",
+			"depth":  full.Depth,
+			"limit":  full.Max,
+		})
+		return
+	}
+	w.WriteHeader(http.StatusInternalServerError)
+	writeJSON(w, map[string]any{"error": err.Error(), "status": "error"})
 }

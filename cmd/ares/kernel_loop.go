@@ -10,6 +10,7 @@ import (
 	"github.com/Timwood0x10/ares/internal/ares_events"
 	"github.com/Timwood0x10/ares/internal/aresrecovery"
 	agentfabric "github.com/Timwood0x10/ares/internal/fabric/agent"
+	taskfabric "github.com/Timwood0x10/ares/internal/fabric/task"
 )
 
 // recoverySweepInterval is how often the event-driven recovery loop also
@@ -51,6 +52,12 @@ const quotaApplyTimeout = 30 * time.Second
 // the package defaults, so an absent kernel loop config section keeps prior
 // behavior (zero-value usable).
 type kernelLoopConfig struct {
+	// OnSweepError receives a sweep that could not settle a task's durable state.
+	//
+	// A callback rather than a return value because the sweep runs on its own goroutine: the loop
+	// outlives any single sweep, so the failure has to reach an owner that lives at least as long.
+	// Nil = log only, which is what the tests use.
+	OnSweepError func(error)
 	// LeaseTTL is the scheduler task-lease duration (0 = scheduler default).
 	LeaseTTL time.Duration
 	// QuotaApplyInterval is how often the quota loop re-applies the budget.
@@ -260,13 +267,34 @@ func runSweepChain(
 	ctx context.Context,
 	recovery *aresrecovery.Recovery,
 	bindReplacements func(ids []string),
-) {
+) error {
+	// The chain runs to the end even when expiry fails: the tasks are already failed in memory and the
+	// later steps must not be skipped. What changes is that the failure is RETURNED — "the durable
+	// state of these expiries is unsettled" is something only a caller can act on.
+	var sweepErr error
 	// Deadline expiry runs BEFORE the lease requeue.
-	expired := recovery.ExpireTaskDeadlines()
+	expired, expErr := recovery.ExpireTaskDeadlines()
 	if len(expired) > 0 {
 		log.Info(ctx, "runKernelRecoveryLoop",
 			"kernel recovery loop: task(s) past deadline failed",
 			"count", len(expired), "task_ids", expired)
+	}
+	// TODO(plan/runtime-stability, round 2): this sweep has no caller to return to — the recovery
+	// loop runs as a bare goroutine and serve does not start it at all. Logging here is a placeholder,
+	// not the contract: the error has to reach a runtime-owned collector. Recorded so the gap is
+	// visible rather than implied by silence.
+	if expErr != nil {
+		// A task expiring is NORMAL work for this sweep; only an expiry whose durable record could
+		// not be settled is a fault. Reporting every expiry as a fault would degrade component health
+		// on a healthy system, which is the fastest way to make the signal useless.
+		if isDurabilityFault(expErr) {
+			log.Error(ctx, "runKernelRecoveryLoop",
+				"kernel recovery loop: deadline expiry has unsettled durable state", expErr)
+			sweepErr = errors.Join(sweepErr, expErr)
+		} else {
+			log.Info(ctx, "runKernelRecoveryLoop",
+				"kernel recovery loop: deadline expiry reported a task outcome", "detail", expErr)
+		}
 	}
 	// Approval SLA expiry runs AFTER deadline expiry and BEFORE the lease
 	// requeue (R1/R2).
@@ -326,6 +354,7 @@ func runSweepChain(
 			"sample", audit.Sample,
 			"why", "retirement is single-node by contract (Parent is provenance); this is their cumulative footprint, not an error in this sweep")
 	}
+	return sweepErr
 }
 
 // reclaimIDs flattens reclaimed agents for the sweep's log line, keeping the STATE
@@ -545,7 +574,7 @@ func runKernelRecoveryLoop(
 			}
 			// Deadline expiry, approval SLA expiry, and lease requeue
 			// run in sequence: see runSweepChain for the ordering rationale.
-			runSweepChain(ctx, recovery, bindReplacements)
+			reportSweepError(cfg, runSweepChain(ctx, recovery, bindReplacements))
 		}()
 	}
 	// bindNominated handles one stale-winner nomination. It shares the
@@ -638,3 +667,32 @@ func parseKernelPollInterval(raw string) time.Duration {
 // kernel paths — the scheduler logic lives in one importable package, both
 // cmd/ares and sdk drive the same engine). cmd/ares keeps its historical
 // names so no caller (kernel wiring, peer mode, tests) changes.
+
+// reportSweepError hands a failed sweep to whoever registered an interest in it.
+//
+// Extracted from the loop body to keep that function under the complexity gate, and because the two
+// cases — nobody listening, and a callback that must not be called with nil — are the whole of it.
+func reportSweepError(cfg kernelLoopConfig, err error) {
+	if err == nil || cfg.OnSweepError == nil {
+		return
+	}
+	cfg.OnSweepError(err)
+}
+
+// isDurabilityFault reports whether an expiry error describes a persistence problem rather than the
+// ordinary "this task ran out of time" outcome.
+//
+// The distinction decides whether component health suffers: an expiry that failed its own append is a
+// fault an operator must see; a task that simply reached its deadline is the sweep doing its job.
+func isDurabilityFault(err error) bool {
+	if err == nil {
+		return false
+	}
+	var partial *taskfabric.PartialCommitError
+	if errors.As(err, &partial) {
+		// A batch that is entirely COMMITTED is a successful sweep: the type is used for the whole
+		// per-member report, so the presence of the error alone says nothing about durability.
+		return len(partial.Refused) > 0 || len(partial.Partial) > 0 || len(partial.Unknown) > 0
+	}
+	return errors.Is(err, taskfabric.ErrCommitUnknown) || errors.Is(err, taskfabric.ErrCommitRefused)
+}

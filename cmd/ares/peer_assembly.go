@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/Timwood0x10/ares/internal/agentruntime"
@@ -61,7 +63,7 @@ func (a *peerAssembly) assembleFabric() error {
 	// Assemble the Kernel: Task Fabric + Agent Fabric + scheduler. This
 	// mirrors flipKernelToTaskFabric but runs directly at startup (no
 	// legacy path to flip from).
-	kernel.fabric = taskfabric.NewFabric()
+	kernel.fabric = newKernelFabric(a.cfg)
 	// HITL approval SLA safety net: a positive kernel.approval_sla makes every
 	// RequiresApproval task that carries no per-step timeout inherit it, so a
 	// forgotten gate expires instead of stalling the plan forever. Empty or
@@ -636,6 +638,23 @@ func (a *peerAssembly) startLoops() {
 	recoveryLoopCfg := kernelLoopCfg
 	recoveryLoopCfg.RecoveryKick = recoveryKick
 	sched.WithRecoveryHint(recoveryHint)
+	// Sweep failures arrive by callback (the loop outlives any single sweep) and are returned from
+	// this run function, so the component's health carries them instead of a log line nobody reads.
+	var sweepMu sync.Mutex
+	var sweepErr error
+	recoveryLoopCfg.OnSweepError = func(err error) {
+		sweepMu.Lock()
+		sweepErr = errors.Join(sweepErr, err)
+		sweepMu.Unlock()
+
+		// Published NOW, not at exit: the loop keeps running, so waiting until it stops means the
+		// component reports healthy for as long as the process lives — and the shutdown path may
+		// suppress the failure anyway. The state is left alone because the loop is still working.
+		if comp != nil && comp.SystemRuntime != nil {
+			comp.SystemRuntime.ReportComponentFault(sysCompRecovery, err)
+		}
+	}
+
 	runBackground(ctx, comp, sysCompRecovery, func(context.Context) error {
 		defer close(recDone)
 		runKernelRecoveryLoop(recCtx, store, kernel.recovery, recoveryLoopCfg,
@@ -660,8 +679,27 @@ func (a *peerAssembly) startLoops() {
 			},
 			sched.HasCapableExecutor,
 		)
-		return nil
+
+		// Returning it (not only logging) is the point: the run function's error is what the component
+		// reports, so an unsettled expiry shows up in the same place as any other component fault.
+		sweepMu.Lock()
+		defer sweepMu.Unlock()
+		return sweepErr
 	})
 	kernel.recoveryStop = recCancel
 	kernel.recoveryDone = recDone
+}
+
+// newKernelFabric builds the task fabric the scheduler drains.
+//
+// It is a named function rather than an inline NewFabric() so the admission cap can be asserted:
+// WithMaxReadyTasks had no production caller at all, which meant backpressure existed only in unit
+// tests — the surface was implemented, configured by nobody, and therefore never on.
+func newKernelFabric(cfg *ares_config.Config) *taskfabric.Fabric {
+	fabric := taskfabric.NewFabric()
+	if cfg == nil {
+		return fabric
+	}
+	// 0 (the default) leaves admission unlimited, so an existing deployment is unaffected.
+	return fabric.WithMaxReadyTasks(cfg.Kernel.MaxReadyTasks)
 }

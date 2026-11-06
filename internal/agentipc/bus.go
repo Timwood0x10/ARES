@@ -66,7 +66,10 @@ type Bus struct {
 	idSeq      uint64
 	// traceSeq mints bus-local trace ids; guarded by mu like idSeq.
 	traceSeq uint64
-	now      func() time.Time
+	// clockMu guards now on its own: allocNow runs on every message from handler goroutines, and it
+	// is itself called from code that already holds mu, so reusing mu would deadlock.
+	clockMu sync.RWMutex
+	now     func() time.Time
 	// deadLetters records failed requests (undeliverable / timed out) for
 	// observability and redelivery. Never nil after NewBus.
 	deadLetters *DeadLetterStore
@@ -74,6 +77,10 @@ type Bus struct {
 	// Nil = unobserved, the pre-observer behavior. See
 	// collaboration_observer.go.
 	collabObserver CollaborationObserver
+	// stallWarnMu guards stallWarnedAt, the rate limiter for the "handler outlived its request"
+	// warning.
+	stallWarnMu   sync.Mutex
+	stallWarnedAt time.Time
 	// logger reports contained handler panics. Nil = silent: library
 	// code must not print directly, and the caller still
 	// learns about the failure through ErrHandlerPanic.
@@ -100,11 +107,12 @@ func (b *Bus) DeadLetters() *DeadLetterStore {
 
 // WithClock injects a controllable clock for deterministic tests.
 func (b *Bus) WithClock(now func() time.Time) *Bus {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if now != nil {
-		b.now = now
+	if now == nil {
+		return b
 	}
+	b.clockMu.Lock()
+	defer b.clockMu.Unlock()
+	b.now = now
 	return b
 }
 

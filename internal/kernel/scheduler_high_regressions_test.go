@@ -60,7 +60,7 @@ func TestPreemptLowerPrioritySkipsWhenFreeCapableExecutorExists(t *testing.T) {
 		t.Fatalf("Create high: %v", err)
 	}
 
-	sched.PreemptLowerPriority(fabric.ResumableTasks())
+	sched.PreemptLowerPriority(context.Background(), fabric.ResumableTasks())
 
 	tk, err := fabric.Task("low-task")
 	if err != nil {
@@ -101,7 +101,7 @@ func TestPreemptLowerPriorityIncapableFreeExecutorDoesNotCount(t *testing.T) {
 		t.Fatalf("Create high: %v", err)
 	}
 
-	sched.PreemptLowerPriority(fabric.ResumableTasks())
+	sched.PreemptLowerPriority(context.Background(), fabric.ResumableTasks())
 
 	tk, err := fabric.Task("low-task")
 	if err != nil {
@@ -151,7 +151,7 @@ func TestPreemptLowerPriorityPreemptsOnlyAsManyAsNeeded(t *testing.T) {
 		t.Fatalf("Create high: %v", err)
 	}
 
-	sched.PreemptLowerPriority(fabric.ResumableTasks())
+	sched.PreemptLowerPriority(context.Background(), fabric.ResumableTasks())
 
 	// Exactly the lowest-priority running task is preempted.
 	assertState := func(id string, want taskfabric.TaskState) {

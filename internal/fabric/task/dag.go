@@ -1,6 +1,9 @@
 package taskfabric
 
-import "slices"
+import (
+	"slices"
+	"sort"
+)
 
 // IsReady reports whether a task's dependencies are all satisfied — every
 // dependency task is COMPLETED — and the task itself is currently READY.
@@ -23,7 +26,7 @@ func (f *Fabric) IsReady(id string) (bool, error) {
 	if !ok {
 		return false, ErrTaskNotFound
 	}
-	if t.State != StateReady {
+	if t.State != StateReady || !t.schedulable() {
 		return false, nil
 	}
 	return depsSatisfiedLocked(f.tasks, t), nil
@@ -50,10 +53,16 @@ func (f *Fabric) ReadyTasks() []string {
 		if !approvalCleared(t) {
 			continue
 		}
+		if !t.schedulable() {
+			// Awaiting reconciliation: the store may already hold the tombstone, or the task's own
+			// record may not be durable.
+			continue
+		}
 		if depsSatisfiedLocked(f.tasks, t) {
 			out = append(out, id)
 		}
 	}
+	f.sortResumableLocked(out)
 	return out
 }
 
@@ -75,6 +84,12 @@ func (f *Fabric) ResumableTasks() []string {
 	defer f.mu.Unlock()
 	var out []string
 	for id, t := range f.tasks {
+		if !t.schedulable() {
+			// This is the queue the drain and the PREEMPTION scan actually use. Filtering only
+			// ReadyTasks left a task that may already be deleted in the store driving preemption of
+			// healthy lower-priority work.
+			continue
+		}
 		switch t.State {
 		case StateReady:
 			if !f.retryDueLocked(t) {
@@ -95,7 +110,68 @@ func (f *Fabric) ResumableTasks() []string {
 			}
 		}
 	}
+	f.sortResumableLocked(out)
 	return out
+}
+
+// sortResumableLocked sorts the resumable task IDs for deterministic dispatch
+// order (M1) with session-level fairness aging (M3). The sort key is:
+//   - effectivePriority DESC, where effectivePriority = priority + agingWeight × waitSeconds
+//     (waitSeconds = now - ReadyAt; a task that has waited longer gets a higher
+//     effective priority, so a session with 100 READY tasks cannot starve a
+//     session with 1 READY task indefinitely);
+//   - ReadyAt ASC (FIFO within an equal effective priority band);
+//   - id ASC (total order tiebreaker for determinism).
+//
+// The aging weight is deliberately small (0.01 priority points per second)
+// so it only breaks ties between sessions, not within one — a high-priority
+// task always outranks a low-priority one unless the wait difference is
+// enormous (hundreds of seconds), which is exactly the intended behavior.
+//
+// Caller must hold f.mu (reads task fields). A zero ReadyAt sorts before
+// any non-zero one (treats unset as "oldest"), which is the correct behavior
+// for tasks restored from a durable store that predates the ReadyAt field.
+func (f *Fabric) sortResumableLocked(ids []string) {
+	if len(ids) <= 1 {
+		return
+	}
+	now := f.now()
+	// agingWeight: 0.01 priority points per second of wait. A task waiting
+	// 100s gets +1 effective priority — enough to cross one priority band,
+	// but not enough to dominate within one.
+	const agingWeight = 0.01
+	sort.Slice(ids, func(i, j int) bool {
+		ti, oki := f.tasks[ids[i]]
+		tj, okj := f.tasks[ids[j]]
+		if !oki || !okj {
+			return ids[i] < ids[j]
+		}
+		// effectivePriority = priority + agingWeight × waitSeconds.
+		// A zero ReadyAt means "oldest possible" for restored tasks.
+		waitI := 0.0
+		if !ti.ReadyAt.IsZero() {
+			waitI = now.Sub(ti.ReadyAt).Seconds()
+			if waitI < 0 {
+				waitI = 0
+			}
+		}
+		waitJ := 0.0
+		if !tj.ReadyAt.IsZero() {
+			waitJ = now.Sub(tj.ReadyAt).Seconds()
+			if waitJ < 0 {
+				waitJ = 0
+			}
+		}
+		effI := float64(ti.Priority) + agingWeight*waitI
+		effJ := float64(tj.Priority) + agingWeight*waitJ
+		if effI != effJ {
+			return effI > effJ
+		}
+		if !ti.ReadyAt.Equal(tj.ReadyAt) {
+			return ti.ReadyAt.Before(tj.ReadyAt)
+		}
+		return ids[i] < ids[j]
+	})
 }
 
 // approvalCleared reports whether a task's HITL approval gate has been
@@ -133,7 +209,10 @@ func dependencySatisfied(dep, dependent *Task) bool {
 		return false
 	}
 	if dep.State == StateCompleted {
-		return true
+		// A completion whose append is still in flight is not a completion the dependent can build on:
+		// if the store refuses it, the task reverts and the dependent would have run on a result that
+		// never existed durably.
+		return !dep.CommitPending
 	}
 	if dependent.AllowPartial && dep.State == StateFailed && slices.Contains(dependent.DegradedInputs, dep.ID) {
 		return true

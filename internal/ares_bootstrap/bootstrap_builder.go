@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/Timwood0x10/ares/internal/ares_config"
 	"github.com/Timwood0x10/ares/internal/ares_events"
@@ -510,6 +511,15 @@ func (b *bootstrapBuilder) wirePlatform() error {
 		return fmt.Errorf("bootstrap: wire discovery: %w", err)
 	default:
 		comp.Discovery = discoveryComp
+		// Tie the auto-discovery loop to the supervisor: without this the loop only observed bctx,
+		// so a shutdown could return from WaitBackground while it was still calling providers.
+		comp.GoBackground(bctx, "discovery-auto-discovery", func(ctx context.Context) error {
+			<-ctx.Done()
+			discoveryComp.Engine.StopAutoDiscovery()
+			waitCtx, cancel := context.WithTimeout(context.Background(), discoveryStopWait)
+			defer cancel()
+			return discoveryComp.Engine.WaitAutoDiscovery(waitCtx)
+		})
 		// Discovery's health verdicts are the only signal for a half-dead MCP
 		// server (answers a probe, but slow or erroring); before this the flag
 		// was updated and read by nobody (defect S-mcp-S4).
@@ -538,3 +548,7 @@ func (b *bootstrapBuilder) wirePlatform() error {
 	startExpiryCleanupWorker(bctx, comp)
 	return nil
 }
+
+// discoveryStopWait bounds how long shutdown waits for the discovery loop to notice cancellation.
+// The loop checks ctx between providers, so this only expires against a provider that blocks.
+const discoveryStopWait = 5 * time.Second

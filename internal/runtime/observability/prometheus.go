@@ -51,10 +51,27 @@ type PrometheusMetrics struct {
 	EvolutionGeneration   prometheus.Gauge
 	EvolutionDAGVersion   prometheus.Gauge
 	EvolutionCompileCount prometheus.Gauge
+	// L1UnmatchedOverrides counts kernel.l1.tools entries that match no registered tool.
+	//
+	// A declaration for a name nobody registered is accepted, validated and then never applied — a
+	// typo ("ripgrep" for "rg") is indistinguishable from a working configuration unless something
+	// reports it. Zero is a valid, healthy value, so the gauge is always SET rather than left absent:
+	// an absent series and a zero one look identical on a dashboard only if you know which to expect.
+	L1UnmatchedOverrides prometheus.Gauge
 
 	// Histograms
 	LLMCallDuration   *prometheus.HistogramVec
 	AgentStepDuration *prometheus.HistogramVec
+
+	// Scheduler histograms (M0 baseline). These answer the three
+	// structural questions about the scheduling loop:
+	//   - how long after a task becomes READY does it get dispatched?
+	//   - when a slow quantum is in flight, how long before an idle agent
+	//     picks up OTHER ready work (the work-conserving gap)?
+	//   - how old is a task when it finally gets dispatched (fairness/aging)?
+	SchedulerReadyToDispatchSeconds   *prometheus.HistogramVec
+	SchedulerWorkConservingGapSeconds *prometheus.HistogramVec
+	SchedulerReadyAgeSeconds          *prometheus.HistogramVec
 
 	// Gauges
 	ActiveAgents        prometheus.Gauge
@@ -117,6 +134,30 @@ func NewPrometheusMetrics() (*PrometheusMetrics, error) {
 				Buckets: []float64{0.1, 0.5, 1, 2.5, 5, 10, 30, 60},
 			},
 			[]string{"phase"},
+		),
+		SchedulerReadyToDispatchSeconds: prometheus.NewHistogramVec(
+			prometheus.HistogramOpts{
+				Name:    "ARES_scheduler_ready_to_dispatch_seconds",
+				Help:    "Wait of work that was actually dispatched: READY to lease acquired and agent chosen. A task that leaves the queue without a claim (no capable candidate, exhausted budget) contributes nothing, so this histogram describes runs, not attempts",
+				Buckets: []float64{0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30},
+			},
+			[]string{},
+		),
+		SchedulerWorkConservingGapSeconds: prometheus.NewHistogramVec(
+			prometheus.HistogramOpts{
+				Name:    "ARES_scheduler_work_conserving_gap_seconds",
+				Help:    "Age of the scheduler's current continuously-busy interval when it had to leave READY work behind: the interval starts at the first quantum admitted after an empty pipeline and ends when the last one finishes. It is NOT saturation — capacity 4 running one long quantum still accumulates, so a deferral after that quantum reports the whole interval. Overlapping quanta count as one interval rather than restarting per completion. Records only deferrals: a zero would claim no work waited",
+				Buckets: []float64{0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30},
+			},
+			[]string{},
+		),
+		SchedulerReadyAgeSeconds: prometheus.NewHistogramVec(
+			prometheus.HistogramOpts{
+				Name:    "ARES_scheduler_ready_age_seconds",
+				Help:    "Queue age when the scheduler looked: once when a task leaves the queue, and at most once per five seconds for the head of a deferred queue. TIME-WEIGHTED — a stalled queue contributes repeatedly while a fast one contributes once per task, so this estimates how old the backlog is, not the wait of an average task. Includes work that was never dispatched",
+				Buckets: []float64{0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60},
+			},
+			[]string{},
 		),
 		ActiveAgents: prometheus.NewGauge(
 			prometheus.GaugeOpts{
@@ -263,6 +304,12 @@ func NewPrometheusMetrics() (*PrometheusMetrics, error) {
 				Help: "Total number of CompilePlan calls since startup",
 			},
 		),
+		L1UnmatchedOverrides: prometheus.NewGauge(
+			prometheus.GaugeOpts{
+				Name: "ARES_l1_unmatched_overrides",
+				Help: "kernel.l1.tools entries whose tool name is not registered in this process; kept in configuration but inactive",
+			},
+		),
 	}
 
 	// Register all collectors with the default Prometheus registry.
@@ -272,6 +319,9 @@ func NewPrometheusMetrics() (*PrometheusMetrics, error) {
 		m.AgentErrorsTotal,
 		m.LLMCallDuration,
 		m.AgentStepDuration,
+		m.SchedulerReadyToDispatchSeconds,
+		m.SchedulerWorkConservingGapSeconds,
+		m.SchedulerReadyAgeSeconds,
 		m.ActiveAgents,
 		m.LLMTokensTotal,
 		m.CostUSDTotal,
@@ -293,6 +343,7 @@ func NewPrometheusMetrics() (*PrometheusMetrics, error) {
 		m.EvolutionGeneration,
 		m.EvolutionDAGVersion,
 		m.EvolutionCompileCount,
+		m.L1UnmatchedOverrides,
 	}
 	for _, c := range collectors {
 		if err := prometheus.Register(c); err != nil {
@@ -588,6 +639,33 @@ func (m *PrometheusMetrics) SetEvolutionCompileCount(count uint64) {
 	m.EvolutionCompileCount.Set(float64(count))
 }
 
+// RecordSchedulerReadyToDispatch observes the time from a task becoming READY
+// to the scheduler acquiring it. nil-safe: a no-op when metrics are not wired.
+func (m *PrometheusMetrics) RecordSchedulerReadyToDispatch(seconds float64) {
+	if m == nil {
+		return
+	}
+	m.SchedulerReadyToDispatchSeconds.WithLabelValues().Observe(seconds)
+}
+
+// RecordSchedulerWorkConservingGap observes the delay in dispatching new READY
+// work while a slow quantum is in flight. nil-safe.
+func (m *PrometheusMetrics) RecordSchedulerWorkConservingGap(seconds float64) {
+	if m == nil {
+		return
+	}
+	m.SchedulerWorkConservingGapSeconds.WithLabelValues().Observe(seconds)
+}
+
+// RecordSchedulerReadyAge observes a task's age (since it became READY) at the
+// moment it is dispatched. nil-safe.
+func (m *PrometheusMetrics) RecordSchedulerReadyAge(seconds float64) {
+	if m == nil {
+		return
+	}
+	m.SchedulerReadyAgeSeconds.WithLabelValues().Observe(seconds)
+}
+
 // RecordCost observes a cost value for a model and session.
 //
 // Args:
@@ -656,4 +734,17 @@ func (m *PrometheusMetrics) RecordEvolutionRuntimePatch(result string) {
 		return
 	}
 	m.EvolutionRuntimePatchesTotal.WithLabelValues(result).Inc()
+}
+
+// SetL1UnmatchedOverrides publishes how many kernel.l1.tools entries matched no registered tool.
+//
+// Best-effort: a metrics failure must never stop the wiring, so an unavailable instance is silent.
+// Called on every L1 (re)build, not only at boot — a tool that appears later through MCP makes an
+// entry match, and the gauge has to be able to say so.
+func SetL1UnmatchedOverrides(count int) {
+	m, err := NewPrometheusMetrics()
+	if err != nil || m == nil {
+		return
+	}
+	m.L1UnmatchedOverrides.Set(float64(count))
 }
